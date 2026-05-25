@@ -1,0 +1,40 @@
+#pragma once
+
+#include <memory>
+#include <string>
+#include <string_view>
+#include <vector>
+
+namespace slang::syntax {
+class SyntaxTree;
+}
+
+namespace pristine::analysis {
+
+struct ParseRange {
+    int start_line = 0;
+    int start_character = 0;
+    int end_line = 0;
+    int end_character = 0;
+};
+
+struct ParseDiagnostic {
+    std::string code;
+    std::string message;
+    ParseRange range;
+    int severity = 1;
+    bool is_error = false;
+};
+
+struct ParseResult {
+    std::shared_ptr<slang::syntax::SyntaxTree> syntax_tree;
+    std::vector<ParseDiagnostic> diagnostics;
+    bool has_errors = false;
+};
+
+class CompilationService {
+public:
+    [[nodiscard]] ParseResult parse(std::string_view text, std::string_view uri) const;
+};
+
+} // namespace pristine::analysis

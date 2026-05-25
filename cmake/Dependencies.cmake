@@ -12,6 +12,23 @@ function(pristine_require_dependency dependency_name)
   add_subdirectory("${dependency_dir}" "${PROJECT_BINARY_DIR}/_deps/${dependency_name}" EXCLUDE_FROM_ALL)
 endfunction()
 
+set(pristine_fmt_dir "${PRISTINE_DEPS_DIR}/src/fmt")
+if(NOT EXISTS "${pristine_fmt_dir}/CMakeLists.txt")
+  message(
+    FATAL_ERROR
+      "Missing dependency 'fmt' in ${pristine_fmt_dir}. Run `cmake -DPRISTINE_ROOT_DIR=${PROJECT_SOURCE_DIR} -P ${PROJECT_SOURCE_DIR}/scripts/bootstrap_deps.cmake` first.")
+endif()
+
+set(FETCHCONTENT_SOURCE_DIR_FMT "${pristine_fmt_dir}" CACHE PATH "Use locally bootstrapped fmt for slang" FORCE)
+set(FETCHCONTENT_UPDATES_DISCONNECTED_FMT ON CACHE BOOL "Disable fmt updates during configure" FORCE)
+
+set(SLANG_INCLUDE_TOOLS OFF CACHE BOOL "Don't build slang tools" FORCE)
+set(SLANG_INCLUDE_DOCS OFF CACHE BOOL "Don't build slang docs" FORCE)
+set(SLANG_INCLUDE_PYLIB OFF CACHE BOOL "Don't build slang Python bindings" FORCE)
+set(SLANG_INCLUDE_INSTALL OFF CACHE BOOL "Don't install slang separately" FORCE)
+set(SLANG_INCLUDE_TESTS OFF CACHE BOOL "Don't build slang tests" FORCE)
+
+pristine_require_dependency(slang)
 pristine_require_dependency(nlohmann_json)
 
 if(PRISTINE_BUILD_TESTS)

@@ -24,15 +24,17 @@ include(Dependencies)
 
 add_library(
   pristine_core
+  src/analysis/CompilationService.cpp
   src/document/DocumentStore.cpp
   src/jsonrpc/JsonRpcServer.cpp
   src/jsonrpc/MessageStream.cpp
   src/lsp/Protocol.cpp
   src/server/ServerSession.cpp
-  src/transport/StdioTransport.cpp)
+  src/transport/StdioTransport.cpp
+  src/workspace/WorkspaceManager.cpp)
 
 target_include_directories(pristine_core PUBLIC "${PROJECT_SOURCE_DIR}/include")
-target_link_libraries(pristine_core PUBLIC nlohmann_json::nlohmann_json)
+target_link_libraries(pristine_core PUBLIC nlohmann_json::nlohmann_json slang::slang)
 
 if(MSVC)
   target_compile_options(pristine_core PRIVATE /W4 /permissive-)

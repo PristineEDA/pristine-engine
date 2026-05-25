@@ -61,8 +61,20 @@ struct DidCloseTextDocumentParams {
 	TextDocumentIdentifier text_document;
 };
 
+struct WorkspaceFolder {
+	std::string uri;
+	std::string name;
+};
+
+struct InitializeParams {
+	std::optional<std::vector<WorkspaceFolder>> workspace_folders;
+	std::optional<std::string> root_uri;
+	std::optional<std::string> root_path;
+};
+
 Json makeInitializeResult(std::string_view server_name, std::string_view server_version);
 
+InitializeParams parseInitializeParams(const Json& params);
 DidOpenTextDocumentParams parseDidOpenTextDocumentParams(const Json& params);
 DidChangeTextDocumentParams parseDidChangeTextDocumentParams(const Json& params);
 DidSaveTextDocumentParams parseDidSaveTextDocumentParams(const Json& params);

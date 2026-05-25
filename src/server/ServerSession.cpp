@@ -1,5 +1,7 @@
 #include "pristine/server/ServerSession.h"
 
+#include <nlohmann/json.hpp>
+
 #include "pristine/jsonrpc/JsonRpcServer.h"
 #include "pristine/lsp/Protocol.h"
 
@@ -40,7 +42,8 @@ void ServerSession::bind(jsonrpc::JsonRpcServer& server) {
     });
 }
 
-jsonrpc::Json ServerSession::handleInitialize(const jsonrpc::Json&) {
+jsonrpc::Json ServerSession::handleInitialize(const jsonrpc::Json& params) {
+    workspace_manager_.initialize(lsp::parseInitializeParams(params));
     initialized_ = true;
     shutdown_requested_ = false;
     return lsp::makeInitializeResult(server_name_, server_version_);
@@ -58,7 +61,9 @@ void ServerSession::handleDidOpen(const jsonrpc::Json& params) {
         throw std::runtime_error("textDocument/didOpen received before initialize");
     }
 
-    document_store_.open(lsp::parseDidOpenTextDocumentParams(params));
+    const auto did_open = lsp::parseDidOpenTextDocumentParams(params);
+    document_store_.open(did_open);
+    publishDiagnostics(did_open.text_document.uri);
 }
 
 void ServerSession::handleDidChange(const jsonrpc::Json& params) {
@@ -66,7 +71,9 @@ void ServerSession::handleDidChange(const jsonrpc::Json& params) {
         throw std::runtime_error("textDocument/didChange received before initialize");
     }
 
-    document_store_.applyChanges(lsp::parseDidChangeTextDocumentParams(params));
+    const auto did_change = lsp::parseDidChangeTextDocumentParams(params);
+    document_store_.applyChanges(did_change);
+    publishDiagnostics(did_change.text_document.uri);
 }
 
 void ServerSession::handleDidSave(const jsonrpc::Json& params) {
@@ -74,7 +81,9 @@ void ServerSession::handleDidSave(const jsonrpc::Json& params) {
         throw std::runtime_error("textDocument/didSave received before initialize");
     }
 
-    document_store_.save(lsp::parseDidSaveTextDocumentParams(params));
+    const auto did_save = lsp::parseDidSaveTextDocumentParams(params);
+    document_store_.save(did_save);
+    publishDiagnostics(did_save.text_document.uri);
 }
 
 void ServerSession::handleDidClose(const jsonrpc::Json& params) {
@@ -82,7 +91,9 @@ void ServerSession::handleDidClose(const jsonrpc::Json& params) {
         throw std::runtime_error("textDocument/didClose received before initialize");
     }
 
-    document_store_.close(lsp::parseDidCloseTextDocumentParams(params));
+    const auto did_close = lsp::parseDidCloseTextDocumentParams(params);
+    clearDiagnostics(did_close.text_document.uri);
+    document_store_.close(did_close);
 }
 
 void ServerSession::handleExit(const jsonrpc::Json&) {
@@ -91,6 +102,48 @@ void ServerSession::handleExit(const jsonrpc::Json&) {
     }
 
     server_->requestStop(shutdown_requested_ ? 0 : 1);
+}
+
+void ServerSession::publishDiagnostics(std::string_view uri) {
+    if (!server_) {
+        return;
+    }
+
+    const auto* document = document_store_.find(uri);
+    if (!document) {
+        return;
+    }
+
+    const auto parse_result = compilation_service_.parse(document->text, document->uri);
+
+    jsonrpc::Json diagnostics = jsonrpc::Json::array();
+    for (const auto& diagnostic : parse_result.diagnostics) {
+        diagnostics.push_back(jsonrpc::Json{{"range",
+                                             jsonrpc::Json{{"start",
+                                                            jsonrpc::Json{{"line", diagnostic.range.start_line},
+                                                                           {"character", diagnostic.range.start_character}}},
+                                                           {"end",
+                                                            jsonrpc::Json{{"line", diagnostic.range.end_line},
+                                                                           {"character", diagnostic.range.end_character}}}}},
+                                            {"severity", diagnostic.severity},
+                                            {"code", diagnostic.code},
+                                            {"source", server_name_},
+                                            {"message", diagnostic.message}});
+    }
+
+    server_->sendNotification("textDocument/publishDiagnostics",
+                              jsonrpc::Json{{"uri", document->uri},
+                                            {"diagnostics", std::move(diagnostics)}});
+}
+
+void ServerSession::clearDiagnostics(std::string_view uri) {
+    if (!server_) {
+        return;
+    }
+
+    server_->sendNotification("textDocument/publishDiagnostics",
+                              jsonrpc::Json{{"uri", std::string(uri)},
+                                            {"diagnostics", jsonrpc::Json::array()}});
 }
 
 } // namespace pristine::server

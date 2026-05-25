@@ -23,10 +23,12 @@ public:
 
     int run(transport::MessageTransport& transport);
     void requestStop(int exit_code);
+    void sendNotification(std::string method, Json params);
 
 private:
     void handleIncoming(transport::MessageTransport& transport, const std::string& payload);
 
+    static Json makeNotification(std::string method, Json params);
     static Json makeResponse(const Json& id, Json result);
     static Json makeErrorResponse(const Json& id, int code, std::string message);
 
@@ -34,6 +36,7 @@ private:
     std::unordered_map<std::string, NotificationHandler> notification_handlers_;
     bool stop_requested_ = false;
     int exit_code_ = 0;
+    transport::MessageTransport* active_transport_ = nullptr;
 };
 
 } // namespace pristine::jsonrpc

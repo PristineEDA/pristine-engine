@@ -31,6 +31,7 @@ void JsonRpcServer::registerNotificationHandler(std::string method, Notification
 }
 
 int JsonRpcServer::run(transport::MessageTransport& transport) {
+    active_transport_ = &transport;
     while (!stop_requested_) {
         auto payload = transport.read();
         if (!payload.has_value()) {
@@ -40,12 +41,22 @@ int JsonRpcServer::run(transport::MessageTransport& transport) {
         handleIncoming(transport, payload.value());
     }
 
+    active_transport_ = nullptr;
+
     return exit_code_;
 }
 
 void JsonRpcServer::requestStop(int exit_code) {
     stop_requested_ = true;
     exit_code_ = exit_code;
+}
+
+void JsonRpcServer::sendNotification(std::string method, Json params) {
+    if (!active_transport_) {
+        throw std::runtime_error("Cannot send a notification when no transport is active");
+    }
+
+    active_transport_->write(makeNotification(std::move(method), std::move(params)).dump());
 }
 
 void JsonRpcServer::handleIncoming(transport::MessageTransport& transport,
@@ -111,6 +122,10 @@ void JsonRpcServer::handleIncoming(transport::MessageTransport& transport,
 
 Json JsonRpcServer::makeResponse(const Json& id, Json result) {
     return Json{{"jsonrpc", "2.0"}, {"id", id}, {"result", std::move(result)}};
+}
+
+Json JsonRpcServer::makeNotification(std::string method, Json params) {
+    return Json{{"jsonrpc", "2.0"}, {"method", std::move(method)}, {"params", std::move(params)}};
 }
 
 Json JsonRpcServer::makeErrorResponse(const Json& id, int code, std::string message) {
