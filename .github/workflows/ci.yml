@@ -1,0 +1,124 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-test:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runs_on }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - id: ubuntu-22.04-x64
+            name: Ubuntu 22.04 x64
+            runs_on: ubuntu-22.04
+            arch: x64
+          - id: ubuntu-24.04-x64
+            name: Ubuntu 24.04 x64
+            runs_on: ubuntu-24.04
+            arch: x64
+          - id: windows-2022-x64
+            name: Windows 2022 x64
+            runs_on: windows-2022
+            arch: x64
+          - id: windows-2025-x64
+            name: Windows 2025 x64
+            runs_on: windows-2025
+            arch: x64
+          - id: macos-14-arm64
+            name: macOS 14 arm64
+            runs_on: macos-14
+            arch: arm64
+          - id: macos-15-arm64
+            name: macOS 15 arm64
+            runs_on: macos-15
+            arch: arm64
+          - id: macos-15-x64
+            name: macOS 15 x64
+            runs_on: macos-15-intel
+            arch: x64
+          - id: macos-26-arm64
+            name: macOS 26 arm64
+            runs_on: macos-26
+            arch: arm64
+          - id: macos-26-x64
+            name: macOS 26 x64
+            runs_on: macos-26-intel
+            arch: x64
+
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Initialize MSVC environment
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Cache dependency archives
+        uses: actions/cache@v4
+        with:
+          path: .deps/archives
+          key: deps-${{ runner.os }}-${{ matrix.arch }}-${{ hashFiles('cmake/DepsLock.cmake') }}
+          restore-keys: |
+            deps-${{ runner.os }}-${{ matrix.arch }}-
+
+      - name: Bootstrap dependencies
+        run: cmake -DPRISTINE_ROOT_DIR=. -P scripts/bootstrap_deps.cmake
+
+      - name: Configure
+        run: cmake --preset dev
+
+      - name: Validate notice files
+        run: cmake --build --preset dev --target pristine_validate_notice
+
+      - name: Build
+        run: cmake --build --preset dev
+
+      - name: Run unit tests
+        run: |
+          $testBinary = Join-Path $PWD 'build/dev/tests/pristine_unit_tests'
+          if ($IsWindows) {
+            $testBinary = "$testBinary.exe"
+          }
+          & $testBinary
+
+      - name: Smoke test server version
+        run: |
+          $binary = Join-Path $PWD 'build/dev/pristine-lsp'
+          if ($IsWindows) {
+            $binary = "$binary.exe"
+          }
+          & $binary --version
+
+      - name: Install to staged prefix
+        run: |
+          Remove-Item -Recurse -Force 'build/install-smoke' -ErrorAction SilentlyContinue
+          cmake --install build/dev --prefix build/install-smoke
+
+      - name: Validate staged install tree
+        run: cmake -DPRISTINE_INSTALL_PREFIX=build/install-smoke -P scripts/validate-install-tree.cmake
+
+      - name: Upload staged install tree
+        uses: actions/upload-artifact@v4
+        with:
+          name: pristine-install-${{ matrix.id }}
+          path: build/install-smoke
+          if-no-files-found: error

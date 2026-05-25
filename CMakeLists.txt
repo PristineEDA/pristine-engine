@@ -22,6 +22,42 @@ include(GNUInstallDirs)
 list(APPEND CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/cmake")
 include(Dependencies)
 
+set(PRISTINE_NOTICE_OUTPUTS
+    "${PROJECT_SOURCE_DIR}/ATTRIBUTIONS.md"
+    "${PROJECT_SOURCE_DIR}/NOTICE")
+set(PRISTINE_NOTICE_INSTALL_DIR "${CMAKE_INSTALL_DATADIR}/pristine-engine/licenses")
+
+add_custom_command(
+  OUTPUT ${PRISTINE_NOTICE_OUTPUTS}
+  COMMAND ${CMAKE_COMMAND} -DPRISTINE_ROOT_DIR=${PROJECT_SOURCE_DIR} -P
+          ${PROJECT_SOURCE_DIR}/scripts/generate-notice.cmake
+  DEPENDS
+    ${PROJECT_SOURCE_DIR}/cmake/attributions.cmake
+    ${PROJECT_SOURCE_DIR}/scripts/generate-notice.cmake
+    ${PROJECT_SOURCE_DIR}/licenses/texts/BSL-1.0.txt
+    ${PROJECT_SOURCE_DIR}/licenses/texts/MIT.txt
+    ${PROJECT_SOURCE_DIR}/licenses/texts/fmt-license.txt
+  COMMENT "Generating third-party notice files"
+  VERBATIM)
+
+add_custom_target(pristine_generate_notice DEPENDS ${PRISTINE_NOTICE_OUTPUTS})
+
+add_custom_target(
+  pristine_validate_notice
+  COMMAND ${CMAKE_COMMAND} -DPRISTINE_ROOT_DIR=${PROJECT_SOURCE_DIR}
+          -DPRISTINE_VALIDATE_ONLY=ON -P
+          ${PROJECT_SOURCE_DIR}/scripts/generate-notice.cmake
+  DEPENDS
+    ${PROJECT_SOURCE_DIR}/ATTRIBUTIONS.md
+    ${PROJECT_SOURCE_DIR}/NOTICE
+    ${PROJECT_SOURCE_DIR}/cmake/attributions.cmake
+    ${PROJECT_SOURCE_DIR}/scripts/generate-notice.cmake
+    ${PROJECT_SOURCE_DIR}/licenses/texts/BSL-1.0.txt
+    ${PROJECT_SOURCE_DIR}/licenses/texts/MIT.txt
+    ${PROJECT_SOURCE_DIR}/licenses/texts/fmt-license.txt
+  COMMENT "Validating third-party notice files"
+  VERBATIM)
+
 add_library(
   pristine_core
   src/analysis/CompilationService.cpp
@@ -52,6 +88,12 @@ add_executable(pristine-lsp src/main.cpp)
 target_link_libraries(pristine-lsp PRIVATE pristine_core)
 
 install(TARGETS pristine-lsp RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+install(
+  FILES
+    ${PROJECT_SOURCE_DIR}/LICENSE
+    ${PROJECT_SOURCE_DIR}/ATTRIBUTIONS.md
+    ${PROJECT_SOURCE_DIR}/NOTICE
+  DESTINATION ${PRISTINE_NOTICE_INSTALL_DIR})
 
 if(PRISTINE_BUILD_TESTS)
   include(CTest)

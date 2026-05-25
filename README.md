@@ -41,6 +41,29 @@ cmake -DPRISTINE_ROOT_DIR=. -P scripts/bootstrap_deps.cmake
 
 The current lock file is in `cmake/DepsLock.cmake`.
 
+## Third-party notices
+
+Third-party notice artifacts are generated from `cmake/attributions.cmake`.
+The current redistributed scope covers:
+
+- `slang`
+- `fmt`
+- `nlohmann/json`
+- `mimalloc`
+- the vendored `boost_unordered` header used by `slang` when no suitable Boost package is found
+
+Regenerate the checked-in notice files:
+
+```powershell
+cmake -DPRISTINE_ROOT_DIR=. -P scripts/generate-notice.cmake
+```
+
+Validate that `ATTRIBUTIONS.md` and `NOTICE` are up to date from the build graph:
+
+```powershell
+cmake --build --preset dev --target pristine_validate_notice
+```
+
 ## Build
 
 Requirements:
@@ -62,6 +85,43 @@ Run tests:
 ```powershell
 ctest --test-dir build/dev --output-on-failure
 ```
+
+## Install layout
+
+Stage an install tree locally:
+
+```powershell
+cmake --install build/dev --prefix build/install-smoke
+```
+
+The staged install layout contains:
+
+- `bin/pristine-lsp`
+- `share/pristine-engine/licenses/LICENSE`
+- `share/pristine-engine/licenses/ATTRIBUTIONS.md`
+- `share/pristine-engine/licenses/NOTICE`
+
+Validate the staged install tree:
+
+```powershell
+cmake -DPRISTINE_INSTALL_PREFIX=build/install-smoke -P scripts/validate-install-tree.cmake
+```
+
+## CI
+
+GitHub Actions CI in `.github/workflows/ci.yml` runs the hosted phase-1 matrix below:
+
+- Ubuntu 22.04 x64
+- Ubuntu 24.04 x64
+- Windows 2022 x64
+- Windows 2025 x64
+- macOS 14 arm64
+- macOS 15 arm64
+- macOS 15 x64
+- macOS 26 arm64
+- macOS 26 x64
+
+The one requested hosted combination that is not covered in phase 1 is macOS 14 x64 because GitHub does not provide a standard `macos-14-intel` label.
 
 ## Binary
 
