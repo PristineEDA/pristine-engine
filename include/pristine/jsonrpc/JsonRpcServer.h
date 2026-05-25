@@ -1,0 +1,39 @@
+#pragma once
+
+#include <functional>
+#include <nlohmann/json.hpp>
+#include <string>
+#include <unordered_map>
+
+namespace pristine::transport {
+class MessageTransport;
+}
+
+namespace pristine::jsonrpc {
+
+using Json = nlohmann::json;
+
+class JsonRpcServer {
+public:
+    using RequestHandler = std::function<Json(const Json&)>;
+    using NotificationHandler = std::function<void(const Json&)>;
+
+    void registerRequestHandler(std::string method, RequestHandler handler);
+    void registerNotificationHandler(std::string method, NotificationHandler handler);
+
+    int run(transport::MessageTransport& transport);
+    void requestStop(int exit_code);
+
+private:
+    void handleIncoming(transport::MessageTransport& transport, const std::string& payload);
+
+    static Json makeResponse(const Json& id, Json result);
+    static Json makeErrorResponse(const Json& id, int code, std::string message);
+
+    std::unordered_map<std::string, RequestHandler> request_handlers_;
+    std::unordered_map<std::string, NotificationHandler> notification_handlers_;
+    bool stop_requested_ = false;
+    int exit_code_ = 0;
+};
+
+} // namespace pristine::jsonrpc
