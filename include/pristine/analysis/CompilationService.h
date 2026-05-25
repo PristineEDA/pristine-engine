@@ -31,6 +31,7 @@ struct DocumentSymbol {
     int kind = 0;
     ParseRange range;
     ParseRange selection_range;
+    std::vector<DocumentSymbol> children;
 };
 
 struct ParseResult {

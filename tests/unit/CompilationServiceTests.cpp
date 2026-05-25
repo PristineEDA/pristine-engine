@@ -53,4 +53,31 @@ TEST_CASE("CompilationService extracts top-level document symbols", "[analysis][
     CHECK(symbols[2].kind == 2);
 }
 
+TEST_CASE("CompilationService extracts nested module member symbols", "[analysis][symbols]") {
+    CompilationService service;
+
+    const auto symbols = service.documentSymbols(
+        "module top #(parameter int WIDTH = 8);\n"
+        "  logic ready;\n"
+        "  wire clk, rst_n;\n"
+        "  typedef logic [7:0] byte_t;\n"
+        "  function automatic int sum();\n"
+        "  endfunction\n"
+        "endmodule\n",
+        "file:///workspace/nested-symbols.sv");
+
+    REQUIRE(symbols.size() == 1);
+    CHECK(symbols[0].name == "top");
+    REQUIRE(symbols[0].children.size() == 6);
+    CHECK(symbols[0].children[0].name == "WIDTH");
+    CHECK(symbols[0].children[0].kind == 14);
+    CHECK(symbols[0].children[1].name == "ready");
+    CHECK(symbols[0].children[1].kind == 13);
+    CHECK(symbols[0].children[2].name == "clk");
+    CHECK(symbols[0].children[3].name == "rst_n");
+    CHECK(symbols[0].children[4].name == "byte_t");
+    CHECK(symbols[0].children[5].name == "sum");
+    CHECK(symbols[0].children[5].kind == 12);
+}
+
 } // namespace pristine::analysis

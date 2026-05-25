@@ -8,6 +8,37 @@
 #include <stdexcept>
 
 namespace pristine::server {
+namespace {
+
+jsonrpc::Json toDocumentSymbolJson(const analysis::DocumentSymbol& symbol) {
+    jsonrpc::Json result{{"name", symbol.name},
+                         {"kind", symbol.kind},
+                         {"range",
+                          jsonrpc::Json{{"start",
+                                         jsonrpc::Json{{"line", symbol.range.start_line},
+                                                        {"character", symbol.range.start_character}}},
+                                        {"end",
+                                         jsonrpc::Json{{"line", symbol.range.end_line},
+                                                        {"character", symbol.range.end_character}}}}},
+                         {"selectionRange",
+                          jsonrpc::Json{{"start",
+                                         jsonrpc::Json{{"line", symbol.selection_range.start_line},
+                                                        {"character", symbol.selection_range.start_character}}},
+                                        {"end",
+                                         jsonrpc::Json{{"line", symbol.selection_range.end_line},
+                                                        {"character", symbol.selection_range.end_character}}}}}};
+
+    if (!symbol.children.empty()) {
+        result["children"] = jsonrpc::Json::array();
+        for (const auto& child : symbol.children) {
+            result["children"].push_back(toDocumentSymbolJson(child));
+        }
+    }
+
+    return result;
+}
+
+} // namespace
 
 ServerSession::ServerSession(std::string server_name, std::string server_version) :
     server_name_(std::move(server_name)), server_version_(std::move(server_version)) {}
@@ -65,22 +96,7 @@ jsonrpc::Json ServerSession::handleDocumentSymbol(const jsonrpc::Json& params) {
 
     jsonrpc::Json result = jsonrpc::Json::array();
     for (const auto& symbol : compilation_service_.documentSymbols(document->text, document->uri)) {
-        result.push_back(jsonrpc::Json{{"name", symbol.name},
-                                       {"kind", symbol.kind},
-                                       {"range",
-                                        jsonrpc::Json{{"start",
-                                                       jsonrpc::Json{{"line", symbol.range.start_line},
-                                                                      {"character", symbol.range.start_character}}},
-                                                      {"end",
-                                                       jsonrpc::Json{{"line", symbol.range.end_line},
-                                                                      {"character", symbol.range.end_character}}}}},
-                                       {"selectionRange",
-                                        jsonrpc::Json{{"start",
-                                                       jsonrpc::Json{{"line", symbol.selection_range.start_line},
-                                                                      {"character", symbol.selection_range.start_character}}},
-                                                      {"end",
-                                                       jsonrpc::Json{{"line", symbol.selection_range.end_line},
-                                                                      {"character", symbol.selection_range.end_character}}}}}});
+        result.push_back(toDocumentSymbolJson(symbol));
     }
 
     return result;

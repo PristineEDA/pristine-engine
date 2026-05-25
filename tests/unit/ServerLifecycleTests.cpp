@@ -283,6 +283,35 @@ TEST_CASE("ServerSession returns top-level document symbols", "[server][symbols]
     CHECK(symbols_response.at("result").at(2).at("kind") == 2);
 }
 
+TEST_CASE("ServerSession returns nested document symbols", "[server][symbols]") {
+    jsonrpc::JsonRpcServer rpc_server;
+    ServerSession session{"pristine-lsp", "0.1.0"};
+    session.bind(rpc_server);
+
+    ScriptedTransport transport{
+        R"({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}})",
+        R"({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///workspace/nested-symbols.sv","languageId":"systemverilog","version":1,"text":"module top #(parameter int WIDTH = 8);\n  logic ready;\n  wire clk, rst_n;\n  typedef logic [7:0] byte_t;\n  function automatic int sum();\n  endfunction\nendmodule\n"}}})",
+        R"({"jsonrpc":"2.0","id":2,"method":"textDocument/documentSymbol","params":{"textDocument":{"uri":"file:///workspace/nested-symbols.sv"}}})"};
+
+    const int exit_code = rpc_server.run(transport);
+
+    CHECK(exit_code == 0);
+    REQUIRE(transport.outputs().size() == 3);
+
+    const auto symbols_response = parseOutput(transport, 2);
+    REQUIRE(symbols_response.at("result").size() == 1);
+    const auto& top_symbol = symbols_response.at("result").at(0);
+    CHECK(top_symbol.at("name") == "top");
+    REQUIRE(top_symbol.contains("children"));
+    REQUIRE(top_symbol.at("children").size() == 6);
+    CHECK(top_symbol.at("children").at(0).at("name") == "WIDTH");
+    CHECK(top_symbol.at("children").at(1).at("name") == "ready");
+    CHECK(top_symbol.at("children").at(2).at("name") == "clk");
+    CHECK(top_symbol.at("children").at(3).at("name") == "rst_n");
+    CHECK(top_symbol.at("children").at(4).at("name") == "byte_t");
+    CHECK(top_symbol.at("children").at(5).at("name") == "sum");
+}
+
 TEST_CASE("ServerSession initializes workspace root without config", "[server][workspace]") {
     jsonrpc::JsonRpcServer rpc_server;
     ServerSession session{"pristine-lsp", "0.1.0"};
