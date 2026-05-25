@@ -52,6 +52,9 @@ void ServerSession::bind(jsonrpc::JsonRpcServer& server) {
     server.registerRequestHandler("textDocument/documentSymbol", [this](const jsonrpc::Json& params) {
         return handleDocumentSymbol(params);
     });
+    server.registerRequestHandler("textDocument/hover", [this](const jsonrpc::Json& params) {
+        return handleHover(params);
+    });
     server.registerRequestHandler("shutdown", [this](const jsonrpc::Json& params) {
         return handleShutdown(params);
     });
@@ -100,6 +103,33 @@ jsonrpc::Json ServerSession::handleDocumentSymbol(const jsonrpc::Json& params) {
     }
 
     return result;
+}
+
+jsonrpc::Json ServerSession::handleHover(const jsonrpc::Json& params) {
+    if (!initialized_) {
+        throw std::runtime_error("textDocument/hover received before initialize");
+    }
+
+    const auto hover = lsp::parseHoverParams(params);
+    const auto* document = document_store_.find(hover.text_document.uri);
+    if (!document) {
+        return nullptr;
+    }
+
+    const auto result = compilation_service_.hover(document->text, document->uri, hover.position.line,
+                                                   hover.position.character);
+    if (!result) {
+        return nullptr;
+    }
+
+    return jsonrpc::Json{{"contents", jsonrpc::Json{{"kind", "markdown"}, {"value", result->contents}}},
+                         {"range",
+                          jsonrpc::Json{{"start",
+                                         jsonrpc::Json{{"line", result->range.start_line},
+                                                        {"character", result->range.start_character}}},
+                                        {"end",
+                                         jsonrpc::Json{{"line", result->range.end_line},
+                                                        {"character", result->range.end_character}}}}}};
 }
 
 jsonrpc::Json ServerSession::handleShutdown(const jsonrpc::Json&) {

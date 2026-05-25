@@ -40,6 +40,7 @@ Json makeInitializeResult(std::string_view server_name, std::string_view server_
         {"capabilities",
          Json{{"positionEncoding", "utf-16"},
               {"documentSymbolProvider", true},
+              {"hoverProvider", true},
               {"textDocumentSync",
                Json{{"openClose", true}, {"change", 2}, {"save", Json{{"includeText", false}}}}},
               {"workspace",
@@ -113,6 +114,11 @@ DidSaveTextDocumentParams parseDidSaveTextDocumentParams(const Json& params) {
 DidCloseTextDocumentParams parseDidCloseTextDocumentParams(const Json& params) {
     return DidCloseTextDocumentParams{.text_document =
                                           parseTextDocumentIdentifier(params.at("textDocument"))};
+}
+
+HoverParams parseHoverParams(const Json& params) {
+    return HoverParams{.text_document = parseTextDocumentIdentifier(params.at("textDocument")),
+                       .position = parsePosition(params.at("position"))};
 }
 
 } // namespace pristine::lsp

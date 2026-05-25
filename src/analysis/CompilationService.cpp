@@ -90,6 +90,10 @@ int toDocumentSymbolKind(slang::syntax::SyntaxKind kind) {
     switch (kind) {
         case slang::syntax::SyntaxKind::PackageDeclaration:
             return 4;
+        case slang::syntax::SyntaxKind::ClassDeclaration:
+            return 5;
+        case slang::syntax::SyntaxKind::EnumType:
+            return 10;
         case slang::syntax::SyntaxKind::InterfaceDeclaration:
             return 11;
         case slang::syntax::SyntaxKind::FunctionDeclaration:
@@ -129,6 +133,88 @@ std::string trimWhitespace(std::string value) {
     }
 
     return value;
+}
+
+std::string symbolKindLabel(int kind) {
+    switch (kind) {
+        case 2:
+            return "Module";
+        case 3:
+            return "Namespace";
+        case 4:
+            return "Package";
+        case 5:
+            return "Class";
+        case 10:
+            return "Enum";
+        case 11:
+            return "Interface / Modport";
+        case 12:
+            return "Callable";
+        case 13:
+            return "Variable";
+        case 14:
+            return "Parameter";
+        case 19:
+            return "Instance";
+        case 22:
+            return "Enum Member";
+        case 26:
+            return "Typedef";
+        default:
+            return "Symbol";
+    }
+}
+
+bool containsPosition(const ParseRange& range, int line, int character) {
+    if (line < range.start_line || line > range.end_line) {
+        return false;
+    }
+
+    if (line == range.start_line && character < range.start_character) {
+        return false;
+    }
+
+    if (line == range.end_line && character >= range.end_character) {
+        return false;
+    }
+
+    return true;
+}
+
+const DocumentSymbol* findHoverSymbol(const DocumentSymbol& symbol, int line, int character) {
+    if (!containsPosition(symbol.range, line, character) &&
+        !containsPosition(symbol.selection_range, line, character)) {
+        return nullptr;
+    }
+
+    for (const auto& child : symbol.children) {
+        if (const auto* match = findHoverSymbol(child, line, character)) {
+            return match;
+        }
+    }
+
+    if (containsPosition(symbol.selection_range, line, character)) {
+        return &symbol;
+    }
+
+    return nullptr;
+}
+
+const DocumentSymbol* findHoverSymbol(const std::vector<DocumentSymbol>& symbols,
+                                      int line,
+                                      int character) {
+    for (const auto& symbol : symbols) {
+        if (const auto* match = findHoverSymbol(symbol, line, character)) {
+            return match;
+        }
+    }
+
+    return nullptr;
+}
+
+std::string makeHoverContents(const DocumentSymbol& symbol) {
+    return "**" + symbolKindLabel(symbol.kind) + "** `" + symbol.name + "`";
 }
 
 std::vector<DocumentSymbol> collectMemberSymbols(const slang::SourceManager& source_manager,
@@ -207,8 +293,130 @@ std::vector<DocumentSymbol> collectHeaderParameterSymbols(
 void appendMemberSymbols(std::vector<DocumentSymbol>& result,
                          const slang::SourceManager& source_manager,
                          std::string_view text,
+                         const slang::syntax::MemberSyntax& member);
+
+void appendNodeSymbols(std::vector<DocumentSymbol>& result,
+                       const slang::SourceManager& source_manager,
+                       std::string_view text,
+                       const slang::syntax::SyntaxNode& node) {
+    if (slang::syntax::MemberSyntax::isKind(node.kind)) {
+        appendMemberSymbols(result, source_manager, text,
+                            static_cast<const slang::syntax::MemberSyntax&>(node));
+    }
+}
+
+std::vector<DocumentSymbol> collectHeaderPortSymbols(const slang::SourceManager& source_manager,
+                                                     std::string_view text,
+                                                     const slang::syntax::ModuleHeaderSyntax& header) {
+    std::vector<DocumentSymbol> result;
+    if (!header.ports || header.ports->kind != slang::syntax::SyntaxKind::AnsiPortList) {
+        return result;
+    }
+
+    const auto& ports = header.ports->as<slang::syntax::AnsiPortListSyntax>();
+    for (const auto* port : ports.ports) {
+        appendMemberSymbols(result, source_manager, text, *port);
+    }
+
+    return result;
+}
+
+std::vector<DocumentSymbol> collectModportSymbols(const slang::SourceManager& source_manager,
+                                                  std::string_view text,
+                                                  const slang::syntax::AnsiPortListSyntax& ports) {
+    std::vector<DocumentSymbol> result;
+    for (const auto* port : ports.ports) {
+        switch (port->kind) {
+            case slang::syntax::SyntaxKind::ModportSimplePortList: {
+                const auto& list = port->as<slang::syntax::ModportSimplePortListSyntax>();
+                for (const auto* simple_port : list.ports) {
+                    switch (simple_port->kind) {
+                        case slang::syntax::SyntaxKind::ModportNamedPort: {
+                            const auto& named = simple_port->as<slang::syntax::ModportNamedPortSyntax>();
+                            result.push_back(makeDocumentSymbol(
+                                std::string(named.name.valueText()), 13,
+                                toParseRange(source_manager, text, named.sourceRange()),
+                                toParseRange(source_manager, text, named.name.range())));
+                            break;
+                        }
+                        case slang::syntax::SyntaxKind::ModportExplicitPort: {
+                            const auto& named = simple_port->as<slang::syntax::ModportExplicitPortSyntax>();
+                            result.push_back(makeDocumentSymbol(
+                                std::string(named.name.valueText()), 13,
+                                toParseRange(source_manager, text, named.sourceRange()),
+                                toParseRange(source_manager, text, named.name.range())));
+                            break;
+                        }
+                        default:
+                            break;
+                    }
+                }
+                break;
+            }
+            case slang::syntax::SyntaxKind::ModportSubroutinePortList: {
+                const auto& list = port->as<slang::syntax::ModportSubroutinePortListSyntax>();
+                for (const auto* subroutine_port : list.ports) {
+                    if (subroutine_port->kind == slang::syntax::SyntaxKind::ModportSubroutinePort) {
+                        const auto& subroutine =
+                            subroutine_port->as<slang::syntax::ModportSubroutinePortSyntax>();
+                        result.push_back(makeDocumentSymbol(
+                            trimWhitespace(subroutine.prototype->name->toString()), 12,
+                            toParseRange(source_manager, text, subroutine.sourceRange()),
+                            toParseRange(source_manager, text, subroutine.prototype->name->sourceRange())));
+                    }
+                }
+                break;
+            }
+            case slang::syntax::SyntaxKind::ModportClockingPort: {
+                const auto& clocking = port->as<slang::syntax::ModportClockingPortSyntax>();
+                result.push_back(makeDocumentSymbol(
+                    std::string(clocking.name.valueText()), 13,
+                    toParseRange(source_manager, text, clocking.sourceRange()),
+                    toParseRange(source_manager, text, clocking.name.range())));
+                break;
+            }
+            default:
+                break;
+        }
+    }
+
+    return result;
+}
+
+std::vector<DocumentSymbol> collectEnumMemberSymbols(const slang::SourceManager& source_manager,
+                                                     std::string_view text,
+                                                     const slang::syntax::EnumTypeSyntax& enum_type) {
+    std::vector<DocumentSymbol> result;
+    for (const auto* member : enum_type.members) {
+        result.push_back(makeDocumentSymbol(
+            std::string(member->name.valueText()), 22,
+            toParseRange(source_manager, text, member->sourceRange()),
+            toParseRange(source_manager, text, member->name.range())));
+    }
+    return result;
+}
+
+void appendMemberSymbols(std::vector<DocumentSymbol>& result,
+                         const slang::SourceManager& source_manager,
+                         std::string_view text,
                          const slang::syntax::MemberSyntax& member) {
     switch (member.kind) {
+        case slang::syntax::SyntaxKind::ImplicitAnsiPort: {
+            const auto& declaration = member.as<slang::syntax::ImplicitAnsiPortSyntax>();
+            result.push_back(makeDocumentSymbol(
+                std::string(declaration.declarator->name.valueText()), 13,
+                toParseRange(source_manager, text, declaration.sourceRange()),
+                toParseRange(source_manager, text, declaration.declarator->name.range())));
+            return;
+        }
+        case slang::syntax::SyntaxKind::ExplicitAnsiPort: {
+            const auto& declaration = member.as<slang::syntax::ExplicitAnsiPortSyntax>();
+            result.push_back(makeDocumentSymbol(
+                std::string(declaration.name.valueText()), 13,
+                toParseRange(source_manager, text, declaration.sourceRange()),
+                toParseRange(source_manager, text, declaration.name.range())));
+            return;
+        }
         case slang::syntax::SyntaxKind::DataDeclaration: {
             const auto& declaration = member.as<slang::syntax::DataDeclarationSyntax>();
             auto symbols = collectDeclaratorSymbols(source_manager, text, declaration.declarators, 13);
@@ -239,10 +447,81 @@ void appendMemberSymbols(std::vector<DocumentSymbol>& result,
         }
         case slang::syntax::SyntaxKind::TypedefDeclaration: {
             const auto& declaration = member.as<slang::syntax::TypedefDeclarationSyntax>();
+            int kind = 26;
+            std::vector<DocumentSymbol> children;
+            if (declaration.type->kind == slang::syntax::SyntaxKind::EnumType) {
+                kind = toDocumentSymbolKind(declaration.type->kind);
+                children = collectEnumMemberSymbols(source_manager, text,
+                                                    declaration.type->as<slang::syntax::EnumTypeSyntax>());
+            }
+
             result.push_back(makeDocumentSymbol(
-                std::string(declaration.name.valueText()), 26,
+                std::string(declaration.name.valueText()), kind,
                 toParseRange(source_manager, text, declaration.sourceRange()),
-                toParseRange(source_manager, text, declaration.name.range())));
+                toParseRange(source_manager, text, declaration.name.range()), std::move(children)));
+            return;
+        }
+        case slang::syntax::SyntaxKind::ClassPropertyDeclaration: {
+            const auto& declaration = member.as<slang::syntax::ClassPropertyDeclarationSyntax>();
+            appendMemberSymbols(result, source_manager, text, *declaration.declaration);
+            return;
+        }
+        case slang::syntax::SyntaxKind::ClassMethodDeclaration: {
+            const auto& declaration = member.as<slang::syntax::ClassMethodDeclarationSyntax>();
+            appendMemberSymbols(result, source_manager, text, *declaration.declaration);
+            return;
+        }
+        case slang::syntax::SyntaxKind::ClassMethodPrototype: {
+            const auto& declaration = member.as<slang::syntax::ClassMethodPrototypeSyntax>();
+            result.push_back(makeDocumentSymbol(
+                trimWhitespace(declaration.prototype->name->toString()), 12,
+                toParseRange(source_manager, text, declaration.sourceRange()),
+                toParseRange(source_manager, text, declaration.prototype->name->sourceRange())));
+            return;
+        }
+        case slang::syntax::SyntaxKind::ClassDeclaration: {
+            const auto& declaration = member.as<slang::syntax::ClassDeclarationSyntax>();
+            result.push_back(makeDocumentSymbol(
+                std::string(declaration.name.valueText()), toDocumentSymbolKind(member.kind),
+                toParseRange(source_manager, text, declaration.sourceRange()),
+                toParseRange(source_manager, text, declaration.name.range()),
+                collectMemberSymbols(source_manager, text, declaration.items)));
+            return;
+        }
+        case slang::syntax::SyntaxKind::GenerateRegion: {
+            const auto& declaration = member.as<slang::syntax::GenerateRegionSyntax>();
+            auto symbols = collectMemberSymbols(source_manager, text, declaration.members);
+            result.insert(result.end(), std::make_move_iterator(symbols.begin()),
+                          std::make_move_iterator(symbols.end()));
+            return;
+        }
+        case slang::syntax::SyntaxKind::GenerateBlock: {
+            const auto& declaration = member.as<slang::syntax::GenerateBlockSyntax>();
+            auto children = collectMemberSymbols(source_manager, text, declaration.members);
+            if (declaration.beginName) {
+                result.push_back(makeDocumentSymbol(
+                    std::string(declaration.beginName->name.valueText()), 3,
+                    toParseRange(source_manager, text, declaration.sourceRange()),
+                    toParseRange(source_manager, text, declaration.beginName->name.range()),
+                    std::move(children)));
+            }
+            else {
+                result.insert(result.end(), std::make_move_iterator(children.begin()),
+                              std::make_move_iterator(children.end()));
+            }
+            return;
+        }
+        case slang::syntax::SyntaxKind::IfGenerate: {
+            const auto& declaration = member.as<slang::syntax::IfGenerateSyntax>();
+            appendMemberSymbols(result, source_manager, text, *declaration.block);
+            if (declaration.elseClause) {
+                appendNodeSymbols(result, source_manager, text, *declaration.elseClause->clause);
+            }
+            return;
+        }
+        case slang::syntax::SyntaxKind::LoopGenerate: {
+            const auto& declaration = member.as<slang::syntax::LoopGenerateSyntax>();
+            appendMemberSymbols(result, source_manager, text, *declaration.block);
             return;
         }
         case slang::syntax::SyntaxKind::ParameterDeclarationStatement: {
@@ -250,6 +529,20 @@ void appendMemberSymbols(std::vector<DocumentSymbol>& result,
             auto symbols = collectParameterSymbols(source_manager, text, *declaration.parameter);
             result.insert(result.end(), std::make_move_iterator(symbols.begin()),
                           std::make_move_iterator(symbols.end()));
+            return;
+        }
+        case slang::syntax::SyntaxKind::HierarchyInstantiation: {
+            const auto& declaration = member.as<slang::syntax::HierarchyInstantiationSyntax>();
+            for (const auto* instance : declaration.instances) {
+                if (!instance->decl) {
+                    continue;
+                }
+
+                result.push_back(makeDocumentSymbol(
+                    std::string(instance->decl->name.valueText()), 19,
+                    toParseRange(source_manager, text, instance->sourceRange()),
+                    toParseRange(source_manager, text, instance->decl->name.range())));
+            }
             return;
         }
         case slang::syntax::SyntaxKind::PortDeclaration: {
@@ -288,6 +581,17 @@ void appendMemberSymbols(std::vector<DocumentSymbol>& result,
                 collectMemberSymbols(source_manager, text, declaration.members)));
             return;
         }
+        case slang::syntax::SyntaxKind::ModportDeclaration: {
+            const auto& declaration = member.as<slang::syntax::ModportDeclarationSyntax>();
+            for (const auto* item : declaration.items) {
+                result.push_back(makeDocumentSymbol(
+                    std::string(item->name.valueText()), 11,
+                    toParseRange(source_manager, text, item->sourceRange()),
+                    toParseRange(source_manager, text, item->name.range()),
+                    collectModportSymbols(source_manager, text, *item->ports)));
+            }
+            return;
+        }
         default:
             if (auto symbol = toDocumentSymbol(source_manager, text, member)) {
                 result.push_back(std::move(*symbol));
@@ -316,6 +620,9 @@ std::optional<DocumentSymbol> toDocumentSymbol(const slang::SourceManager& sourc
         case slang::syntax::SyntaxKind::ProgramDeclaration: {
             const auto& declaration = member.as<slang::syntax::ModuleDeclarationSyntax>();
             auto children = collectHeaderParameterSymbols(source_manager, text, *declaration.header);
+            auto port_children = collectHeaderPortSymbols(source_manager, text, *declaration.header);
+            children.insert(children.end(), std::make_move_iterator(port_children.begin()),
+                            std::make_move_iterator(port_children.end()));
             auto member_children = collectMemberSymbols(source_manager, text, declaration.members);
             children.insert(children.end(), std::make_move_iterator(member_children.begin()),
                             std::make_move_iterator(member_children.end()));
@@ -371,6 +678,19 @@ std::vector<DocumentSymbol> CompilationService::documentSymbols(std::string_view
     const auto& compilation_unit = syntax_tree->root().as<slang::syntax::CompilationUnitSyntax>();
 
     return collectMemberSymbols(source_manager, text, compilation_unit.members);
+}
+
+std::optional<HoverResult> CompilationService::hover(std::string_view text,
+                                                     std::string_view uri,
+                                                     int line,
+                                                     int character) const {
+    const auto symbols = documentSymbols(text, uri);
+    const auto* symbol = findHoverSymbol(symbols, line, character);
+    if (!symbol) {
+        return std::nullopt;
+    }
+
+    return HoverResult{.contents = makeHoverContents(*symbol), .range = symbol->selection_range};
 }
 
 } // namespace pristine::analysis

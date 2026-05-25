@@ -61,6 +61,11 @@ struct DidCloseTextDocumentParams {
 	TextDocumentIdentifier text_document;
 };
 
+struct HoverParams {
+	TextDocumentIdentifier text_document;
+	Position position;
+};
+
 struct WorkspaceFolder {
 	std::string uri;
 	std::string name;
@@ -79,5 +84,6 @@ DidOpenTextDocumentParams parseDidOpenTextDocumentParams(const Json& params);
 DidChangeTextDocumentParams parseDidChangeTextDocumentParams(const Json& params);
 DidSaveTextDocumentParams parseDidSaveTextDocumentParams(const Json& params);
 DidCloseTextDocumentParams parseDidCloseTextDocumentParams(const Json& params);
+HoverParams parseHoverParams(const Json& params);
 
 } // namespace pristine::lsp

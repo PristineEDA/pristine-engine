@@ -27,6 +27,7 @@ public:
 private:
     jsonrpc::Json handleInitialize(const jsonrpc::Json& params);
     jsonrpc::Json handleDocumentSymbol(const jsonrpc::Json& params);
+    jsonrpc::Json handleHover(const jsonrpc::Json& params);
     jsonrpc::Json handleShutdown(const jsonrpc::Json& params);
     void handleInitialized(const jsonrpc::Json& params);
     void handleDidOpen(const jsonrpc::Json& params);

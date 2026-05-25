@@ -134,8 +134,9 @@ TEST_CASE("ServerSession handles initialize-shutdown-exit", "[server][lifecycle]
     const auto initialize_response = parseOutput(transport, 0);
     CHECK(initialize_response.at("id") == 1);
     CHECK(initialize_response.at("result").at("serverInfo").at("name") == "pristine-lsp");
-        CHECK(initialize_response.at("result").at("capabilities").at("documentSymbolProvider") ==
-            true);
+    CHECK(initialize_response.at("result").at("capabilities").at("documentSymbolProvider") ==
+          true);
+    CHECK(initialize_response.at("result").at("capabilities").at("hoverProvider") == true);
     CHECK(initialize_response.at("result").at("capabilities").at("textDocumentSync").at(
               "openClose") == true);
 
@@ -310,6 +311,185 @@ TEST_CASE("ServerSession returns nested document symbols", "[server][symbols]") 
     CHECK(top_symbol.at("children").at(3).at("name") == "rst_n");
     CHECK(top_symbol.at("children").at(4).at("name") == "byte_t");
     CHECK(top_symbol.at("children").at(5).at("name") == "sum");
+}
+
+TEST_CASE("ServerSession returns ansi header port symbols", "[server][symbols]") {
+    jsonrpc::JsonRpcServer rpc_server;
+    ServerSession session{"pristine-lsp", "0.1.0"};
+    session.bind(rpc_server);
+
+    ScriptedTransport transport{
+        R"({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}})",
+        R"({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///workspace/ansi-ports.sv","languageId":"systemverilog","version":1,"text":"module top(input logic clk, output logic [7:0] data);\nendmodule\n"}}})",
+        R"({"jsonrpc":"2.0","id":2,"method":"textDocument/documentSymbol","params":{"textDocument":{"uri":"file:///workspace/ansi-ports.sv"}}})"};
+
+    const int exit_code = rpc_server.run(transport);
+
+    CHECK(exit_code == 0);
+    REQUIRE(transport.outputs().size() == 3);
+
+    const auto symbols_response = parseOutput(transport, 2);
+    REQUIRE(symbols_response.at("result").size() == 1);
+    const auto& top_symbol = symbols_response.at("result").at(0);
+    CHECK(top_symbol.at("name") == "top");
+    REQUIRE(top_symbol.contains("children"));
+    REQUIRE(top_symbol.at("children").size() == 2);
+    CHECK(top_symbol.at("children").at(0).at("name") == "clk");
+    CHECK(top_symbol.at("children").at(1).at("name") == "data");
+}
+
+TEST_CASE("ServerSession returns interface modport symbols", "[server][symbols]") {
+    jsonrpc::JsonRpcServer rpc_server;
+    ServerSession session{"pristine-lsp", "0.1.0"};
+    session.bind(rpc_server);
+
+    ScriptedTransport transport{
+        R"({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}})",
+        R"({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///workspace/interface-modport.sv","languageId":"systemverilog","version":1,"text":"interface bus_if(input logic clk);\n  logic ready;\n  function void sample();\n  endfunction\n  modport master(input clk, ready, import function sample);\nendinterface\n"}}})",
+        R"({"jsonrpc":"2.0","id":2,"method":"textDocument/documentSymbol","params":{"textDocument":{"uri":"file:///workspace/interface-modport.sv"}}})"};
+
+    const int exit_code = rpc_server.run(transport);
+
+    CHECK(exit_code == 0);
+    REQUIRE(transport.outputs().size() == 3);
+
+    const auto symbols_response = parseOutput(transport, 2);
+    REQUIRE(symbols_response.at("result").size() == 1);
+    const auto& interface_symbol = symbols_response.at("result").at(0);
+    CHECK(interface_symbol.at("name") == "bus_if");
+    REQUIRE(interface_symbol.contains("children"));
+    REQUIRE(interface_symbol.at("children").size() == 4);
+    CHECK(interface_symbol.at("children").at(0).at("name") == "clk");
+    CHECK(interface_symbol.at("children").at(1).at("name") == "ready");
+    CHECK(interface_symbol.at("children").at(2).at("name") == "sample");
+    const auto& modport_symbol = interface_symbol.at("children").at(3);
+    CHECK(modport_symbol.at("name") == "master");
+    REQUIRE(modport_symbol.contains("children"));
+    REQUIRE(modport_symbol.at("children").size() == 3);
+    CHECK(modport_symbol.at("children").at(0).at("name") == "clk");
+    CHECK(modport_symbol.at("children").at(1).at("name") == "ready");
+    CHECK(modport_symbol.at("children").at(2).at("name") == "sample");
+}
+
+TEST_CASE("ServerSession returns class enum and instance symbols", "[server][symbols]") {
+    jsonrpc::JsonRpcServer rpc_server;
+    ServerSession session{"pristine-lsp", "0.1.0"};
+    session.bind(rpc_server);
+
+    ScriptedTransport transport{
+        R"({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}})",
+        R"({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///workspace/class-enum-instance.sv","languageId":"systemverilog","version":1,"text":"class Packet;\n  rand int len;\n  function void clear();\n  endfunction\nendclass\ntypedef enum logic [1:0] { Idle, Busy } state_t;\nmodule top;\n  child child_i();\nendmodule\n"}}})",
+        R"({"jsonrpc":"2.0","id":2,"method":"textDocument/documentSymbol","params":{"textDocument":{"uri":"file:///workspace/class-enum-instance.sv"}}})"};
+
+    const int exit_code = rpc_server.run(transport);
+
+    CHECK(exit_code == 0);
+    REQUIRE(transport.outputs().size() == 3);
+
+    const auto symbols_response = parseOutput(transport, 2);
+    REQUIRE(symbols_response.at("result").size() == 3);
+    const auto& class_symbol = symbols_response.at("result").at(0);
+    CHECK(class_symbol.at("name") == "Packet");
+    REQUIRE(class_symbol.contains("children"));
+    REQUIRE(class_symbol.at("children").size() == 2);
+    CHECK(class_symbol.at("children").at(0).at("name") == "len");
+    CHECK(class_symbol.at("children").at(1).at("name") == "clear");
+    const auto& enum_symbol = symbols_response.at("result").at(1);
+    CHECK(enum_symbol.at("name") == "state_t");
+    REQUIRE(enum_symbol.contains("children"));
+    REQUIRE(enum_symbol.at("children").size() == 2);
+    CHECK(enum_symbol.at("children").at(0).at("name") == "Idle");
+    CHECK(enum_symbol.at("children").at(1).at("name") == "Busy");
+    const auto& module_symbol = symbols_response.at("result").at(2);
+    CHECK(module_symbol.at("name") == "top");
+    REQUIRE(module_symbol.contains("children"));
+    REQUIRE(module_symbol.at("children").size() == 1);
+    CHECK(module_symbol.at("children").at(0).at("name") == "child_i");
+}
+
+TEST_CASE("ServerSession returns named generate block symbols", "[server][symbols]") {
+    jsonrpc::JsonRpcServer rpc_server;
+    ServerSession session{"pristine-lsp", "0.1.0"};
+    session.bind(rpc_server);
+
+    ScriptedTransport transport{
+        R"({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}})",
+        R"({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///workspace/generate-blocks.sv","languageId":"systemverilog","version":1,"text":"module top;\n  generate\n    begin : gen_blk\n      logic enabled;\n    end\n  endgenerate\nendmodule\n"}}})",
+        R"({"jsonrpc":"2.0","id":2,"method":"textDocument/documentSymbol","params":{"textDocument":{"uri":"file:///workspace/generate-blocks.sv"}}})"};
+
+    const int exit_code = rpc_server.run(transport);
+
+    CHECK(exit_code == 0);
+    REQUIRE(transport.outputs().size() == 3);
+
+    const auto symbols_response = parseOutput(transport, 2);
+    REQUIRE(symbols_response.at("result").size() == 1);
+    const auto& module_symbol = symbols_response.at("result").at(0);
+    CHECK(module_symbol.at("name") == "top");
+    REQUIRE(module_symbol.contains("children"));
+    REQUIRE(module_symbol.at("children").size() == 1);
+    const auto& block_symbol = module_symbol.at("children").at(0);
+    CHECK(block_symbol.at("name") == "gen_blk");
+    CHECK(block_symbol.at("kind") == 3);
+    REQUIRE(block_symbol.contains("children"));
+    REQUIRE(block_symbol.at("children").size() == 1);
+    CHECK(block_symbol.at("children").at(0).at("name") == "enabled");
+}
+
+TEST_CASE("ServerSession returns if and loop generate symbols", "[server][symbols]") {
+    jsonrpc::JsonRpcServer rpc_server;
+    ServerSession session{"pristine-lsp", "0.1.0"};
+    session.bind(rpc_server);
+
+    ScriptedTransport transport{
+        R"({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}})",
+        R"({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///workspace/generate-branches.sv","languageId":"systemverilog","version":1,"text":"module top;\n  generate\n    if (1) begin : has_feature\n      logic enabled;\n    end else begin : no_feature\n      logic disabled;\n    end\n    for (genvar i = 0; i < 2; i++) begin : lane\n      logic ready;\n    end\n  endgenerate\nendmodule\n"}}})",
+        R"({"jsonrpc":"2.0","id":2,"method":"textDocument/documentSymbol","params":{"textDocument":{"uri":"file:///workspace/generate-branches.sv"}}})"};
+
+    const int exit_code = rpc_server.run(transport);
+
+    CHECK(exit_code == 0);
+    REQUIRE(transport.outputs().size() == 3);
+
+    const auto symbols_response = parseOutput(transport, 2);
+    REQUIRE(symbols_response.at("result").size() == 1);
+    const auto& module_symbol = symbols_response.at("result").at(0);
+    CHECK(module_symbol.at("name") == "top");
+    REQUIRE(module_symbol.contains("children"));
+    REQUIRE(module_symbol.at("children").size() == 3);
+    CHECK(module_symbol.at("children").at(0).at("name") == "has_feature");
+    CHECK(module_symbol.at("children").at(1).at("name") == "no_feature");
+    CHECK(module_symbol.at("children").at(2).at("name") == "lane");
+    REQUIRE(module_symbol.at("children").at(0).at("children").size() == 1);
+    CHECK(module_symbol.at("children").at(0).at("children").at(0).at("name") == "enabled");
+    REQUIRE(module_symbol.at("children").at(1).at("children").size() == 1);
+    CHECK(module_symbol.at("children").at(1).at("children").at(0).at("name") == "disabled");
+    REQUIRE(module_symbol.at("children").at(2).at("children").size() == 1);
+    CHECK(module_symbol.at("children").at(2).at("children").at(0).at("name") == "ready");
+}
+
+TEST_CASE("ServerSession returns hover for declaration symbols", "[server][hover]") {
+    jsonrpc::JsonRpcServer rpc_server;
+    ServerSession session{"pristine-lsp", "0.1.0"};
+    session.bind(rpc_server);
+
+    ScriptedTransport transport{
+        R"({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}})",
+        R"({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///workspace/hover.sv","languageId":"systemverilog","version":1,"text":"module top;\n  logic ready;\nendmodule\n"}}})",
+        R"({"jsonrpc":"2.0","id":2,"method":"textDocument/hover","params":{"textDocument":{"uri":"file:///workspace/hover.sv"},"position":{"line":1,"character":8}}})"};
+
+    const int exit_code = rpc_server.run(transport);
+
+    CHECK(exit_code == 0);
+    REQUIRE(transport.outputs().size() == 3);
+
+    const auto hover_response = parseOutput(transport, 2);
+    CHECK(hover_response.at("id") == 2);
+    CHECK(hover_response.at("result").at("contents").at("kind") == "markdown");
+    CHECK(hover_response.at("result").at("contents").at("value") == "**Variable** `ready`");
+    CHECK(hover_response.at("result").at("range").at("start").at("line") == 1);
+    CHECK(hover_response.at("result").at("range").at("start").at("character") == 8);
+    CHECK(hover_response.at("result").at("range").at("end").at("character") == 13);
 }
 
 TEST_CASE("ServerSession initializes workspace root without config", "[server][workspace]") {
