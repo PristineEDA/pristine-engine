@@ -24,6 +24,7 @@ include(Dependencies)
 
 add_library(
   pristine_core
+  src/document/DocumentStore.cpp
   src/jsonrpc/JsonRpcServer.cpp
   src/jsonrpc/MessageStream.cpp
   src/lsp/Protocol.cpp

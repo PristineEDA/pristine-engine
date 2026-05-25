@@ -86,4 +86,67 @@ TEST_CASE("ServerSession exits with failure when shutdown is skipped", "[server]
     CHECK(parseOutput(transport, 0).at("id") == 1);
 }
 
+TEST_CASE("ServerSession tracks open change save state", "[server][sync]") {
+    jsonrpc::JsonRpcServer rpc_server;
+    ServerSession session{"pristine-lsp", "0.1.0"};
+    session.bind(rpc_server);
+
+    constexpr std::string_view uri = "file:///workspace/top.sv";
+    ScriptedTransport transport{
+        R"({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}})",
+        R"({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///workspace/top.sv","languageId":"systemverilog","version":1,"text":"module top;\nendmodule\n"}}})",
+        R"({"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":{"uri":"file:///workspace/top.sv","version":2},"contentChanges":[{"range":{"start":{"line":0,"character":7},"end":{"line":0,"character":10}},"text":"demo"}]}})",
+        R"({"jsonrpc":"2.0","method":"textDocument/didSave","params":{"textDocument":{"uri":"file:///workspace/top.sv"}}})"};
+
+    const int exit_code = rpc_server.run(transport);
+
+    CHECK(exit_code == 0);
+    REQUIRE(transport.outputs().size() == 1);
+
+    const auto* document = session.documents().find(uri);
+    REQUIRE(document != nullptr);
+    CHECK(document->language_id == "systemverilog");
+    CHECK(document->version == 2);
+    CHECK(document->text == "module demo;\nendmodule\n");
+    CHECK(document->dirty == false);
+}
+
+TEST_CASE("ServerSession closes tracked documents", "[server][sync]") {
+    jsonrpc::JsonRpcServer rpc_server;
+    ServerSession session{"pristine-lsp", "0.1.0"};
+    session.bind(rpc_server);
+
+    ScriptedTransport transport{
+        R"({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}})",
+        R"({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///workspace/top.sv","languageId":"systemverilog","version":1,"text":"module top;\nendmodule\n"}}})",
+        R"({"jsonrpc":"2.0","method":"textDocument/didClose","params":{"textDocument":{"uri":"file:///workspace/top.sv"}}})"};
+
+    const int exit_code = rpc_server.run(transport);
+
+    CHECK(exit_code == 0);
+    CHECK(session.documents().size() == 0);
+}
+
+TEST_CASE("ServerSession applies incremental UTF-16 text edits", "[server][sync]") {
+    jsonrpc::JsonRpcServer rpc_server;
+    ServerSession session{"pristine-lsp", "0.1.0"};
+    session.bind(rpc_server);
+
+    constexpr std::string_view uri = "file:///workspace/unicode.sv";
+    ScriptedTransport transport{
+        R"({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}})",
+        R"({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///workspace/unicode.sv","languageId":"systemverilog","version":1,"text":"alpha\ud83d\ude00beta"}}})",
+        R"({"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":{"uri":"file:///workspace/unicode.sv","version":2},"contentChanges":[{"range":{"start":{"line":0,"character":7},"end":{"line":0,"character":11}},"text":"gamma"}]}})"};
+
+    const int exit_code = rpc_server.run(transport);
+
+    CHECK(exit_code == 0);
+
+    const auto* document = session.documents().find(uri);
+    REQUIRE(document != nullptr);
+    CHECK(document->version == 2);
+    CHECK(document->text == "alpha\xF0\x9F\x98\x80gamma");
+    CHECK(document->dirty == true);
+}
+
 } // namespace pristine::server

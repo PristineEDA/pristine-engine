@@ -3,14 +3,18 @@
 Standalone SystemVerilog LSP server in C++20.
 
 Current status: the repository contains the first executable MVP slice.
-It boots as a standalone stdio server, implements JSON-RPC framing, and supports the base LSP lifecycle methods below:
+It boots as a standalone stdio server, implements JSON-RPC framing, and now supports the base LSP lifecycle and document sync methods below:
 
 - `initialize`
 - `initialized`
 - `shutdown`
 - `exit`
+- `textDocument/didOpen`
+- `textDocument/didChange`
+- `textDocument/didSave`
+- `textDocument/didClose`
 
-This is intentionally a thin foundation. `slang` integration, document sync, diagnostics, symbol navigation, and completion are not wired in yet.
+This is intentionally still a thin foundation. `slang` integration, diagnostics, symbol navigation, and completion are not wired in yet.
 
 ## Dependency bootstrap
 
@@ -68,12 +72,13 @@ Example:
 - `src/transport`: stdio transport for LSP payload exchange
 - `src/jsonrpc`: `Content-Length` framing and JSON-RPC request/notification routing
 - `src/lsp`: minimal initialize result construction
-- `src/server`: lifecycle session wiring for initialize/shutdown/exit
-- `tests/unit`: framing and lifecycle tests
+- `src/document`: in-memory open document state and incremental text edit application
+- `src/server`: lifecycle and text sync session wiring
+- `tests/unit`: framing, lifecycle, and text sync tests
 
 ## Next steps
 
-- Add workspace and document state
-- Add `textDocument/didOpen`, `didChange`, `didSave`, `didClose`
+- Add workspace and config state
 - Introduce `slang` bootstrap and compilation service
-- Layer in diagnostics, hover, definition, references, symbols, and completion
+- Layer in parse diagnostics and `documentSymbol`
+- Then add hover, definition, references, symbols, and completion
