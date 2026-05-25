@@ -39,6 +39,7 @@ Json makeInitializeResult(std::string_view server_name, std::string_view server_
     return Json{
         {"capabilities",
          Json{{"positionEncoding", "utf-16"},
+              {"documentSymbolProvider", true},
               {"textDocumentSync",
                Json{{"openClose", true}, {"change", 2}, {"save", Json{{"includeText", false}}}}},
               {"workspace",

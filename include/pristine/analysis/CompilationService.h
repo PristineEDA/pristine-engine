@@ -26,6 +26,13 @@ struct ParseDiagnostic {
     bool is_error = false;
 };
 
+struct DocumentSymbol {
+    std::string name;
+    int kind = 0;
+    ParseRange range;
+    ParseRange selection_range;
+};
+
 struct ParseResult {
     std::shared_ptr<slang::syntax::SyntaxTree> syntax_tree;
     std::vector<ParseDiagnostic> diagnostics;
@@ -35,6 +42,8 @@ struct ParseResult {
 class CompilationService {
 public:
     [[nodiscard]] ParseResult parse(std::string_view text, std::string_view uri) const;
+    [[nodiscard]] std::vector<DocumentSymbol> documentSymbols(std::string_view text,
+                                                              std::string_view uri) const;
 };
 
 } // namespace pristine::analysis

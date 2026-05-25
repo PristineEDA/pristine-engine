@@ -134,6 +134,8 @@ TEST_CASE("ServerSession handles initialize-shutdown-exit", "[server][lifecycle]
     const auto initialize_response = parseOutput(transport, 0);
     CHECK(initialize_response.at("id") == 1);
     CHECK(initialize_response.at("result").at("serverInfo").at("name") == "pristine-lsp");
+        CHECK(initialize_response.at("result").at("capabilities").at("documentSymbolProvider") ==
+            true);
     CHECK(initialize_response.at("result").at("capabilities").at("textDocumentSync").at(
               "openClose") == true);
 
@@ -251,8 +253,34 @@ TEST_CASE("ServerSession publishes parse diagnostics for invalid text", "[server
     const auto diagnostics = findNotifications(transport, "textDocument/publishDiagnostics");
     REQUIRE(diagnostics.size() == 1);
     REQUIRE_FALSE(diagnostics.front().at("params").at("diagnostics").empty());
-        CHECK(diagnostics.front().at("params").at("diagnostics").front().at("source").get<std::string>() ==
-            "pristine-lsp");
+    CHECK(diagnostics.front().at("params").at("diagnostics").front().at("source").get<std::string>() ==
+          "pristine-lsp");
+}
+
+TEST_CASE("ServerSession returns top-level document symbols", "[server][symbols]") {
+    jsonrpc::JsonRpcServer rpc_server;
+    ServerSession session{"pristine-lsp", "0.1.0"};
+    session.bind(rpc_server);
+
+    ScriptedTransport transport{
+        R"({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}})",
+        R"({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///workspace/symbols.sv","languageId":"systemverilog","version":1,"text":"package pkg; endpackage\ninterface bus; endinterface\nmodule top; endmodule\n"}}})",
+        R"({"jsonrpc":"2.0","id":2,"method":"textDocument/documentSymbol","params":{"textDocument":{"uri":"file:///workspace/symbols.sv"}}})"};
+
+    const int exit_code = rpc_server.run(transport);
+
+    CHECK(exit_code == 0);
+    REQUIRE(transport.outputs().size() == 3);
+
+    const auto symbols_response = parseOutput(transport, 2);
+    CHECK(symbols_response.at("id") == 2);
+    REQUIRE(symbols_response.at("result").size() == 3);
+    CHECK(symbols_response.at("result").at(0).at("name") == "pkg");
+    CHECK(symbols_response.at("result").at(0).at("kind") == 4);
+    CHECK(symbols_response.at("result").at(1).at("name") == "bus");
+    CHECK(symbols_response.at("result").at(1).at("kind") == 11);
+    CHECK(symbols_response.at("result").at(2).at("name") == "top");
+    CHECK(symbols_response.at("result").at(2).at("kind") == 2);
 }
 
 TEST_CASE("ServerSession initializes workspace root without config", "[server][workspace]") {

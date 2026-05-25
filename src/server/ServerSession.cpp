@@ -18,6 +18,9 @@ void ServerSession::bind(jsonrpc::JsonRpcServer& server) {
     server.registerRequestHandler("initialize", [this](const jsonrpc::Json& params) {
         return handleInitialize(params);
     });
+    server.registerRequestHandler("textDocument/documentSymbol", [this](const jsonrpc::Json& params) {
+        return handleDocumentSymbol(params);
+    });
     server.registerRequestHandler("shutdown", [this](const jsonrpc::Json& params) {
         return handleShutdown(params);
     });
@@ -47,6 +50,40 @@ jsonrpc::Json ServerSession::handleInitialize(const jsonrpc::Json& params) {
     initialized_ = true;
     shutdown_requested_ = false;
     return lsp::makeInitializeResult(server_name_, server_version_);
+}
+
+jsonrpc::Json ServerSession::handleDocumentSymbol(const jsonrpc::Json& params) {
+    if (!initialized_) {
+        throw std::runtime_error("textDocument/documentSymbol received before initialize");
+    }
+
+    const auto uri = params.at("textDocument").at("uri").get<std::string>();
+    const auto* document = document_store_.find(uri);
+    if (!document) {
+        return jsonrpc::Json::array();
+    }
+
+    jsonrpc::Json result = jsonrpc::Json::array();
+    for (const auto& symbol : compilation_service_.documentSymbols(document->text, document->uri)) {
+        result.push_back(jsonrpc::Json{{"name", symbol.name},
+                                       {"kind", symbol.kind},
+                                       {"range",
+                                        jsonrpc::Json{{"start",
+                                                       jsonrpc::Json{{"line", symbol.range.start_line},
+                                                                      {"character", symbol.range.start_character}}},
+                                                      {"end",
+                                                       jsonrpc::Json{{"line", symbol.range.end_line},
+                                                                      {"character", symbol.range.end_character}}}}},
+                                       {"selectionRange",
+                                        jsonrpc::Json{{"start",
+                                                       jsonrpc::Json{{"line", symbol.selection_range.start_line},
+                                                                      {"character", symbol.selection_range.start_character}}},
+                                                      {"end",
+                                                       jsonrpc::Json{{"line", symbol.selection_range.end_line},
+                                                                      {"character", symbol.selection_range.end_character}}}}}});
+    }
+
+    return result;
 }
 
 jsonrpc::Json ServerSession::handleShutdown(const jsonrpc::Json&) {

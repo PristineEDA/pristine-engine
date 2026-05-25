@@ -1,64 +1,13 @@
 #include "pristine/document/DocumentStore.h"
 
+#include "pristine/text/Utf.h"
+
 #include <cstddef>
 #include <stdexcept>
 #include <string_view>
 
 namespace pristine::document {
 namespace {
-
-struct DecodedCodePoint {
-    char32_t value;
-    size_t byte_length;
-};
-
-DecodedCodePoint decodeNextCodePoint(std::string_view text, size_t offset) {
-    if (offset >= text.size()) {
-        throw std::runtime_error("Unexpected end of UTF-8 input");
-    }
-
-    const auto first = static_cast<unsigned char>(text[offset]);
-    if ((first & 0x80U) == 0) {
-        return DecodedCodePoint{.value = static_cast<char32_t>(first), .byte_length = 1};
-    }
-
-    size_t expected_length = 0;
-    char32_t code_point = 0;
-    if ((first & 0xE0U) == 0xC0U) {
-        expected_length = 2;
-        code_point = static_cast<char32_t>(first & 0x1FU);
-    }
-    else if ((first & 0xF0U) == 0xE0U) {
-        expected_length = 3;
-        code_point = static_cast<char32_t>(first & 0x0FU);
-    }
-    else if ((first & 0xF8U) == 0xF0U) {
-        expected_length = 4;
-        code_point = static_cast<char32_t>(first & 0x07U);
-    }
-    else {
-        throw std::runtime_error("Invalid UTF-8 leading byte");
-    }
-
-    if (offset + expected_length > text.size()) {
-        throw std::runtime_error("Truncated UTF-8 sequence");
-    }
-
-    for (size_t index = 1; index < expected_length; ++index) {
-        const auto byte = static_cast<unsigned char>(text[offset + index]);
-        if ((byte & 0xC0U) != 0x80U) {
-            throw std::runtime_error("Invalid UTF-8 continuation byte");
-        }
-
-        code_point = static_cast<char32_t>((code_point << 6) | (byte & 0x3FU));
-    }
-
-    return DecodedCodePoint{.value = code_point, .byte_length = expected_length};
-}
-
-size_t utf16Width(char32_t code_point) {
-    return code_point > 0xFFFF ? 2U : 1U;
-}
 
 size_t findLineOffset(std::string_view text, int line) {
     if (line < 0) {
@@ -98,8 +47,8 @@ size_t findByteOffset(std::string_view text, const lsp::Position& position) {
             return offset;
         }
 
-        const auto decoded = decodeNextCodePoint(text, offset);
-        const auto width = static_cast<int>(utf16Width(decoded.value));
+        const auto decoded = text::decodeNextCodePoint(text, offset);
+        const auto width = static_cast<int>(text::utf16CodeUnitWidth(decoded.value));
         if (consumed_utf16 + width > position.character) {
             throw std::runtime_error("Position splits a UTF-16 surrogate pair");
         }

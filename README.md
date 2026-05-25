@@ -3,7 +3,7 @@
 Standalone SystemVerilog LSP server in C++20.
 
 Current status: the repository contains an executable MVP with the first `slang`-backed language slice.
-It boots as a standalone stdio server, implements JSON-RPC framing, supports the base LSP lifecycle and document sync methods below, and publishes parse diagnostics for open documents:
+It boots as a standalone stdio server, implements JSON-RPC framing, supports the base LSP lifecycle and document sync methods below, publishes parse diagnostics for open documents, and answers minimal top-level `textDocument/documentSymbol` requests:
 
 - `initialize`
 - `initialized`
@@ -16,7 +16,7 @@ It boots as a standalone stdio server, implements JSON-RPC framing, supports the
 
 The server also resolves the workspace root from `initialize`, loads a minimal `.slang/server.json` when present, and parses open buffers through locally bootstrapped `slang` sources.
 
-This is intentionally still a thin foundation. Parse diagnostics are wired in, but symbol navigation, semantic analysis, and completion are not yet implemented.
+This is intentionally still a thin foundation. Parse diagnostics and top-level document symbols are wired in, but richer symbol hierarchies, semantic analysis, and completion are not yet implemented.
 
 The current config slice recognizes these workspace fields from `.slang/server.json`:
 
@@ -83,13 +83,13 @@ Example:
 - `src/transport`: stdio transport for LSP payload exchange
 - `src/jsonrpc`: `Content-Length` framing and JSON-RPC request/notification routing
 - `src/lsp`: minimal initialize result construction
-- `src/analysis`: thin `slang` compilation / parse diagnostic seam
+- `src/analysis`: thin `slang` compilation / parse diagnostic / top-level symbol seam
 - `src/document`: in-memory open document state and incremental text edit application
 - `src/workspace`: workspace root resolution and minimal `.slang/server.json` loading
-- `src/server`: lifecycle, text sync, workspace/config, and `publishDiagnostics` session wiring
-- `tests/unit`: framing, lifecycle, text sync, workspace/config, and parse diagnostic tests
+- `src/server`: lifecycle, text sync, workspace/config, `publishDiagnostics`, and `documentSymbol` session wiring
+- `tests/unit`: framing, lifecycle, text sync, workspace/config, parse diagnostic, UTF-16 position, and document symbol tests
 
 ## Next steps
 
-- Layer in `documentSymbol` on top of the current parse seam
-- Then add hover, definition, references, symbols, and completion
+- Expand `documentSymbol` from top-level declarations to nested members
+- Then add hover, definition, references, workspace symbols, and completion
