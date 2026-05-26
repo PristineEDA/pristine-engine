@@ -151,7 +151,7 @@ jobs:
       - name: Upload staged install tree
         uses: actions/upload-artifact@v4
         with:
-          name: pristine-install-${{ matrix.id }}
+          name: pristine-engine-${{ matrix.id }}
           path: build/install-smoke
           if-no-files-found: error
 
@@ -190,7 +190,7 @@ jobs:
       - name: Download install artifacts
         uses: actions/download-artifact@v4
         with:
-          pattern: pristine-install-*
+          pattern: pristine-engine-*
           path: release/staged
 
       - name: Package release artifacts
@@ -198,13 +198,13 @@ jobs:
           $packageDir = Join-Path $PWD 'release/packages'
           New-Item -ItemType Directory -Force -Path $packageDir | Out-Null
 
-          $artifacts = @(Get-ChildItem -Path 'release/staged' -Directory -Filter 'pristine-install-*' | Sort-Object Name)
+          $artifacts = @(Get-ChildItem -Path 'release/staged' -Directory -Filter 'pristine-engine-*' | Sort-Object Name)
           if ($artifacts.Count -eq 0) {
-            throw 'No pristine-install-* artifacts were downloaded'
+            throw 'No pristine-engine-* artifacts were downloaded'
           }
 
           foreach ($artifact in $artifacts) {
-            $platformId = $artifact.Name -replace '^pristine-install-', ''
+            $platformId = $artifact.Name -replace '^pristine-engine-', ''
             $archive = Join-Path $packageDir "pristine-engine-${{ github.ref_name }}-$platformId.zip"
             Compress-Archive -Path (Join-Path $artifact.FullName '*') -DestinationPath $archive -Force
           }

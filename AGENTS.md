@@ -211,7 +211,7 @@ Each CI job currently does the following:
 - validate the staged install tree
 - upload the staged install artifact
 
-Pushes of `v*` tags run the same matrix and then publish a GitHub Release. The release job downloads all `pristine-install-*` artifacts, packages each staged install tree as `pristine-engine-<tag>-<platform>.zip`, generates `SHA256SUMS.txt`, and uploads the assets to the matching GitHub Release.
+Pushes of `v*` tags run the same matrix and then publish a GitHub Release. The release job downloads all `pristine-engine-*` artifacts, packages each staged install tree as `pristine-engine-<tag>-<platform>.zip`, generates `SHA256SUMS.txt`, and uploads the assets to the matching GitHub Release.
 
 ## Current Verified Local State
 

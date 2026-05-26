@@ -137,7 +137,8 @@ DefinitionParams parseDefinitionParams(const Json& params) {
 
 ReferenceParams parseReferenceParams(const Json& params) {
     ReferenceParams result{.text_document = parseTextDocumentIdentifier(params.at("textDocument")),
-                           .position = parsePosition(params.at("position"))};
+                           .position = parsePosition(params.at("position")),
+                           .context = ReferenceContext{}};
 
     const auto context_it = params.find("context");
     if (context_it != params.end() && !context_it->is_null()) {
@@ -161,7 +162,8 @@ WorkspaceSymbolParams parseWorkspaceSymbolParams(const Json& params) {
 
 CompletionParams parseCompletionParams(const Json& params) {
     CompletionParams result{.text_document = parseTextDocumentIdentifier(params.at("textDocument")),
-                            .position = parsePosition(params.at("position"))};
+                            .position = parsePosition(params.at("position")),
+                            .context = std::nullopt};
 
     const auto context_it = params.find("context");
     if (context_it != params.end() && !context_it->is_null()) {
