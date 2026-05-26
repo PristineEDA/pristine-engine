@@ -1,12 +1,17 @@
 # pristine-engine Agent Notes
 
-## Project Summary
+## Scope
+
+This file is for coding agents working in this repository.
+
+- Put agent-only workflow rules here, not in `README.md`, unless the user explicitly asks for end-user documentation changes.
+- Keep edits narrow, preserve existing layering, and validate the smallest affected slice before widening scope.
+
+## Product Snapshot
 
 `pristine-engine` is a standalone SystemVerilog LSP server implemented in C++20.
 
-The repository currently contains an executable MVP with the first `slang`-backed language slice. The server boots as a stdio process, implements JSON-RPC framing, supports the base LSP lifecycle, synchronizes open documents, publishes parse diagnostics, answers syntax-driven `textDocument/documentSymbol`, and serves a minimal declaration-oriented `textDocument/hover`.
-
-Implemented LSP methods today:
+Current implemented LSP surface:
 
 - `initialize`
 - `initialized`
@@ -18,13 +23,14 @@ Implemented LSP methods today:
 - `textDocument/didClose`
 - `textDocument/hover`
 
-Current non-goals / missing pieces:
+Current behavior is still a thin MVP:
 
-- no cross-file navigation yet
-- no `definition`, `references`, `workspace/symbol`, or completion yet
-- current symbol and hover behavior is still syntax-oriented rather than deep semantic analysis
+- parse diagnostics for open documents are implemented
+- `textDocument/documentSymbol` is syntax-driven and supports top-level declarations plus common nested members
+- `textDocument/hover` is declaration-oriented and built from the same syntax symbol tree
+- deeper semantic analysis, cross-file navigation, references, workspace symbols, and completion are not implemented yet
 
-The workspace root is resolved from `initialize`, and the server loads a minimal `.slang/server.json` when present.
+The server resolves the workspace root from `initialize` and loads a minimal `.slang/server.json` when present.
 
 Recognized `.slang/server.json` fields:
 
@@ -35,26 +41,28 @@ Recognized `.slang/server.json` fields:
 - `index[].dirs`
 - `index[].excludeDirs`
 
-## Repository Layout
+## Code Map
 
-- `CMakeLists.txt`: root build, tests, install, and notice target wiring
-- `CMakePresets.json`: development configure/build presets
-- `cmake/Dependencies.cmake`: local third-party wiring and `slang` integration
-- `cmake/DepsLock.cmake`: pinned third-party archive URLs and hashes
-- `cmake/attributions.cmake`: canonical third-party attribution source
-- `scripts/bootstrap_deps.cmake`: bootstraps pinned archives into `.deps/`
-- `scripts/generate-notice.cmake`: regenerates checked-in `ATTRIBUTIONS.md` and `NOTICE`
-- `scripts/validate-install-tree.cmake`: validates staged install layout
-- `src/transport`: stdio transport
-- `src/jsonrpc`: `Content-Length` framing and JSON-RPC dispatch
-- `src/lsp`: LSP protocol structures and parsing
-- `src/analysis`: thin `slang` compilation and syntax-analysis seam
-- `src/document`: in-memory open document store and incremental UTF-16 edits
-- `src/workspace`: workspace root resolution and `.slang/server.json` loading
-- `src/server`: session wiring for lifecycle, sync, diagnostics, `documentSymbol`, and `hover`
-- `tests/unit`: framing, lifecycle, text sync, workspace/config, diagnostics, UTF-16, symbol, and hover tests
+Use the nearest owning layer instead of patching around it from a wrapper.
 
-## Build And Validation
+- lifecycle, notification handling, diagnostics publishing, `documentSymbol`, and `hover` session wiring: `src/server/ServerSession.cpp`
+- LSP protocol structures and JSON payload parsing: `src/lsp/Protocol.cpp`
+- parse pipeline, syntax symbol extraction, hover content, and diagnostics: `src/analysis/CompilationService.cpp`
+- open-document state and UTF-16 incremental edits: `src/document/DocumentStore.cpp`
+- workspace root resolution and `.slang/server.json` loading: `src/workspace/WorkspaceManager.cpp`
+- stdio transport and JSON-RPC framing: `src/transport/StdioTransport.cpp`, `src/jsonrpc/MessageStream.cpp`, `src/jsonrpc/JsonRpcServer.cpp`
+- process entry point, CLI switches, Windows stdio mode, and version output: `src/main.cpp`
+- unit coverage for framing, lifecycle, sync, workspace, diagnostics, UTF-16, symbols, and hover: `tests/unit`
+
+## Working Rules
+
+- Prefer changing the layer that computes behavior, not the layer that only forwards or serializes it.
+- When behavior changes, update or add the closest unit test in `tests/unit`.
+- Preserve the current architecture split: transport -> jsonrpc -> lsp/workspace/document/analysis -> server.
+- Avoid broad refactors unless the user asks for them or the local change cannot be made safely otherwise.
+- Do not reintroduce agent process rules into `README.md` unless explicitly requested.
+
+## Build Environment
 
 Dependencies are not tracked as git submodules. They are downloaded into the local, gitignored `.deps/` cache.
 
@@ -71,34 +79,49 @@ cmake --preset dev
 cmake --build --preset dev
 ```
 
-Run tests:
+Windows note:
+
+- use a Visual Studio Developer Command Prompt or equivalent MSVC environment before configuring
+- in this workspace, the Visual Studio bundled `ctest.exe` may be more reliable than `ctest` from `PATH`
+
+## Validation Playbook
+
+Pick the narrowest validation that can falsify the change.
+
+For code changes under `src/` or `include/`:
 
 ```powershell
+cmake --build --preset dev
 ctest --test-dir build/dev --output-on-failure
 ```
 
-Version smoke test:
+If `ctest` is not on `PATH` in the current Windows shell, use:
+
+```powershell
+& 'C:\Program Files (x86)\Microsoft Visual Studio\18\BuildTools\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\ctest.exe' --test-dir '.\build\dev' --output-on-failure
+```
+
+If the change touches CLI behavior, entrypoint wiring, binary naming, or packaging expectations, also run:
 
 ```powershell
 ./build/dev/pristine-engine --version
 ```
 
-Validate generated notice files from the build graph:
+If the change touches notice generation, install layout, packaging metadata, or dependency scope, also run:
 
 ```powershell
 cmake --build --preset dev --target pristine_validate_notice
-```
-
-Stage and validate the install tree:
-
-```powershell
 cmake --install build/dev --prefix build/install-smoke
 cmake -DPRISTINE_INSTALL_PREFIX=build/install-smoke -P scripts/validate-install-tree.cmake
 ```
 
-Windows note:
+If the change touches dependency wiring in `cmake/Dependencies.cmake`, `cmake/DepsLock.cmake`, or bootstrap scripts, validate from a clean tree to catch accidental network fetches:
 
-- use a Visual Studio Developer Command Prompt or equivalent MSVC environment before configuring
+```powershell
+Remove-Item -Recurse -Force .\build\dev
+cmake --preset dev
+cmake --build --preset dev
+```
 
 ## Dependency And Packaging Guardrails
 
@@ -107,11 +130,15 @@ Windows note:
 - Do not rely on implicit configure-time network access.
 - `fmt` is intentionally overridden through `FETCHCONTENT_SOURCE_DIR_FMT` so that `slang` uses the locally bootstrapped copy.
 - `SLANG_USE_MIMALLOC` is forced `OFF` in `cmake/Dependencies.cmake` so a clean build tree does not trigger a remote `mimalloc` fetch during configure.
-- If `mimalloc` is ever re-enabled, it must be converted into a pinned local dependency first, and the redistributed notice scope must be updated accordingly.
+- If `mimalloc` is ever re-enabled, convert it into a pinned local dependency first and update the redistributed notice scope in the same change.
 
-## Notices And Install Layout
+## Notice Workflow
 
-Third-party notice artifacts are generated from `cmake/attributions.cmake`.
+Notice metadata is owned by `cmake/attributions.cmake`.
+
+- do not hand-maintain `ATTRIBUTIONS.md` or `NOTICE` as primary sources
+- update `cmake/attributions.cmake` and any referenced text files under `licenses/texts/`
+- regenerate notice outputs through `scripts/generate-notice.cmake` or the `pristine_generate_notice` / `pristine_validate_notice` targets
 
 Current redistributed scope:
 
@@ -120,23 +147,25 @@ Current redistributed scope:
 - `nlohmann/json`
 - the vendored `boost_unordered` header used by `slang` when no suitable Boost package is found
 
-Generated / installed notice artifacts:
-
-- `LICENSE`
-- `ATTRIBUTIONS.md`
-- `NOTICE`
-
-Installed destination:
+Installed notice destination:
 
 - `share/pristine-engine/licenses`
 
-## Binary Naming
+## Naming Contract
 
-- The CMake executable target is still named `pristine-lsp`.
+- The CMake executable target remains `pristine-lsp`.
 - The produced runtime binary name is `pristine-engine` via `OUTPUT_NAME`.
 - CLI smoke tests, install validation, and CI all expect the runtime artifact to be named `pristine-engine`.
 
-## CI
+If you change this contract, update all affected surfaces in the same change:
+
+- `CMakeLists.txt`
+- `src/main.cpp`
+- `scripts/validate-install-tree.cmake`
+- `.github/workflows/ci.yml`
+- notice/install docs or tests that assert the runtime name
+
+## CI Expectations
 
 GitHub Actions CI is defined in `.github/workflows/ci.yml`.
 
@@ -166,7 +195,7 @@ Each CI job currently does the following:
 - validate the staged install tree
 - upload the staged install artifact
 
-## Current Verified State
+## Current Verified Local State
 
 The current repository state has been locally verified on Windows with:
 
@@ -176,8 +205,8 @@ The current repository state has been locally verified on Windows with:
 - `pristine-engine --version`
 - unit tests passing
 
-## Likely Next Steps
+## Likely Near-Term Work
 
 - deepen semantic analysis beyond the current syntax-driven symbol tree
-- add definition / references / workspace symbols / completion
+- add definition, references, workspace symbols, and completion
 - extend hover beyond the current declaration-oriented slice
