@@ -134,10 +134,10 @@ Config WorkspaceManager::parseConfig(const lsp::Json& config_json) {
         throw std::runtime_error("Expected workspace config root to be a JSON object");
     }
 
-    Config result{
-        .build = getOptionalString(config_json, "build"),
-        .build_pattern = getOptionalString(config_json, "buildPattern"),
-        .flags = getOptionalString(config_json, "flags")};
+    Config result{};
+    result.build = getOptionalString(config_json, "build");
+    result.build_pattern = getOptionalString(config_json, "buildPattern");
+    result.flags = getOptionalString(config_json, "flags");
 
     const auto build_relative_paths_it = config_json.find("buildRelativePaths");
     if (build_relative_paths_it != config_json.end() && !build_relative_paths_it->is_null()) {

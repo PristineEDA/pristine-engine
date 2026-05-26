@@ -652,7 +652,8 @@ ParseResult CompilationService::parse(std::string_view text, std::string_view ur
     auto syntax_tree = slang::syntax::SyntaxTree::fromText(text, source_manager, "source", uri);
     slang::DiagnosticEngine diagnostic_engine(source_manager);
 
-    ParseResult result{.syntax_tree = syntax_tree};
+    ParseResult result{};
+    result.syntax_tree = syntax_tree;
     for (const auto& diagnostic : syntax_tree->diagnostics()) {
         const auto severity = diagnostic_engine.getSeverity(diagnostic.code, diagnostic.location);
         result.diagnostics.push_back(

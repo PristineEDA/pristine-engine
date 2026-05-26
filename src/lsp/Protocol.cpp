@@ -51,8 +51,9 @@ Json makeInitializeResult(std::string_view server_name, std::string_view server_
 }
 
 InitializeParams parseInitializeParams(const Json& params) {
-    InitializeParams result{.root_uri = parseOptionalString(params, "rootUri"),
-                            .root_path = parseOptionalString(params, "rootPath")};
+    InitializeParams result{};
+    result.root_uri = parseOptionalString(params, "rootUri");
+    result.root_path = parseOptionalString(params, "rootPath");
 
     const auto workspace_folders_it = params.find("workspaceFolders");
     if (workspace_folders_it != params.end() && !workspace_folders_it->is_null()) {
@@ -77,11 +78,12 @@ DidOpenTextDocumentParams parseDidOpenTextDocumentParams(const Json& params) {
 }
 
 DidChangeTextDocumentParams parseDidChangeTextDocumentParams(const Json& params) {
-    DidChangeTextDocumentParams result{
-        .text_document = parseVersionedTextDocumentIdentifier(params.at("textDocument"))};
+    DidChangeTextDocumentParams result{};
+    result.text_document = parseVersionedTextDocumentIdentifier(params.at("textDocument"));
 
     for (const auto& change : params.at("contentChanges")) {
-        TextDocumentContentChangeEvent content_change{.text = change.at("text").get<std::string>()};
+        TextDocumentContentChangeEvent content_change{};
+        content_change.text = change.at("text").get<std::string>();
 
         const auto range_it = change.find("range");
         if (range_it != change.end() && !range_it->is_null()) {
@@ -100,8 +102,8 @@ DidChangeTextDocumentParams parseDidChangeTextDocumentParams(const Json& params)
 }
 
 DidSaveTextDocumentParams parseDidSaveTextDocumentParams(const Json& params) {
-    DidSaveTextDocumentParams result{.text_document =
-                                         parseTextDocumentIdentifier(params.at("textDocument"))};
+    DidSaveTextDocumentParams result{};
+    result.text_document = parseTextDocumentIdentifier(params.at("textDocument"));
 
     const auto text_it = params.find("text");
     if (text_it != params.end() && !text_it->is_null()) {
