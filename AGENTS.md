@@ -92,7 +92,7 @@ Create a version tag for the current project version:
 pwsh -NoProfile -File scripts/create-version-tag.ps1
 ```
 
-Use `-Push` to push the tag to the remote and trigger the tag release workflow. The script derives the tag from `CMakeLists.txt` and validates it against `src/main.cpp`'s `kServerVersion` before creating an annotated `v<version>` tag.
+Use `-Push` to push the tag to the remote and trigger the tag release workflow. The script derives the tag from `CMakeLists.txt` and creates an annotated `v<version>` tag. Runtime code and tests consume the generated `pristine/Version.h` header configured from the same CMake project version.
 
 Windows note:
 
@@ -200,7 +200,7 @@ Current hosted matrix:
 Each CI job currently does the following:
 
 - checkout
-- validate that the CMake project version and `kServerVersion` match
+- resolve the CMake project version before build and assert the runtime `--version` output matches it
 - bootstrap dependencies
 - configure `dev`
 - validate notice files

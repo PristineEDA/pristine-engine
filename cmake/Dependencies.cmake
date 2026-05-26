@@ -29,7 +29,23 @@ set(SLANG_INCLUDE_INSTALL OFF CACHE BOOL "Don't install slang separately" FORCE)
 set(SLANG_INCLUDE_TESTS OFF CACHE BOOL "Don't build slang tests" FORCE)
 set(SLANG_USE_MIMALLOC OFF CACHE BOOL "Don't let slang fetch mimalloc during configure" FORCE)
 
+set(pristine_git_find_package_was_defined FALSE)
+if(DEFINED CMAKE_DISABLE_FIND_PACKAGE_Git)
+  set(pristine_git_find_package_was_defined TRUE)
+  set(pristine_disable_find_package_git "${CMAKE_DISABLE_FIND_PACKAGE_Git}")
+endif()
+
+# Vendored slang source trees are unpacked under this repository, so allowing
+# Git discovery makes its version probe climb into the pristine-engine repo and
+# pick up unrelated tags.
+set(CMAKE_DISABLE_FIND_PACKAGE_Git ON)
 pristine_require_dependency(slang)
+if(pristine_git_find_package_was_defined)
+  set(CMAKE_DISABLE_FIND_PACKAGE_Git "${pristine_disable_find_package_git}")
+else()
+  unset(CMAKE_DISABLE_FIND_PACKAGE_Git)
+endif()
+
 pristine_require_dependency(nlohmann_json)
 
 if(PRISTINE_BUILD_TESTS)

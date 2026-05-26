@@ -1,3 +1,4 @@
+#include "pristine/Version.h"
 #include "pristine/jsonrpc/JsonRpcServer.h"
 #include "pristine/server/ServerSession.h"
 #include "pristine/transport/StdioTransport.h"
@@ -18,6 +19,7 @@ namespace pristine::server {
 namespace {
 
 namespace fs = std::filesystem;
+constexpr auto kTestServerVersion = ::pristine::kVersionString;
 
 class ScriptedTransport final : public transport::MessageTransport {
 public:
@@ -128,7 +130,7 @@ private:
 
 TEST_CASE("ServerSession handles initialize-shutdown-exit", "[server][lifecycle]") {
     jsonrpc::JsonRpcServer rpc_server;
-    ServerSession session{"pristine-lsp", "0.1.0"};
+    ServerSession session{"pristine-lsp", kTestServerVersion};
     session.bind(rpc_server);
 
     ScriptedTransport transport{
@@ -163,7 +165,7 @@ TEST_CASE("ServerSession handles initialize-shutdown-exit", "[server][lifecycle]
 
 TEST_CASE("ServerSession exits with failure when shutdown is skipped", "[server][lifecycle]") {
     jsonrpc::JsonRpcServer rpc_server;
-    ServerSession session{"pristine-lsp", "0.1.0"};
+    ServerSession session{"pristine-lsp", kTestServerVersion};
     session.bind(rpc_server);
 
     ScriptedTransport transport{
@@ -179,7 +181,7 @@ TEST_CASE("ServerSession exits with failure when shutdown is skipped", "[server]
 
 TEST_CASE("ServerSession tracks open change save state", "[server][sync]") {
     jsonrpc::JsonRpcServer rpc_server;
-    ServerSession session{"pristine-lsp", "0.1.0"};
+    ServerSession session{"pristine-lsp", kTestServerVersion};
     session.bind(rpc_server);
 
     constexpr std::string_view uri = "file:///workspace/top.sv";
@@ -209,7 +211,7 @@ TEST_CASE("ServerSession tracks open change save state", "[server][sync]") {
 
 TEST_CASE("ServerSession closes tracked documents", "[server][sync]") {
     jsonrpc::JsonRpcServer rpc_server;
-    ServerSession session{"pristine-lsp", "0.1.0"};
+    ServerSession session{"pristine-lsp", kTestServerVersion};
     session.bind(rpc_server);
     constexpr std::string_view uri = "file:///workspace/top.sv";
 
@@ -230,7 +232,7 @@ TEST_CASE("ServerSession closes tracked documents", "[server][sync]") {
 
 TEST_CASE("ServerSession applies incremental UTF-16 text edits", "[server][sync]") {
     jsonrpc::JsonRpcServer rpc_server;
-    ServerSession session{"pristine-lsp", "0.1.0"};
+    ServerSession session{"pristine-lsp", kTestServerVersion};
     session.bind(rpc_server);
 
     constexpr std::string_view uri = "file:///workspace/unicode.sv";
@@ -256,7 +258,7 @@ TEST_CASE("ServerSession applies incremental UTF-16 text edits", "[server][sync]
 
 TEST_CASE("ServerSession publishes parse diagnostics for invalid text", "[server][diagnostics]") {
     jsonrpc::JsonRpcServer rpc_server;
-    ServerSession session{"pristine-lsp", "0.1.0"};
+    ServerSession session{"pristine-lsp", kTestServerVersion};
     session.bind(rpc_server);
 
     ScriptedTransport transport{
@@ -276,7 +278,7 @@ TEST_CASE("ServerSession publishes parse diagnostics for invalid text", "[server
 
 TEST_CASE("ServerSession returns top-level document symbols", "[server][symbols]") {
     jsonrpc::JsonRpcServer rpc_server;
-    ServerSession session{"pristine-lsp", "0.1.0"};
+    ServerSession session{"pristine-lsp", kTestServerVersion};
     session.bind(rpc_server);
 
     ScriptedTransport transport{
@@ -302,7 +304,7 @@ TEST_CASE("ServerSession returns top-level document symbols", "[server][symbols]
 
 TEST_CASE("ServerSession returns nested document symbols", "[server][symbols]") {
     jsonrpc::JsonRpcServer rpc_server;
-    ServerSession session{"pristine-lsp", "0.1.0"};
+    ServerSession session{"pristine-lsp", kTestServerVersion};
     session.bind(rpc_server);
 
     ScriptedTransport transport{
@@ -331,7 +333,7 @@ TEST_CASE("ServerSession returns nested document symbols", "[server][symbols]") 
 
 TEST_CASE("ServerSession returns ansi header port symbols", "[server][symbols]") {
     jsonrpc::JsonRpcServer rpc_server;
-    ServerSession session{"pristine-lsp", "0.1.0"};
+    ServerSession session{"pristine-lsp", kTestServerVersion};
     session.bind(rpc_server);
 
     ScriptedTransport transport{
@@ -356,7 +358,7 @@ TEST_CASE("ServerSession returns ansi header port symbols", "[server][symbols]")
 
 TEST_CASE("ServerSession returns interface modport symbols", "[server][symbols]") {
     jsonrpc::JsonRpcServer rpc_server;
-    ServerSession session{"pristine-lsp", "0.1.0"};
+    ServerSession session{"pristine-lsp", kTestServerVersion};
     session.bind(rpc_server);
 
     ScriptedTransport transport{
@@ -389,7 +391,7 @@ TEST_CASE("ServerSession returns interface modport symbols", "[server][symbols]"
 
 TEST_CASE("ServerSession returns class enum and instance symbols", "[server][symbols]") {
     jsonrpc::JsonRpcServer rpc_server;
-    ServerSession session{"pristine-lsp", "0.1.0"};
+    ServerSession session{"pristine-lsp", kTestServerVersion};
     session.bind(rpc_server);
 
     ScriptedTransport transport{
@@ -425,7 +427,7 @@ TEST_CASE("ServerSession returns class enum and instance symbols", "[server][sym
 
 TEST_CASE("ServerSession returns named generate block symbols", "[server][symbols]") {
     jsonrpc::JsonRpcServer rpc_server;
-    ServerSession session{"pristine-lsp", "0.1.0"};
+    ServerSession session{"pristine-lsp", kTestServerVersion};
     session.bind(rpc_server);
 
     ScriptedTransport transport{
@@ -454,7 +456,7 @@ TEST_CASE("ServerSession returns named generate block symbols", "[server][symbol
 
 TEST_CASE("ServerSession returns if and loop generate symbols", "[server][symbols]") {
     jsonrpc::JsonRpcServer rpc_server;
-    ServerSession session{"pristine-lsp", "0.1.0"};
+    ServerSession session{"pristine-lsp", kTestServerVersion};
     session.bind(rpc_server);
 
     ScriptedTransport transport{
@@ -486,7 +488,7 @@ TEST_CASE("ServerSession returns if and loop generate symbols", "[server][symbol
 
 TEST_CASE("ServerSession returns hover for declaration symbols", "[server][hover]") {
     jsonrpc::JsonRpcServer rpc_server;
-    ServerSession session{"pristine-lsp", "0.1.0"};
+    ServerSession session{"pristine-lsp", kTestServerVersion};
     session.bind(rpc_server);
 
     ScriptedTransport transport{
@@ -510,7 +512,7 @@ TEST_CASE("ServerSession returns hover for declaration symbols", "[server][hover
 
 TEST_CASE("ServerSession handles Tier 1 LSP navigation and completion", "[server][lsp-core]") {
     jsonrpc::JsonRpcServer rpc_server;
-    ServerSession session{"pristine-lsp", "0.1.0"};
+    ServerSession session{"pristine-lsp", kTestServerVersion};
     session.bind(rpc_server);
 
     TempWorkspace workspace;
@@ -577,7 +579,7 @@ TEST_CASE("ServerSession handles Tier 1 LSP navigation and completion", "[server
 
 TEST_CASE("ServerSession initializes workspace root without config", "[server][workspace]") {
     jsonrpc::JsonRpcServer rpc_server;
-    ServerSession session{"pristine-lsp", "0.1.0"};
+    ServerSession session{"pristine-lsp", kTestServerVersion};
     session.bind(rpc_server);
 
     TempWorkspace workspace;
@@ -601,7 +603,7 @@ TEST_CASE("ServerSession initializes workspace root without config", "[server][w
 
 TEST_CASE("ServerSession loads workspace config from .slang server json", "[server][workspace]") {
     jsonrpc::JsonRpcServer rpc_server;
-    ServerSession session{"pristine-lsp", "0.1.0"};
+    ServerSession session{"pristine-lsp", kTestServerVersion};
     session.bind(rpc_server);
 
     TempWorkspace workspace;
@@ -645,7 +647,7 @@ TEST_CASE("ServerSession loads workspace config from .slang server json", "[serv
 
 TEST_CASE("ServerSession survives invalid workspace config", "[server][workspace]") {
     jsonrpc::JsonRpcServer rpc_server;
-    ServerSession session{"pristine-lsp", "0.1.0"};
+    ServerSession session{"pristine-lsp", kTestServerVersion};
     session.bind(rpc_server);
 
     TempWorkspace workspace;

@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.23)
 
 project(
   pristine-engine
-  VERSION 0.1.0
+  VERSION 0.1.1
   DESCRIPTION "Standalone SystemVerilog language server"
   LANGUAGES CXX)
 
@@ -21,6 +21,13 @@ include(GNUInstallDirs)
 
 list(APPEND CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/cmake")
 include(Dependencies)
+
+set(PRISTINE_GENERATED_INCLUDE_DIR "${PROJECT_BINARY_DIR}/generated/include")
+file(MAKE_DIRECTORY "${PRISTINE_GENERATED_INCLUDE_DIR}/pristine")
+configure_file(
+  "${PROJECT_SOURCE_DIR}/cmake/Version.h.in"
+  "${PRISTINE_GENERATED_INCLUDE_DIR}/pristine/Version.h"
+  @ONLY)
 
 set(PRISTINE_NOTICE_OUTPUTS
     "${PROJECT_SOURCE_DIR}/ATTRIBUTIONS.md"
@@ -70,7 +77,8 @@ add_library(
   src/transport/StdioTransport.cpp
   src/workspace/WorkspaceManager.cpp)
 
-target_include_directories(pristine_core PUBLIC "${PROJECT_SOURCE_DIR}/include")
+target_include_directories(
+  pristine_core PUBLIC "${PROJECT_SOURCE_DIR}/include" "${PRISTINE_GENERATED_INCLUDE_DIR}")
 target_link_libraries(pristine_core PUBLIC nlohmann_json::nlohmann_json slang::slang)
 
 if(MSVC)

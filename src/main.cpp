@@ -3,6 +3,7 @@
 #    include <io.h>
 #endif
 
+#include "pristine/Version.h"
 #include "pristine/jsonrpc/JsonRpcServer.h"
 #include "pristine/server/ServerSession.h"
 #include "pristine/transport/StdioTransport.h"
@@ -13,13 +14,12 @@
 namespace {
 
 constexpr std::string_view kServerName = "pristine-engine";
-constexpr std::string_view kServerVersion = "0.1.0";
 
 int runStdioServer() {
     pristine::transport::StdioTransport transport(std::cin, std::cout);
     pristine::jsonrpc::JsonRpcServer rpc_server;
     pristine::server::ServerSession session{std::string(kServerName),
-                                            std::string(kServerVersion)};
+                                            std::string(pristine::kVersion)};
     session.bind(rpc_server);
     return rpc_server.run(transport);
 }
@@ -38,7 +38,7 @@ int main(int argc, char** argv) {
 
     const std::string_view command = argv[1];
     if (command == "--version") {
-        std::cout << kServerName << ' ' << kServerVersion << '\n';
+        std::cout << kServerName << ' ' << pristine::kVersion << '\n';
         return 0;
     }
 

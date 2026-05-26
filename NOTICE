@@ -9,14 +9,14 @@ Bundled notice files:
 - NOTICE
 
 Redistributed components:
-- slang fd508122d3de5fbe9c90845146794d059fa4eca0 (MIT) - Michael Popoloski, packaged from the AndrewNolte/slang fork
-  https://github.com/AndrewNolte/slang/tree/fd508122d3de5fbe9c90845146794d059fa4eca0
+- slang v11.0 (MIT) - Mike Popoloski and slang contributors
+  https://github.com/MikePopoloski/slang/tree/v11.0
 - fmt 12.1.0 (MIT with fmt embedded-code exception) - Victor Zverovich and fmt contributors
   https://github.com/fmtlib/fmt/tree/12.1.0
 - nlohmann/json v3.11.3 (MIT) - Niels Lohmann
   https://github.com/nlohmann/json/tree/v3.11.3
-- boost_unordered vendored header vendored in slang fd508122d3de5fbe9c90845146794d059fa4eca0 (BSL-1.0) - Boost contributors listed in slang/external/boost_unordered.hpp
-  https://github.com/AndrewNolte/slang/blob/fd508122d3de5fbe9c90845146794d059fa4eca0/external/boost_unordered.hpp
+- boost_unordered vendored header vendored in slang v11.0 (BSL-1.0) - Boost contributors listed in slang/external/boost_unordered.hpp
+  https://github.com/MikePopoloski/slang/blob/v11.0/external/boost_unordered.hpp
 
 ================================================================================
 MIT License
@@ -24,7 +24,7 @@ MIT License
 The covered components in this section are distributed under the standard MIT License. The component list records the applicable upstream owners.
 
 Covered components:
-- slang fd508122d3de5fbe9c90845146794d059fa4eca0 - Michael Popoloski, packaged from the AndrewNolte/slang fork
+- slang v11.0 - Mike Popoloski and slang contributors
 - nlohmann/json v3.11.3 - Niels Lohmann
 
 MIT License
@@ -99,7 +99,7 @@ Boost Software License 1.0
 slang currently builds against a vendored boost_unordered header when a suitable Boost package is not found. This section preserves the Boost Software License text for that bundled header code.
 
 Covered components:
-- boost_unordered vendored header vendored in slang fd508122d3de5fbe9c90845146794d059fa4eca0 - Boost contributors listed in slang/external/boost_unordered.hpp
+- boost_unordered vendored header vendored in slang v11.0 - Boost contributors listed in slang/external/boost_unordered.hpp
 
 Boost Software License - Version 1.0 - August 17th, 2003
 

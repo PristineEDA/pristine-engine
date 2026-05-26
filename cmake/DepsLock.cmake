@@ -4,9 +4,9 @@ set(PRISTINE_DEPENDENCY_NAMES
     nlohmann_json
     catch2)
 
-set(PRISTINE_DEP_slang_URL "https://codeload.github.com/AndrewNolte/slang/tar.gz/fd508122d3de5fbe9c90845146794d059fa4eca0")
-set(PRISTINE_DEP_slang_SHA256 "932094B34662BE48D9384042EA517B6191C7B2BA77A8A231601E318C7F9555B4")
-set(PRISTINE_DEP_slang_ARCHIVE_NAME "slang-fd508122d3de5fbe9c90845146794d059fa4eca0.tar.gz")
+set(PRISTINE_DEP_slang_URL "https://codeload.github.com/MikePopoloski/slang/tar.gz/refs/tags/v11.0")
+set(PRISTINE_DEP_slang_SHA256 "50676D5A9ADBEFB97D266A4B174E6B0513901AFD5AC57A6CDFEA0A61149C3704")
+set(PRISTINE_DEP_slang_ARCHIVE_NAME "slang-v11.0.tar.gz")
 
 set(PRISTINE_DEP_fmt_URL "https://codeload.github.com/fmtlib/fmt/tar.gz/refs/tags/12.1.0")
 set(PRISTINE_DEP_fmt_SHA256 "EA7DE4299689E12B6DDDD392F9896F08FB0777AC7168897A244A6D6085043FEA")

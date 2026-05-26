@@ -1,0 +1,10 @@
+#pragma once
+
+#include <string_view>
+
+namespace pristine {
+
+inline constexpr char kVersionString[] = "@PROJECT_VERSION@";
+inline constexpr std::string_view kVersion = kVersionString;
+
+} // namespace pristine

@@ -76,16 +76,6 @@ jobs:
           }
           $version = $cmakeMatch.Groups[1].Value
 
-          $main = Get-Content -Raw 'src/main.cpp'
-          $mainMatch = [regex]::Match($main, 'kServerVersion\s*=\s*"([^"]+)"')
-          if (-not $mainMatch.Success) {
-            throw 'Unable to find kServerVersion in src/main.cpp'
-          }
-          $serverVersion = $mainMatch.Groups[1].Value
-          if ($serverVersion -ne $version) {
-            throw "Version mismatch: CMakeLists.txt has $version, but src/main.cpp has $serverVersion"
-          }
-
           $tagName = "v$version"
           $isReleaseTag = '${{ github.event_name }}' -eq 'push' -and '${{ github.ref_type }}' -eq 'tag'
           if ($isReleaseTag -and '${{ github.ref_name }}' -ne $tagName) {

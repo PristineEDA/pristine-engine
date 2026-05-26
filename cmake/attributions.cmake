@@ -80,14 +80,14 @@ pristine_register_notice_family(
 pristine_register_attribution(
   slang
   NAME "slang"
-  VERSION "fd508122d3de5fbe9c90845146794d059fa4eca0"
-  OWNER "Michael Popoloski, packaged from the AndrewNolte/slang fork"
-  URL "https://github.com/AndrewNolte/slang/tree/fd508122d3de5fbe9c90845146794d059fa4eca0"
+  VERSION "v11.0"
+  OWNER "Mike Popoloski and slang contributors"
+  URL "https://github.com/MikePopoloski/slang/tree/v11.0"
   LICENSE_LABEL "MIT"
   SCOPE "redistributed"
   RELATIONSHIP "direct dependency"
   FAMILY_IDS mit
-  NOTES "Pinned in cmake/DepsLock.cmake and linked via slang::slang."
+  NOTES "Pinned to the MikePopoloski/slang v11.0 tag in cmake/DepsLock.cmake and linked via slang::slang. Tag v11.0 resolves to commit 7ddf4059f79eff508dd486eb42fd650cdf320d52."
 )
 
 pristine_register_attribution(
@@ -119,9 +119,9 @@ pristine_register_attribution(
 pristine_register_attribution(
   boost_unordered
   NAME "boost_unordered vendored header"
-  VERSION "vendored in slang fd508122d3de5fbe9c90845146794d059fa4eca0"
+  VERSION "vendored in slang v11.0"
   OWNER "Boost contributors listed in slang/external/boost_unordered.hpp"
-  URL "https://github.com/AndrewNolte/slang/blob/fd508122d3de5fbe9c90845146794d059fa4eca0/external/boost_unordered.hpp"
+  URL "https://github.com/MikePopoloski/slang/blob/v11.0/external/boost_unordered.hpp"
   LICENSE_LABEL "BSL-1.0"
   SCOPE "redistributed"
   RELATIONSHIP "transitive vendored header via slang"

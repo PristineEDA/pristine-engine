@@ -50,21 +50,11 @@ $repoRoot = (Invoke-Git -Arguments @('rev-parse', '--show-toplevel')).Output
 Set-Location $repoRoot
 
 $cmakeLists = Join-Path $repoRoot 'CMakeLists.txt'
-$mainCpp = Join-Path $repoRoot 'src/main.cpp'
 
 $cmakeVersion = Get-RequiredMatch `
     -Content (Get-Content -Raw -Path $cmakeLists) `
     -Pattern '(?s)project\s*\(\s*pristine-engine\b.*?\bVERSION\s+([0-9]+\.[0-9]+\.[0-9]+(?:[-+][A-Za-z0-9.-]+)?)' `
     -Description 'the CMake project version'
-
-$serverVersion = Get-RequiredMatch `
-    -Content (Get-Content -Raw -Path $mainCpp) `
-    -Pattern 'kServerVersion\s*=\s*"([^"]+)"' `
-    -Description 'kServerVersion in src/main.cpp'
-
-if ($serverVersion -ne $cmakeVersion) {
-    throw "Version mismatch: CMakeLists.txt has $cmakeVersion, but src/main.cpp has $serverVersion."
-}
 
 $tagName = "$TagPrefix$cmakeVersion"
 if ($tagName -notmatch '^v?[0-9]+\.[0-9]+\.[0-9]+(?:[-+][A-Za-z0-9.-]+)?$') {
