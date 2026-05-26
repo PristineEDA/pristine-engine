@@ -216,6 +216,59 @@ TEST_CASE("CompilationService extracts class enum and instance symbols", "[analy
     CHECK(symbols[2].children[0].kind == 19);
 }
 
+TEST_CASE("CompilationService extracts module definitions and direct instantiations", "[analysis][hierarchy]") {
+    CompilationService service;
+
+    const auto modules = service.moduleDefinitions(
+        "module leaf; endmodule\n"
+        "module child;\n"
+        "  leaf u_leaf();\n"
+        "endmodule\n"
+        "module top;\n"
+        "  child u_child();\n"
+        "endmodule\n",
+        "file:///workspace/hierarchy.sv");
+
+    REQUIRE(modules.size() == 3);
+    CHECK(modules[0].name == "leaf");
+    CHECK(modules[0].instances.empty());
+
+    CHECK(modules[1].name == "child");
+    REQUIRE(modules[1].instances.size() == 1);
+    CHECK(modules[1].instances[0].module_name == "leaf");
+    CHECK(modules[1].instances[0].instance_name == "u_leaf");
+    CHECK(modules[1].instances[0].selection_range.start_line == 2);
+    CHECK(modules[1].instances[0].selection_range.start_character == 7);
+
+    CHECK(modules[2].name == "top");
+    REQUIRE(modules[2].instances.size() == 1);
+    CHECK(modules[2].instances[0].module_name == "child");
+    CHECK(modules[2].instances[0].instance_name == "u_child");
+    CHECK(modules[2].instances[0].module_selection_range.start_line == 5);
+    CHECK(modules[2].instances[0].module_selection_range.start_character == 2);
+}
+
+TEST_CASE("CompilationService extracts hierarchy instantiations inside generate blocks", "[analysis][hierarchy]") {
+    CompilationService service;
+
+    const auto modules = service.moduleDefinitions(
+        "module lane; endmodule\n"
+        "module top;\n"
+        "  generate\n"
+        "    if (1) begin : enabled\n"
+        "      lane u_lane();\n"
+        "    end\n"
+        "  endgenerate\n"
+        "endmodule\n",
+        "file:///workspace/generate-hierarchy.sv");
+
+    REQUIRE(modules.size() == 2);
+    CHECK(modules[1].name == "top");
+    REQUIRE(modules[1].instances.size() == 1);
+    CHECK(modules[1].instances[0].module_name == "lane");
+    CHECK(modules[1].instances[0].instance_name == "u_lane");
+}
+
 TEST_CASE("CompilationService extracts named generate block symbols", "[analysis][symbols]") {
     CompilationService service;
 

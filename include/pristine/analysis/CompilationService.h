@@ -35,6 +35,21 @@ struct DocumentSymbol {
     std::vector<DocumentSymbol> children;
 };
 
+struct ModuleInstantiation {
+    std::string module_name;
+    std::string instance_name;
+    ParseRange range;
+    ParseRange selection_range;
+    ParseRange module_selection_range;
+};
+
+struct ModuleDefinition {
+    std::string name;
+    ParseRange range;
+    ParseRange selection_range;
+    std::vector<ModuleInstantiation> instances;
+};
+
 struct HoverResult {
     std::string contents;
     ParseRange range;
@@ -56,6 +71,8 @@ public:
     [[nodiscard]] ParseResult parse(std::string_view text, std::string_view uri) const;
     [[nodiscard]] std::vector<DocumentSymbol> documentSymbols(std::string_view text,
                                                               std::string_view uri) const;
+    [[nodiscard]] std::vector<ModuleDefinition> moduleDefinitions(std::string_view text,
+                                                                  std::string_view uri) const;
     [[nodiscard]] std::optional<HoverResult> hover(std::string_view text,
                                                    std::string_view uri,
                                                    int line,

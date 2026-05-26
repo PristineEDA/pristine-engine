@@ -577,6 +577,91 @@ TEST_CASE("ServerSession handles Tier 1 LSP navigation and completion", "[server
     }));
 }
 
+TEST_CASE("ServerSession returns inferred SystemVerilog module hierarchy", "[server][hierarchy]") {
+    jsonrpc::JsonRpcServer rpc_server;
+    ServerSession session{"pristine-lsp", kTestServerVersion};
+    session.bind(rpc_server);
+
+    TempWorkspace workspace;
+    const auto leaf_path = workspace.writeFile("rtl/leaf.sv", "module leaf; endmodule\n");
+    const auto child_path = workspace.writeFile(
+        "rtl/child.sv",
+        "module child;\n"
+        "  leaf u_leaf();\n"
+        "endmodule\n");
+    const auto top_path = workspace.writeFile(
+        "rtl/top.sv",
+        "module top;\n"
+        "  child u_child();\n"
+        "endmodule\n");
+
+    ScriptedTransport transport{
+        std::string(R"({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"rootUri":")") +
+            toFileUri(workspace.root()) + R"("}})",
+        R"({"jsonrpc":"2.0","id":2,"method":"systemverilog/moduleHierarchy","params":{}})"};
+
+    const int exit_code = rpc_server.run(transport);
+
+    CHECK(exit_code == 0);
+    REQUIRE(transport.outputs().size() == 2);
+
+    const auto hierarchy_response = parseOutput(transport, 1);
+    CHECK(hierarchy_response.at("id") == 2);
+    const auto& result = hierarchy_response.at("result");
+    REQUIRE(result.at("messages").empty());
+    REQUIRE(result.at("roots").size() == 1);
+
+    const auto& top = result.at("roots").at(0);
+    CHECK(top.at("moduleName") == "top");
+    CHECK(top.at("uri") == toFileUri(top_path));
+    REQUIRE(top.at("children").size() == 1);
+
+    const auto& child = top.at("children").at(0);
+    CHECK(child.at("moduleName") == "child");
+    CHECK(child.at("instanceName") == "u_child");
+    CHECK(child.at("uri") == toFileUri(child_path));
+    CHECK(child.at("instanceSelectionRange").at("start").at("line") == 1);
+    REQUIRE(child.at("children").size() == 1);
+
+    const auto& leaf = child.at("children").at(0);
+    CHECK(leaf.at("moduleName") == "leaf");
+    CHECK(leaf.at("instanceName") == "u_leaf");
+    CHECK(leaf.at("uri") == toFileUri(leaf_path));
+    CHECK(leaf.at("children").empty());
+}
+
+TEST_CASE("ServerSession marks unresolved and cyclic module hierarchy entries", "[server][hierarchy]") {
+    jsonrpc::JsonRpcServer rpc_server;
+    ServerSession session{"pristine-lsp", kTestServerVersion};
+    session.bind(rpc_server);
+
+    TempWorkspace workspace;
+    workspace.writeFile(
+        "rtl/top.sv",
+        "module top;\n"
+        "  top u_self();\n"
+        "  missing u_missing();\n"
+        "endmodule\n");
+
+    ScriptedTransport transport{
+        std::string(R"({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"rootUri":")") +
+            toFileUri(workspace.root()) + R"("}})",
+        R"({"jsonrpc":"2.0","id":2,"method":"systemverilog/moduleHierarchy","params":{"moduleName":"top"}})"};
+
+    const int exit_code = rpc_server.run(transport);
+
+    CHECK(exit_code == 0);
+    REQUIRE(transport.outputs().size() == 2);
+
+    const auto hierarchy_response = parseOutput(transport, 1);
+    const auto& root = hierarchy_response.at("result").at("roots").at(0);
+    REQUIRE(root.at("children").size() == 2);
+    CHECK(root.at("children").at(0).at("cycle") == true);
+    CHECK(root.at("children").at(0).at("moduleName") == "top");
+    CHECK(root.at("children").at(1).at("unresolved") == true);
+    CHECK(root.at("children").at(1).at("moduleName") == "missing");
+}
+
 TEST_CASE("ServerSession initializes workspace root without config", "[server][workspace]") {
     jsonrpc::JsonRpcServer rpc_server;
     ServerSession session{"pristine-lsp", kTestServerVersion};

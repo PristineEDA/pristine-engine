@@ -13,6 +13,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <utility>
 
 namespace pristine::analysis {
 namespace {
@@ -385,6 +386,16 @@ std::string makeHoverContents(const DocumentSymbol& symbol) {
 std::vector<DocumentSymbol> collectMemberSymbols(const slang::SourceManager& source_manager,
                                                  std::string_view text,
                                                  std::span<slang::syntax::MemberSyntax* const> members);
+
+void collectModuleInstantiations(std::vector<ModuleInstantiation>& result,
+                                 const slang::SourceManager& source_manager,
+                                 std::string_view text,
+                                 std::span<slang::syntax::MemberSyntax* const> members);
+
+void appendNodeModuleInstantiations(std::vector<ModuleInstantiation>& result,
+                                    const slang::SourceManager& source_manager,
+                                    std::string_view text,
+                                    const slang::syntax::SyntaxNode& node);
 
 std::optional<DocumentSymbol> toDocumentSymbol(const slang::SourceManager& source_manager,
                                                std::string_view text,
@@ -775,6 +786,102 @@ std::vector<DocumentSymbol> collectMemberSymbols(const slang::SourceManager& sou
     return result;
 }
 
+void appendModuleInstantiation(std::vector<ModuleInstantiation>& result,
+                               const slang::SourceManager& source_manager,
+                               std::string_view text,
+                               const slang::syntax::HierarchyInstantiationSyntax& declaration) {
+    const auto module_name = std::string(declaration.type.valueText());
+    if (module_name.empty()) {
+        return;
+    }
+
+    for (const auto* instance : declaration.instances) {
+        if (!instance || !instance->decl) {
+            continue;
+        }
+
+        result.push_back(ModuleInstantiation{
+            .module_name = module_name,
+            .instance_name = std::string(instance->decl->name.valueText()),
+            .range = toParseRange(source_manager, text, instance->sourceRange()),
+            .selection_range = toParseRange(source_manager, text, instance->decl->name.range()),
+            .module_selection_range = toParseRange(source_manager, text, declaration.type.range())});
+    }
+}
+
+void appendModuleInstantiationsFromMember(std::vector<ModuleInstantiation>& result,
+                                          const slang::SourceManager& source_manager,
+                                          std::string_view text,
+                                          const slang::syntax::MemberSyntax& member) {
+    switch (member.kind) {
+        case slang::syntax::SyntaxKind::HierarchyInstantiation:
+            appendModuleInstantiation(result, source_manager, text,
+                                      member.as<slang::syntax::HierarchyInstantiationSyntax>());
+            return;
+        case slang::syntax::SyntaxKind::GenerateRegion: {
+            const auto& declaration = member.as<slang::syntax::GenerateRegionSyntax>();
+            collectModuleInstantiations(result, source_manager, text, declaration.members);
+            return;
+        }
+        case slang::syntax::SyntaxKind::GenerateBlock: {
+            const auto& declaration = member.as<slang::syntax::GenerateBlockSyntax>();
+            collectModuleInstantiations(result, source_manager, text, declaration.members);
+            return;
+        }
+        case slang::syntax::SyntaxKind::IfGenerate: {
+            const auto& declaration = member.as<slang::syntax::IfGenerateSyntax>();
+            appendModuleInstantiationsFromMember(result, source_manager, text, *declaration.block);
+            if (declaration.elseClause) {
+                appendNodeModuleInstantiations(result, source_manager, text, *declaration.elseClause->clause);
+            }
+            return;
+        }
+        case slang::syntax::SyntaxKind::LoopGenerate: {
+            const auto& declaration = member.as<slang::syntax::LoopGenerateSyntax>();
+            appendModuleInstantiationsFromMember(result, source_manager, text, *declaration.block);
+            return;
+        }
+        default:
+            return;
+    }
+}
+
+void appendNodeModuleInstantiations(std::vector<ModuleInstantiation>& result,
+                                    const slang::SourceManager& source_manager,
+                                    std::string_view text,
+                                    const slang::syntax::SyntaxNode& node) {
+    if (slang::syntax::MemberSyntax::isKind(node.kind)) {
+        appendModuleInstantiationsFromMember(result, source_manager, text,
+                                            static_cast<const slang::syntax::MemberSyntax&>(node));
+    }
+}
+
+void collectModuleInstantiations(std::vector<ModuleInstantiation>& result,
+                                 const slang::SourceManager& source_manager,
+                                 std::string_view text,
+                                 std::span<slang::syntax::MemberSyntax* const> members) {
+    for (const auto* member : members) {
+        appendModuleInstantiationsFromMember(result, source_manager, text, *member);
+    }
+}
+
+std::optional<ModuleDefinition> toModuleDefinition(const slang::SourceManager& source_manager,
+                                                   std::string_view text,
+                                                   const slang::syntax::MemberSyntax& member) {
+    if (member.kind != slang::syntax::SyntaxKind::ModuleDeclaration) {
+        return std::nullopt;
+    }
+
+    const auto& declaration = member.as<slang::syntax::ModuleDeclarationSyntax>();
+    std::vector<ModuleInstantiation> instances;
+    collectModuleInstantiations(instances, source_manager, text, declaration.members);
+
+    return ModuleDefinition{.name = std::string(declaration.header->name.valueText()),
+                            .range = toParseRange(source_manager, text, declaration.sourceRange()),
+                            .selection_range = toParseRange(source_manager, text, declaration.header->name.range()),
+                            .instances = std::move(instances)};
+}
+
 std::optional<DocumentSymbol> toDocumentSymbol(const slang::SourceManager& source_manager,
                                                std::string_view text,
                                                const slang::syntax::MemberSyntax& member) {
@@ -844,6 +951,25 @@ std::vector<DocumentSymbol> CompilationService::documentSymbols(std::string_view
     const auto& compilation_unit = syntax_tree->root().as<slang::syntax::CompilationUnitSyntax>();
 
     return collectMemberSymbols(source_manager, text, compilation_unit.members);
+}
+
+std::vector<ModuleDefinition> CompilationService::moduleDefinitions(std::string_view text,
+                                                                    std::string_view uri) const {
+    slang::SourceManager source_manager;
+    auto syntax_tree = slang::syntax::SyntaxTree::fromFileInMemory(text, source_manager, "source", uri);
+    if (!syntax_tree || syntax_tree->root().kind != slang::syntax::SyntaxKind::CompilationUnit) {
+        return {};
+    }
+
+    const auto& compilation_unit = syntax_tree->root().as<slang::syntax::CompilationUnitSyntax>();
+    std::vector<ModuleDefinition> result;
+    for (const auto* member : compilation_unit.members) {
+        if (auto definition = toModuleDefinition(source_manager, text, *member)) {
+            result.push_back(std::move(*definition));
+        }
+    }
+
+    return result;
 }
 
 std::optional<HoverResult> CompilationService::hover(std::string_view text,

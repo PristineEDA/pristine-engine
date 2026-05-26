@@ -8,6 +8,7 @@
 #include <nlohmann/json.hpp>
 
 #include <string>
+#include <unordered_map>
 
 namespace pristine::jsonrpc {
 class JsonRpcServer;
@@ -28,6 +29,7 @@ public:
 private:
     jsonrpc::Json handleInitialize(const jsonrpc::Json& params);
     jsonrpc::Json handleDocumentSymbol(const jsonrpc::Json& params);
+    jsonrpc::Json handleModuleHierarchy(const jsonrpc::Json& params);
     jsonrpc::Json handleHover(const jsonrpc::Json& params);
     jsonrpc::Json handleDefinition(const jsonrpc::Json& params);
     jsonrpc::Json handleReferences(const jsonrpc::Json& params);
@@ -42,7 +44,9 @@ private:
     void handleExit(const jsonrpc::Json& params);
     void indexWorkspaceSources();
     void updateSymbolIndex(std::string_view uri, std::string_view text);
+    void updateHierarchyIndex(std::string_view uri, std::string_view text);
     void restoreClosedDocumentIndex(std::string_view uri);
+    void removeDocumentIndexes(std::string_view uri);
     void publishDiagnostics(std::string_view uri);
     void clearDiagnostics(std::string_view uri);
 
@@ -53,6 +57,7 @@ private:
     jsonrpc::JsonRpcServer* server_ = nullptr;
     analysis::CompilationService compilation_service_;
     analysis::SymbolIndex symbol_index_;
+    std::unordered_map<std::string, std::vector<analysis::ModuleDefinition>> hierarchy_documents_;
     document::DocumentStore document_store_;
     workspace::WorkspaceManager workspace_manager_;
 };
