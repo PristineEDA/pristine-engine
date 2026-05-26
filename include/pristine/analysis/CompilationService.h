@@ -40,6 +40,11 @@ struct HoverResult {
     ParseRange range;
 };
 
+struct Identifier {
+    std::string name;
+    ParseRange range;
+};
+
 struct ParseResult {
     std::shared_ptr<slang::syntax::SyntaxTree> syntax_tree;
     std::vector<ParseDiagnostic> diagnostics;
@@ -55,6 +60,13 @@ public:
                                                    std::string_view uri,
                                                    int line,
                                                    int character) const;
+    [[nodiscard]] std::vector<Identifier> identifiers(std::string_view text) const;
+    [[nodiscard]] std::optional<Identifier> identifierAt(std::string_view text,
+                                                         int line,
+                                                         int character) const;
+    [[nodiscard]] std::string completionPrefix(std::string_view text,
+                                               int line,
+                                               int character) const;
 };
 
 } // namespace pristine::analysis

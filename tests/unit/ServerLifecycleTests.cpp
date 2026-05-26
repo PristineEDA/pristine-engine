@@ -4,6 +4,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <chrono>
 #include <deque>
 #include <filesystem>
@@ -109,6 +110,16 @@ public:
         return config_path;
     }
 
+    fs::path writeFile(std::string_view relative_path, std::string_view contents) const {
+        const auto file_path = root_ / relative_path;
+        fs::create_directories(file_path.parent_path());
+
+        std::ofstream output(file_path);
+        output << contents;
+        output.close();
+        return file_path;
+    }
+
 private:
     fs::path root_;
 };
@@ -137,6 +148,11 @@ TEST_CASE("ServerSession handles initialize-shutdown-exit", "[server][lifecycle]
     CHECK(initialize_response.at("result").at("capabilities").at("documentSymbolProvider") ==
           true);
     CHECK(initialize_response.at("result").at("capabilities").at("hoverProvider") == true);
+    CHECK(initialize_response.at("result").at("capabilities").at("definitionProvider") == true);
+    CHECK(initialize_response.at("result").at("capabilities").at("referencesProvider") == true);
+    CHECK(initialize_response.at("result").at("capabilities").at("workspaceSymbolProvider") == true);
+    CHECK(initialize_response.at("result").at("capabilities").at("completionProvider").at(
+              "resolveProvider") == false);
     CHECK(initialize_response.at("result").at("capabilities").at("textDocumentSync").at(
               "openClose") == true);
 
@@ -490,6 +506,73 @@ TEST_CASE("ServerSession returns hover for declaration symbols", "[server][hover
     CHECK(hover_response.at("result").at("range").at("start").at("line") == 1);
     CHECK(hover_response.at("result").at("range").at("start").at("character") == 8);
     CHECK(hover_response.at("result").at("range").at("end").at("character") == 13);
+}
+
+TEST_CASE("ServerSession handles Tier 1 LSP navigation and completion", "[server][lsp-core]") {
+    jsonrpc::JsonRpcServer rpc_server;
+    ServerSession session{"pristine-lsp", "0.1.0"};
+    session.bind(rpc_server);
+
+    TempWorkspace workspace;
+    const auto child_path = workspace.writeFile("rtl/child.sv", "module child; endmodule\n");
+    const auto top_path = workspace.writeFile(
+        "rtl/top.sv",
+        "module top;\n"
+        "  child child_i();\n"
+        "  logic ready;\n"
+        "  assign ready = ready;\n"
+        "endmodule\n");
+    const auto child_uri = toFileUri(child_path);
+    const auto top_uri = toFileUri(top_path);
+
+    ScriptedTransport transport{
+        std::string(R"({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"rootUri":")") +
+            toFileUri(workspace.root()) + R"("}})",
+        std::string(R"({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":")") +
+            top_uri +
+            R"(","languageId":"systemverilog","version":1,"text":"module top;\n  child child_i();\n  logic ready;\n  assign ready = ready;\nendmodule\n"}}})",
+        std::string(R"({"jsonrpc":"2.0","id":2,"method":"textDocument/definition","params":{"textDocument":{"uri":")") +
+            top_uri + R"("},"position":{"line":1,"character":3}}})",
+        std::string(R"({"jsonrpc":"2.0","id":3,"method":"textDocument/references","params":{"textDocument":{"uri":")") +
+            top_uri + R"("},"position":{"line":2,"character":9},"context":{"includeDeclaration":false}}})",
+        R"({"jsonrpc":"2.0","id":4,"method":"workspace/symbol","params":{"query":"ch"}})",
+        std::string(R"({"jsonrpc":"2.0","id":5,"method":"textDocument/completion","params":{"textDocument":{"uri":")") +
+            top_uri + R"("},"position":{"line":1,"character":4},"context":{"triggerKind":1}}})"};
+
+    const int exit_code = rpc_server.run(transport);
+
+    CHECK(exit_code == 0);
+    REQUIRE(transport.outputs().size() == 6);
+
+    const auto definition_response = parseOutput(transport, 2);
+    CHECK(definition_response.at("id") == 2);
+    REQUIRE(definition_response.at("result").size() == 1);
+    CHECK(definition_response.at("result").at(0).at("uri") == child_uri);
+    CHECK(definition_response.at("result").at(0).at("range").at("start").at("line") == 0);
+    CHECK(definition_response.at("result").at(0).at("range").at("start").at("character") == 7);
+
+    const auto references_response = parseOutput(transport, 3);
+    CHECK(references_response.at("id") == 3);
+    REQUIRE(references_response.at("result").size() == 2);
+    CHECK(references_response.at("result").at(0).at("range").at("start").at("line") == 3);
+    CHECK(references_response.at("result").at(1).at("range").at("start").at("line") == 3);
+
+    const auto workspace_symbol_response = parseOutput(transport, 4);
+    CHECK(workspace_symbol_response.at("id") == 4);
+    const auto& workspace_symbols = workspace_symbol_response.at("result");
+    CHECK(std::any_of(workspace_symbols.begin(), workspace_symbols.end(), [&](const jsonrpc::Json& symbol) {
+        return symbol.at("name") == "child" && symbol.at("location").at("uri") == child_uri;
+    }));
+
+    const auto completion_response = parseOutput(transport, 5);
+    CHECK(completion_response.at("id") == 5);
+    const auto& completions = completion_response.at("result");
+    CHECK(std::any_of(completions.begin(), completions.end(), [](const jsonrpc::Json& item) {
+        return item.at("label") == "child";
+    }));
+    CHECK(std::any_of(completions.begin(), completions.end(), [](const jsonrpc::Json& item) {
+        return item.at("label") == "child_i";
+    }));
 }
 
 TEST_CASE("ServerSession initializes workspace root without config", "[server][workspace]") {

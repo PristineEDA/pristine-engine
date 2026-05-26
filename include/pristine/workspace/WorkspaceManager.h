@@ -35,6 +35,8 @@ public:
     void initialize(const lsp::InitializeParams& params);
 
     const State& state() const { return state_; }
+    [[nodiscard]] std::vector<std::filesystem::path> sourceFilesForIndex() const;
+    [[nodiscard]] static std::optional<std::filesystem::path> pathFromFileUri(std::string_view uri);
 
 private:
     static std::optional<std::filesystem::path> resolveRootPath(const lsp::InitializeParams& params);

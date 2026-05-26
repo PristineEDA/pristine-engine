@@ -66,6 +66,36 @@ struct HoverParams {
 	Position position;
 };
 
+struct DefinitionParams {
+	TextDocumentIdentifier text_document;
+	Position position;
+};
+
+struct ReferenceContext {
+	bool include_declaration = false;
+};
+
+struct ReferenceParams {
+	TextDocumentIdentifier text_document;
+	Position position;
+	ReferenceContext context;
+};
+
+struct WorkspaceSymbolParams {
+	std::string query;
+};
+
+struct CompletionContext {
+	int trigger_kind = 1;
+	std::optional<std::string> trigger_character;
+};
+
+struct CompletionParams {
+	TextDocumentIdentifier text_document;
+	Position position;
+	std::optional<CompletionContext> context;
+};
+
 struct WorkspaceFolder {
 	std::string uri;
 	std::string name;
@@ -85,5 +115,9 @@ DidChangeTextDocumentParams parseDidChangeTextDocumentParams(const Json& params)
 DidSaveTextDocumentParams parseDidSaveTextDocumentParams(const Json& params);
 DidCloseTextDocumentParams parseDidCloseTextDocumentParams(const Json& params);
 HoverParams parseHoverParams(const Json& params);
+DefinitionParams parseDefinitionParams(const Json& params);
+ReferenceParams parseReferenceParams(const Json& params);
+WorkspaceSymbolParams parseWorkspaceSymbolParams(const Json& params);
+CompletionParams parseCompletionParams(const Json& params);
 
 } // namespace pristine::lsp

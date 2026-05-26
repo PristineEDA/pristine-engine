@@ -22,13 +22,18 @@ Current implemented LSP surface:
 - `textDocument/didSave`
 - `textDocument/didClose`
 - `textDocument/hover`
+- `textDocument/definition`
+- `textDocument/references`
+- `workspace/symbol`
+- `textDocument/completion`
 
 Current behavior is still a thin MVP:
 
 - parse diagnostics for open documents are implemented
 - `textDocument/documentSymbol` is syntax-driven and supports top-level declarations plus common nested members
 - `textDocument/hover` is declaration-oriented and built from the same syntax symbol tree
-- deeper semantic analysis, cross-file navigation, references, workspace symbols, and completion are not implemented yet
+- `textDocument/definition`, `textDocument/references`, `workspace/symbol`, and `textDocument/completion` are backed by a lightweight syntax/text workspace index
+- deeper semantic analysis, rename, document highlights, inlay hints, code actions, call hierarchy, and precise SystemVerilog scope resolution are not implemented yet
 
 The server resolves the workspace root from `initialize` and loads a minimal `.slang/server.json` when present.
 
@@ -45,14 +50,16 @@ Recognized `.slang/server.json` fields:
 
 Use the nearest owning layer instead of patching around it from a wrapper.
 
-- lifecycle, notification handling, diagnostics publishing, `documentSymbol`, and `hover` session wiring: `src/server/ServerSession.cpp`
+- lifecycle, notification handling, diagnostics publishing, `documentSymbol`, `hover`, definition, references, workspace symbols, and completion session wiring: `src/server/ServerSession.cpp`
 - LSP protocol structures and JSON payload parsing: `src/lsp/Protocol.cpp`
-- parse pipeline, syntax symbol extraction, hover content, and diagnostics: `src/analysis/CompilationService.cpp`
+- parse pipeline, syntax symbol extraction, identifier scanning, hover content, and diagnostics: `src/analysis/CompilationService.cpp`
+- lightweight workspace symbol/reference/completion index: `src/analysis/SymbolIndex.cpp`
 - open-document state and UTF-16 incremental edits: `src/document/DocumentStore.cpp`
 - workspace root resolution and `.slang/server.json` loading: `src/workspace/WorkspaceManager.cpp`
 - stdio transport and JSON-RPC framing: `src/transport/StdioTransport.cpp`, `src/jsonrpc/MessageStream.cpp`, `src/jsonrpc/JsonRpcServer.cpp`
 - process entry point, CLI switches, Windows stdio mode, and version output: `src/main.cpp`
-- unit coverage for framing, lifecycle, sync, workspace, diagnostics, UTF-16, symbols, and hover: `tests/unit`
+- unit coverage for framing, lifecycle, sync, workspace, diagnostics, UTF-16, symbols, hover, and Tier 1 LSP navigation/completion: `tests/unit`
+- subprocess LSP smoke coverage: `tests/e2e`
 
 ## Working Rules
 
@@ -208,5 +215,6 @@ The current repository state has been locally verified on Windows with:
 ## Likely Near-Term Work
 
 - deepen semantic analysis beyond the current syntax-driven symbol tree
-- add definition, references, workspace symbols, and completion
+- deepen semantic analysis beyond the current syntax/text index
 - extend hover beyond the current declaration-oriented slice
+- add rename, document highlights, inlay hints, code actions, and call hierarchy

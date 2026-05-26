@@ -61,6 +61,7 @@ add_custom_target(
 add_library(
   pristine_core
   src/analysis/CompilationService.cpp
+  src/analysis/SymbolIndex.cpp
   src/document/DocumentStore.cpp
   src/jsonrpc/JsonRpcServer.cpp
   src/jsonrpc/MessageStream.cpp

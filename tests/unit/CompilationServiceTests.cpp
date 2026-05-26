@@ -2,6 +2,9 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
+#include <string_view>
+
 namespace pristine::analysis {
 
 TEST_CASE("CompilationService parses valid SystemVerilog text", "[analysis][parse]") {
@@ -49,6 +52,46 @@ TEST_CASE("CompilationService returns hover for declaration symbols", "[analysis
     CHECK(hover->range.start_character == 8);
     CHECK(hover->range.end_line == 1);
     CHECK(hover->range.end_character == 13);
+}
+
+TEST_CASE("CompilationService extracts identifier ranges outside comments and strings", "[analysis][identifiers]") {
+    CompilationService service;
+
+    const auto identifiers = service.identifiers(
+        "module top;\n"
+        "  logic ready; // fake_comment\n"
+        "  string name = \"fake_string\";\n"
+        "endmodule\n");
+
+    const auto contains_name = [&](std::string_view name) {
+        return std::any_of(identifiers.begin(), identifiers.end(), [&](const Identifier& identifier) {
+            return identifier.name == name;
+        });
+    };
+
+    CHECK(contains_name("ready"));
+    CHECK_FALSE(contains_name("fake_comment"));
+    CHECK_FALSE(contains_name("fake_string"));
+
+    const auto ready = service.identifierAt("module top;\n  logic ready;\nendmodule\n", 1, 9);
+    REQUIRE(ready.has_value());
+    CHECK(ready->name == "ready");
+    CHECK(ready->range.start_line == 1);
+    CHECK(ready->range.start_character == 8);
+    CHECK(ready->range.end_character == 13);
+}
+
+TEST_CASE("CompilationService computes completion prefix", "[analysis][completion]") {
+    CompilationService service;
+
+    const auto prefix = service.completionPrefix(
+        "module top;\n"
+        "  logic ready;\n"
+        "  assign ready = re\n"
+        "endmodule\n",
+        2, 19);
+
+    CHECK(prefix == "re");
 }
 
 TEST_CASE("CompilationService extracts top-level document symbols", "[analysis][symbols]") {

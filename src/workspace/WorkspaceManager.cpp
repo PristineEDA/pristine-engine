@@ -1,6 +1,7 @@
 #include "pristine/workspace/WorkspaceManager.h"
 
 #include <cctype>
+#include <algorithm>
 #include <fstream>
 #include <iostream>
 #include <stdexcept>
@@ -79,21 +80,43 @@ std::string percentDecode(std::string_view value) {
     return result;
 }
 
-std::optional<fs::path> pathFromFileUri(std::string_view uri) {
-    constexpr std::string_view prefix = "file://";
-    if (!uri.starts_with(prefix)) {
-        return std::nullopt;
+bool isSystemVerilogFile(const fs::path& path) {
+    const auto extension = path.extension().string();
+    return extension == ".sv" || extension == ".svh" || extension == ".v" || extension == ".vh";
+}
+
+bool isExcludedPath(const fs::path& path, const std::vector<std::string>& exclude_dirs) {
+    const auto normalized = path.generic_string();
+    return std::any_of(exclude_dirs.begin(), exclude_dirs.end(), [&](const std::string& exclude_dir) {
+        return !exclude_dir.empty() && normalized.find(fs::path(exclude_dir).generic_string()) != std::string::npos;
+    });
+}
+
+void collectSourceFiles(const fs::path& directory,
+                        const std::vector<std::string>& exclude_dirs,
+                        std::vector<fs::path>& result) {
+    std::error_code error;
+    if (!fs::exists(directory, error) || !fs::is_directory(directory, error)) {
+        return;
     }
 
-    auto decoded = percentDecode(uri.substr(prefix.size()));
-#ifdef _WIN32
-    if (decoded.size() >= 3 && decoded[0] == '/' && std::isalpha(static_cast<unsigned char>(decoded[1])) &&
-        decoded[2] == ':') {
-        decoded.erase(decoded.begin());
-    }
-#endif
+    for (fs::recursive_directory_iterator it(directory, fs::directory_options::skip_permission_denied, error), end;
+         it != end; it.increment(error)) {
+        if (error) {
+            error.clear();
+            continue;
+        }
 
-    return fs::path(decoded);
+        const auto current_path = it->path();
+        if (it->is_directory(error) && isExcludedPath(current_path, exclude_dirs)) {
+            it.disable_recursion_pending();
+            continue;
+        }
+        if (it->is_regular_file(error) && isSystemVerilogFile(current_path) &&
+            !isExcludedPath(current_path, exclude_dirs)) {
+            result.push_back(current_path);
+        }
+    }
 }
 
 } // namespace
@@ -127,6 +150,46 @@ std::optional<fs::path> WorkspaceManager::resolveRootPath(const lsp::InitializeP
     }
 
     return std::nullopt;
+}
+
+std::optional<fs::path> WorkspaceManager::pathFromFileUri(std::string_view uri) {
+    constexpr std::string_view prefix = "file://";
+    if (!uri.starts_with(prefix)) {
+        return std::nullopt;
+    }
+
+    auto decoded = percentDecode(uri.substr(prefix.size()));
+#ifdef _WIN32
+    if (decoded.size() >= 3 && decoded[0] == '/' && std::isalpha(static_cast<unsigned char>(decoded[1])) &&
+        decoded[2] == ':') {
+        decoded.erase(decoded.begin());
+    }
+#endif
+
+    return fs::path(decoded);
+}
+
+std::vector<fs::path> WorkspaceManager::sourceFilesForIndex() const {
+    std::vector<fs::path> result;
+    if (!state_.root_path.has_value()) {
+        return result;
+    }
+
+    if (state_.config.index.empty()) {
+        collectSourceFiles(*state_.root_path, {}, result);
+    }
+    else {
+        for (const auto& index_config : state_.config.index) {
+            for (const auto& dir : index_config.dirs) {
+                const auto directory = fs::path(dir).is_absolute() ? fs::path(dir) : *state_.root_path / dir;
+                collectSourceFiles(directory, index_config.exclude_dirs, result);
+            }
+        }
+    }
+
+    std::sort(result.begin(), result.end());
+    result.erase(std::unique(result.begin(), result.end()), result.end());
+    return result;
 }
 
 Config WorkspaceManager::parseConfig(const lsp::Json& config_json) {

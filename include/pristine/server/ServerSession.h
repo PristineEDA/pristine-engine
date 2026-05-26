@@ -1,6 +1,7 @@
 #pragma once
 
 #include "pristine/analysis/CompilationService.h"
+#include "pristine/analysis/SymbolIndex.h"
 #include "pristine/document/DocumentStore.h"
 #include "pristine/workspace/WorkspaceManager.h"
 
@@ -28,6 +29,10 @@ private:
     jsonrpc::Json handleInitialize(const jsonrpc::Json& params);
     jsonrpc::Json handleDocumentSymbol(const jsonrpc::Json& params);
     jsonrpc::Json handleHover(const jsonrpc::Json& params);
+    jsonrpc::Json handleDefinition(const jsonrpc::Json& params);
+    jsonrpc::Json handleReferences(const jsonrpc::Json& params);
+    jsonrpc::Json handleWorkspaceSymbol(const jsonrpc::Json& params);
+    jsonrpc::Json handleCompletion(const jsonrpc::Json& params);
     jsonrpc::Json handleShutdown(const jsonrpc::Json& params);
     void handleInitialized(const jsonrpc::Json& params);
     void handleDidOpen(const jsonrpc::Json& params);
@@ -35,6 +40,9 @@ private:
     void handleDidSave(const jsonrpc::Json& params);
     void handleDidClose(const jsonrpc::Json& params);
     void handleExit(const jsonrpc::Json& params);
+    void indexWorkspaceSources();
+    void updateSymbolIndex(std::string_view uri, std::string_view text);
+    void restoreClosedDocumentIndex(std::string_view uri);
     void publishDiagnostics(std::string_view uri);
     void clearDiagnostics(std::string_view uri);
 
@@ -44,6 +52,7 @@ private:
     bool shutdown_requested_ = false;
     jsonrpc::JsonRpcServer* server_ = nullptr;
     analysis::CompilationService compilation_service_;
+    analysis::SymbolIndex symbol_index_;
     document::DocumentStore document_store_;
     workspace::WorkspaceManager workspace_manager_;
 };

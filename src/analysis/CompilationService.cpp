@@ -9,13 +9,21 @@
 #include "slang/syntax/SyntaxKind.h"
 #include "slang/text/SourceManager.h"
 
+#include <cctype>
 #include <optional>
 #include <span>
+#include <string>
 
 namespace pristine::analysis {
 namespace {
 
 struct ParsePosition {
+    int line = 0;
+    int character = 0;
+};
+
+struct ScanState {
+    size_t offset = 0;
     int line = 0;
     int character = 0;
 };
@@ -180,6 +188,163 @@ bool containsPosition(const ParseRange& range, int line, int character) {
     }
 
     return true;
+}
+
+bool isIdentifierStart(char value) {
+    const auto ch = static_cast<unsigned char>(value);
+    return std::isalpha(ch) != 0 || value == '_' || value == '$';
+}
+
+bool isIdentifierContinue(char value) {
+    const auto ch = static_cast<unsigned char>(value);
+    return std::isalnum(ch) != 0 || value == '_' || value == '$';
+}
+
+void advanceOne(std::string_view text, ScanState& state) {
+    if (state.offset >= text.size()) {
+        return;
+    }
+
+    if (text[state.offset] == '\r') {
+        ++state.offset;
+        if (state.offset < text.size() && text[state.offset] == '\n') {
+            ++state.offset;
+        }
+        ++state.line;
+        state.character = 0;
+        return;
+    }
+
+    if (text[state.offset] == '\n') {
+        ++state.offset;
+        ++state.line;
+        state.character = 0;
+        return;
+    }
+
+    const auto decoded = text::decodeNextCodePoint(text, state.offset);
+    state.offset += decoded.byte_length;
+    state.character += static_cast<int>(text::utf16CodeUnitWidth(decoded.value));
+}
+
+void advanceAscii(std::string_view text, ScanState& state) {
+    if (state.offset >= text.size()) {
+        return;
+    }
+    ++state.offset;
+    ++state.character;
+}
+
+bool startsWith(std::string_view text, size_t offset, std::string_view value) {
+    return offset + value.size() <= text.size() && text.substr(offset, value.size()) == value;
+}
+
+void skipLineComment(std::string_view text, ScanState& state) {
+    advanceAscii(text, state);
+    advanceAscii(text, state);
+    while (state.offset < text.size() && text[state.offset] != '\n' && text[state.offset] != '\r') {
+        advanceOne(text, state);
+    }
+}
+
+void skipBlockComment(std::string_view text, ScanState& state) {
+    advanceAscii(text, state);
+    advanceAscii(text, state);
+    while (state.offset < text.size()) {
+        if (startsWith(text, state.offset, "*/")) {
+            advanceAscii(text, state);
+            advanceAscii(text, state);
+            return;
+        }
+        advanceOne(text, state);
+    }
+}
+
+void skipStringLiteral(std::string_view text, ScanState& state) {
+    advanceAscii(text, state);
+    bool escaped = false;
+    while (state.offset < text.size()) {
+        const char value = text[state.offset];
+        if (!escaped && value == '"') {
+            advanceAscii(text, state);
+            return;
+        }
+
+        const bool begins_escape = !escaped && value == '\\';
+        advanceOne(text, state);
+        escaped = begins_escape;
+    }
+}
+
+std::vector<Identifier> collectIdentifiers(std::string_view text) {
+    std::vector<Identifier> result;
+    ScanState state{};
+    while (state.offset < text.size()) {
+        if (startsWith(text, state.offset, "//")) {
+            skipLineComment(text, state);
+            continue;
+        }
+        if (startsWith(text, state.offset, "/*")) {
+            skipBlockComment(text, state);
+            continue;
+        }
+        if (text[state.offset] == '"') {
+            skipStringLiteral(text, state);
+            continue;
+        }
+
+        const char value = text[state.offset];
+        if (!isIdentifierStart(value)) {
+            advanceOne(text, state);
+            continue;
+        }
+
+        const auto start_line = state.line;
+        const auto start_character = state.character;
+        std::string name;
+        while (state.offset < text.size() && isIdentifierContinue(text[state.offset])) {
+            name.push_back(text[state.offset]);
+            advanceAscii(text, state);
+        }
+
+        result.push_back(Identifier{
+            .name = std::move(name),
+            .range = ParseRange{.start_line = start_line,
+                                .start_character = start_character,
+                                .end_line = state.line,
+                                .end_character = state.character}});
+    }
+
+    return result;
+}
+
+std::optional<size_t> byteOffsetAtPosition(std::string_view text, int line, int character) {
+    if (line < 0 || character < 0) {
+        return std::nullopt;
+    }
+
+    ScanState state{};
+    while (state.offset <= text.size()) {
+        if (state.line == line && state.character == character) {
+            return state.offset;
+        }
+        if (state.offset >= text.size()) {
+            break;
+        }
+
+        const auto previous_line = state.line;
+        const auto previous_character = state.character;
+        advanceOne(text, state);
+        if (previous_line == line && previous_character < character &&
+            (state.line > line || state.character > character)) {
+            return std::nullopt;
+        }
+        if (state.line > line) {
+            return std::nullopt;
+        }
+    }
+
+    return std::nullopt;
 }
 
 const DocumentSymbol* findHoverSymbol(const DocumentSymbol& symbol, int line, int character) {
@@ -692,6 +857,42 @@ std::optional<HoverResult> CompilationService::hover(std::string_view text,
     }
 
     return HoverResult{.contents = makeHoverContents(*symbol), .range = symbol->selection_range};
+}
+
+std::vector<Identifier> CompilationService::identifiers(std::string_view text) const {
+    return collectIdentifiers(text);
+}
+
+std::optional<Identifier> CompilationService::identifierAt(std::string_view text,
+                                                           int line,
+                                                           int character) const {
+    for (const auto& identifier : collectIdentifiers(text)) {
+        if (containsPosition(identifier.range, line, character)) {
+            return identifier;
+        }
+    }
+
+    return std::nullopt;
+}
+
+std::string CompilationService::completionPrefix(std::string_view text,
+                                                 int line,
+                                                 int character) const {
+    const auto offset = byteOffsetAtPosition(text, line, character);
+    if (!offset.has_value()) {
+        return {};
+    }
+
+    size_t start = *offset;
+    while (start > 0 && isIdentifierContinue(text[start - 1])) {
+        --start;
+    }
+
+    if (start == *offset) {
+        return {};
+    }
+
+    return std::string(text.substr(start, *offset - start));
 }
 
 } // namespace pristine::analysis

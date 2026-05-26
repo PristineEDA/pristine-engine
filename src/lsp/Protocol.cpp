@@ -1,6 +1,7 @@
 #include "pristine/lsp/Protocol.h"
 
 #include <stdexcept>
+#include <utility>
 
 namespace pristine::lsp {
 namespace {
@@ -41,6 +42,12 @@ Json makeInitializeResult(std::string_view server_name, std::string_view server_
          Json{{"positionEncoding", "utf-16"},
               {"documentSymbolProvider", true},
               {"hoverProvider", true},
+              {"definitionProvider", true},
+              {"referencesProvider", true},
+              {"workspaceSymbolProvider", true},
+              {"completionProvider",
+               Json{{"resolveProvider", false},
+                    {"triggerCharacters", Json::array({".", "`", ":"})}}},
               {"textDocumentSync",
                Json{{"openClose", true}, {"change", 2}, {"save", Json{{"includeText", false}}}}},
               {"workspace",
@@ -121,6 +128,58 @@ DidCloseTextDocumentParams parseDidCloseTextDocumentParams(const Json& params) {
 HoverParams parseHoverParams(const Json& params) {
     return HoverParams{.text_document = parseTextDocumentIdentifier(params.at("textDocument")),
                        .position = parsePosition(params.at("position"))};
+}
+
+DefinitionParams parseDefinitionParams(const Json& params) {
+    return DefinitionParams{.text_document = parseTextDocumentIdentifier(params.at("textDocument")),
+                            .position = parsePosition(params.at("position"))};
+}
+
+ReferenceParams parseReferenceParams(const Json& params) {
+    ReferenceParams result{.text_document = parseTextDocumentIdentifier(params.at("textDocument")),
+                           .position = parsePosition(params.at("position"))};
+
+    const auto context_it = params.find("context");
+    if (context_it != params.end() && !context_it->is_null()) {
+        const auto include_declaration_it = context_it->find("includeDeclaration");
+        if (include_declaration_it != context_it->end() && !include_declaration_it->is_null()) {
+            result.context.include_declaration = include_declaration_it->get<bool>();
+        }
+    }
+
+    return result;
+}
+
+WorkspaceSymbolParams parseWorkspaceSymbolParams(const Json& params) {
+    WorkspaceSymbolParams result{};
+    const auto query_it = params.find("query");
+    if (query_it != params.end() && !query_it->is_null()) {
+        result.query = query_it->get<std::string>();
+    }
+    return result;
+}
+
+CompletionParams parseCompletionParams(const Json& params) {
+    CompletionParams result{.text_document = parseTextDocumentIdentifier(params.at("textDocument")),
+                            .position = parsePosition(params.at("position"))};
+
+    const auto context_it = params.find("context");
+    if (context_it != params.end() && !context_it->is_null()) {
+        CompletionContext context{};
+        const auto trigger_kind_it = context_it->find("triggerKind");
+        if (trigger_kind_it != context_it->end() && !trigger_kind_it->is_null()) {
+            context.trigger_kind = trigger_kind_it->get<int>();
+        }
+
+        const auto trigger_character_it = context_it->find("triggerCharacter");
+        if (trigger_character_it != context_it->end() && !trigger_character_it->is_null()) {
+            context.trigger_character = trigger_character_it->get<std::string>();
+        }
+
+        result.context = std::move(context);
+    }
+
+    return result;
 }
 
 } // namespace pristine::lsp
