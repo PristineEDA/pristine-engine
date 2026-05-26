@@ -86,6 +86,14 @@ cmake --preset dev
 cmake --build --preset dev
 ```
 
+Create a version tag for the current project version:
+
+```powershell
+pwsh -NoProfile -File scripts/create-version-tag.ps1
+```
+
+Use `-Push` to push the tag to the remote and trigger the tag release workflow. The script derives the tag from `CMakeLists.txt` and validates it against `src/main.cpp`'s `kServerVersion` before creating an annotated `v<version>` tag.
+
 Windows note:
 
 - use a Visual Studio Developer Command Prompt or equivalent MSVC environment before configuring
@@ -192,15 +200,18 @@ Current hosted matrix:
 Each CI job currently does the following:
 
 - checkout
+- validate that the CMake project version and `kServerVersion` match
 - bootstrap dependencies
 - configure `dev`
 - validate notice files
 - build
 - run unit tests
-- run `pristine-engine --version`
+- run `pristine-engine --version` and assert the output matches the project version
 - install to a staged prefix
 - validate the staged install tree
 - upload the staged install artifact
+
+Pushes of `v*` tags run the same matrix and then publish a GitHub Release. The release job downloads all `pristine-install-*` artifacts, packages each staged install tree as `pristine-engine-<tag>-<platform>.zip`, generates `SHA256SUMS.txt`, and uploads the assets to the matching GitHub Release.
 
 ## Current Verified Local State
 
