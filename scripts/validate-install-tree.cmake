@@ -13,9 +13,9 @@ if(NOT IS_ABSOLUTE "${PRISTINE_INSTALL_PREFIX}")
 endif()
 
 if(CMAKE_HOST_WIN32)
-  set(pristine_binary_name "pristine-lsp.exe")
+  set(pristine_binary_name "pristine-engine.exe")
 else()
-  set(pristine_binary_name "pristine-lsp")
+  set(pristine_binary_name "pristine-engine")
 endif()
 
 set(pristine_notice_dir "${PRISTINE_INSTALL_PREFIX}/share/pristine-engine/licenses")

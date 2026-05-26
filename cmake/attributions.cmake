@@ -117,19 +117,6 @@ pristine_register_attribution(
 )
 
 pristine_register_attribution(
-  mimalloc
-  NAME "mimalloc"
-  VERSION "v2.2.4"
-  OWNER "Microsoft Corporation and Daan Leijen"
-  URL "https://github.com/microsoft/mimalloc/tree/v2.2.4"
-  LICENSE_LABEL "MIT"
-  SCOPE "redistributed"
-  RELATIONSHIP "transitive dependency via slang"
-  FAMILY_IDS mit
-  NOTES "Enabled by slang's default SLANG_USE_MIMALLOC=ON path in external/CMakeLists.txt."
-)
-
-pristine_register_attribution(
   boost_unordered
   NAME "boost_unordered vendored header"
   VERSION "vendored in slang fd508122d3de5fbe9c90845146794d059fa4eca0"

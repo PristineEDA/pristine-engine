@@ -1,7 +1,7 @@
 Third-Party Notices for pristine-engine
 
 This file is generated from cmake/attributions.cmake.
-It covers the third-party components redistributed in the pristine-lsp install tree.
+It covers the third-party components redistributed in the pristine-engine install tree.
 
 Bundled notice files:
 - LICENSE
@@ -15,8 +15,6 @@ Redistributed components:
   https://github.com/fmtlib/fmt/tree/12.1.0
 - nlohmann/json v3.11.3 (MIT) - Niels Lohmann
   https://github.com/nlohmann/json/tree/v3.11.3
-- mimalloc v2.2.4 (MIT) - Microsoft Corporation and Daan Leijen
-  https://github.com/microsoft/mimalloc/tree/v2.2.4
 - boost_unordered vendored header vendored in slang fd508122d3de5fbe9c90845146794d059fa4eca0 (BSL-1.0) - Boost contributors listed in slang/external/boost_unordered.hpp
   https://github.com/AndrewNolte/slang/blob/fd508122d3de5fbe9c90845146794d059fa4eca0/external/boost_unordered.hpp
 
@@ -28,7 +26,6 @@ The covered components in this section are distributed under the standard MIT Li
 Covered components:
 - slang fd508122d3de5fbe9c90845146794d059fa4eca0 - Michael Popoloski, packaged from the AndrewNolte/slang fork
 - nlohmann/json v3.11.3 - Niels Lohmann
-- mimalloc v2.2.4 - Microsoft Corporation and Daan Leijen
 
 MIT License
 

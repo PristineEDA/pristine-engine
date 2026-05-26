@@ -37,10 +37,6 @@ jobs:
             name: Windows 2025 x64
             runs_on: windows-2025
             arch: x64
-          - id: macos-14-arm64
-            name: macOS 14 arm64
-            runs_on: macos-14
-            arch: arm64
           - id: macos-15-arm64
             name: macOS 15 arm64
             runs_on: macos-15
@@ -102,7 +98,7 @@ jobs:
 
       - name: Smoke test server version
         run: |
-          $binary = Join-Path $PWD 'build/dev/pristine-lsp'
+          $binary = Join-Path $PWD 'build/dev/pristine-engine'
           if ($IsWindows) {
             $binary = "$binary.exe"
           }

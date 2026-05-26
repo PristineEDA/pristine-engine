@@ -12,7 +12,7 @@
 
 namespace {
 
-constexpr std::string_view kServerName = "pristine-lsp";
+constexpr std::string_view kServerName = "pristine-engine";
 constexpr std::string_view kServerVersion = "0.1.0";
 
 int runStdioServer() {

@@ -27,6 +27,7 @@ set(SLANG_INCLUDE_DOCS OFF CACHE BOOL "Don't build slang docs" FORCE)
 set(SLANG_INCLUDE_PYLIB OFF CACHE BOOL "Don't build slang Python bindings" FORCE)
 set(SLANG_INCLUDE_INSTALL OFF CACHE BOOL "Don't install slang separately" FORCE)
 set(SLANG_INCLUDE_TESTS OFF CACHE BOOL "Don't build slang tests" FORCE)
+set(SLANG_USE_MIMALLOC OFF CACHE BOOL "Don't let slang fetch mimalloc during configure" FORCE)
 
 pristine_require_dependency(slang)
 pristine_require_dependency(nlohmann_json)

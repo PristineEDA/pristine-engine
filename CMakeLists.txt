@@ -86,6 +86,7 @@ endif()
 
 add_executable(pristine-lsp src/main.cpp)
 target_link_libraries(pristine-lsp PRIVATE pristine_core)
+set_target_properties(pristine-lsp PROPERTIES OUTPUT_NAME pristine-engine)
 
 install(TARGETS pristine-lsp RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 install(

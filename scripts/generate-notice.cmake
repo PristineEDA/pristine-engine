@@ -53,7 +53,7 @@ endfunction()
 
 set(attributions_content "# Third-Party Attributions\n\n")
 string(APPEND attributions_content "This file is generated from `cmake/attributions.cmake`.\n")
-string(APPEND attributions_content "It inventories the third-party components redistributed in the `pristine-lsp` install tree.\n\n")
+string(APPEND attributions_content "It inventories the third-party components redistributed in the `pristine-engine` install tree.\n\n")
 string(APPEND attributions_content "| Component | Version | Relationship | License | Owner | Upstream |\n")
 string(APPEND attributions_content "| --- | --- | --- | --- | --- | --- |\n")
 
@@ -92,7 +92,7 @@ list(REMOVE_DUPLICATES used_family_ids)
 
 set(notice_content "Third-Party Notices for pristine-engine\n\n")
 string(APPEND notice_content "This file is generated from cmake/attributions.cmake.\n")
-string(APPEND notice_content "It covers the third-party components redistributed in the pristine-lsp install tree.\n\n")
+string(APPEND notice_content "It covers the third-party components redistributed in the pristine-engine install tree.\n\n")
 string(APPEND notice_content "Bundled notice files:\n")
 string(APPEND notice_content "- LICENSE\n")
 string(APPEND notice_content "- ATTRIBUTIONS.md\n")
