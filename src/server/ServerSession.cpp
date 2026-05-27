@@ -798,6 +798,9 @@ void ServerSession::bind(jsonrpc::JsonRpcServer& server) {
     server.registerRequestHandler("textDocument/definition", [this](const jsonrpc::Json& params) {
         return handleDefinition(params);
     });
+    server.registerRequestHandler("textDocument/implementation", [this](const jsonrpc::Json& params) {
+        return handleImplementation(params);
+    });
     server.registerRequestHandler("textDocument/documentHighlight", [this](const jsonrpc::Json& params) {
         return handleDocumentHighlight(params);
     });
@@ -1014,6 +1017,43 @@ jsonrpc::Json ServerSession::handleReferences(const jsonrpc::Json& params) {
     for (const auto& reference : symbol_index_.references(identifier->name,
                                                           references.context.include_declaration)) {
         result.push_back(toLocationJson(reference.location));
+    }
+
+    return result;
+}
+
+jsonrpc::Json ServerSession::handleImplementation(const jsonrpc::Json& params) {
+    if (!initialized_) {
+        throw std::runtime_error("textDocument/implementation received before initialize");
+    }
+
+    const auto implementation = lsp::parseImplementationParams(params);
+    const auto* document = document_store_.find(implementation.text_document.uri);
+    if (!document) {
+        return jsonrpc::Json::array();
+    }
+
+    const auto identifier = compilation_service_.identifierAt(document->text,
+                                                              implementation.position.line,
+                                                              implementation.position.character);
+    if (!identifier) {
+        return jsonrpc::Json::array();
+    }
+
+    const auto definitions = sortedModuleDefinitions(hierarchy_documents_);
+    const auto modules = buildModuleLookup(definitions);
+    if (!modules.contains(identifier->name)) {
+        return jsonrpc::Json::array();
+    }
+
+    jsonrpc::Json result = jsonrpc::Json::array();
+    for (const auto& definition : definitions) {
+        for (const auto& instance : definition.definition.instances) {
+            if (instance.module_name == identifier->name) {
+                result.push_back(toLocationJson(analysis::Location{.uri = definition.uri,
+                                                                    .range = instance.module_selection_range}));
+            }
+        }
     }
 
     return result;

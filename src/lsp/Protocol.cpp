@@ -43,6 +43,7 @@ Json makeInitializeResult(std::string_view server_name, std::string_view server_
               {"documentSymbolProvider", true},
               {"hoverProvider", true},
               {"definitionProvider", true},
+              {"implementationProvider", true},
               {"documentHighlightProvider", true},
               {"documentLinkProvider", Json{{"resolveProvider", false}}},
               {"inlayHintProvider", Json{{"resolveProvider", false}}},
@@ -156,6 +157,11 @@ DefinitionParams parseDefinitionParams(const Json& params) {
                             .position = parsePosition(params.at("position"))};
 }
 
+ImplementationParams parseImplementationParams(const Json& params) {
+    return ImplementationParams{.text_document = parseTextDocumentIdentifier(params.at("textDocument")),
+                                .position = parsePosition(params.at("position"))};
+}
+
 DocumentHighlightParams parseDocumentHighlightParams(const Json& params) {
     return DocumentHighlightParams{.text_document = parseTextDocumentIdentifier(params.at("textDocument")),
                                    .position = parsePosition(params.at("position"))};
@@ -184,7 +190,8 @@ SemanticTokensParams parseSemanticTokensParams(const Json& params) {
 }
 
 SelectionRangeParams parseSelectionRangeParams(const Json& params) {
-    SelectionRangeParams result{.text_document = parseTextDocumentIdentifier(params.at("textDocument"))};
+    SelectionRangeParams result{.text_document = parseTextDocumentIdentifier(params.at("textDocument")),
+                                .positions = {}};
     for (const auto& position : params.at("positions")) {
         result.positions.push_back(parsePosition(position));
     }

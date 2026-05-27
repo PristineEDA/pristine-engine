@@ -116,6 +116,7 @@ def main() -> int:
             )
             capabilities = initialize["result"]["capabilities"]
             assert capabilities["definitionProvider"] is True
+            assert capabilities["implementationProvider"] is True
             assert capabilities["documentHighlightProvider"] is True
             assert capabilities["documentLinkProvider"]["resolveProvider"] is False
             assert capabilities["inlayHintProvider"]["resolveProvider"] is False
@@ -157,9 +158,23 @@ def main() -> int:
             assert definition[0]["uri"] == child_uri
             assert definition[0]["range"]["start"] == {"line": 0, "character": 7}
 
-            references = request(
+            implementations = request(
                 process,
                 3,
+                "textDocument/implementation",
+                {
+                    "textDocument": {"uri": top_uri},
+                    "position": {"line": 3, "character": 3},
+                },
+            )["result"]
+            assert len(implementations) == 1
+            assert implementations[0]["uri"] == top_uri
+            assert implementations[0]["range"]["start"] == {"line": 3, "character": 2}
+            assert implementations[0]["range"]["end"] == {"line": 3, "character": 7}
+
+            references = request(
+                process,
+                4,
                 "textDocument/references",
                 {
                     "textDocument": {"uri": top_uri},
@@ -172,7 +187,7 @@ def main() -> int:
 
             workspace_symbols = request(
                 process,
-                4,
+                5,
                 "workspace/symbol",
                 {"query": "ch"},
             )["result"]
@@ -183,7 +198,7 @@ def main() -> int:
 
             completions = request(
                 process,
-                5,
+                6,
                 "textDocument/completion",
                 {
                     "textDocument": {"uri": top_uri},
@@ -197,7 +212,7 @@ def main() -> int:
 
             highlights = request(
                 process,
-                6,
+                7,
                 "textDocument/documentHighlight",
                 {
                     "textDocument": {"uri": top_uri},
@@ -210,7 +225,7 @@ def main() -> int:
 
             rename = request(
                 process,
-                7,
+                8,
                 "textDocument/rename",
                 {
                     "textDocument": {"uri": top_uri},
@@ -224,7 +239,7 @@ def main() -> int:
 
             links = request(
                 process,
-                8,
+                9,
                 "textDocument/documentLink",
                 {"textDocument": {"uri": top_uri}},
             )["result"]
@@ -240,7 +255,7 @@ def main() -> int:
 
             inlay_hints = request(
                 process,
-                9,
+                10,
                 "textDocument/inlayHint",
                 {
                     "textDocument": {"uri": top_uri},
@@ -260,7 +275,7 @@ def main() -> int:
 
             code_actions = request(
                 process,
-                10,
+                11,
                 "textDocument/codeAction",
                 {
                     "textDocument": {"uri": top_uri},
@@ -282,7 +297,7 @@ def main() -> int:
 
             prepare_top = request(
                 process,
-                11,
+                12,
                 "textDocument/prepareCallHierarchy",
                 {
                     "textDocument": {"uri": top_uri},
@@ -296,7 +311,7 @@ def main() -> int:
 
             top_outgoing = request(
                 process,
-                12,
+                13,
                 "callHierarchy/outgoingCalls",
                 {"item": top_item},
             )["result"]
@@ -307,7 +322,7 @@ def main() -> int:
 
             prepare_child = request(
                 process,
-                13,
+                14,
                 "textDocument/prepareCallHierarchy",
                 {
                     "textDocument": {"uri": top_uri},
@@ -321,7 +336,7 @@ def main() -> int:
 
             child_incoming = request(
                 process,
-                14,
+                15,
                 "callHierarchy/incomingCalls",
                 {"item": child_item},
             )["result"]
@@ -331,7 +346,7 @@ def main() -> int:
 
             child_outgoing = request(
                 process,
-                15,
+                16,
                 "callHierarchy/outgoingCalls",
                 {"item": child_item},
             )["result"]
@@ -341,7 +356,7 @@ def main() -> int:
 
             folding_ranges = request(
                 process,
-                16,
+                17,
                 "textDocument/foldingRange",
                 {"textDocument": {"uri": top_uri}},
             )["result"]
@@ -352,7 +367,7 @@ def main() -> int:
 
             semantic_tokens = request(
                 process,
-                17,
+                18,
                 "textDocument/semanticTokens/full",
                 {"textDocument": {"uri": top_uri}},
             )["result"]
@@ -361,7 +376,7 @@ def main() -> int:
 
             selection_ranges = request(
                 process,
-                18,
+                19,
                 "textDocument/selectionRange",
                 {
                     "textDocument": {"uri": top_uri},
@@ -376,7 +391,7 @@ def main() -> int:
 
             signature_help = request(
                 process,
-                19,
+                20,
                 "textDocument/signatureHelp",
                 {
                     "textDocument": {"uri": top_uri},
@@ -392,7 +407,7 @@ def main() -> int:
 
             prepare_rename = request(
                 process,
-                20,
+                21,
                 "textDocument/prepareRename",
                 {
                     "textDocument": {"uri": top_uri},
@@ -407,7 +422,7 @@ def main() -> int:
                 "placeholder": "ready",
             }
 
-            request(process, 21, "shutdown", None)
+            request(process, 22, "shutdown", None)
             notify(process, "exit", None)
             return_code = process.wait(timeout=5)
             assert return_code == 0

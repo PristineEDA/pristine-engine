@@ -151,6 +151,7 @@ TEST_CASE("ServerSession handles initialize-shutdown-exit", "[server][lifecycle]
           true);
     CHECK(initialize_response.at("result").at("capabilities").at("hoverProvider") == true);
     CHECK(initialize_response.at("result").at("capabilities").at("definitionProvider") == true);
+    CHECK(initialize_response.at("result").at("capabilities").at("implementationProvider") == true);
     CHECK(initialize_response.at("result").at("capabilities").at("documentHighlightProvider") == true);
     CHECK(initialize_response.at("result").at("capabilities").at("documentLinkProvider").at(
               "resolveProvider") == false);
@@ -555,12 +556,14 @@ TEST_CASE("ServerSession handles Tier 1 LSP navigation and completion", "[server
             top_uri + R"("},"position":{"line":2,"character":9},"context":{"includeDeclaration":false}}})",
         R"({"jsonrpc":"2.0","id":4,"method":"workspace/symbol","params":{"query":"ch"}})",
         std::string(R"({"jsonrpc":"2.0","id":5,"method":"textDocument/completion","params":{"textDocument":{"uri":")") +
-            top_uri + R"("},"position":{"line":1,"character":4},"context":{"triggerKind":1}}})"};
+            top_uri + R"("},"position":{"line":1,"character":4},"context":{"triggerKind":1}}})",
+        std::string(R"({"jsonrpc":"2.0","id":6,"method":"textDocument/implementation","params":{"textDocument":{"uri":")") +
+            top_uri + R"("},"position":{"line":1,"character":3}}})"};
 
     const int exit_code = rpc_server.run(transport);
 
     CHECK(exit_code == 0);
-    REQUIRE(transport.outputs().size() == 6);
+    REQUIRE(transport.outputs().size() == 7);
 
     const auto definition_response = parseOutput(transport, 2);
     CHECK(definition_response.at("id") == 2);
@@ -591,6 +594,63 @@ TEST_CASE("ServerSession handles Tier 1 LSP navigation and completion", "[server
     CHECK(std::any_of(completions.begin(), completions.end(), [](const jsonrpc::Json& item) {
         return item.at("label") == "child_i";
     }));
+
+    const auto implementation_response = parseOutput(transport, 6);
+    CHECK(implementation_response.at("id") == 6);
+    REQUIRE(implementation_response.at("result").size() == 1);
+    CHECK(implementation_response.at("result").at(0).at("uri") == top_uri);
+    CHECK(implementation_response.at("result").at(0).at("range").at("start").at("line") == 1);
+    CHECK(implementation_response.at("result").at(0).at("range").at("start").at("character") == 2);
+    CHECK(implementation_response.at("result").at(0).at("range").at("end").at("character") == 7);
+}
+
+TEST_CASE("ServerSession returns implementations from module definitions", "[server][lsp-core]") {
+    jsonrpc::JsonRpcServer rpc_server;
+    ServerSession session{"pristine-lsp", kTestServerVersion};
+    session.bind(rpc_server);
+
+    TempWorkspace workspace;
+    const auto child_text = std::string("module child; endmodule\n");
+    const auto top_text = std::string(
+        "module top;\n"
+        "  child child_i();\n"
+        "endmodule\n");
+    const auto child_path = workspace.writeFile("rtl/child.sv", child_text);
+    const auto top_path = workspace.writeFile("rtl/top.sv", top_text);
+    const auto child_uri = toFileUri(child_path);
+    const auto top_uri = toFileUri(top_path);
+
+    ScriptedTransport transport{
+        std::string(R"({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"rootUri":")") +
+            toFileUri(workspace.root()) + R"("}})",
+        std::string(R"({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":")") +
+            child_uri + R"(","languageId":"systemverilog","version":1,"text":)" +
+            jsonrpc::Json(child_text).dump() + R"(}}})",
+        std::string(R"({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":")") +
+            top_uri + R"(","languageId":"systemverilog","version":1,"text":)" +
+            jsonrpc::Json(top_text).dump() + R"(}}})",
+        std::string(R"({"jsonrpc":"2.0","id":2,"method":"textDocument/implementation","params":{"textDocument":{"uri":")") +
+            child_uri + R"("},"position":{"line":0,"character":8}}})"};
+
+    const int exit_code = rpc_server.run(transport);
+
+    CHECK(exit_code == 0);
+    std::optional<jsonrpc::Json> implementation_response;
+    for (const auto& payload : transport.outputs()) {
+        const auto message = jsonrpc::Json::parse(payload);
+        const auto id_it = message.find("id");
+        if (id_it != message.end() && *id_it == 2) {
+            implementation_response = message;
+            break;
+        }
+    }
+
+    REQUIRE(implementation_response.has_value());
+    REQUIRE(implementation_response->at("result").size() == 1);
+    CHECK(implementation_response->at("result").at(0).at("uri") == top_uri);
+    CHECK(implementation_response->at("result").at(0).at("range").at("start").at("line") == 1);
+    CHECK(implementation_response->at("result").at(0).at("range").at("start").at("character") == 2);
+    CHECK(implementation_response->at("result").at(0).at("range").at("end").at("character") == 7);
 }
 
 TEST_CASE("ServerSession handles Tier 2 rename highlight and document links", "[server][lsp-core]") {

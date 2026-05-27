@@ -32,6 +32,7 @@ private:
     jsonrpc::Json handleModuleHierarchy(const jsonrpc::Json& params);
     jsonrpc::Json handleHover(const jsonrpc::Json& params);
     jsonrpc::Json handleDefinition(const jsonrpc::Json& params);
+    jsonrpc::Json handleImplementation(const jsonrpc::Json& params);
     jsonrpc::Json handleDocumentHighlight(const jsonrpc::Json& params);
     jsonrpc::Json handleDocumentLink(const jsonrpc::Json& params);
     jsonrpc::Json handleInlayHint(const jsonrpc::Json& params);

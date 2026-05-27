@@ -71,6 +71,11 @@ struct DefinitionParams {
 	Position position;
 };
 
+struct ImplementationParams {
+	TextDocumentIdentifier text_document;
+	Position position;
+};
+
 struct DocumentHighlightParams {
 	TextDocumentIdentifier text_document;
 	Position position;
@@ -180,6 +185,7 @@ DidSaveTextDocumentParams parseDidSaveTextDocumentParams(const Json& params);
 DidCloseTextDocumentParams parseDidCloseTextDocumentParams(const Json& params);
 HoverParams parseHoverParams(const Json& params);
 DefinitionParams parseDefinitionParams(const Json& params);
+ImplementationParams parseImplementationParams(const Json& params);
 DocumentHighlightParams parseDocumentHighlightParams(const Json& params);
 DocumentLinkParams parseDocumentLinkParams(const Json& params);
 InlayHintParams parseInlayHintParams(const Json& params);
