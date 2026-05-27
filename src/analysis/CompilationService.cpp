@@ -9,7 +9,9 @@
 #include "slang/syntax/SyntaxKind.h"
 #include "slang/text/SourceManager.h"
 
+#include <algorithm>
 #include <cctype>
+#include <map>
 #include <optional>
 #include <span>
 #include <string>
@@ -610,6 +612,604 @@ std::vector<std::string> collectHeaderPortNames(const slang::SourceManager& sour
     return result;
 }
 
+std::string toLowerAscii(std::string value) {
+    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch) {
+        return static_cast<char>(std::tolower(ch));
+    });
+    return value;
+}
+
+std::string tokenDirection(std::string_view value) {
+    const auto normalized = toLowerAscii(std::string(value));
+    if (normalized == "input") {
+        return "input";
+    }
+    if (normalized == "output") {
+        return "output";
+    }
+    if (normalized == "inout") {
+        return "inout";
+    }
+    return "inout";
+}
+
+std::string portHeaderDirection(const slang::syntax::PortHeaderSyntax& header) {
+    switch (header.kind) {
+        case slang::syntax::SyntaxKind::VariablePortHeader: {
+            const auto& declaration = header.as<slang::syntax::VariablePortHeaderSyntax>();
+            return tokenDirection(declaration.direction.valueText());
+        }
+        case slang::syntax::SyntaxKind::NetPortHeader: {
+            const auto& declaration = header.as<slang::syntax::NetPortHeaderSyntax>();
+            return tokenDirection(declaration.direction.valueText());
+        }
+        default:
+            return "inout";
+    }
+}
+
+std::string portHeaderWidthText(const slang::syntax::PortHeaderSyntax& header) {
+    switch (header.kind) {
+        case slang::syntax::SyntaxKind::VariablePortHeader: {
+            const auto& declaration = header.as<slang::syntax::VariablePortHeaderSyntax>();
+            return trimWhitespace(declaration.dataType->toString());
+        }
+        case slang::syntax::SyntaxKind::NetPortHeader: {
+            const auto& declaration = header.as<slang::syntax::NetPortHeaderSyntax>();
+            return trimWhitespace(declaration.dataType->toString());
+        }
+        default:
+            return {};
+    }
+}
+
+void appendOrUpdatePort(std::vector<SchematicPort>& result, SchematicPort port) {
+    const auto existing = std::find_if(result.begin(), result.end(), [&](const SchematicPort& candidate) {
+        return candidate.name == port.name;
+    });
+    if (existing == result.end()) {
+        result.push_back(std::move(port));
+        return;
+    }
+
+    if (existing->direction == "inout" && port.direction != "inout") {
+        existing->direction = std::move(port.direction);
+    }
+    if (existing->width_text.empty() && !port.width_text.empty()) {
+        existing->width_text = std::move(port.width_text);
+    }
+    existing->range = port.range;
+    existing->selection_range = port.selection_range;
+}
+
+void appendPortDeclarators(std::vector<SchematicPort>& result,
+                           const slang::SourceManager& source_manager,
+                           std::string_view text,
+                           const slang::syntax::PortHeaderSyntax& header,
+                           const slang::syntax::SeparatedSyntaxList<slang::syntax::DeclaratorSyntax>& declarators) {
+    const auto direction = portHeaderDirection(header);
+    const auto width_text = portHeaderWidthText(header);
+    for (const auto* declarator : declarators) {
+        appendOrUpdatePort(result, SchematicPort{.name = std::string(declarator->name.valueText()),
+                                                 .direction = direction,
+                                                 .width_text = width_text,
+                                                 .range = toParseRange(source_manager, text, declarator->sourceRange()),
+                                                 .selection_range = toParseRange(source_manager, text,
+                                                                                declarator->name.range())});
+    }
+}
+
+std::vector<SchematicPort> collectHeaderSchematicPorts(const slang::SourceManager& source_manager,
+                                                       std::string_view text,
+                                                       const slang::syntax::ModuleHeaderSyntax& header) {
+    std::vector<SchematicPort> result;
+    if (!header.ports) {
+        return result;
+    }
+
+    if (header.ports->kind == slang::syntax::SyntaxKind::AnsiPortList) {
+        const auto& ports = header.ports->as<slang::syntax::AnsiPortListSyntax>();
+        for (const auto* port : ports.ports) {
+            switch (port->kind) {
+                case slang::syntax::SyntaxKind::ImplicitAnsiPort: {
+                    const auto& declaration = port->as<slang::syntax::ImplicitAnsiPortSyntax>();
+                    appendOrUpdatePort(result, SchematicPort{
+                                                   .name = std::string(declaration.declarator->name.valueText()),
+                                                   .direction = portHeaderDirection(*declaration.header),
+                                                   .width_text = portHeaderWidthText(*declaration.header),
+                                                   .range = toParseRange(source_manager, text,
+                                                                         declaration.sourceRange()),
+                                                   .selection_range = toParseRange(source_manager, text,
+                                                                                  declaration.declarator->name.range())});
+                    break;
+                }
+                case slang::syntax::SyntaxKind::ExplicitAnsiPort: {
+                    const auto& declaration = port->as<slang::syntax::ExplicitAnsiPortSyntax>();
+                    appendOrUpdatePort(result, SchematicPort{.name = std::string(declaration.name.valueText()),
+                                                             .direction = tokenDirection(declaration.direction.valueText()),
+                                                             .width_text = {},
+                                                             .range = toParseRange(source_manager, text,
+                                                                                   declaration.sourceRange()),
+                                                             .selection_range = toParseRange(source_manager, text,
+                                                                                            declaration.name.range())});
+                    break;
+                }
+                case slang::syntax::SyntaxKind::PortDeclaration: {
+                    const auto& declaration = port->as<slang::syntax::PortDeclarationSyntax>();
+                    appendPortDeclarators(result, source_manager, text, *declaration.header,
+                                          declaration.declarators);
+                    break;
+                }
+                default:
+                    break;
+            }
+        }
+    }
+    else if (header.ports->kind == slang::syntax::SyntaxKind::NonAnsiPortList) {
+        const auto& ports = header.ports->as<slang::syntax::NonAnsiPortListSyntax>();
+        for (const auto* port : ports.ports) {
+            switch (port->kind) {
+                case slang::syntax::SyntaxKind::ExplicitNonAnsiPort: {
+                    const auto& declaration = port->as<slang::syntax::ExplicitNonAnsiPortSyntax>();
+                    appendOrUpdatePort(result, SchematicPort{.name = std::string(declaration.name.valueText()),
+                                                             .direction = "inout",
+                                                             .width_text = {},
+                                                             .range = toParseRange(source_manager, text,
+                                                                                   declaration.sourceRange()),
+                                                             .selection_range = toParseRange(source_manager, text,
+                                                                                            declaration.name.range())});
+                    break;
+                }
+                case slang::syntax::SyntaxKind::ImplicitNonAnsiPort: {
+                    const auto& declaration = port->as<slang::syntax::ImplicitNonAnsiPortSyntax>();
+                    const auto name = trimWhitespace(declaration.expr->toString());
+                    if (!name.empty()) {
+                        appendOrUpdatePort(result, SchematicPort{.name = name,
+                                                                 .direction = "inout",
+                                                                 .width_text = {},
+                                                                 .range = toParseRange(source_manager, text,
+                                                                                       declaration.sourceRange()),
+                                                                 .selection_range = toParseRange(source_manager, text,
+                                                                                                declaration.expr->sourceRange())});
+                    }
+                    break;
+                }
+                default:
+                    break;
+            }
+        }
+    }
+
+    return result;
+}
+
+void collectMemberPortDeclarations(std::vector<SchematicPort>& result,
+                                   const slang::SourceManager& source_manager,
+                                   std::string_view text,
+                                   std::span<slang::syntax::MemberSyntax* const> members) {
+    for (const auto* member : members) {
+        if (member->kind != slang::syntax::SyntaxKind::PortDeclaration) {
+            continue;
+        }
+        const auto& declaration = member->as<slang::syntax::PortDeclarationSyntax>();
+        appendPortDeclarators(result, source_manager, text, *declaration.header, declaration.declarators);
+    }
+}
+
+std::string expressionText(const slang::syntax::SyntaxNode& node) {
+    return trimWhitespace(node.toString());
+}
+
+std::string expressionSignal(const slang::syntax::SyntaxNode& node) {
+    return expressionText(node);
+}
+
+SchematicConnection makeConnection(std::string port_name,
+                                   int port_index,
+                                   std::string signal,
+                                   ParseRange range) {
+    return SchematicConnection{.port_name = std::move(port_name),
+                               .port_index = port_index,
+                               .signal = std::move(signal),
+                               .range = range};
+}
+
+template<typename TConnectionRange>
+std::vector<SchematicConnection> collectSchematicConnections(
+    const slang::SourceManager& source_manager,
+    std::string_view text,
+    const TConnectionRange& connections) {
+    std::vector<SchematicConnection> result;
+    int index = 0;
+    for (const auto* connection : connections) {
+        switch (connection->kind) {
+            case slang::syntax::SyntaxKind::NamedPortConnection: {
+                const auto& named = connection->as<slang::syntax::NamedPortConnectionSyntax>();
+                const auto signal = named.expr ? expressionSignal(*named.expr)
+                                               : std::string(named.name.valueText());
+                result.push_back(makeConnection(std::string(named.name.valueText()), -1, signal,
+                                                toParseRange(source_manager, text,
+                                                             named.expr ? named.expr->sourceRange()
+                                                                        : named.sourceRange())));
+                break;
+            }
+            case slang::syntax::SyntaxKind::OrderedPortConnection: {
+                const auto& ordered = connection->as<slang::syntax::OrderedPortConnectionSyntax>();
+                result.push_back(makeConnection({}, index, expressionSignal(*ordered.expr),
+                                                toParseRange(source_manager, text,
+                                                             ordered.expr->sourceRange())));
+                break;
+            }
+            default:
+                break;
+        }
+        ++index;
+    }
+    return result;
+}
+
+std::string generatedName(std::string_view prefix, int index) {
+    return std::string("$") + std::string(prefix) + std::to_string(index);
+}
+
+std::string primitivePortName(int index) {
+    if (index == 0) {
+        return "Y";
+    }
+    if (index == 1) {
+        return "A";
+    }
+    if (index == 2) {
+        return "B";
+    }
+    return std::string("I") + std::to_string(index - 1);
+}
+
+std::optional<std::string> logicKindForBinary(slang::syntax::SyntaxKind kind) {
+    switch (kind) {
+        case slang::syntax::SyntaxKind::BinaryAndExpression:
+        case slang::syntax::SyntaxKind::LogicalAndExpression:
+            return "and";
+        case slang::syntax::SyntaxKind::BinaryOrExpression:
+        case slang::syntax::SyntaxKind::LogicalOrExpression:
+            return "or";
+        case slang::syntax::SyntaxKind::BinaryXorExpression:
+            return "xor";
+        case slang::syntax::SyntaxKind::BinaryXnorExpression:
+            return "xnor";
+        default:
+            return std::nullopt;
+    }
+}
+
+std::optional<std::string> logicKindForUnary(slang::syntax::SyntaxKind kind) {
+    switch (kind) {
+        case slang::syntax::SyntaxKind::UnaryBitwiseNotExpression:
+        case slang::syntax::SyntaxKind::UnaryLogicalNotExpression:
+            return "not";
+        default:
+            return std::nullopt;
+    }
+}
+
+const slang::syntax::ExpressionSyntax& unwrapExpression(const slang::syntax::ExpressionSyntax& expression) {
+    if (expression.kind == slang::syntax::SyntaxKind::ParenthesizedExpression) {
+        return *expression.as<slang::syntax::ParenthesizedExpressionSyntax>().expression;
+    }
+    return expression;
+}
+
+struct ExpressionSchematicContext {
+    int cell_index = 0;
+    int net_index = 0;
+};
+
+bool appendLogicExpression(ModuleSchematic& module,
+                           const slang::SourceManager& source_manager,
+                           std::string_view text,
+                           const slang::syntax::ExpressionSyntax& expression,
+                           std::string output_signal,
+                           ExpressionSchematicContext& context);
+
+std::string materializeExpression(ModuleSchematic& module,
+                                  const slang::SourceManager& source_manager,
+                                  std::string_view text,
+                                  const slang::syntax::ExpressionSyntax& expression,
+                                  ExpressionSchematicContext& context) {
+    const auto& inner = unwrapExpression(expression);
+    if (logicKindForBinary(inner.kind).has_value() ||
+        logicKindForUnary(inner.kind).has_value() ||
+        inner.kind == slang::syntax::SyntaxKind::ConditionalExpression) {
+        const auto signal = generatedName("net", context.net_index++);
+        if (appendLogicExpression(module, source_manager, text, inner, signal, context)) {
+            return signal;
+        }
+    }
+
+    return expressionSignal(expression);
+}
+
+void appendLogicCell(ModuleSchematic& module,
+                     const slang::SourceManager& source_manager,
+                     std::string_view text,
+                     std::string kind,
+                     const slang::syntax::SyntaxNode& source,
+                     std::vector<SchematicConnection> connections,
+                     ExpressionSchematicContext& context) {
+    const auto name = generatedName(kind, context.cell_index++);
+    module.cells.push_back(SchematicCell{.id = name,
+                                         .name = name,
+                                         .type = kind,
+                                         .kind = std::move(kind),
+                                         .range = toParseRange(source_manager, text, source.sourceRange()),
+                                         .selection_range = toParseRange(source_manager, text, source.sourceRange()),
+                                         .connections = std::move(connections)});
+}
+
+bool appendLogicExpression(ModuleSchematic& module,
+                           const slang::SourceManager& source_manager,
+                           std::string_view text,
+                           const slang::syntax::ExpressionSyntax& expression,
+                           std::string output_signal,
+                           ExpressionSchematicContext& context) {
+    const auto& inner = unwrapExpression(expression);
+    if (const auto kind = logicKindForBinary(inner.kind)) {
+        const auto& binary = inner.as<slang::syntax::BinaryExpressionSyntax>();
+        std::vector<SchematicConnection> connections;
+        connections.push_back(makeConnection("Y", -1, std::move(output_signal),
+                                             toParseRange(source_manager, text, inner.sourceRange())));
+        connections.push_back(makeConnection("A", -1,
+                                             materializeExpression(module, source_manager, text,
+                                                                   *binary.left, context),
+                                             toParseRange(source_manager, text, binary.left->sourceRange())));
+        connections.push_back(makeConnection("B", -1,
+                                             materializeExpression(module, source_manager, text,
+                                                                   *binary.right, context),
+                                             toParseRange(source_manager, text, binary.right->sourceRange())));
+        appendLogicCell(module, source_manager, text, *kind, inner, std::move(connections), context);
+        return true;
+    }
+
+    if (const auto kind = logicKindForUnary(inner.kind)) {
+        const auto& unary = inner.as<slang::syntax::PrefixUnaryExpressionSyntax>();
+        std::vector<SchematicConnection> connections;
+        connections.push_back(makeConnection("Y", -1, std::move(output_signal),
+                                             toParseRange(source_manager, text, inner.sourceRange())));
+        connections.push_back(makeConnection("A", -1,
+                                             materializeExpression(module, source_manager, text,
+                                                                   *unary.operand, context),
+                                             toParseRange(source_manager, text, unary.operand->sourceRange())));
+        appendLogicCell(module, source_manager, text, *kind, inner, std::move(connections), context);
+        return true;
+    }
+
+    if (inner.kind == slang::syntax::SyntaxKind::ConditionalExpression) {
+        const auto& conditional = inner.as<slang::syntax::ConditionalExpressionSyntax>();
+        std::vector<SchematicConnection> connections;
+        connections.push_back(makeConnection("Y", -1, std::move(output_signal),
+                                             toParseRange(source_manager, text, inner.sourceRange())));
+        if (!conditional.predicate->conditions.empty()) {
+            const auto* predicate = *conditional.predicate->conditions.begin();
+            connections.push_back(makeConnection("S", -1,
+                                                 materializeExpression(module, source_manager, text,
+                                                                       *predicate->expr, context),
+                                                 toParseRange(source_manager, text,
+                                                              predicate->expr->sourceRange())));
+        }
+        connections.push_back(makeConnection("I1", -1,
+                                             materializeExpression(module, source_manager, text,
+                                                                   *conditional.left, context),
+                                             toParseRange(source_manager, text,
+                                                          conditional.left->sourceRange())));
+        connections.push_back(makeConnection("I0", -1,
+                                             materializeExpression(module, source_manager, text,
+                                                                   *conditional.right, context),
+                                             toParseRange(source_manager, text,
+                                                          conditional.right->sourceRange())));
+        appendLogicCell(module, source_manager, text, "mux", inner, std::move(connections), context);
+        return true;
+    }
+
+    return false;
+}
+
+void appendBufferExpression(ModuleSchematic& module,
+                            const slang::SourceManager& source_manager,
+                            std::string_view text,
+                            const slang::syntax::ExpressionSyntax& expression,
+                            std::string output_signal,
+                            ExpressionSchematicContext& context) {
+    std::vector<SchematicConnection> connections;
+    connections.push_back(makeConnection("Y", -1, std::move(output_signal),
+                                         toParseRange(source_manager, text, expression.sourceRange())));
+    connections.push_back(makeConnection("A", -1,
+                                         materializeExpression(module, source_manager, text, expression, context),
+                                         toParseRange(source_manager, text, expression.sourceRange())));
+    appendLogicCell(module, source_manager, text, "buf", expression, std::move(connections), context);
+}
+
+void appendSchematicModuleInstantiation(ModuleSchematic& module,
+                                        const slang::SourceManager& source_manager,
+                                        std::string_view text,
+                                        const slang::syntax::HierarchyInstantiationSyntax& declaration) {
+    const auto module_name = std::string(declaration.type.valueText());
+    if (module_name.empty()) {
+        return;
+    }
+
+    int generated_index = 0;
+    for (const auto* instance : declaration.instances) {
+        if (!instance || !instance->decl) {
+            continue;
+        }
+
+        auto instance_name = std::string(instance->decl->name.valueText());
+        if (instance_name.empty()) {
+            instance_name = generatedName("inst", generated_index++);
+        }
+
+        module.cells.push_back(SchematicCell{
+            .id = instance_name,
+            .name = instance_name,
+            .type = module_name,
+            .kind = "module",
+            .range = toParseRange(source_manager, text, instance->sourceRange()),
+            .selection_range = toParseRange(source_manager, text, instance->decl->name.range()),
+            .connections = collectSchematicConnections(source_manager, text, instance->connections)});
+    }
+}
+
+void appendSchematicPrimitiveInstantiation(ModuleSchematic& module,
+                                           const slang::SourceManager& source_manager,
+                                           std::string_view text,
+                                           const slang::syntax::PrimitiveInstantiationSyntax& declaration) {
+    const auto primitive_type = toLowerAscii(std::string(declaration.type.valueText()));
+    if (primitive_type.empty()) {
+        return;
+    }
+
+    int generated_index = 0;
+    for (const auto* instance : declaration.instances) {
+        if (!instance) {
+            continue;
+        }
+
+        auto instance_name = instance->decl ? std::string(instance->decl->name.valueText()) : std::string{};
+        if (instance_name.empty()) {
+            instance_name = generatedName(primitive_type, generated_index++);
+        }
+
+        auto connections = collectSchematicConnections(source_manager, text, instance->connections);
+        for (auto& connection : connections) {
+            if (connection.port_name.empty() && connection.port_index >= 0) {
+                connection.port_name = primitivePortName(connection.port_index);
+            }
+        }
+
+        module.cells.push_back(SchematicCell{.id = instance_name,
+                                             .name = instance_name,
+                                             .type = primitive_type,
+                                             .kind = primitive_type,
+                                             .range = toParseRange(source_manager, text,
+                                                                   instance->sourceRange()),
+                                             .selection_range = instance->decl
+                                                                    ? toParseRange(source_manager, text,
+                                                                                   instance->decl->name.range())
+                                                                    : toParseRange(source_manager, text,
+                                                                                   instance->sourceRange()),
+                                             .connections = std::move(connections)});
+    }
+}
+
+void appendSchematicContinuousAssign(ModuleSchematic& module,
+                                     const slang::SourceManager& source_manager,
+                                     std::string_view text,
+                                     const slang::syntax::ContinuousAssignSyntax& declaration) {
+    ExpressionSchematicContext context;
+    for (const auto* assignment : declaration.assignments) {
+        if (!assignment || assignment->kind != slang::syntax::SyntaxKind::AssignmentExpression) {
+            continue;
+        }
+
+        const auto& binary = assignment->as<slang::syntax::BinaryExpressionSyntax>();
+        auto output_signal = expressionSignal(*binary.left);
+        if (output_signal.empty()) {
+            continue;
+        }
+
+        if (!appendLogicExpression(module, source_manager, text, *binary.right, output_signal, context)) {
+            appendBufferExpression(module, source_manager, text, *binary.right, std::move(output_signal), context);
+        }
+    }
+}
+
+void appendSchematicCellsFromNode(ModuleSchematic& module,
+                                  const slang::SourceManager& source_manager,
+                                  std::string_view text,
+                                  const slang::syntax::SyntaxNode& node);
+
+void appendSchematicCellsFromMember(ModuleSchematic& module,
+                                    const slang::SourceManager& source_manager,
+                                    std::string_view text,
+                                    const slang::syntax::MemberSyntax& member) {
+    switch (member.kind) {
+        case slang::syntax::SyntaxKind::HierarchyInstantiation:
+            appendSchematicModuleInstantiation(module, source_manager, text,
+                                               member.as<slang::syntax::HierarchyInstantiationSyntax>());
+            return;
+        case slang::syntax::SyntaxKind::PrimitiveInstantiation:
+            appendSchematicPrimitiveInstantiation(module, source_manager, text,
+                                                  member.as<slang::syntax::PrimitiveInstantiationSyntax>());
+            return;
+        case slang::syntax::SyntaxKind::ContinuousAssign:
+            appendSchematicContinuousAssign(module, source_manager, text,
+                                            member.as<slang::syntax::ContinuousAssignSyntax>());
+            return;
+        case slang::syntax::SyntaxKind::GenerateRegion: {
+            const auto& declaration = member.as<slang::syntax::GenerateRegionSyntax>();
+            for (const auto* child : declaration.members) {
+                appendSchematicCellsFromMember(module, source_manager, text, *child);
+            }
+            return;
+        }
+        case slang::syntax::SyntaxKind::GenerateBlock: {
+            const auto& declaration = member.as<slang::syntax::GenerateBlockSyntax>();
+            for (const auto* child : declaration.members) {
+                appendSchematicCellsFromMember(module, source_manager, text, *child);
+            }
+            return;
+        }
+        case slang::syntax::SyntaxKind::IfGenerate: {
+            const auto& declaration = member.as<slang::syntax::IfGenerateSyntax>();
+            appendSchematicCellsFromMember(module, source_manager, text, *declaration.block);
+            if (declaration.elseClause) {
+                appendSchematicCellsFromNode(module, source_manager, text, *declaration.elseClause->clause);
+            }
+            return;
+        }
+        case slang::syntax::SyntaxKind::LoopGenerate: {
+            const auto& declaration = member.as<slang::syntax::LoopGenerateSyntax>();
+            appendSchematicCellsFromMember(module, source_manager, text, *declaration.block);
+            return;
+        }
+        default:
+            return;
+    }
+}
+
+void appendSchematicCellsFromNode(ModuleSchematic& module,
+                                  const slang::SourceManager& source_manager,
+                                  std::string_view text,
+                                  const slang::syntax::SyntaxNode& node) {
+    if (slang::syntax::MemberSyntax::isKind(node.kind)) {
+        appendSchematicCellsFromMember(module, source_manager, text,
+                                       static_cast<const slang::syntax::MemberSyntax&>(node));
+    }
+}
+
+std::optional<ModuleSchematic> toModuleSchematic(const slang::SourceManager& source_manager,
+                                                 std::string_view text,
+                                                 const slang::syntax::MemberSyntax& member) {
+    if (member.kind != slang::syntax::SyntaxKind::ModuleDeclaration) {
+        return std::nullopt;
+    }
+
+    const auto& declaration = member.as<slang::syntax::ModuleDeclarationSyntax>();
+    ModuleSchematic schematic{.name = std::string(declaration.header->name.valueText()),
+                              .range = toParseRange(source_manager, text, declaration.sourceRange()),
+                              .selection_range = toParseRange(source_manager, text,
+                                                              declaration.header->name.range()),
+                              .ports = collectHeaderSchematicPorts(source_manager, text,
+                                                                    *declaration.header),
+                              .cells = {}};
+    collectMemberPortDeclarations(schematic.ports, source_manager, text, declaration.members);
+    for (const auto* child : declaration.members) {
+        appendSchematicCellsFromMember(schematic, source_manager, text, *child);
+    }
+
+    return schematic;
+}
+
 std::vector<DocumentSymbol> collectModportSymbols(const slang::SourceManager& source_manager,
                                                   std::string_view text,
                                                   const slang::syntax::AnsiPortListSyntax& ports) {
@@ -1080,6 +1680,25 @@ std::vector<ModuleDefinition> CompilationService::moduleDefinitions(std::string_
     for (const auto* member : compilation_unit.members) {
         if (auto definition = toModuleDefinition(source_manager, text, *member)) {
             result.push_back(std::move(*definition));
+        }
+    }
+
+    return result;
+}
+
+std::vector<ModuleSchematic> CompilationService::moduleSchematics(std::string_view text,
+                                                                  std::string_view uri) const {
+    slang::SourceManager source_manager;
+    auto syntax_tree = slang::syntax::SyntaxTree::fromFileInMemory(text, source_manager, "source", uri);
+    if (!syntax_tree || syntax_tree->root().kind != slang::syntax::SyntaxKind::CompilationUnit) {
+        return {};
+    }
+
+    const auto& compilation_unit = syntax_tree->root().as<slang::syntax::CompilationUnitSyntax>();
+    std::vector<ModuleSchematic> result;
+    for (const auto* member : compilation_unit.members) {
+        if (auto schematic = toModuleSchematic(source_manager, text, *member)) {
+            result.push_back(std::move(*schematic));
         }
     }
 

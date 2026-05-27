@@ -30,6 +30,7 @@ private:
     jsonrpc::Json handleInitialize(const jsonrpc::Json& params);
     jsonrpc::Json handleDocumentSymbol(const jsonrpc::Json& params);
     jsonrpc::Json handleModuleHierarchy(const jsonrpc::Json& params);
+    jsonrpc::Json handleSchematic(const jsonrpc::Json& params);
     jsonrpc::Json handleHover(const jsonrpc::Json& params);
     jsonrpc::Json handleDefinition(const jsonrpc::Json& params);
     jsonrpc::Json handleImplementation(const jsonrpc::Json& params);
@@ -72,6 +73,7 @@ private:
     analysis::CompilationService compilation_service_;
     analysis::SymbolIndex symbol_index_;
     std::unordered_map<std::string, std::vector<analysis::ModuleDefinition>> hierarchy_documents_;
+    std::unordered_map<std::string, std::vector<analysis::ModuleSchematic>> schematic_documents_;
     document::DocumentStore document_store_;
     workspace::WorkspaceManager workspace_manager_;
 };

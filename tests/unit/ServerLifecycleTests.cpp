@@ -843,6 +843,68 @@ TEST_CASE("ServerSession returns inferred SystemVerilog module hierarchy", "[ser
     CHECK(leaf.at("children").empty());
 }
 
+TEST_CASE("ServerSession returns schematic data for a selected top module", "[server][schematic]") {
+    jsonrpc::JsonRpcServer rpc_server;
+    ServerSession session{"pristine-lsp", kTestServerVersion};
+    session.bind(rpc_server);
+
+    TempWorkspace workspace;
+    workspace.writeFile("rtl/child.sv", "module child(input logic a, output logic y); endmodule\n");
+    const auto top_path = workspace.writeFile(
+        "rtl/top.sv",
+        "module top(input logic a, input logic b, input logic sel, output logic y);\n"
+        "  logic n1, n2;\n"
+        "  child u_child(.a(a), .y(n1));\n"
+        "  and u_and(n2, a, b);\n"
+        "  assign y = sel ? n1 : (a | b);\n"
+        "endmodule\n");
+
+    ScriptedTransport transport{
+        std::string(R"({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"rootUri":")") +
+            toFileUri(workspace.root()) + R"("}})",
+        R"({"jsonrpc":"2.0","id":2,"method":"systemverilog/schematic","params":{"moduleName":"top"}})"};
+
+    const int exit_code = rpc_server.run(transport);
+
+    CHECK(exit_code == 0);
+    REQUIRE(transport.outputs().size() == 2);
+
+    const auto schematic_response = parseOutput(transport, 1);
+    CHECK(schematic_response.at("id") == 2);
+    const auto& result = schematic_response.at("result");
+    CHECK(result.at("rootModuleId") == "top");
+    REQUIRE(result.at("modules").size() == 2);
+
+    const auto top_it = std::find_if(result.at("modules").begin(), result.at("modules").end(),
+                                    [](const jsonrpc::Json& module) {
+                                        return module.at("id") == "top";
+                                    });
+    REQUIRE(top_it != result.at("modules").end());
+    CHECK(top_it->at("uri") == toFileUri(top_path));
+    REQUIRE(top_it->at("ports").size() == 4);
+    CHECK(top_it->at("ports").at(0).at("direction") == "input");
+    CHECK(top_it->at("ports").at(3).at("direction") == "output");
+
+    const auto& cells = top_it->at("cells");
+    CHECK(std::any_of(cells.begin(), cells.end(), [](const jsonrpc::Json& cell) {
+        return cell.at("name") == "u_child" && cell.at("kind") == "module" && cell.at("type") == "child";
+    }));
+    CHECK(std::any_of(cells.begin(), cells.end(), [](const jsonrpc::Json& cell) {
+        return cell.at("name") == "u_and" && cell.at("kind") == "and";
+    }));
+    CHECK(std::any_of(cells.begin(), cells.end(), [](const jsonrpc::Json& cell) {
+        return cell.at("kind") == "or";
+    }));
+    CHECK(std::any_of(cells.begin(), cells.end(), [](const jsonrpc::Json& cell) {
+        return cell.at("kind") == "mux";
+    }));
+
+    const auto& nets = top_it->at("nets");
+    CHECK(std::any_of(nets.begin(), nets.end(), [](const jsonrpc::Json& net) {
+        return net.at("name") == "y" && !net.at("drivers").empty() && !net.at("loads").empty();
+    }));
+}
+
 TEST_CASE("ServerSession handles standard call hierarchy", "[server][hierarchy]") {
     jsonrpc::JsonRpcServer rpc_server;
     ServerSession session{"pristine-lsp", kTestServerVersion};

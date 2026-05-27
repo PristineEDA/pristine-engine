@@ -291,6 +291,70 @@ TEST_CASE("CompilationService extracts hierarchy instantiations inside generate 
     CHECK(modules[1].instances[0].instance_name == "u_lane");
 }
 
+TEST_CASE("CompilationService extracts schematic ports cells and assign logic", "[analysis][schematic]") {
+    CompilationService service;
+
+    const auto schematics = service.moduleSchematics(
+        "module child(input logic a, output logic y); endmodule\n"
+        "module top(input logic a, input logic b, input logic sel, output logic y);\n"
+        "  logic n1, n2;\n"
+        "  child u_child(.a(a), .y(n1));\n"
+        "  and u_and(n2, a, b);\n"
+        "  assign y = sel ? n1 : (a | b);\n"
+        "endmodule\n",
+        "file:///workspace/schematic.sv");
+
+    REQUIRE(schematics.size() == 2);
+    const auto& top = schematics[1];
+    CHECK(top.name == "top");
+    REQUIRE(top.ports.size() == 4);
+    CHECK(top.ports[0].name == "a");
+    CHECK(top.ports[0].direction == "input");
+    CHECK(top.ports[3].name == "y");
+    CHECK(top.ports[3].direction == "output");
+
+    const auto has_cell_kind = [&](std::string_view kind) {
+        return std::any_of(top.cells.begin(), top.cells.end(), [&](const SchematicCell& cell) {
+            return cell.kind == kind;
+        });
+    };
+
+    CHECK(has_cell_kind("module"));
+    CHECK(has_cell_kind("and"));
+    CHECK(has_cell_kind("or"));
+    CHECK(has_cell_kind("mux"));
+
+    const auto child_cell = std::find_if(top.cells.begin(), top.cells.end(), [](const SchematicCell& cell) {
+        return cell.name == "u_child";
+    });
+    REQUIRE(child_cell != top.cells.end());
+    CHECK(child_cell->type == "child");
+    REQUIRE(child_cell->connections.size() == 2);
+    CHECK(child_cell->connections[0].port_name == "a");
+    CHECK(child_cell->connections[0].signal == "a");
+    CHECK(child_cell->connections[1].port_name == "y");
+    CHECK(child_cell->connections[1].signal == "n1");
+
+    const auto primitive_cell = std::find_if(top.cells.begin(), top.cells.end(), [](const SchematicCell& cell) {
+        return cell.name == "u_and";
+    });
+    REQUIRE(primitive_cell != top.cells.end());
+    REQUIRE(primitive_cell->connections.size() == 3);
+    CHECK(primitive_cell->connections[0].port_name == "Y");
+    CHECK(primitive_cell->connections[0].signal == "n2");
+
+    const auto mux_cell = std::find_if(top.cells.begin(), top.cells.end(), [](const SchematicCell& cell) {
+        return cell.kind == "mux";
+    });
+    REQUIRE(mux_cell != top.cells.end());
+    CHECK(std::any_of(mux_cell->connections.begin(), mux_cell->connections.end(), [](const SchematicConnection& connection) {
+        return connection.port_name == "Y" && connection.signal == "y";
+    }));
+    CHECK(std::any_of(mux_cell->connections.begin(), mux_cell->connections.end(), [](const SchematicConnection& connection) {
+        return connection.port_name == "S" && connection.signal == "sel";
+    }));
+}
+
 TEST_CASE("CompilationService extracts named generate block symbols", "[analysis][symbols]") {
     CompilationService service;
 

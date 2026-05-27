@@ -51,6 +51,39 @@ struct ModuleDefinition {
     std::vector<ModuleInstantiation> instances;
 };
 
+struct SchematicPort {
+    std::string name;
+    std::string direction;
+    std::string width_text;
+    ParseRange range;
+    ParseRange selection_range;
+};
+
+struct SchematicConnection {
+    std::string port_name;
+    int port_index = -1;
+    std::string signal;
+    ParseRange range;
+};
+
+struct SchematicCell {
+    std::string id;
+    std::string name;
+    std::string type;
+    std::string kind;
+    ParseRange range;
+    ParseRange selection_range;
+    std::vector<SchematicConnection> connections;
+};
+
+struct ModuleSchematic {
+    std::string name;
+    ParseRange range;
+    ParseRange selection_range;
+    std::vector<SchematicPort> ports;
+    std::vector<SchematicCell> cells;
+};
+
 struct HoverResult {
     std::string contents;
     ParseRange range;
@@ -79,6 +112,8 @@ public:
                                                               std::string_view uri) const;
     [[nodiscard]] std::vector<ModuleDefinition> moduleDefinitions(std::string_view text,
                                                                   std::string_view uri) const;
+    [[nodiscard]] std::vector<ModuleSchematic> moduleSchematics(std::string_view text,
+                                                                std::string_view uri) const;
     [[nodiscard]] std::optional<HoverResult> hover(std::string_view text,
                                                    std::string_view uri,
                                                    int line,
