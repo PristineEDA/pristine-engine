@@ -824,7 +824,7 @@ std::vector<SchematicConnection> collectSchematicConnections(
     for (const auto* connection : connections) {
         switch (connection->kind) {
             case slang::syntax::SyntaxKind::NamedPortConnection: {
-                const auto& named = connection->as<slang::syntax::NamedPortConnectionSyntax>();
+                const auto& named = connection->template as<slang::syntax::NamedPortConnectionSyntax>();
                 const auto signal = named.expr ? expressionSignal(*named.expr)
                                                : std::string(named.name.valueText());
                 result.push_back(makeConnection(std::string(named.name.valueText()), -1, signal,
@@ -834,7 +834,7 @@ std::vector<SchematicConnection> collectSchematicConnections(
                 break;
             }
             case slang::syntax::SyntaxKind::OrderedPortConnection: {
-                const auto& ordered = connection->as<slang::syntax::OrderedPortConnectionSyntax>();
+                const auto& ordered = connection->template as<slang::syntax::OrderedPortConnectionSyntax>();
                 result.push_back(makeConnection({}, index, expressionSignal(*ordered.expr),
                                                 toParseRange(source_manager, text,
                                                              ordered.expr->sourceRange())));
