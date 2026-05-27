@@ -319,6 +319,109 @@ std::vector<Identifier> collectIdentifiers(std::string_view text) {
     return result;
 }
 
+bool isHorizontalWhitespace(char value) {
+    return value == ' ' || value == '\t' || value == '\f' || value == '\v';
+}
+
+void skipHorizontalWhitespace(std::string_view text, ScanState& state) {
+    while (state.offset < text.size() && isHorizontalWhitespace(text[state.offset])) {
+        advanceAscii(text, state);
+    }
+}
+
+std::optional<IncludeDirective> tryCollectIncludeDirective(std::string_view text,
+                                                           const ScanState& state) {
+    if (state.offset >= text.size() || text[state.offset] != '`') {
+        return std::nullopt;
+    }
+
+    ScanState cursor = state;
+    advanceAscii(text, cursor);
+    constexpr std::string_view include_keyword = "include";
+    if (!startsWith(text, cursor.offset, include_keyword)) {
+        return std::nullopt;
+    }
+
+    for (size_t index = 0; index < include_keyword.size(); ++index) {
+        advanceAscii(text, cursor);
+    }
+
+    skipHorizontalWhitespace(text, cursor);
+    if (cursor.offset >= text.size()) {
+        return std::nullopt;
+    }
+
+    const char delimiter = text[cursor.offset];
+    const char terminator = delimiter == '<' ? '>' : delimiter;
+    if (delimiter != '"' && delimiter != '<') {
+        return std::nullopt;
+    }
+
+    advanceAscii(text, cursor);
+    const auto target_start_offset = cursor.offset;
+    const auto target_start_line = cursor.line;
+    const auto target_start_character = cursor.character;
+
+    bool escaped = false;
+    while (cursor.offset < text.size()) {
+        const char value = text[cursor.offset];
+        if (!escaped && value == terminator) {
+            const auto target_end_offset = cursor.offset;
+            const auto target_end_line = cursor.line;
+            const auto target_end_character = cursor.character;
+            advanceAscii(text, cursor);
+
+            if (target_end_offset == target_start_offset) {
+                return std::nullopt;
+            }
+
+            return IncludeDirective{
+                .target = std::string(text.substr(target_start_offset,
+                                                  target_end_offset - target_start_offset)),
+                .range = ParseRange{.start_line = target_start_line,
+                                    .start_character = target_start_character,
+                                    .end_line = target_end_line,
+                                    .end_character = target_end_character}};
+        }
+
+        const bool begins_escape = delimiter == '"' && !escaped && value == '\\';
+        if (value == '\n' || value == '\r') {
+            return std::nullopt;
+        }
+        advanceOne(text, cursor);
+        escaped = begins_escape;
+    }
+
+    return std::nullopt;
+}
+
+std::vector<IncludeDirective> collectIncludeDirectives(std::string_view text) {
+    std::vector<IncludeDirective> result;
+    ScanState state{};
+    while (state.offset < text.size()) {
+        if (startsWith(text, state.offset, "//")) {
+            skipLineComment(text, state);
+            continue;
+        }
+        if (startsWith(text, state.offset, "/*")) {
+            skipBlockComment(text, state);
+            continue;
+        }
+        if (text[state.offset] == '"') {
+            skipStringLiteral(text, state);
+            continue;
+        }
+
+        if (const auto directive = tryCollectIncludeDirective(text, state)) {
+            result.push_back(*directive);
+        }
+
+        advanceOne(text, state);
+    }
+
+    return result;
+}
+
 std::optional<size_t> byteOffsetAtPosition(std::string_view text, int line, int character) {
     if (line < 0 || character < 0) {
         return std::nullopt;
@@ -494,6 +597,16 @@ std::vector<DocumentSymbol> collectHeaderPortSymbols(const slang::SourceManager&
         appendMemberSymbols(result, source_manager, text, *port);
     }
 
+    return result;
+}
+
+std::vector<std::string> collectHeaderPortNames(const slang::SourceManager& source_manager,
+                                                std::string_view text,
+                                                const slang::syntax::ModuleHeaderSyntax& header) {
+    std::vector<std::string> result;
+    for (const auto& symbol : collectHeaderPortSymbols(source_manager, text, header)) {
+        result.push_back(symbol.name);
+    }
     return result;
 }
 
@@ -879,6 +992,7 @@ std::optional<ModuleDefinition> toModuleDefinition(const slang::SourceManager& s
     return ModuleDefinition{.name = std::string(declaration.header->name.valueText()),
                             .range = toParseRange(source_manager, text, declaration.sourceRange()),
                             .selection_range = toParseRange(source_manager, text, declaration.header->name.range()),
+                            .ports = collectHeaderPortNames(source_manager, text, *declaration.header),
                             .instances = std::move(instances)};
 }
 
@@ -1019,6 +1133,10 @@ std::string CompilationService::completionPrefix(std::string_view text,
     }
 
     return std::string(text.substr(start, *offset - start));
+}
+
+std::vector<IncludeDirective> CompilationService::includeDirectives(std::string_view text) const {
+    return collectIncludeDirectives(text);
 }
 
 } // namespace pristine::analysis

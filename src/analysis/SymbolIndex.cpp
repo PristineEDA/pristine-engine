@@ -183,6 +183,35 @@ std::vector<ReferenceEntry> SymbolIndex::references(std::string_view name,
     return result;
 }
 
+std::vector<ReferenceEntry> SymbolIndex::documentReferences(std::string_view uri,
+                                                            std::string_view name,
+                                                            bool include_declaration) const {
+    std::vector<ReferenceEntry> result;
+    const auto document_it = documents_.find(std::string(uri));
+    if (document_it == documents_.end()) {
+        return result;
+    }
+
+    for (const auto& reference : document_it->second.references) {
+        if (reference.name != name) {
+            continue;
+        }
+        if (!include_declaration && isDeclarationReference(reference, document_it->second.symbols)) {
+            continue;
+        }
+        result.push_back(reference);
+    }
+
+    std::sort(result.begin(), result.end(), [](const ReferenceEntry& lhs, const ReferenceEntry& rhs) {
+        if (lhs.location.range.start_line != rhs.location.range.start_line) {
+            return lhs.location.range.start_line < rhs.location.range.start_line;
+        }
+        return lhs.location.range.start_character < rhs.location.range.start_character;
+    });
+
+    return result;
+}
+
 std::vector<SymbolEntry> SymbolIndex::workspaceSymbols(std::string_view query) const {
     std::vector<SymbolEntry> result;
     for (const auto& document : documents_) {
@@ -233,6 +262,11 @@ std::vector<CompletionEntry> SymbolIndex::completions(std::string_view prefix,
     }
 
     return result;
+}
+
+bool SymbolIndex::hasAmbiguousDefinitions(std::string_view name,
+                                          std::string_view preferred_uri) const {
+    return definitions(name, preferred_uri).size() > 1;
 }
 
 } // namespace pristine::analysis

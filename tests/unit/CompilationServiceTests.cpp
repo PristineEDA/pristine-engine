@@ -94,6 +94,25 @@ TEST_CASE("CompilationService computes completion prefix", "[analysis][completio
     CHECK(prefix == "re");
 }
 
+TEST_CASE("CompilationService extracts include directives", "[analysis][links]") {
+    CompilationService service;
+
+    const auto includes = service.includeDirectives(
+        "// `include \"ignored.svh\"\n"
+        "`include \"defs.svh\"\n"
+        "string path = \"`include fake.svh\";\n"
+        "`include <pkg/common.svh>\n");
+
+    REQUIRE(includes.size() == 2);
+    CHECK(includes[0].target == "defs.svh");
+    CHECK(includes[0].range.start_line == 1);
+    CHECK(includes[0].range.start_character == 10);
+    CHECK(includes[0].range.end_character == 18);
+    CHECK(includes[1].target == "pkg/common.svh");
+    CHECK(includes[1].range.start_line == 3);
+    CHECK(includes[1].range.start_character == 10);
+}
+
 TEST_CASE("CompilationService extracts top-level document symbols", "[analysis][symbols]") {
     CompilationService service;
 
@@ -220,7 +239,7 @@ TEST_CASE("CompilationService extracts module definitions and direct instantiati
     CompilationService service;
 
     const auto modules = service.moduleDefinitions(
-        "module leaf; endmodule\n"
+        "module leaf(input logic clk, output logic done); endmodule\n"
         "module child;\n"
         "  leaf u_leaf();\n"
         "endmodule\n"
@@ -231,6 +250,9 @@ TEST_CASE("CompilationService extracts module definitions and direct instantiati
 
     REQUIRE(modules.size() == 3);
     CHECK(modules[0].name == "leaf");
+    REQUIRE(modules[0].ports.size() == 2);
+    CHECK(modules[0].ports[0] == "clk");
+    CHECK(modules[0].ports[1] == "done");
     CHECK(modules[0].instances.empty());
 
     CHECK(modules[1].name == "child");

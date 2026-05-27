@@ -43,7 +43,28 @@ Json makeInitializeResult(std::string_view server_name, std::string_view server_
               {"documentSymbolProvider", true},
               {"hoverProvider", true},
               {"definitionProvider", true},
+              {"documentHighlightProvider", true},
+              {"documentLinkProvider", Json{{"resolveProvider", false}}},
+              {"inlayHintProvider", Json{{"resolveProvider", false}}},
+              {"codeActionProvider",
+               Json{{"resolveProvider", false},
+                    {"codeActionKinds", Json::array({"quickfix"})}}},
+              {"foldingRangeProvider", true},
+              {"semanticTokensProvider",
+               Json{{"legend",
+                   Json{{"tokenTypes",
+                       Json::array({"namespace", "type", "class", "enum", "interface",
+                                "function", "variable", "parameter", "enumMember"})},
+                      {"tokenModifiers", Json::array()}}},
+                  {"full", true},
+                  {"range", false}}},
+              {"selectionRangeProvider", true},
+              {"signatureHelpProvider",
+               Json{{"triggerCharacters", Json::array({"(", ","})},
+                    {"retriggerCharacters", Json::array({","})}}},
+              {"callHierarchyProvider", true},
               {"referencesProvider", true},
+              {"renameProvider", Json{{"prepareProvider", true}}},
               {"workspaceSymbolProvider", true},
               {"completionProvider",
                Json{{"resolveProvider", false},
@@ -135,6 +156,62 @@ DefinitionParams parseDefinitionParams(const Json& params) {
                             .position = parsePosition(params.at("position"))};
 }
 
+DocumentHighlightParams parseDocumentHighlightParams(const Json& params) {
+    return DocumentHighlightParams{.text_document = parseTextDocumentIdentifier(params.at("textDocument")),
+                                   .position = parsePosition(params.at("position"))};
+}
+
+DocumentLinkParams parseDocumentLinkParams(const Json& params) {
+    return DocumentLinkParams{.text_document = parseTextDocumentIdentifier(params.at("textDocument"))};
+}
+
+InlayHintParams parseInlayHintParams(const Json& params) {
+    return InlayHintParams{.text_document = parseTextDocumentIdentifier(params.at("textDocument")),
+                           .range = parseRange(params.at("range"))};
+}
+
+CodeActionParams parseCodeActionParams(const Json& params) {
+    return CodeActionParams{.text_document = parseTextDocumentIdentifier(params.at("textDocument")),
+                            .range = parseRange(params.at("range"))};
+}
+
+FoldingRangeParams parseFoldingRangeParams(const Json& params) {
+    return FoldingRangeParams{.text_document = parseTextDocumentIdentifier(params.at("textDocument"))};
+}
+
+SemanticTokensParams parseSemanticTokensParams(const Json& params) {
+    return SemanticTokensParams{.text_document = parseTextDocumentIdentifier(params.at("textDocument"))};
+}
+
+SelectionRangeParams parseSelectionRangeParams(const Json& params) {
+    SelectionRangeParams result{.text_document = parseTextDocumentIdentifier(params.at("textDocument"))};
+    for (const auto& position : params.at("positions")) {
+        result.positions.push_back(parsePosition(position));
+    }
+    return result;
+}
+
+SignatureHelpParams parseSignatureHelpParams(const Json& params) {
+    return SignatureHelpParams{.text_document = parseTextDocumentIdentifier(params.at("textDocument")),
+                               .position = parsePosition(params.at("position"))};
+}
+
+CallHierarchyItem parseCallHierarchyItem(const Json& value) {
+    return CallHierarchyItem{.name = value.at("name").get<std::string>(),
+                             .uri = value.at("uri").get<std::string>(),
+                             .range = parseRange(value.at("range")),
+                             .selection_range = parseRange(value.at("selectionRange"))};
+}
+
+CallHierarchyPrepareParams parseCallHierarchyPrepareParams(const Json& params) {
+    return CallHierarchyPrepareParams{.text_document = parseTextDocumentIdentifier(params.at("textDocument")),
+                                      .position = parsePosition(params.at("position"))};
+}
+
+CallHierarchyCallsParams parseCallHierarchyCallsParams(const Json& params) {
+    return CallHierarchyCallsParams{.item = parseCallHierarchyItem(params.at("item"))};
+}
+
 ReferenceParams parseReferenceParams(const Json& params) {
     ReferenceParams result{.text_document = parseTextDocumentIdentifier(params.at("textDocument")),
                            .position = parsePosition(params.at("position")),
@@ -182,6 +259,17 @@ CompletionParams parseCompletionParams(const Json& params) {
     }
 
     return result;
+}
+
+PrepareRenameParams parsePrepareRenameParams(const Json& params) {
+    return PrepareRenameParams{.text_document = parseTextDocumentIdentifier(params.at("textDocument")),
+                               .position = parsePosition(params.at("position"))};
+}
+
+RenameParams parseRenameParams(const Json& params) {
+    return RenameParams{.text_document = parseTextDocumentIdentifier(params.at("textDocument")),
+                        .position = parsePosition(params.at("position")),
+                        .new_name = params.at("newName").get<std::string>()};
 }
 
 } // namespace pristine::lsp

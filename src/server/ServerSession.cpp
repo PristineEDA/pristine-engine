@@ -5,6 +5,9 @@
 #include "pristine/jsonrpc/JsonRpcServer.h"
 #include "pristine/lsp/Protocol.h"
 
+#include <algorithm>
+#include <cctype>
+#include <cstddef>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -12,6 +15,7 @@
 #include <optional>
 #include <set>
 #include <stdexcept>
+#include <unordered_map>
 
 namespace pristine::server {
 namespace {
@@ -29,6 +33,136 @@ jsonrpc::Json toRangeJson(const analysis::ParseRange& range) {
 
 jsonrpc::Json toLocationJson(const analysis::Location& location) {
     return jsonrpc::Json{{"uri", location.uri}, {"range", toRangeJson(location.range)}};
+}
+
+jsonrpc::Json toTextEditJson(const analysis::ParseRange& range, std::string_view new_text) {
+    return jsonrpc::Json{{"range", toRangeJson(range)}, {"newText", new_text}};
+}
+
+jsonrpc::Json toPositionJson(int line, int character) {
+    return jsonrpc::Json{{"line", line}, {"character", character}};
+}
+
+jsonrpc::Json toDocumentHighlightJson(const analysis::Location& location) {
+    return jsonrpc::Json{{"range", toRangeJson(location.range)}, {"kind", 1}};
+}
+
+jsonrpc::Json toInlayHintJson(const analysis::ModuleInstantiation& instance) {
+    return jsonrpc::Json{{"position", toPositionJson(instance.selection_range.end_line,
+                                                      instance.selection_range.end_character)},
+                         {"label", std::string(": ") + instance.module_name},
+                         {"kind", 1}};
+}
+
+std::optional<int> semanticTokenTypeForSymbolKind(int symbol_kind) {
+    switch (symbol_kind) {
+        case 2:
+        case 26:
+            return 1;
+        case 3:
+        case 4:
+            return 0;
+        case 5:
+            return 2;
+        case 10:
+            return 3;
+        case 11:
+            return 4;
+        case 12:
+            return 5;
+        case 13:
+        case 19:
+            return 6;
+        case 14:
+            return 7;
+        case 22:
+            return 8;
+        default:
+            return std::nullopt;
+    }
+}
+
+struct SemanticToken {
+    int line = 0;
+    int character = 0;
+    int length = 0;
+    int type = 0;
+};
+
+struct SignatureInvocation {
+    std::string module_name;
+    std::string instance_name;
+    int active_parameter = 0;
+};
+
+void collectFoldingRanges(jsonrpc::Json& result, const std::vector<analysis::DocumentSymbol>& symbols) {
+    for (const auto& symbol : symbols) {
+        if (symbol.range.end_line > symbol.range.start_line) {
+            result.push_back(jsonrpc::Json{{"startLine", symbol.range.start_line},
+                                           {"startCharacter", symbol.range.start_character},
+                                           {"endLine", symbol.range.end_line},
+                                           {"endCharacter", symbol.range.end_character},
+                                           {"kind", "region"}});
+        }
+        collectFoldingRanges(result, symbol.children);
+    }
+}
+
+void collectSemanticTokens(std::vector<SemanticToken>& result,
+                           const std::vector<analysis::DocumentSymbol>& symbols) {
+    for (const auto& symbol : symbols) {
+        const auto token_type = semanticTokenTypeForSymbolKind(symbol.kind);
+        const auto& range = symbol.selection_range;
+        if (token_type.has_value() && range.start_line == range.end_line &&
+            range.end_character > range.start_character) {
+            result.push_back(SemanticToken{.line = range.start_line,
+                                           .character = range.start_character,
+                                           .length = range.end_character - range.start_character,
+                                           .type = *token_type});
+        }
+        collectSemanticTokens(result, symbol.children);
+    }
+}
+
+jsonrpc::Json toSemanticTokensJson(std::vector<SemanticToken> tokens) {
+    std::sort(tokens.begin(), tokens.end(), [](const SemanticToken& lhs, const SemanticToken& rhs) {
+        if (lhs.line != rhs.line) {
+            return lhs.line < rhs.line;
+        }
+        if (lhs.character != rhs.character) {
+            return lhs.character < rhs.character;
+        }
+        if (lhs.length != rhs.length) {
+            return lhs.length < rhs.length;
+        }
+        return lhs.type < rhs.type;
+    });
+    tokens.erase(std::unique(tokens.begin(), tokens.end(), [](const SemanticToken& lhs,
+                                                             const SemanticToken& rhs) {
+                     return lhs.line == rhs.line && lhs.character == rhs.character &&
+                            lhs.length == rhs.length && lhs.type == rhs.type;
+                 }),
+                 tokens.end());
+
+    jsonrpc::Json data = jsonrpc::Json::array();
+    int previous_line = 0;
+    int previous_character = 0;
+    bool first = true;
+    for (const auto& token : tokens) {
+        const auto delta_line = first ? token.line : token.line - previous_line;
+        const auto delta_character = first || delta_line != 0 ? token.character
+                                                             : token.character - previous_character;
+        data.push_back(delta_line);
+        data.push_back(delta_character);
+        data.push_back(token.length);
+        data.push_back(token.type);
+        data.push_back(0);
+        previous_line = token.line;
+        previous_character = token.character;
+        first = false;
+    }
+
+    return jsonrpc::Json{{"data", std::move(data)}};
 }
 
 int toCompletionItemKind(int symbol_kind) {
@@ -95,6 +229,355 @@ std::optional<std::string> readFileText(const fs::path& path) {
     return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
 }
 
+bool isIdentifierStart(char value) {
+    const auto ch = static_cast<unsigned char>(value);
+    return std::isalpha(ch) != 0 || value == '_' || value == '$';
+}
+
+bool isIdentifierContinue(char value) {
+    const auto ch = static_cast<unsigned char>(value);
+    return std::isalnum(ch) != 0 || value == '_' || value == '$';
+}
+
+bool isValidIdentifier(std::string_view value) {
+    if (value.empty() || !isIdentifierStart(value.front())) {
+        return false;
+    }
+    return std::all_of(value.begin() + 1, value.end(), isIdentifierContinue);
+}
+
+int comparePosition(int lhs_line, int lhs_character, int rhs_line, int rhs_character) {
+    if (lhs_line != rhs_line) {
+        return lhs_line < rhs_line ? -1 : 1;
+    }
+    if (lhs_character == rhs_character) {
+        return 0;
+    }
+    return lhs_character < rhs_character ? -1 : 1;
+}
+
+bool positionInRange(int line, int character, const lsp::Range& range) {
+    return comparePosition(line, character, range.start.line, range.start.character) >= 0 &&
+           comparePosition(line, character, range.end.line, range.end.character) <= 0;
+}
+
+bool isEmptyRange(const lsp::Range& range) {
+    return range.start.line == range.end.line && range.start.character == range.end.character;
+}
+
+bool parseRangeContainsPosition(const analysis::ParseRange& range, const lsp::Position& position) {
+    return comparePosition(position.line, position.character, range.start_line, range.start_character) >= 0 &&
+           comparePosition(position.line, position.character, range.end_line, range.end_character) < 0;
+}
+
+bool parseRangeIntersects(const analysis::ParseRange& target, const lsp::Range& range) {
+    if (isEmptyRange(range)) {
+        return parseRangeContainsPosition(target, range.start);
+    }
+
+    return comparePosition(target.end_line, target.end_character,
+                           range.start.line, range.start.character) > 0 &&
+           comparePosition(range.end.line, range.end.character,
+                           target.start_line, target.start_character) > 0;
+}
+
+bool sameParseRange(const analysis::ParseRange& lhs, const analysis::ParseRange& rhs) {
+    return lhs.start_line == rhs.start_line && lhs.start_character == rhs.start_character &&
+           lhs.end_line == rhs.end_line && lhs.end_character == rhs.end_character;
+}
+
+void appendDistinctRange(std::vector<analysis::ParseRange>& ranges, const analysis::ParseRange& range) {
+    if (std::none_of(ranges.begin(), ranges.end(), [&](const analysis::ParseRange& existing) {
+            return sameParseRange(existing, range);
+        })) {
+        ranges.push_back(range);
+    }
+}
+
+analysis::ParseRange pointRange(const lsp::Position& position) {
+    return analysis::ParseRange{.start_line = position.line,
+                                .start_character = position.character,
+                                .end_line = position.line,
+                                .end_character = position.character};
+}
+
+std::optional<analysis::ParseRange> lineRangeAtPosition(std::string_view text, const lsp::Position& position) {
+    if (position.line < 0) {
+        return std::nullopt;
+    }
+
+    int line = 0;
+    size_t line_start = 0;
+    for (size_t offset = 0; offset < text.size() && line < position.line; ++offset) {
+        if (text[offset] == '\n') {
+            ++line;
+            line_start = offset + 1;
+        }
+    }
+    if (line != position.line || line_start > text.size()) {
+        return std::nullopt;
+    }
+
+    size_t line_end = line_start;
+    while (line_end < text.size() && text[line_end] != '\n' && text[line_end] != '\r') {
+        ++line_end;
+    }
+
+    size_t trimmed_start = line_start;
+    while (trimmed_start < line_end && (text[trimmed_start] == ' ' || text[trimmed_start] == '\t')) {
+        ++trimmed_start;
+    }
+    size_t trimmed_end = line_end;
+    while (trimmed_end > trimmed_start && (text[trimmed_end - 1] == ' ' || text[trimmed_end - 1] == '\t')) {
+        --trimmed_end;
+    }
+    if (trimmed_start == trimmed_end) {
+        return std::nullopt;
+    }
+
+    return analysis::ParseRange{.start_line = position.line,
+                                .start_character = static_cast<int>(trimmed_start - line_start),
+                                .end_line = position.line,
+                                .end_character = static_cast<int>(trimmed_end - line_start)};
+}
+
+std::optional<size_t> offsetAtPosition(std::string_view text, const lsp::Position& position) {
+    if (position.line < 0 || position.character < 0) {
+        return std::nullopt;
+    }
+
+    int line = 0;
+    int character = 0;
+    for (size_t offset = 0; offset < text.size(); ++offset) {
+        if (line == position.line && character == position.character) {
+            return offset;
+        }
+
+        const char value = text[offset];
+        if (value == '\r') {
+            if (offset + 1 < text.size() && text[offset + 1] == '\n') {
+                ++offset;
+            }
+            ++line;
+            character = 0;
+            continue;
+        }
+        if (value == '\n') {
+            ++line;
+            character = 0;
+            continue;
+        }
+        ++character;
+    }
+
+    if (line == position.line && character == position.character) {
+        return text.size();
+    }
+    return std::nullopt;
+}
+
+std::optional<size_t> offsetAtParsePosition(std::string_view text, int line, int character) {
+    return offsetAtPosition(text, lsp::Position{.line = line, .character = character});
+}
+
+int activeParameterAt(std::string_view text, size_t open_paren_offset, size_t position_offset) {
+    int active_parameter = 0;
+    int depth = 0;
+    for (size_t offset = open_paren_offset + 1; offset < position_offset && offset < text.size(); ++offset) {
+        const char value = text[offset];
+        if (value == '(') {
+            ++depth;
+            continue;
+        }
+        if (value == ')') {
+            if (depth == 0) {
+                break;
+            }
+            --depth;
+            continue;
+        }
+        if (value == ',' && depth == 0) {
+            ++active_parameter;
+        }
+    }
+    return active_parameter;
+}
+
+std::optional<SignatureInvocation> findSignatureInvocation(
+    const analysis::CompilationService& compilation_service,
+    const document::TextDocument& document,
+    const lsp::Position& position) {
+    const auto position_offset = offsetAtPosition(document.text, position);
+    if (!position_offset.has_value()) {
+        return std::nullopt;
+    }
+
+    for (const auto& module : compilation_service.moduleDefinitions(document.text, document.uri)) {
+        for (const auto& instance : module.instances) {
+            if (!parseRangeContainsPosition(instance.range, position)) {
+                continue;
+            }
+
+            const auto search_start = offsetAtParsePosition(document.text,
+                                                            instance.selection_range.end_line,
+                                                            instance.selection_range.end_character);
+            const auto search_end = offsetAtParsePosition(document.text,
+                                                          instance.range.end_line,
+                                                          instance.range.end_character);
+            if (!search_start.has_value() || !search_end.has_value() || *position_offset < *search_start) {
+                continue;
+            }
+
+            const auto bounded_position = std::min(*position_offset, *search_end);
+            const auto open_paren_it = std::find(document.text.begin() + static_cast<std::ptrdiff_t>(*search_start),
+                                                 document.text.begin() + static_cast<std::ptrdiff_t>(bounded_position),
+                                                 '(');
+            if (open_paren_it == document.text.begin() + static_cast<std::ptrdiff_t>(bounded_position)) {
+                continue;
+            }
+
+            const auto open_paren_offset = static_cast<size_t>(std::distance(document.text.begin(), open_paren_it));
+            return SignatureInvocation{.module_name = instance.module_name,
+                                       .instance_name = instance.instance_name,
+                                       .active_parameter = activeParameterAt(document.text,
+                                                                            open_paren_offset,
+                                                                            *position_offset)};
+        }
+    }
+
+    return std::nullopt;
+}
+
+std::string signatureLabel(const analysis::ModuleDefinition& module) {
+    std::string label = module.name + "(";
+    for (size_t index = 0; index < module.ports.size(); ++index) {
+        if (index != 0) {
+            label += ", ";
+        }
+        label += module.ports[index];
+    }
+    label += ")";
+    return label;
+}
+
+jsonrpc::Json toSignatureHelpJson(const analysis::ModuleDefinition& module, int active_parameter) {
+    jsonrpc::Json parameters = jsonrpc::Json::array();
+    for (const auto& port : module.ports) {
+        parameters.push_back(jsonrpc::Json{{"label", port}});
+    }
+
+    const auto bounded_parameter = module.ports.empty()
+        ? 0
+        : std::min(active_parameter, static_cast<int>(module.ports.size()) - 1);
+
+    return jsonrpc::Json{{"signatures",
+                          jsonrpc::Json::array({jsonrpc::Json{{"label", signatureLabel(module)},
+                                                               {"parameters", std::move(parameters)}}})},
+                         {"activeSignature", 0},
+                         {"activeParameter", bounded_parameter}};
+}
+
+void collectSelectionSymbolRanges(std::vector<analysis::ParseRange>& ranges,
+                                  const std::vector<analysis::DocumentSymbol>& symbols,
+                                  const lsp::Position& position) {
+    for (const auto& symbol : symbols) {
+        if (!parseRangeContainsPosition(symbol.range, position) &&
+            !parseRangeContainsPosition(symbol.selection_range, position)) {
+            continue;
+        }
+
+        collectSelectionSymbolRanges(ranges, symbol.children, position);
+        if (parseRangeContainsPosition(symbol.selection_range, position)) {
+            appendDistinctRange(ranges, symbol.selection_range);
+        }
+        if (parseRangeContainsPosition(symbol.range, position)) {
+            appendDistinctRange(ranges, symbol.range);
+        }
+    }
+}
+
+jsonrpc::Json toSelectionRangeJson(const std::vector<analysis::ParseRange>& ranges) {
+    jsonrpc::Json current;
+    for (auto range_it = ranges.rbegin(); range_it != ranges.rend(); ++range_it) {
+        jsonrpc::Json next{{"range", toRangeJson(*range_it)}};
+        if (!current.is_null()) {
+            next["parent"] = std::move(current);
+        }
+        current = std::move(next);
+    }
+    return current;
+}
+
+jsonrpc::Json selectionRangeForPosition(const analysis::CompilationService& compilation_service,
+                                        const document::TextDocument& document,
+                                        const lsp::Position& position) {
+    std::vector<analysis::ParseRange> ranges;
+    if (const auto identifier = compilation_service.identifierAt(document.text, position.line,
+                                                                 position.character)) {
+        appendDistinctRange(ranges, identifier->range);
+    }
+    if (const auto line_range = lineRangeAtPosition(document.text, position)) {
+        appendDistinctRange(ranges, *line_range);
+    }
+    collectSelectionSymbolRanges(ranges,
+                                 compilation_service.documentSymbols(document.text, document.uri),
+                                 position);
+    if (ranges.empty()) {
+        ranges.push_back(pointRange(position));
+    }
+    return toSelectionRangeJson(ranges);
+}
+
+std::optional<fs::path> resolveIncludeTarget(const workspace::WorkspaceManager& workspace_manager,
+                                             std::string_view document_uri,
+                                             std::string_view target) {
+    const auto target_path = fs::path(std::string(target));
+    std::vector<fs::path> candidates;
+
+    if (target_path.is_absolute()) {
+        candidates.push_back(target_path);
+    }
+    else if (const auto document_path = workspace::WorkspaceManager::pathFromFileUri(document_uri)) {
+        candidates.push_back(document_path->parent_path() / target_path);
+    }
+
+    if (!target_path.is_absolute()) {
+        const auto& workspace_state = workspace_manager.state();
+        if (workspace_state.root_path.has_value()) {
+            candidates.push_back(*workspace_state.root_path / target_path);
+        }
+    }
+
+    for (const auto& candidate : candidates) {
+        std::error_code error;
+        if (fs::exists(candidate, error) && fs::is_regular_file(candidate, error)) {
+            return fs::weakly_canonical(candidate, error);
+        }
+    }
+
+    return std::nullopt;
+}
+
+std::optional<fs::path> proposedIncludeTarget(const workspace::WorkspaceManager& workspace_manager,
+                                              std::string_view document_uri,
+                                              std::string_view target) {
+    const auto target_path = fs::path(std::string(target));
+    if (target_path.is_absolute()) {
+        return target_path;
+    }
+
+    if (const auto document_path = workspace::WorkspaceManager::pathFromFileUri(document_uri)) {
+        return document_path->parent_path() / target_path;
+    }
+
+    const auto& workspace_state = workspace_manager.state();
+    if (workspace_state.root_path.has_value()) {
+        return *workspace_state.root_path / target_path;
+    }
+
+    return std::nullopt;
+}
+
 jsonrpc::Json toDocumentSymbolJson(const analysis::DocumentSymbol& symbol) {
     jsonrpc::Json result{{"name", symbol.name},
                          {"kind", symbol.kind},
@@ -115,6 +598,89 @@ struct IndexedModuleDefinition {
     std::string uri;
     analysis::ModuleDefinition definition;
 };
+
+bool sameRange(const analysis::ParseRange& lhs, const lsp::Range& rhs) {
+    return lhs.start_line == rhs.start.line && lhs.start_character == rhs.start.character &&
+           lhs.end_line == rhs.end.line && lhs.end_character == rhs.end.character;
+}
+
+std::vector<IndexedModuleDefinition> sortedModuleDefinitions(
+    const std::unordered_map<std::string, std::vector<analysis::ModuleDefinition>>& documents) {
+    std::vector<IndexedModuleDefinition> result;
+    for (const auto& [uri, definitions] : documents) {
+        for (const auto& definition : definitions) {
+            result.push_back(IndexedModuleDefinition{.uri = uri, .definition = definition});
+        }
+    }
+
+    std::sort(result.begin(), result.end(), [](const auto& lhs, const auto& rhs) {
+        if (lhs.definition.name != rhs.definition.name) {
+            return lhs.definition.name < rhs.definition.name;
+        }
+        if (lhs.uri != rhs.uri) {
+            return lhs.uri < rhs.uri;
+        }
+        return lhs.definition.range.start_line < rhs.definition.range.start_line;
+    });
+
+    return result;
+}
+
+std::map<std::string, IndexedModuleDefinition> buildModuleLookup(
+    const std::vector<IndexedModuleDefinition>& definitions) {
+    std::map<std::string, IndexedModuleDefinition> modules;
+    for (const auto& definition : definitions) {
+        modules.try_emplace(definition.definition.name, definition);
+    }
+    return modules;
+}
+
+jsonrpc::Json toCallHierarchyItemJson(const IndexedModuleDefinition& module) {
+    return jsonrpc::Json{{"name", module.definition.name},
+                         {"kind", 2},
+                         {"detail", "module"},
+                         {"uri", module.uri},
+                         {"range", toRangeJson(module.definition.range)},
+                         {"selectionRange", toRangeJson(module.definition.selection_range)}};
+}
+
+std::optional<IndexedModuleDefinition> findCallHierarchyModule(
+    const std::vector<IndexedModuleDefinition>& definitions,
+    const lsp::CallHierarchyItem& item) {
+    for (const auto& definition : definitions) {
+        if (definition.definition.name == item.name && definition.uri == item.uri &&
+            sameRange(definition.definition.selection_range, item.selection_range)) {
+            return definition;
+        }
+    }
+    return std::nullopt;
+}
+
+std::optional<IndexedModuleDefinition> findCallHierarchyModuleAt(
+    const std::vector<IndexedModuleDefinition>& definitions,
+    std::string_view uri,
+    const lsp::Position& position) {
+    const auto modules = buildModuleLookup(definitions);
+    for (const auto& definition : definitions) {
+        if (definition.uri != uri) {
+            continue;
+        }
+        if (parseRangeContainsPosition(definition.definition.selection_range, position)) {
+            return definition;
+        }
+        for (const auto& instance : definition.definition.instances) {
+            if (!parseRangeContainsPosition(instance.module_selection_range, position) &&
+                !parseRangeContainsPosition(instance.selection_range, position)) {
+                continue;
+            }
+            const auto target_it = modules.find(instance.module_name);
+            if (target_it != modules.end()) {
+                return target_it->second;
+            }
+        }
+    }
+    return std::nullopt;
+}
 
 jsonrpc::Json makeUnresolvedHierarchyNode(const analysis::ModuleInstantiation& instance) {
     return jsonrpc::Json{{"moduleName", instance.module_name},
@@ -232,6 +798,39 @@ void ServerSession::bind(jsonrpc::JsonRpcServer& server) {
     server.registerRequestHandler("textDocument/definition", [this](const jsonrpc::Json& params) {
         return handleDefinition(params);
     });
+    server.registerRequestHandler("textDocument/documentHighlight", [this](const jsonrpc::Json& params) {
+        return handleDocumentHighlight(params);
+    });
+    server.registerRequestHandler("textDocument/documentLink", [this](const jsonrpc::Json& params) {
+        return handleDocumentLink(params);
+    });
+    server.registerRequestHandler("textDocument/inlayHint", [this](const jsonrpc::Json& params) {
+        return handleInlayHint(params);
+    });
+    server.registerRequestHandler("textDocument/codeAction", [this](const jsonrpc::Json& params) {
+        return handleCodeAction(params);
+    });
+    server.registerRequestHandler("textDocument/foldingRange", [this](const jsonrpc::Json& params) {
+        return handleFoldingRange(params);
+    });
+    server.registerRequestHandler("textDocument/semanticTokens/full", [this](const jsonrpc::Json& params) {
+        return handleSemanticTokensFull(params);
+    });
+    server.registerRequestHandler("textDocument/selectionRange", [this](const jsonrpc::Json& params) {
+        return handleSelectionRange(params);
+    });
+    server.registerRequestHandler("textDocument/signatureHelp", [this](const jsonrpc::Json& params) {
+        return handleSignatureHelp(params);
+    });
+    server.registerRequestHandler("textDocument/prepareCallHierarchy", [this](const jsonrpc::Json& params) {
+        return handlePrepareCallHierarchy(params);
+    });
+    server.registerRequestHandler("callHierarchy/incomingCalls", [this](const jsonrpc::Json& params) {
+        return handleIncomingCalls(params);
+    });
+    server.registerRequestHandler("callHierarchy/outgoingCalls", [this](const jsonrpc::Json& params) {
+        return handleOutgoingCalls(params);
+    });
     server.registerRequestHandler("textDocument/references", [this](const jsonrpc::Json& params) {
         return handleReferences(params);
     });
@@ -240,6 +839,12 @@ void ServerSession::bind(jsonrpc::JsonRpcServer& server) {
     });
     server.registerRequestHandler("textDocument/completion", [this](const jsonrpc::Json& params) {
         return handleCompletion(params);
+    });
+    server.registerRequestHandler("textDocument/prepareRename", [this](const jsonrpc::Json& params) {
+        return handlePrepareRename(params);
+    });
+    server.registerRequestHandler("textDocument/rename", [this](const jsonrpc::Json& params) {
+        return handleRename(params);
     });
     server.registerRequestHandler("shutdown", [this](const jsonrpc::Json& params) {
         return handleShutdown(params);
@@ -299,28 +904,11 @@ jsonrpc::Json ServerSession::handleModuleHierarchy(const jsonrpc::Json& params) 
         throw std::runtime_error("systemverilog/moduleHierarchy received before initialize");
     }
 
-    std::vector<std::pair<std::string, IndexedModuleDefinition>> sorted_definitions;
-    for (const auto& document : hierarchy_documents_) {
-        for (const auto& definition : document.second) {
-            sorted_definitions.push_back({definition.name, IndexedModuleDefinition{.uri = document.first,
-                                                                                   .definition = definition}});
-        }
-    }
-    std::sort(sorted_definitions.begin(), sorted_definitions.end(), [](const auto& lhs, const auto& rhs) {
-        if (lhs.first != rhs.first) {
-            return lhs.first < rhs.first;
-        }
-        if (lhs.second.uri != rhs.second.uri) {
-            return lhs.second.uri < rhs.second.uri;
-        }
-        return lhs.second.definition.range.start_line < rhs.second.definition.range.start_line;
-    });
-
-    std::map<std::string, IndexedModuleDefinition> modules;
+    const auto sorted_definitions = sortedModuleDefinitions(hierarchy_documents_);
+    auto modules = buildModuleLookup(sorted_definitions);
     std::set<std::string> instantiated_modules;
-    for (const auto& entry : sorted_definitions) {
-        modules.try_emplace(entry.first, entry.second);
-        for (const auto& instance : entry.second.definition.instances) {
+    for (const auto& definition : sorted_definitions) {
+        for (const auto& instance : definition.definition.instances) {
             instantiated_modules.insert(instance.module_name);
         }
     }
@@ -431,6 +1019,260 @@ jsonrpc::Json ServerSession::handleReferences(const jsonrpc::Json& params) {
     return result;
 }
 
+jsonrpc::Json ServerSession::handleDocumentHighlight(const jsonrpc::Json& params) {
+    if (!initialized_) {
+        throw std::runtime_error("textDocument/documentHighlight received before initialize");
+    }
+
+    const auto highlight = lsp::parseDocumentHighlightParams(params);
+    const auto* document = document_store_.find(highlight.text_document.uri);
+    if (!document) {
+        return jsonrpc::Json::array();
+    }
+
+    const auto identifier = compilation_service_.identifierAt(document->text, highlight.position.line,
+                                                              highlight.position.character);
+    if (!identifier) {
+        return jsonrpc::Json::array();
+    }
+
+    jsonrpc::Json result = jsonrpc::Json::array();
+    for (const auto& reference : symbol_index_.documentReferences(document->uri, identifier->name, true)) {
+        result.push_back(toDocumentHighlightJson(reference.location));
+    }
+
+    return result;
+}
+
+jsonrpc::Json ServerSession::handleDocumentLink(const jsonrpc::Json& params) {
+    if (!initialized_) {
+        throw std::runtime_error("textDocument/documentLink received before initialize");
+    }
+
+    const auto links = lsp::parseDocumentLinkParams(params);
+    const auto* document = document_store_.find(links.text_document.uri);
+    if (!document) {
+        return jsonrpc::Json::array();
+    }
+
+    jsonrpc::Json result = jsonrpc::Json::array();
+    for (const auto& include : compilation_service_.includeDirectives(document->text)) {
+        const auto target = resolveIncludeTarget(workspace_manager_, document->uri, include.target);
+        if (!target.has_value()) {
+            continue;
+        }
+        result.push_back(jsonrpc::Json{{"range", toRangeJson(include.range)},
+                                       {"target", toFileUri(*target)}});
+    }
+
+    return result;
+}
+
+jsonrpc::Json ServerSession::handleInlayHint(const jsonrpc::Json& params) {
+    if (!initialized_) {
+        throw std::runtime_error("textDocument/inlayHint received before initialize");
+    }
+
+    const auto hints = lsp::parseInlayHintParams(params);
+    const auto* document = document_store_.find(hints.text_document.uri);
+    if (!document) {
+        return jsonrpc::Json::array();
+    }
+
+    jsonrpc::Json result = jsonrpc::Json::array();
+    for (const auto& module : compilation_service_.moduleDefinitions(document->text, document->uri)) {
+        for (const auto& instance : module.instances) {
+            if (positionInRange(instance.selection_range.end_line,
+                                instance.selection_range.end_character,
+                                hints.range)) {
+                result.push_back(toInlayHintJson(instance));
+            }
+        }
+    }
+
+    return result;
+}
+
+jsonrpc::Json ServerSession::handleCodeAction(const jsonrpc::Json& params) {
+    if (!initialized_) {
+        throw std::runtime_error("textDocument/codeAction received before initialize");
+    }
+
+    const auto action = lsp::parseCodeActionParams(params);
+    const auto* document = document_store_.find(action.text_document.uri);
+    if (!document) {
+        return jsonrpc::Json::array();
+    }
+
+    jsonrpc::Json result = jsonrpc::Json::array();
+    for (const auto& include : compilation_service_.includeDirectives(document->text)) {
+        if (!parseRangeIntersects(include.range, action.range) ||
+            resolveIncludeTarget(workspace_manager_, document->uri, include.target).has_value()) {
+            continue;
+        }
+
+        const auto target = proposedIncludeTarget(workspace_manager_, document->uri, include.target);
+        if (!target.has_value()) {
+            continue;
+        }
+
+        jsonrpc::Json create_file{{"kind", "create"},
+                                  {"uri", toFileUri(*target)},
+                                  {"options", jsonrpc::Json{{"ignoreIfExists", true}}}};
+        jsonrpc::Json edit{{"documentChanges", jsonrpc::Json::array({std::move(create_file)})}};
+        result.push_back(jsonrpc::Json{
+            {"title", std::string("Create include file '") + include.target + "'"},
+            {"kind", "quickfix"},
+            {"isPreferred", true},
+            {"edit", std::move(edit)}});
+    }
+
+    return result;
+}
+
+jsonrpc::Json ServerSession::handleFoldingRange(const jsonrpc::Json& params) {
+    if (!initialized_) {
+        throw std::runtime_error("textDocument/foldingRange received before initialize");
+    }
+
+    const auto folding_range = lsp::parseFoldingRangeParams(params);
+    const auto* document = document_store_.find(folding_range.text_document.uri);
+    if (!document) {
+        return jsonrpc::Json::array();
+    }
+
+    jsonrpc::Json result = jsonrpc::Json::array();
+    collectFoldingRanges(result, compilation_service_.documentSymbols(document->text, document->uri));
+    return result;
+}
+
+jsonrpc::Json ServerSession::handleSemanticTokensFull(const jsonrpc::Json& params) {
+    if (!initialized_) {
+        throw std::runtime_error("textDocument/semanticTokens/full received before initialize");
+    }
+
+    const auto semantic_tokens = lsp::parseSemanticTokensParams(params);
+    const auto* document = document_store_.find(semantic_tokens.text_document.uri);
+    if (!document) {
+        return jsonrpc::Json{{"data", jsonrpc::Json::array()}};
+    }
+
+    std::vector<SemanticToken> tokens;
+    collectSemanticTokens(tokens, compilation_service_.documentSymbols(document->text, document->uri));
+    return toSemanticTokensJson(std::move(tokens));
+}
+
+jsonrpc::Json ServerSession::handleSelectionRange(const jsonrpc::Json& params) {
+    if (!initialized_) {
+        throw std::runtime_error("textDocument/selectionRange received before initialize");
+    }
+
+    const auto selection_range = lsp::parseSelectionRangeParams(params);
+    const auto* document = document_store_.find(selection_range.text_document.uri);
+    if (!document) {
+        return jsonrpc::Json::array();
+    }
+
+    jsonrpc::Json result = jsonrpc::Json::array();
+    for (const auto& position : selection_range.positions) {
+        result.push_back(selectionRangeForPosition(compilation_service_, *document, position));
+    }
+    return result;
+}
+
+jsonrpc::Json ServerSession::handleSignatureHelp(const jsonrpc::Json& params) {
+    if (!initialized_) {
+        throw std::runtime_error("textDocument/signatureHelp received before initialize");
+    }
+
+    const auto signature_help = lsp::parseSignatureHelpParams(params);
+    const auto* document = document_store_.find(signature_help.text_document.uri);
+    if (!document) {
+        return nullptr;
+    }
+
+    const auto invocation = findSignatureInvocation(compilation_service_, *document, signature_help.position);
+    if (!invocation.has_value()) {
+        return nullptr;
+    }
+
+    const auto modules = buildModuleLookup(sortedModuleDefinitions(hierarchy_documents_));
+    const auto module_it = modules.find(invocation->module_name);
+    if (module_it == modules.end()) {
+        return nullptr;
+    }
+
+    return toSignatureHelpJson(module_it->second.definition, invocation->active_parameter);
+}
+
+jsonrpc::Json ServerSession::handlePrepareCallHierarchy(const jsonrpc::Json& params) {
+    if (!initialized_) {
+        throw std::runtime_error("textDocument/prepareCallHierarchy received before initialize");
+    }
+
+    const auto prepare = lsp::parseCallHierarchyPrepareParams(params);
+    const auto definitions = sortedModuleDefinitions(hierarchy_documents_);
+    const auto module = findCallHierarchyModuleAt(definitions, prepare.text_document.uri, prepare.position);
+    if (!module.has_value()) {
+        return nullptr;
+    }
+
+    return jsonrpc::Json::array({toCallHierarchyItemJson(*module)});
+}
+
+jsonrpc::Json ServerSession::handleIncomingCalls(const jsonrpc::Json& params) {
+    if (!initialized_) {
+        throw std::runtime_error("callHierarchy/incomingCalls received before initialize");
+    }
+
+    const auto calls = lsp::parseCallHierarchyCallsParams(params);
+    const auto definitions = sortedModuleDefinitions(hierarchy_documents_);
+    const auto target = findCallHierarchyModule(definitions, calls.item);
+    if (!target.has_value()) {
+        return jsonrpc::Json::array();
+    }
+
+    jsonrpc::Json result = jsonrpc::Json::array();
+    for (const auto& caller : definitions) {
+        for (const auto& instance : caller.definition.instances) {
+            if (instance.module_name == target->definition.name) {
+                result.push_back(jsonrpc::Json{{"from", toCallHierarchyItemJson(caller)},
+                                               {"fromRanges", jsonrpc::Json::array(
+                                                                  {toRangeJson(instance.module_selection_range)})}});
+            }
+        }
+    }
+
+    return result;
+}
+
+jsonrpc::Json ServerSession::handleOutgoingCalls(const jsonrpc::Json& params) {
+    if (!initialized_) {
+        throw std::runtime_error("callHierarchy/outgoingCalls received before initialize");
+    }
+
+    const auto calls = lsp::parseCallHierarchyCallsParams(params);
+    const auto definitions = sortedModuleDefinitions(hierarchy_documents_);
+    const auto source = findCallHierarchyModule(definitions, calls.item);
+    if (!source.has_value()) {
+        return jsonrpc::Json::array();
+    }
+
+    const auto modules = buildModuleLookup(definitions);
+    jsonrpc::Json result = jsonrpc::Json::array();
+    for (const auto& instance : source->definition.instances) {
+        const auto target_it = modules.find(instance.module_name);
+        if (target_it == modules.end()) {
+            continue;
+        }
+        result.push_back(jsonrpc::Json{{"to", toCallHierarchyItemJson(target_it->second)},
+                                       {"fromRanges", jsonrpc::Json::array(
+                                                          {toRangeJson(instance.module_selection_range)})}});
+    }
+
+    return result;
+}
+
 jsonrpc::Json ServerSession::handleWorkspaceSymbol(const jsonrpc::Json& params) {
     if (!initialized_) {
         throw std::runtime_error("workspace/symbol received before initialize");
@@ -468,6 +1310,75 @@ jsonrpc::Json ServerSession::handleCompletion(const jsonrpc::Json& params) {
     }
 
     return result;
+}
+
+jsonrpc::Json ServerSession::handlePrepareRename(const jsonrpc::Json& params) {
+    if (!initialized_) {
+        throw std::runtime_error("textDocument/prepareRename received before initialize");
+    }
+
+    const auto prepare = lsp::parsePrepareRenameParams(params);
+    const auto* document = document_store_.find(prepare.text_document.uri);
+    if (!document) {
+        return nullptr;
+    }
+
+    const auto identifier = compilation_service_.identifierAt(document->text, prepare.position.line,
+                                                              prepare.position.character);
+    if (!identifier) {
+        return nullptr;
+    }
+
+    const auto definitions = symbol_index_.definitions(identifier->name, document->uri);
+    if (definitions.empty() || symbol_index_.hasAmbiguousDefinitions(identifier->name, document->uri)) {
+        return nullptr;
+    }
+
+    return jsonrpc::Json{{"range", toRangeJson(identifier->range)}, {"placeholder", identifier->name}};
+}
+
+jsonrpc::Json ServerSession::handleRename(const jsonrpc::Json& params) {
+    if (!initialized_) {
+        throw std::runtime_error("textDocument/rename received before initialize");
+    }
+
+    const auto rename = lsp::parseRenameParams(params);
+    if (!isValidIdentifier(rename.new_name)) {
+        return nullptr;
+    }
+
+    const auto* document = document_store_.find(rename.text_document.uri);
+    if (!document) {
+        return nullptr;
+    }
+
+    const auto identifier = compilation_service_.identifierAt(document->text, rename.position.line,
+                                                              rename.position.character);
+    if (!identifier) {
+        return nullptr;
+    }
+
+    const auto definitions = symbol_index_.definitions(identifier->name, document->uri);
+    if (definitions.empty() || symbol_index_.hasAmbiguousDefinitions(identifier->name, document->uri)) {
+        return nullptr;
+    }
+
+    std::map<std::string, jsonrpc::Json> changes;
+    for (const auto& reference : symbol_index_.references(identifier->name, true)) {
+        auto [entry_it, inserted] = changes.try_emplace(reference.location.uri, jsonrpc::Json::array());
+        entry_it->second.push_back(toTextEditJson(reference.location.range, rename.new_name));
+    }
+
+    if (changes.empty()) {
+        return nullptr;
+    }
+
+    jsonrpc::Json changes_json = jsonrpc::Json::object();
+    for (auto& [uri, edits] : changes) {
+        changes_json[uri] = std::move(edits);
+    }
+
+    return jsonrpc::Json{{"changes", std::move(changes_json)}};
 }
 
 jsonrpc::Json ServerSession::handleShutdown(const jsonrpc::Json&) {

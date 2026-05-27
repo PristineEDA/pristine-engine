@@ -151,7 +151,23 @@ TEST_CASE("ServerSession handles initialize-shutdown-exit", "[server][lifecycle]
           true);
     CHECK(initialize_response.at("result").at("capabilities").at("hoverProvider") == true);
     CHECK(initialize_response.at("result").at("capabilities").at("definitionProvider") == true);
+    CHECK(initialize_response.at("result").at("capabilities").at("documentHighlightProvider") == true);
+    CHECK(initialize_response.at("result").at("capabilities").at("documentLinkProvider").at(
+              "resolveProvider") == false);
+    CHECK(initialize_response.at("result").at("capabilities").at("inlayHintProvider").at(
+              "resolveProvider") == false);
+    CHECK(initialize_response.at("result").at("capabilities").at("codeActionProvider").at(
+              "resolveProvider") == false);
+    CHECK(initialize_response.at("result").at("capabilities").at("foldingRangeProvider") == true);
+    CHECK(initialize_response.at("result").at("capabilities").at("semanticTokensProvider").at(
+              "full") == true);
+    CHECK(initialize_response.at("result").at("capabilities").at("selectionRangeProvider") == true);
+    CHECK(initialize_response.at("result").at("capabilities").at("signatureHelpProvider").at(
+              "triggerCharacters").at(0) == "(");
+    CHECK(initialize_response.at("result").at("capabilities").at("callHierarchyProvider") == true);
     CHECK(initialize_response.at("result").at("capabilities").at("referencesProvider") == true);
+    CHECK(initialize_response.at("result").at("capabilities").at("renameProvider").at(
+              "prepareProvider") == true);
     CHECK(initialize_response.at("result").at("capabilities").at("workspaceSymbolProvider") == true);
     CHECK(initialize_response.at("result").at("capabilities").at("completionProvider").at(
               "resolveProvider") == false);
@@ -577,6 +593,143 @@ TEST_CASE("ServerSession handles Tier 1 LSP navigation and completion", "[server
     }));
 }
 
+TEST_CASE("ServerSession handles Tier 2 rename highlight and document links", "[server][lsp-core]") {
+    jsonrpc::JsonRpcServer rpc_server;
+    ServerSession session{"pristine-lsp", kTestServerVersion};
+    session.bind(rpc_server);
+
+    TempWorkspace workspace;
+    workspace.writeFile("rtl/child.sv", "module child(input logic clk, output logic rst_n); endmodule\n");
+    const auto include_path = workspace.writeFile("rtl/defs.svh", "`define FEATURE 1\n");
+    const auto top_text = std::string(
+        "`include \"defs.svh\"\n"
+        "`include \"missing.svh\"\n"
+        "module top;\n"
+        "  child child_i(.clk(), .rst_n());\n"
+        "  logic ready;\n"
+        "  assign ready = ready;\n"
+        "endmodule\n");
+    const auto top_path = workspace.writeFile("rtl/top.sv", top_text);
+    const auto include_uri = toFileUri(include_path);
+    const auto missing_uri = toFileUri(workspace.root() / "rtl" / "missing.svh");
+    const auto top_uri = toFileUri(top_path);
+    const auto top_text_json = jsonrpc::Json(top_text).dump();
+
+    ScriptedTransport transport{
+        std::string(R"({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"rootUri":")") +
+            toFileUri(workspace.root()) + R"("}})",
+        std::string(R"({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":")") +
+            top_uri + R"(","languageId":"systemverilog","version":1,"text":)" + top_text_json + R"(}}})",
+        std::string(R"({"jsonrpc":"2.0","id":2,"method":"textDocument/documentHighlight","params":{"textDocument":{"uri":")") +
+            top_uri + R"("},"position":{"line":4,"character":9}}})",
+        std::string(R"({"jsonrpc":"2.0","id":3,"method":"textDocument/rename","params":{"textDocument":{"uri":")") +
+            top_uri + R"("},"position":{"line":4,"character":9},"newName":"valid"}})",
+        std::string(R"({"jsonrpc":"2.0","id":4,"method":"textDocument/rename","params":{"textDocument":{"uri":")") +
+            top_uri + R"("},"position":{"line":4,"character":9},"newName":"not valid"}})",
+        std::string(R"({"jsonrpc":"2.0","id":5,"method":"textDocument/documentLink","params":{"textDocument":{"uri":")") +
+            top_uri + R"("}}})",
+        std::string(R"({"jsonrpc":"2.0","id":6,"method":"textDocument/inlayHint","params":{"textDocument":{"uri":")") +
+            top_uri + R"("},"range":{"start":{"line":0,"character":0},"end":{"line":7,"character":0}}}})",
+        std::string(R"({"jsonrpc":"2.0","id":7,"method":"textDocument/codeAction","params":{"textDocument":{"uri":")") +
+            top_uri + R"("},"range":{"start":{"line":1,"character":10},"end":{"line":1,"character":21}},"context":{"diagnostics":[]}}})",
+        std::string(R"({"jsonrpc":"2.0","id":8,"method":"textDocument/foldingRange","params":{"textDocument":{"uri":")") +
+            top_uri + R"("}}})",
+        std::string(R"({"jsonrpc":"2.0","id":9,"method":"textDocument/semanticTokens/full","params":{"textDocument":{"uri":")") +
+            top_uri + R"("}}})",
+        std::string(R"({"jsonrpc":"2.0","id":10,"method":"textDocument/selectionRange","params":{"textDocument":{"uri":")") +
+            top_uri + R"("},"positions":[{"line":4,"character":9}]}})",
+        std::string(R"({"jsonrpc":"2.0","id":11,"method":"textDocument/signatureHelp","params":{"textDocument":{"uri":")") +
+            top_uri + R"("},"position":{"line":3,"character":25}}})",
+        std::string(R"({"jsonrpc":"2.0","id":12,"method":"textDocument/prepareRename","params":{"textDocument":{"uri":")") +
+            top_uri + R"("},"position":{"line":4,"character":9}}})"};
+
+    const int exit_code = rpc_server.run(transport);
+
+    CHECK(exit_code == 0);
+    REQUIRE(transport.outputs().size() == 13);
+
+    const auto highlight_response = parseOutput(transport, 2);
+    CHECK(highlight_response.at("id") == 2);
+    REQUIRE(highlight_response.at("result").size() == 3);
+    CHECK(highlight_response.at("result").at(0).at("range").at("start").at("line") == 4);
+    CHECK(highlight_response.at("result").at(1).at("range").at("start").at("line") == 5);
+    CHECK(highlight_response.at("result").at(2).at("kind") == 1);
+
+    const auto rename_response = parseOutput(transport, 3);
+    CHECK(rename_response.at("id") == 3);
+    const auto& edits = rename_response.at("result").at("changes").at(top_uri);
+    REQUIRE(edits.size() == 3);
+    CHECK(edits.at(0).at("newText") == "valid");
+    CHECK(edits.at(0).at("range").at("start").at("line") == 4);
+    CHECK(edits.at(1).at("range").at("start").at("line") == 5);
+
+    const auto invalid_rename_response = parseOutput(transport, 4);
+    CHECK(invalid_rename_response.at("id") == 4);
+    CHECK(invalid_rename_response.at("result").is_null());
+
+    const auto document_link_response = parseOutput(transport, 5);
+    CHECK(document_link_response.at("id") == 5);
+    REQUIRE(document_link_response.at("result").size() == 1);
+    CHECK(document_link_response.at("result").at(0).at("target") == include_uri);
+    CHECK(document_link_response.at("result").at(0).at("range").at("start").at("line") == 0);
+    CHECK(document_link_response.at("result").at(0).at("range").at("start").at("character") == 10);
+
+    const auto inlay_hint_response = parseOutput(transport, 6);
+    CHECK(inlay_hint_response.at("id") == 6);
+    REQUIRE(inlay_hint_response.at("result").size() == 1);
+    CHECK(inlay_hint_response.at("result").at(0).at("label") == ": child");
+    CHECK(inlay_hint_response.at("result").at(0).at("kind") == 1);
+    CHECK(inlay_hint_response.at("result").at(0).at("position").at("line") == 3);
+    CHECK(inlay_hint_response.at("result").at(0).at("position").at("character") == 15);
+
+    const auto code_action_response = parseOutput(transport, 7);
+    CHECK(code_action_response.at("id") == 7);
+    REQUIRE(code_action_response.at("result").size() == 1);
+    const auto& code_action = code_action_response.at("result").at(0);
+    CHECK(code_action.at("title") == "Create include file 'missing.svh'");
+    CHECK(code_action.at("kind") == "quickfix");
+    CHECK(code_action.at("edit").at("documentChanges").at(0).at("kind") == "create");
+    CHECK(code_action.at("edit").at("documentChanges").at(0).at("uri") == missing_uri);
+
+    const auto folding_response = parseOutput(transport, 8);
+    CHECK(folding_response.at("id") == 8);
+    REQUIRE_FALSE(folding_response.at("result").empty());
+    CHECK(folding_response.at("result").at(0).at("startLine") == 2);
+    CHECK(folding_response.at("result").at(0).at("endLine") == 6);
+
+    const auto semantic_tokens_response = parseOutput(transport, 9);
+    CHECK(semantic_tokens_response.at("id") == 9);
+    const auto& semantic_data = semantic_tokens_response.at("result").at("data");
+    REQUIRE_FALSE(semantic_data.empty());
+    CHECK(semantic_data.size() % 5 == 0);
+
+    const auto selection_range_response = parseOutput(transport, 10);
+    CHECK(selection_range_response.at("id") == 10);
+    REQUIRE(selection_range_response.at("result").size() == 1);
+    const auto& selection_range = selection_range_response.at("result").at(0);
+    CHECK(selection_range.at("range").at("start").at("line") == 4);
+    CHECK(selection_range.at("range").at("start").at("character") == 8);
+    CHECK(selection_range.at("parent").at("range").at("start").at("character") == 2);
+    CHECK(selection_range.at("parent").at("parent").at("range").at("start").at("line") == 2);
+
+    const auto signature_help_response = parseOutput(transport, 11);
+    CHECK(signature_help_response.at("id") == 11);
+    const auto& signature_help = signature_help_response.at("result");
+    REQUIRE(signature_help.at("signatures").size() == 1);
+    CHECK(signature_help.at("signatures").at(0).at("label") == "child(clk, rst_n)");
+    REQUIRE(signature_help.at("signatures").at(0).at("parameters").size() == 2);
+    CHECK(signature_help.at("signatures").at(0).at("parameters").at(0).at("label") == "clk");
+    CHECK(signature_help.at("signatures").at(0).at("parameters").at(1).at("label") == "rst_n");
+    CHECK(signature_help.at("activeParameter") == 1);
+
+    const auto prepare_rename_response = parseOutput(transport, 12);
+    CHECK(prepare_rename_response.at("id") == 12);
+    CHECK(prepare_rename_response.at("result").at("placeholder") == "ready");
+    CHECK(prepare_rename_response.at("result").at("range").at("start").at("line") == 4);
+    CHECK(prepare_rename_response.at("result").at("range").at("start").at("character") == 8);
+    CHECK(prepare_rename_response.at("result").at("range").at("end").at("character") == 13);
+}
+
 TEST_CASE("ServerSession returns inferred SystemVerilog module hierarchy", "[server][hierarchy]") {
     jsonrpc::JsonRpcServer rpc_server;
     ServerSession session{"pristine-lsp", kTestServerVersion};
@@ -628,6 +781,78 @@ TEST_CASE("ServerSession returns inferred SystemVerilog module hierarchy", "[ser
     CHECK(leaf.at("instanceName") == "u_leaf");
     CHECK(leaf.at("uri") == toFileUri(leaf_path));
     CHECK(leaf.at("children").empty());
+}
+
+TEST_CASE("ServerSession handles standard call hierarchy", "[server][hierarchy]") {
+    jsonrpc::JsonRpcServer rpc_server;
+    ServerSession session{"pristine-lsp", kTestServerVersion};
+    session.bind(rpc_server);
+
+    TempWorkspace workspace;
+    workspace.writeFile("rtl/leaf.sv", "module leaf; endmodule\n");
+    const auto child_path = workspace.writeFile(
+        "rtl/child.sv",
+        "module child;\n"
+        "  leaf u_leaf();\n"
+        "endmodule\n");
+    const auto top_path = workspace.writeFile(
+        "rtl/top.sv",
+        "module top;\n"
+        "  child u_child();\n"
+        "endmodule\n");
+    const auto child_uri = toFileUri(child_path);
+    const auto top_uri = toFileUri(top_path);
+
+    const auto top_item = std::string(
+        R"({"name":"top","kind":2,"uri":")") + top_uri +
+        R"(","range":{"start":{"line":0,"character":0},"end":{"line":0,"character":0}},"selectionRange":{"start":{"line":0,"character":7},"end":{"line":0,"character":10}}})";
+    const auto child_item = std::string(
+        R"({"name":"child","kind":2,"uri":")") + child_uri +
+        R"(","range":{"start":{"line":0,"character":0},"end":{"line":0,"character":0}},"selectionRange":{"start":{"line":0,"character":7},"end":{"line":0,"character":12}}})";
+
+    ScriptedTransport transport{
+        std::string(R"({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"rootUri":")") +
+            toFileUri(workspace.root()) + R"("}})",
+        std::string(R"({"jsonrpc":"2.0","id":2,"method":"textDocument/prepareCallHierarchy","params":{"textDocument":{"uri":")") +
+            top_uri + R"("},"position":{"line":0,"character":8}}})",
+        std::string(R"({"jsonrpc":"2.0","id":3,"method":"callHierarchy/outgoingCalls","params":{"item":)" +
+            top_item + R"(}})"),
+        std::string(R"({"jsonrpc":"2.0","id":4,"method":"textDocument/prepareCallHierarchy","params":{"textDocument":{"uri":")") +
+            top_uri + R"("},"position":{"line":1,"character":3}}})",
+        std::string(R"({"jsonrpc":"2.0","id":5,"method":"callHierarchy/incomingCalls","params":{"item":)" +
+            child_item + R"(}})")};
+
+    const int exit_code = rpc_server.run(transport);
+
+    CHECK(exit_code == 0);
+    REQUIRE(transport.outputs().size() == 5);
+
+    const auto prepare_top_response = parseOutput(transport, 1);
+    CHECK(prepare_top_response.at("id") == 2);
+    REQUIRE(prepare_top_response.at("result").size() == 1);
+    CHECK(prepare_top_response.at("result").at(0).at("name") == "top");
+    CHECK(prepare_top_response.at("result").at(0).at("uri") == top_uri);
+
+    const auto outgoing_response = parseOutput(transport, 2);
+    CHECK(outgoing_response.at("id") == 3);
+    REQUIRE(outgoing_response.at("result").size() == 1);
+    CHECK(outgoing_response.at("result").at(0).at("to").at("name") == "child");
+    CHECK(outgoing_response.at("result").at(0).at("to").at("uri") == child_uri);
+    CHECK(outgoing_response.at("result").at(0).at("fromRanges").at(0).at("start").at("line") == 1);
+    CHECK(outgoing_response.at("result").at(0).at("fromRanges").at(0).at("start").at("character") == 2);
+
+    const auto prepare_child_response = parseOutput(transport, 3);
+    CHECK(prepare_child_response.at("id") == 4);
+    REQUIRE(prepare_child_response.at("result").size() == 1);
+    CHECK(prepare_child_response.at("result").at(0).at("name") == "child");
+    CHECK(prepare_child_response.at("result").at(0).at("uri") == child_uri);
+
+    const auto incoming_response = parseOutput(transport, 4);
+    CHECK(incoming_response.at("id") == 5);
+    REQUIRE(incoming_response.at("result").size() == 1);
+    CHECK(incoming_response.at("result").at(0).at("from").at("name") == "top");
+    CHECK(incoming_response.at("result").at(0).at("from").at("uri") == top_uri);
+    CHECK(incoming_response.at("result").at(0).at("fromRanges").at(0).at("start").at("line") == 1);
 }
 
 TEST_CASE("ServerSession marks unresolved and cyclic module hierarchy entries", "[server][hierarchy]") {

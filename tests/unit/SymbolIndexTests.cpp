@@ -26,6 +26,12 @@ TEST_CASE("SymbolIndex resolves definitions and references", "[analysis][index]"
     REQUIRE(references.size() == 2);
     CHECK(references[0].location.range.start_line == 3);
     CHECK(references[1].location.range.start_line == 3);
+
+    const auto document_references = index.documentReferences("file:///workspace/top.sv", "ready", true);
+    REQUIRE(document_references.size() == 3);
+    CHECK(document_references[0].location.range.start_line == 2);
+    CHECK(document_references[1].location.range.start_line == 3);
+    CHECK(document_references[2].location.range.start_line == 3);
 }
 
 TEST_CASE("SymbolIndex returns workspace symbols and completions", "[analysis][index]") {
@@ -47,6 +53,16 @@ TEST_CASE("SymbolIndex returns workspace symbols and completions", "[analysis][i
     CHECK(std::any_of(completions.begin(), completions.end(), [](const CompletionEntry& item) {
         return item.label == "child" && item.detail == "Module";
     }));
+}
+
+TEST_CASE("SymbolIndex detects ambiguous definitions", "[analysis][index]") {
+    SymbolIndex index;
+    index.updateDocument("file:///workspace/a.sv", "module child; endmodule\n");
+    index.updateDocument("file:///workspace/b.sv", "module child; endmodule\n");
+    index.updateDocument("file:///workspace/top.sv", "module top; child child_i(); endmodule\n");
+
+    CHECK(index.hasAmbiguousDefinitions("child", "file:///workspace/top.sv"));
+    CHECK_FALSE(index.hasAmbiguousDefinitions("top", "file:///workspace/top.sv"));
 }
 
 } // namespace pristine::analysis

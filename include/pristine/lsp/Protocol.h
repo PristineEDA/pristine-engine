@@ -71,6 +71,59 @@ struct DefinitionParams {
 	Position position;
 };
 
+struct DocumentHighlightParams {
+	TextDocumentIdentifier text_document;
+	Position position;
+};
+
+struct DocumentLinkParams {
+	TextDocumentIdentifier text_document;
+};
+
+struct InlayHintParams {
+	TextDocumentIdentifier text_document;
+	Range range;
+};
+
+struct CodeActionParams {
+	TextDocumentIdentifier text_document;
+	Range range;
+};
+
+struct FoldingRangeParams {
+	TextDocumentIdentifier text_document;
+};
+
+struct SemanticTokensParams {
+	TextDocumentIdentifier text_document;
+};
+
+struct SelectionRangeParams {
+	TextDocumentIdentifier text_document;
+	std::vector<Position> positions;
+};
+
+struct SignatureHelpParams {
+	TextDocumentIdentifier text_document;
+	Position position;
+};
+
+struct CallHierarchyPrepareParams {
+	TextDocumentIdentifier text_document;
+	Position position;
+};
+
+struct CallHierarchyItem {
+	std::string name;
+	std::string uri;
+	Range range;
+	Range selection_range;
+};
+
+struct CallHierarchyCallsParams {
+	CallHierarchyItem item;
+};
+
 struct ReferenceContext {
 	bool include_declaration = false;
 };
@@ -96,6 +149,17 @@ struct CompletionParams {
 	std::optional<CompletionContext> context;
 };
 
+struct PrepareRenameParams {
+	TextDocumentIdentifier text_document;
+	Position position;
+};
+
+struct RenameParams {
+	TextDocumentIdentifier text_document;
+	Position position;
+	std::string new_name;
+};
+
 struct WorkspaceFolder {
 	std::string uri;
 	std::string name;
@@ -116,8 +180,20 @@ DidSaveTextDocumentParams parseDidSaveTextDocumentParams(const Json& params);
 DidCloseTextDocumentParams parseDidCloseTextDocumentParams(const Json& params);
 HoverParams parseHoverParams(const Json& params);
 DefinitionParams parseDefinitionParams(const Json& params);
+DocumentHighlightParams parseDocumentHighlightParams(const Json& params);
+DocumentLinkParams parseDocumentLinkParams(const Json& params);
+InlayHintParams parseInlayHintParams(const Json& params);
+CodeActionParams parseCodeActionParams(const Json& params);
+FoldingRangeParams parseFoldingRangeParams(const Json& params);
+SemanticTokensParams parseSemanticTokensParams(const Json& params);
+SelectionRangeParams parseSelectionRangeParams(const Json& params);
+SignatureHelpParams parseSignatureHelpParams(const Json& params);
+CallHierarchyPrepareParams parseCallHierarchyPrepareParams(const Json& params);
+CallHierarchyCallsParams parseCallHierarchyCallsParams(const Json& params);
 ReferenceParams parseReferenceParams(const Json& params);
 WorkspaceSymbolParams parseWorkspaceSymbolParams(const Json& params);
 CompletionParams parseCompletionParams(const Json& params);
+PrepareRenameParams parsePrepareRenameParams(const Json& params);
+RenameParams parseRenameParams(const Json& params);
 
 } // namespace pristine::lsp

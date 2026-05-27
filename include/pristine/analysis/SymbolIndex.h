@@ -43,9 +43,14 @@ public:
                                                        std::string_view preferred_uri) const;
     [[nodiscard]] std::vector<ReferenceEntry> references(std::string_view name,
                                                          bool include_declaration) const;
+    [[nodiscard]] std::vector<ReferenceEntry> documentReferences(std::string_view uri,
+                                                                 std::string_view name,
+                                                                 bool include_declaration) const;
     [[nodiscard]] std::vector<SymbolEntry> workspaceSymbols(std::string_view query) const;
     [[nodiscard]] std::vector<CompletionEntry> completions(std::string_view prefix,
                                                            std::string_view preferred_uri) const;
+    [[nodiscard]] bool hasAmbiguousDefinitions(std::string_view name,
+                                               std::string_view preferred_uri) const;
     [[nodiscard]] size_t documentCount() const { return documents_.size(); }
 
 private:

@@ -47,6 +47,7 @@ struct ModuleDefinition {
     std::string name;
     ParseRange range;
     ParseRange selection_range;
+    std::vector<std::string> ports;
     std::vector<ModuleInstantiation> instances;
 };
 
@@ -57,6 +58,11 @@ struct HoverResult {
 
 struct Identifier {
     std::string name;
+    ParseRange range;
+};
+
+struct IncludeDirective {
+    std::string target;
     ParseRange range;
 };
 
@@ -84,6 +90,7 @@ public:
     [[nodiscard]] std::string completionPrefix(std::string_view text,
                                                int line,
                                                int character) const;
+    [[nodiscard]] std::vector<IncludeDirective> includeDirectives(std::string_view text) const;
 };
 
 } // namespace pristine::analysis

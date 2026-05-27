@@ -67,18 +67,33 @@ def main() -> int:
         root = pathlib.Path(temp_dir)
         rtl = root / "rtl"
         rtl.mkdir()
+        leaf = rtl / "leaf.sv"
         child = rtl / "child.sv"
         top = rtl / "top.sv"
-        child.write_text("module child; endmodule\n", encoding="utf-8")
+        defs = rtl / "defs.svh"
+        missing = rtl / "missing.svh"
+        leaf.write_text("module leaf; endmodule\n", encoding="utf-8")
+        child.write_text(
+            "module child(input logic clk, output logic rst_n);\n"
+            "  leaf u_leaf();\n"
+            "endmodule\n",
+            encoding="utf-8",
+        )
+        defs.write_text("`define FEATURE 1\n", encoding="utf-8")
         top_text = (
+            "`include \"defs.svh\"\n"
+            "`include \"missing.svh\"\n"
             "module top;\n"
-            "  child child_i();\n"
+            "  child child_i(.clk(), .rst_n());\n"
             "  logic ready;\n"
             "  assign ready = ready;\n"
             "endmodule\n"
         )
         top.write_text(top_text, encoding="utf-8")
+        leaf_uri = leaf.resolve().as_uri()
         child_uri = child.resolve().as_uri()
+        defs_uri = defs.resolve().as_uri()
+        missing_uri = missing.resolve().as_uri()
         top_uri = top.resolve().as_uri()
 
         process = subprocess.Popen(
@@ -101,7 +116,17 @@ def main() -> int:
             )
             capabilities = initialize["result"]["capabilities"]
             assert capabilities["definitionProvider"] is True
+            assert capabilities["documentHighlightProvider"] is True
+            assert capabilities["documentLinkProvider"]["resolveProvider"] is False
+            assert capabilities["inlayHintProvider"]["resolveProvider"] is False
+            assert capabilities["codeActionProvider"]["resolveProvider"] is False
+            assert capabilities["foldingRangeProvider"] is True
+            assert capabilities["semanticTokensProvider"]["full"] is True
+            assert capabilities["selectionRangeProvider"] is True
+            assert capabilities["signatureHelpProvider"]["triggerCharacters"] == ["(", ","]
+            assert capabilities["callHierarchyProvider"] is True
             assert capabilities["referencesProvider"] is True
+            assert capabilities["renameProvider"]["prepareProvider"] is True
             assert capabilities["workspaceSymbolProvider"] is True
             assert capabilities["completionProvider"]["resolveProvider"] is False
 
@@ -125,7 +150,7 @@ def main() -> int:
                 "textDocument/definition",
                 {
                     "textDocument": {"uri": top_uri},
-                    "position": {"line": 1, "character": 3},
+                    "position": {"line": 3, "character": 3},
                 },
             )["result"]
             assert len(definition) == 1
@@ -138,12 +163,12 @@ def main() -> int:
                 "textDocument/references",
                 {
                     "textDocument": {"uri": top_uri},
-                    "position": {"line": 2, "character": 9},
+                    "position": {"line": 4, "character": 9},
                     "context": {"includeDeclaration": False},
                 },
             )["result"]
             assert len(references) == 2
-            assert all(item["range"]["start"]["line"] == 3 for item in references)
+            assert all(item["range"]["start"]["line"] == 5 for item in references)
 
             workspace_symbols = request(
                 process,
@@ -162,7 +187,7 @@ def main() -> int:
                 "textDocument/completion",
                 {
                     "textDocument": {"uri": top_uri},
-                    "position": {"line": 1, "character": 4},
+                    "position": {"line": 3, "character": 4},
                     "context": {"triggerKind": 1},
                 },
             )["result"]
@@ -170,7 +195,219 @@ def main() -> int:
             assert "child" in labels
             assert "child_i" in labels
 
-            request(process, 6, "shutdown", None)
+            highlights = request(
+                process,
+                6,
+                "textDocument/documentHighlight",
+                {
+                    "textDocument": {"uri": top_uri},
+                    "position": {"line": 4, "character": 9},
+                },
+            )["result"]
+            assert len(highlights) == 3
+            assert highlights[0]["range"]["start"] == {"line": 4, "character": 8}
+            assert highlights[1]["range"]["start"]["line"] == 5
+
+            rename = request(
+                process,
+                7,
+                "textDocument/rename",
+                {
+                    "textDocument": {"uri": top_uri},
+                    "position": {"line": 4, "character": 9},
+                    "newName": "valid",
+                },
+            )["result"]
+            assert set(rename["changes"].keys()) == {top_uri}
+            assert len(rename["changes"][top_uri]) == 3
+            assert all(edit["newText"] == "valid" for edit in rename["changes"][top_uri])
+
+            links = request(
+                process,
+                8,
+                "textDocument/documentLink",
+                {"textDocument": {"uri": top_uri}},
+            )["result"]
+            assert links == [
+                {
+                    "range": {
+                        "start": {"line": 0, "character": 10},
+                        "end": {"line": 0, "character": 18},
+                    },
+                    "target": defs_uri,
+                }
+            ]
+
+            inlay_hints = request(
+                process,
+                9,
+                "textDocument/inlayHint",
+                {
+                    "textDocument": {"uri": top_uri},
+                    "range": {
+                        "start": {"line": 0, "character": 0},
+                        "end": {"line": 7, "character": 0},
+                    },
+                },
+            )["result"]
+            assert inlay_hints == [
+                {
+                    "position": {"line": 3, "character": 15},
+                    "label": ": child",
+                    "kind": 1,
+                }
+            ]
+
+            code_actions = request(
+                process,
+                10,
+                "textDocument/codeAction",
+                {
+                    "textDocument": {"uri": top_uri},
+                    "range": {
+                        "start": {"line": 1, "character": 10},
+                        "end": {"line": 1, "character": 21},
+                    },
+                    "context": {"diagnostics": []},
+                },
+            )["result"]
+            assert len(code_actions) == 1
+            assert code_actions[0]["title"] == "Create include file 'missing.svh'"
+            assert code_actions[0]["kind"] == "quickfix"
+            assert code_actions[0]["edit"]["documentChanges"][0] == {
+                "kind": "create",
+                "uri": missing_uri,
+                "options": {"ignoreIfExists": True},
+            }
+
+            prepare_top = request(
+                process,
+                11,
+                "textDocument/prepareCallHierarchy",
+                {
+                    "textDocument": {"uri": top_uri},
+                    "position": {"line": 2, "character": 8},
+                },
+            )["result"]
+            assert len(prepare_top) == 1
+            top_item = prepare_top[0]
+            assert top_item["name"] == "top"
+            assert top_item["uri"] == top_uri
+
+            top_outgoing = request(
+                process,
+                12,
+                "callHierarchy/outgoingCalls",
+                {"item": top_item},
+            )["result"]
+            assert len(top_outgoing) == 1
+            assert top_outgoing[0]["to"]["name"] == "child"
+            assert top_outgoing[0]["to"]["uri"] == child_uri
+            assert top_outgoing[0]["fromRanges"][0]["start"] == {"line": 3, "character": 2}
+
+            prepare_child = request(
+                process,
+                13,
+                "textDocument/prepareCallHierarchy",
+                {
+                    "textDocument": {"uri": top_uri},
+                    "position": {"line": 3, "character": 3},
+                },
+            )["result"]
+            assert len(prepare_child) == 1
+            child_item = prepare_child[0]
+            assert child_item["name"] == "child"
+            assert child_item["uri"] == child_uri
+
+            child_incoming = request(
+                process,
+                14,
+                "callHierarchy/incomingCalls",
+                {"item": child_item},
+            )["result"]
+            assert len(child_incoming) == 1
+            assert child_incoming[0]["from"]["name"] == "top"
+            assert child_incoming[0]["from"]["uri"] == top_uri
+
+            child_outgoing = request(
+                process,
+                15,
+                "callHierarchy/outgoingCalls",
+                {"item": child_item},
+            )["result"]
+            assert len(child_outgoing) == 1
+            assert child_outgoing[0]["to"]["name"] == "leaf"
+            assert child_outgoing[0]["to"]["uri"] == leaf_uri
+
+            folding_ranges = request(
+                process,
+                16,
+                "textDocument/foldingRange",
+                {"textDocument": {"uri": top_uri}},
+            )["result"]
+            assert any(
+                item["startLine"] == 2 and item["endLine"] == 6
+                for item in folding_ranges
+            )
+
+            semantic_tokens = request(
+                process,
+                17,
+                "textDocument/semanticTokens/full",
+                {"textDocument": {"uri": top_uri}},
+            )["result"]
+            assert semantic_tokens["data"]
+            assert len(semantic_tokens["data"]) % 5 == 0
+
+            selection_ranges = request(
+                process,
+                18,
+                "textDocument/selectionRange",
+                {
+                    "textDocument": {"uri": top_uri},
+                    "positions": [{"line": 4, "character": 9}],
+                },
+            )["result"]
+            assert len(selection_ranges) == 1
+            selection_range = selection_ranges[0]
+            assert selection_range["range"]["start"] == {"line": 4, "character": 8}
+            assert selection_range["parent"]["range"]["start"] == {"line": 4, "character": 2}
+            assert selection_range["parent"]["parent"]["range"]["start"] == {"line": 2, "character": 0}
+
+            signature_help = request(
+                process,
+                19,
+                "textDocument/signatureHelp",
+                {
+                    "textDocument": {"uri": top_uri},
+                    "position": {"line": 3, "character": 25},
+                },
+            )["result"]
+            assert signature_help["signatures"][0]["label"] == "child(clk, rst_n)"
+            assert signature_help["signatures"][0]["parameters"] == [
+                {"label": "clk"},
+                {"label": "rst_n"},
+            ]
+            assert signature_help["activeParameter"] == 1
+
+            prepare_rename = request(
+                process,
+                20,
+                "textDocument/prepareRename",
+                {
+                    "textDocument": {"uri": top_uri},
+                    "position": {"line": 4, "character": 9},
+                },
+            )["result"]
+            assert prepare_rename == {
+                "range": {
+                    "start": {"line": 4, "character": 8},
+                    "end": {"line": 4, "character": 13},
+                },
+                "placeholder": "ready",
+            }
+
+            request(process, 21, "shutdown", None)
             notify(process, "exit", None)
             return_code = process.wait(timeout=5)
             assert return_code == 0
