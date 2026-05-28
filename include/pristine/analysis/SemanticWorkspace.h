@@ -11,6 +11,30 @@
 
 namespace pristine::analysis {
 
+enum class SemanticTypeKind {
+    Unknown,
+    Builtin,
+    Alias,
+    Enum,
+    Module,
+    Interface,
+    Class
+};
+
+struct SemanticType {
+    SemanticTypeKind kind = SemanticTypeKind::Unknown;
+    std::string name;
+    std::string display_name;
+    std::optional<Location> declaration;
+};
+
+struct SemanticDocumentState {
+    int version = -1;
+    bool is_open = false;
+    bool dirty = false;
+    bool invalidate_dependents = false;
+};
+
 struct SemanticScope {
     std::string path;
     std::string parent_path;
@@ -34,7 +58,12 @@ struct SemanticReference {
 
 struct SemanticDocument {
     std::string uri;
+    int version = -1;
+    bool is_open = false;
+    bool dirty = false;
+    bool stale = false;
     std::vector<IncludeDirective> includes;
+    std::vector<std::string> included_uris;
     std::vector<SemanticScope> scopes;
     std::vector<SemanticSymbol> symbols;
     std::vector<SemanticReference> references;
@@ -43,10 +72,16 @@ struct SemanticDocument {
 class SemanticWorkspace {
 public:
     void clear();
-    void updateDocument(std::string_view uri, std::string_view text);
+    void setWorkspaceRoot(std::string_view root_uri);
+    void updateDocument(std::string_view uri,
+                        std::string_view text,
+                        SemanticDocumentState state = {});
     void removeDocument(std::string_view uri);
 
     [[nodiscard]] const SemanticDocument* document(std::string_view uri) const;
+    [[nodiscard]] std::vector<std::string> includedUris(std::string_view uri) const;
+    [[nodiscard]] std::vector<std::string> includingUris(std::string_view uri) const;
+    [[nodiscard]] std::vector<std::string> staleDocumentUris() const;
     [[nodiscard]] std::optional<SemanticSymbol> resolvedSymbolAt(std::string_view uri,
                                                                   int line,
                                                                   int character) const;
@@ -78,9 +113,15 @@ private:
     [[nodiscard]] std::vector<SemanticSymbol> resolveName(std::string_view name,
                                                           std::string_view scope_path,
                                                           std::string_view preferred_uri) const;
+    [[nodiscard]] std::vector<std::string> resolveIncludeUris(std::string_view including_uri,
+                                                              std::string_view target) const;
+    void rebuildReverseIncludes();
+    void markDependentsStale(std::string_view uri);
 
     CompilationService compilation_service_;
+    std::string workspace_root_uri_;
     std::unordered_map<std::string, SemanticDocument> documents_;
+    std::unordered_map<std::string, std::vector<std::string>> reverse_includes_;
 };
 
 } // namespace pristine::analysis

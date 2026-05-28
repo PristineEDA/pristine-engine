@@ -61,7 +61,9 @@ private:
     void handleDidChangeWatchedFiles(const jsonrpc::Json& params);
     void handleExit(const jsonrpc::Json& params);
     void indexWorkspaceSources();
-    void updateSymbolIndex(std::string_view uri, std::string_view text);
+    void updateSymbolIndex(std::string_view uri,
+                           std::string_view text,
+                           analysis::SemanticDocumentState semantic_state = {});
     void updateHierarchyIndex(std::string_view uri, std::string_view text);
     void restoreClosedDocumentIndex(std::string_view uri);
     void removeDocumentIndexes(std::string_view uri);

@@ -166,15 +166,142 @@ bool referenceLess(const SemanticReference& lhs, const SemanticReference& rhs) {
     return lhs.name < rhs.name;
 }
 
+bool isFileUri(std::string_view value) {
+    return value.starts_with("file://");
+}
+
+bool isWindowsAbsolutePath(std::string_view value) {
+    return value.size() >= 3 && std::isalpha(static_cast<unsigned char>(value[0])) != 0 && value[1] == ':' &&
+           (value[2] == '/' || value[2] == '\\');
+}
+
+std::string toForwardSlashes(std::string_view value) {
+    std::string result(value);
+    std::replace(result.begin(), result.end(), '\\', '/');
+    return result;
+}
+
+bool isDriveSegment(std::string_view value) {
+    return value.size() == 2 && std::isalpha(static_cast<unsigned char>(value[0])) != 0 && value[1] == ':';
+}
+
+std::string normalizeFileUri(std::string_view uri) {
+    if (!isFileUri(uri)) {
+        return toForwardSlashes(uri);
+    }
+
+    constexpr std::string_view prefix = "file://";
+    const auto path = toForwardSlashes(uri.substr(prefix.size()));
+    const bool absolute = !path.empty() && path.front() == '/';
+    std::vector<std::string> segments;
+
+    size_t position = 0;
+    while (position <= path.size()) {
+        const auto separator = path.find('/', position);
+        const auto segment = path.substr(position, separator == std::string::npos ? std::string::npos
+                                                                                  : separator - position);
+        if (!segment.empty() && segment != ".") {
+            if (segment == "..") {
+                if (!segments.empty() && !isDriveSegment(segments.back())) {
+                    segments.pop_back();
+                }
+                else if (!absolute) {
+                    segments.push_back(segment);
+                }
+            }
+            else {
+                segments.push_back(segment);
+            }
+        }
+        if (separator == std::string::npos) {
+            break;
+        }
+        position = separator + 1;
+    }
+
+    std::string normalized_path = absolute ? "/" : "";
+    for (size_t index = 0; index < segments.size(); ++index) {
+        if (index > 0) {
+            normalized_path.push_back('/');
+        }
+        normalized_path += segments[index];
+    }
+    return std::string(prefix) + normalized_path;
+}
+
+std::string withoutTrailingSlash(std::string value) {
+    constexpr std::string_view root_uri = "file:///";
+    while (value.size() > root_uri.size() && value.ends_with('/')) {
+        value.pop_back();
+    }
+    return value;
+}
+
+std::string uriDirectory(std::string_view uri) {
+    auto normalized = withoutTrailingSlash(normalizeFileUri(uri));
+    constexpr std::string_view prefix = "file://";
+    const auto separator = normalized.rfind('/');
+    if (separator == std::string::npos || separator <= prefix.size()) {
+        return normalized;
+    }
+    return normalized.substr(0, separator);
+}
+
+std::string joinFileUri(std::string_view base_uri, std::string_view target) {
+    if (target.empty()) {
+        return {};
+    }
+    if (isFileUri(target)) {
+        return withoutTrailingSlash(normalizeFileUri(target));
+    }
+
+    const auto normalized_target = toForwardSlashes(target);
+    if (!normalized_target.empty() && normalized_target.front() == '/') {
+        return withoutTrailingSlash(normalizeFileUri(std::string("file://") + normalized_target));
+    }
+    if (isWindowsAbsolutePath(normalized_target)) {
+        return withoutTrailingSlash(normalizeFileUri(std::string("file:///") + normalized_target));
+    }
+
+    auto base = withoutTrailingSlash(normalizeFileUri(base_uri));
+    return withoutTrailingSlash(normalizeFileUri(base + "/" + normalized_target));
+}
+
 } // namespace
 
 void SemanticWorkspace::clear() {
     documents_.clear();
+    reverse_includes_.clear();
 }
 
-void SemanticWorkspace::updateDocument(std::string_view uri, std::string_view text) {
-    SemanticDocument document{.uri = std::string(uri),
-                              .includes = compilation_service_.includeDirectives(text),
+void SemanticWorkspace::setWorkspaceRoot(std::string_view root_uri) {
+    workspace_root_uri_ = root_uri.empty() ? std::string{} : withoutTrailingSlash(normalizeFileUri(root_uri));
+}
+
+void SemanticWorkspace::updateDocument(std::string_view uri,
+                                       std::string_view text,
+                                       SemanticDocumentState state) {
+    const auto document_uri = withoutTrailingSlash(normalizeFileUri(uri));
+    if (state.invalidate_dependents) {
+        markDependentsStale(document_uri);
+    }
+
+    auto includes = compilation_service_.includeDirectives(text);
+    std::set<std::string> included_uris;
+    for (const auto& include : includes) {
+        for (const auto& included_uri : resolveIncludeUris(document_uri, include.target)) {
+            included_uris.insert(included_uri);
+        }
+    }
+
+    SemanticDocument document{.uri = document_uri,
+                              .version = state.version,
+                              .is_open = state.is_open,
+                              .dirty = state.dirty,
+                              .stale = false,
+                              .includes = std::move(includes),
+                              .included_uris = std::vector<std::string>(included_uris.begin(),
+                                                                        included_uris.end()),
                               .scopes = {SemanticScope{.path = std::string(kRootScope),
                                                        .parent_path = {},
                                                        .range = rootRange()}},
@@ -182,8 +309,8 @@ void SemanticWorkspace::updateDocument(std::string_view uri, std::string_view te
                               .references = {}};
 
     try {
-        for (const auto& symbol : compilation_service_.documentSymbols(text, uri)) {
-            appendSymbols(document, uri, kRootScope, symbol);
+        for (const auto& symbol : compilation_service_.documentSymbols(text, document_uri)) {
+            appendSymbols(document, document_uri, kRootScope, symbol);
         }
     }
     catch (...) {
@@ -192,30 +319,59 @@ void SemanticWorkspace::updateDocument(std::string_view uri, std::string_view te
     }
 
     for (const auto& identifier : compilation_service_.identifiers(text)) {
-        document.references.push_back(SemanticReference{.name = identifier.name,
-                                                        .scope_path = scopePathAt(
-                                                            document, identifier.range.start_line,
-                                                            identifier.range.start_character),
-                                                        .location = Location{.uri = std::string(uri),
-                                                                             .range = identifier.range}});
+        document.references.push_back(SemanticReference{
+            .name = identifier.name,
+            .scope_path = scopePathAt(document, identifier.range.start_line, identifier.range.start_character),
+            .location = Location{.uri = document_uri, .range = identifier.range}});
     }
 
     std::sort(document.symbols.begin(), document.symbols.end(), symbolLess);
     std::sort(document.references.begin(), document.references.end(), referenceLess);
 
-    documents_.insert_or_assign(std::string(uri), std::move(document));
+    documents_.insert_or_assign(document_uri, std::move(document));
+    rebuildReverseIncludes();
 }
 
 void SemanticWorkspace::removeDocument(std::string_view uri) {
-    documents_.erase(std::string(uri));
+    const auto document_uri = withoutTrailingSlash(normalizeFileUri(uri));
+    markDependentsStale(document_uri);
+    documents_.erase(document_uri);
+    rebuildReverseIncludes();
 }
 
 const SemanticDocument* SemanticWorkspace::document(std::string_view uri) const {
-    const auto document_it = documents_.find(std::string(uri));
+    const auto document_it = documents_.find(withoutTrailingSlash(normalizeFileUri(uri)));
     if (document_it == documents_.end()) {
         return nullptr;
     }
     return &document_it->second;
+}
+
+std::vector<std::string> SemanticWorkspace::includedUris(std::string_view uri) const {
+    const auto* source = document(uri);
+    if (!source) {
+        return {};
+    }
+    return source->included_uris;
+}
+
+std::vector<std::string> SemanticWorkspace::includingUris(std::string_view uri) const {
+    const auto graph_it = reverse_includes_.find(withoutTrailingSlash(normalizeFileUri(uri)));
+    if (graph_it == reverse_includes_.end()) {
+        return {};
+    }
+    return graph_it->second;
+}
+
+std::vector<std::string> SemanticWorkspace::staleDocumentUris() const {
+    std::vector<std::string> result;
+    for (const auto& document_entry : documents_) {
+        if (document_entry.second.stale) {
+            result.push_back(document_entry.first);
+        }
+    }
+    std::sort(result.begin(), result.end());
+    return result;
 }
 
 std::optional<SemanticSymbol> SemanticWorkspace::symbolAt(std::string_view uri,
@@ -384,6 +540,7 @@ std::vector<SemanticSymbol> SemanticWorkspace::visibleSymbolsAt(std::string_view
     std::vector<SemanticSymbol> result;
     std::string current_scope = scopePathAt(*source, line, character);
     while (!current_scope.empty()) {
+        std::vector<SemanticSymbol> scope_symbols;
         for (const auto& document_entry : documents_) {
             for (const auto& symbol : document_entry.second.symbols) {
                 if (symbol.scope_path != current_scope || !startsWithInsensitive(prefix, symbol.name) ||
@@ -391,14 +548,72 @@ std::vector<SemanticSymbol> SemanticWorkspace::visibleSymbolsAt(std::string_view
                     continue;
                 }
                 emitted_names.insert(symbol.name);
-                result.push_back(symbol);
+                scope_symbols.push_back(symbol);
             }
         }
+        std::sort(scope_symbols.begin(), scope_symbols.end(), symbolLess);
+        result.insert(result.end(), scope_symbols.begin(), scope_symbols.end());
         current_scope = parentScopePath(current_scope);
     }
-
-    std::sort(result.begin(), result.end(), symbolLess);
     return result;
+}
+
+std::vector<std::string> SemanticWorkspace::resolveIncludeUris(std::string_view including_uri,
+                                                               std::string_view target) const {
+    std::set<std::string> result;
+    const auto target_text = toForwardSlashes(target);
+    if (target_text.empty()) {
+        return {};
+    }
+
+    if (isFileUri(target_text) || (!target_text.empty() && target_text.front() == '/') ||
+        isWindowsAbsolutePath(target_text)) {
+        result.insert(joinFileUri({}, target_text));
+    }
+    else {
+        result.insert(joinFileUri(uriDirectory(including_uri), target_text));
+        if (!workspace_root_uri_.empty()) {
+            result.insert(joinFileUri(workspace_root_uri_, target_text));
+        }
+    }
+
+    return std::vector<std::string>(result.begin(), result.end());
+}
+
+void SemanticWorkspace::rebuildReverseIncludes() {
+    reverse_includes_.clear();
+    for (const auto& document_entry : documents_) {
+        for (const auto& included_uri : document_entry.second.included_uris) {
+            reverse_includes_[included_uri].push_back(document_entry.first);
+        }
+    }
+
+    for (auto& graph_entry : reverse_includes_) {
+        auto& including_uris = graph_entry.second;
+        std::sort(including_uris.begin(), including_uris.end());
+        including_uris.erase(std::unique(including_uris.begin(), including_uris.end()), including_uris.end());
+    }
+}
+
+void SemanticWorkspace::markDependentsStale(std::string_view uri) {
+    const auto document_uri = withoutTrailingSlash(normalizeFileUri(uri));
+    std::set<std::string> visited;
+    std::vector<std::string> pending = includingUris(document_uri);
+    while (!pending.empty()) {
+        auto current_uri = std::move(pending.back());
+        pending.pop_back();
+        if (current_uri == document_uri || !visited.insert(current_uri).second) {
+            continue;
+        }
+
+        if (auto document_it = documents_.find(current_uri); document_it != documents_.end()) {
+            document_it->second.stale = true;
+        }
+
+        for (const auto& parent_uri : includingUris(current_uri)) {
+            pending.push_back(parent_uri);
+        }
+    }
 }
 
 } // namespace pristine::analysis

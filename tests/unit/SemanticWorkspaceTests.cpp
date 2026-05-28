@@ -67,20 +67,81 @@ TEST_CASE("SemanticWorkspace reports visible symbols from nearest scope outward"
     CHECK(std::any_of(visible.begin(), visible.end(), [](const SemanticSymbol& symbol) {
         return symbol.name == "visible";
     }));
+
+    const auto local_it = std::find_if(visible.begin(), visible.end(), [](const SemanticSymbol& symbol) {
+        return symbol.name == "local_ready";
+    });
+    const auto root_it = std::find_if(visible.begin(), visible.end(), [](const SemanticSymbol& symbol) {
+        return symbol.name == "visible";
+    });
+    REQUIRE(local_it != visible.end());
+    REQUIRE(root_it != visible.end());
+    CHECK(local_it < root_it);
 }
 
 TEST_CASE("SemanticWorkspace tracks include directives per document", "[analysis][semantic]") {
     SemanticWorkspace workspace;
+    workspace.setWorkspaceRoot("file:///workspace");
     workspace.updateDocument("file:///workspace/includes.sv",
                              "`include \"defs.svh\"\n"
-                             "module top; endmodule\n");
+                             "`include \"rtl/types.svh\"\n"
+                             "module top; endmodule\n",
+                             SemanticDocumentState{.version = 7,
+                                                   .is_open = true,
+                                                   .dirty = true,
+                                                   .invalidate_dependents = false});
 
     const auto* document = workspace.document("file:///workspace/includes.sv");
 
     REQUIRE(document != nullptr);
-    REQUIRE(document->includes.size() == 1);
+    CHECK(document->version == 7);
+    CHECK(document->is_open);
+    CHECK(document->dirty);
+    REQUIRE(document->includes.size() == 2);
     CHECK(document->includes.front().target == "defs.svh");
     CHECK(document->includes.front().range.start_line == 0);
+    REQUIRE(document->included_uris.size() == 2);
+    CHECK(document->included_uris.at(0) == "file:///workspace/defs.svh");
+    CHECK(document->included_uris.at(1) == "file:///workspace/rtl/types.svh");
+}
+
+TEST_CASE("SemanticWorkspace builds reverse include edges and marks dependents stale", "[analysis][semantic]") {
+    SemanticWorkspace workspace;
+    workspace.setWorkspaceRoot("file:///workspace");
+    workspace.updateDocument("file:///workspace/rtl/top.sv",
+                             "`include \"defs.svh\"\n"
+                             "module top; endmodule\n");
+    workspace.updateDocument("file:///workspace/rtl/defs.svh", "typedef logic bit_t;\n");
+
+    const auto including_top = workspace.includingUris("file:///workspace/rtl/defs.svh");
+    REQUIRE(including_top.size() == 1);
+    CHECK(including_top.front() == "file:///workspace/rtl/top.sv");
+    CHECK(workspace.staleDocumentUris().empty());
+
+    workspace.updateDocument("file:///workspace/rtl/defs.svh", "typedef bit bit_t;\n",
+                             SemanticDocumentState{.version = -1,
+                                                   .is_open = false,
+                                                   .dirty = false,
+                                                   .invalidate_dependents = true});
+
+    const auto stale_documents = workspace.staleDocumentUris();
+    REQUIRE(stale_documents.size() == 1);
+    CHECK(stale_documents.front() == "file:///workspace/rtl/top.sv");
+}
+
+TEST_CASE("SemanticWorkspace clears dependency graph when documents are removed", "[analysis][semantic]") {
+    SemanticWorkspace workspace;
+    workspace.setWorkspaceRoot("file:///workspace");
+    workspace.updateDocument("file:///workspace/top.sv",
+                             "`include \"defs.svh\"\n"
+                             "module top; endmodule\n");
+
+    REQUIRE_FALSE(workspace.includingUris("file:///workspace/defs.svh").empty());
+
+    workspace.removeDocument("file:///workspace/top.sv");
+
+    CHECK(workspace.includingUris("file:///workspace/defs.svh").empty());
+    CHECK(workspace.documentCount() == 0);
 }
 
 } // namespace pristine::analysis

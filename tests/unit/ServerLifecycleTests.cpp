@@ -789,6 +789,25 @@ TEST_CASE("ServerSession resolves references within semantic scopes", "[server][
     CHECK(references_response->at("result").at(0).at("uri").get<std::string>() == std::string(uri));
 }
 
+TEST_CASE("ServerSession prefers scoped semantic completions", "[server][lsp-core]") {
+    jsonrpc::JsonRpcServer rpc_server;
+    ServerSession session{"pristine-lsp", kTestServerVersion};
+    session.bind(rpc_server);
+
+    constexpr std::string_view uri = "file:///workspace/completion.sv";
+    ScriptedTransport transport{
+        R"({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}})",
+        R"({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///workspace/completion.sv","languageId":"systemverilog","version":1,"text":"module ready; endmodule\nmodule top;\n  logic ready;\n  assign rea = ready;\nendmodule\n"}}})",
+        R"({"jsonrpc":"2.0","id":2,"method":"textDocument/completion","params":{"textDocument":{"uri":"file:///workspace/completion.sv"},"position":{"line":3,"character":12},"context":{"triggerKind":1}}})"};
+
+    CHECK(rpc_server.run(transport) == 0);
+    const auto completion_response = findResponse(transport, 2);
+    REQUIRE(completion_response.has_value());
+    REQUIRE_FALSE(completion_response->at("result").empty());
+    CHECK(completion_response->at("result").at(0).at("label") == "ready");
+    CHECK(completion_response->at("result").at(0).at("detail") == "Variable");
+}
+
 TEST_CASE("ServerSession handles Tier 2 rename highlight and document links", "[server][lsp-core]") {
     jsonrpc::JsonRpcServer rpc_server;
     ServerSession session{"pristine-lsp", kTestServerVersion};

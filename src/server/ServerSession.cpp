@@ -190,6 +190,37 @@ int toCompletionItemKind(int symbol_kind) {
     }
 }
 
+std::string completionDetailForSymbolKind(int symbol_kind) {
+    switch (symbol_kind) {
+        case 2:
+            return "Module";
+        case 3:
+            return "Namespace";
+        case 4:
+            return "Package";
+        case 5:
+            return "Class";
+        case 10:
+            return "Enum";
+        case 11:
+            return "Interface / Modport";
+        case 12:
+            return "Callable";
+        case 13:
+            return "Variable";
+        case 14:
+            return "Parameter";
+        case 19:
+            return "Instance";
+        case 22:
+            return "Enum Member";
+        case 26:
+            return "Typedef";
+        default:
+            return "Symbol";
+    }
+}
+
 bool isTypeDefinitionSymbol(int symbol_kind) {
     switch (symbol_kind) {
         case 2:
@@ -1178,6 +1209,12 @@ void ServerSession::bind(jsonrpc::JsonRpcServer& server) {
 jsonrpc::Json ServerSession::handleInitialize(const jsonrpc::Json& params) {
     workspace_manager_.initialize(lsp::parseInitializeParams(params));
     semantic_workspace_.clear();
+    if (const auto& root_path = workspace_manager_.state().root_path) {
+        semantic_workspace_.setWorkspaceRoot(toFileUri(*root_path));
+    }
+    else {
+        semantic_workspace_.setWorkspaceRoot({});
+    }
     symbol_index_.clear();
     hierarchy_documents_.clear();
     schematic_documents_.clear();
@@ -1750,7 +1787,21 @@ jsonrpc::Json ServerSession::handleCompletion(const jsonrpc::Json& params) {
     const auto prefix = compilation_service_.completionPrefix(document->text, completion.position.line,
                                                               completion.position.character);
     jsonrpc::Json result = jsonrpc::Json::array();
+    std::set<std::string> emitted_labels;
+    for (const auto& symbol : semantic_workspace_.visibleSymbolsAt(document->uri, completion.position.line,
+                                                                   completion.position.character, prefix)) {
+        if (!emitted_labels.insert(symbol.name).second) {
+            continue;
+        }
+        result.push_back(jsonrpc::Json{{"label", symbol.name},
+                                       {"kind", toCompletionItemKind(symbol.kind)},
+                                       {"detail", completionDetailForSymbolKind(symbol.kind)}});
+    }
+
     for (const auto& item : symbol_index_.completions(prefix, document->uri)) {
+        if (!emitted_labels.insert(item.label).second) {
+            continue;
+        }
         result.push_back(jsonrpc::Json{{"label", item.label},
                                        {"kind", toCompletionItemKind(item.kind)},
                                        {"detail", item.detail}});
@@ -1870,7 +1921,11 @@ void ServerSession::handleDidOpen(const jsonrpc::Json& params) {
 
     const auto did_open = lsp::parseDidOpenTextDocumentParams(params);
     document_store_.open(did_open);
-    updateSymbolIndex(did_open.text_document.uri, did_open.text_document.text);
+    updateSymbolIndex(did_open.text_document.uri, did_open.text_document.text,
+                      analysis::SemanticDocumentState{.version = did_open.text_document.version,
+                                                      .is_open = true,
+                                                      .dirty = false,
+                                                      .invalidate_dependents = true});
     publishDiagnostics(did_open.text_document.uri);
 }
 
@@ -1882,7 +1937,11 @@ void ServerSession::handleDidChange(const jsonrpc::Json& params) {
     const auto did_change = lsp::parseDidChangeTextDocumentParams(params);
     document_store_.applyChanges(did_change);
     if (const auto* document = document_store_.find(did_change.text_document.uri)) {
-        updateSymbolIndex(document->uri, document->text);
+        updateSymbolIndex(document->uri, document->text,
+                          analysis::SemanticDocumentState{.version = document->version,
+                                                          .is_open = true,
+                                                          .dirty = document->dirty,
+                                                          .invalidate_dependents = true});
     }
     publishDiagnostics(did_change.text_document.uri);
 }
@@ -1895,7 +1954,11 @@ void ServerSession::handleDidSave(const jsonrpc::Json& params) {
     const auto did_save = lsp::parseDidSaveTextDocumentParams(params);
     document_store_.save(did_save);
     if (const auto* document = document_store_.find(did_save.text_document.uri)) {
-        updateSymbolIndex(document->uri, document->text);
+        updateSymbolIndex(document->uri, document->text,
+                          analysis::SemanticDocumentState{.version = document->version,
+                                                          .is_open = true,
+                                                          .dirty = document->dirty,
+                                                          .invalidate_dependents = true});
     }
     publishDiagnostics(did_save.text_document.uri);
 }
@@ -1929,7 +1992,11 @@ void ServerSession::handleDidChangeWatchedFiles(const jsonrpc::Json& params) {
         }
 
         if (const auto* document = document_store_.find(change.uri)) {
-            updateSymbolIndex(document->uri, document->text);
+            updateSymbolIndex(document->uri, document->text,
+                              analysis::SemanticDocumentState{.version = document->version,
+                                                              .is_open = true,
+                                                              .dirty = document->dirty,
+                                                              .invalidate_dependents = true});
             continue;
         }
 
@@ -1945,7 +2012,11 @@ void ServerSession::handleDidChangeWatchedFiles(const jsonrpc::Json& params) {
             continue;
         }
 
-        updateSymbolIndex(change.uri, *text);
+        updateSymbolIndex(change.uri, *text,
+                          analysis::SemanticDocumentState{.version = -1,
+                                                          .is_open = false,
+                                                          .dirty = false,
+                                                          .invalidate_dependents = true});
     }
 }
 
@@ -1967,8 +2038,10 @@ void ServerSession::indexWorkspaceSources() {
     }
 }
 
-void ServerSession::updateSymbolIndex(std::string_view uri, std::string_view text) {
-    semantic_workspace_.updateDocument(uri, text);
+void ServerSession::updateSymbolIndex(std::string_view uri,
+                                      std::string_view text,
+                                      analysis::SemanticDocumentState semantic_state) {
+    semantic_workspace_.updateDocument(uri, text, semantic_state);
     symbol_index_.updateDocument(uri, text);
     updateHierarchyIndex(uri, text);
 }
@@ -2008,7 +2081,11 @@ void ServerSession::restoreClosedDocumentIndex(std::string_view uri) {
         return;
     }
 
-    updateSymbolIndex(uri, *text);
+    updateSymbolIndex(uri, *text,
+                      analysis::SemanticDocumentState{.version = -1,
+                                                      .is_open = false,
+                                                      .dirty = false,
+                                                      .invalidate_dependents = true});
 }
 
 void ServerSession::removeDocumentIndexes(std::string_view uri) {
