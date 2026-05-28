@@ -50,6 +50,7 @@ private:
     jsonrpc::Json handleReferences(const jsonrpc::Json& params);
     jsonrpc::Json handleWorkspaceSymbol(const jsonrpc::Json& params);
     jsonrpc::Json handleCompletion(const jsonrpc::Json& params);
+    jsonrpc::Json handleCompletionItemResolve(const jsonrpc::Json& params);
     jsonrpc::Json handlePrepareRename(const jsonrpc::Json& params);
     jsonrpc::Json handleRename(const jsonrpc::Json& params);
     jsonrpc::Json handleShutdown(const jsonrpc::Json& params);

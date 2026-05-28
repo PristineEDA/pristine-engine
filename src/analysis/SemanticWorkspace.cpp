@@ -110,7 +110,11 @@ void appendSymbols(SemanticDocument& document,
                                               .scope_path = symbol_scope,
                                               .location = Location{.uri = std::string(uri),
                                                                    .range = symbol.selection_range},
-                                              .selection_range = symbol.selection_range});
+                                              .selection_range = symbol.selection_range,
+                                              .type = std::nullopt,
+                                              .direction = {},
+                                              .constant_expression = {},
+                                              .constant_value = std::nullopt});
 
     std::string child_scope = symbol_scope;
     if (opensScope(symbol.kind)) {
@@ -911,6 +915,10 @@ std::optional<SemanticSymbol> SemanticWorkspace::findResolvedSymbolAt(std::strin
     return resolveReference(*reference);
 }
 
+std::optional<SemanticSymbol> SemanticWorkspace::findSymbolById(std::string_view symbol_id) const {
+    return symbolById(symbol_id);
+}
+
 std::vector<SemanticSymbol> SemanticWorkspace::findDefinitionsAt(std::string_view uri,
                                                                  int line,
                                                                  int character) const {
@@ -1038,6 +1046,51 @@ std::vector<SemanticSymbol> SemanticWorkspace::visibleSymbolsAt(std::string_view
         std::sort(scope_symbols.begin(), scope_symbols.end(), symbolLess);
         result.insert(result.end(), scope_symbols.begin(), scope_symbols.end());
         current_scope = parentScopePath(current_scope);
+    }
+    return result;
+}
+
+std::vector<SemanticSymbol> SemanticWorkspace::packageMembersAt(std::string_view uri,
+                                                                int line,
+                                                                int character,
+                                                                std::string_view package_name,
+                                                                std::string_view prefix) const {
+    const auto* source = document(uri);
+    if (!source) {
+        return {};
+    }
+
+    const auto current_scope = scopePathAt(*source, line, character);
+    std::vector<std::string> package_scopes;
+    for (const auto& package : resolveName(package_name, current_scope, uri)) {
+        if (package.kind == 4) {
+            package_scopes.push_back(childScopePath(package.scope_path, package.name));
+        }
+    }
+
+    if (package_scopes.empty()) {
+        package_scopes.push_back(childScopePath(kRootScope, package_name));
+    }
+
+    std::sort(package_scopes.begin(), package_scopes.end());
+    package_scopes.erase(std::unique(package_scopes.begin(), package_scopes.end()), package_scopes.end());
+
+    std::set<std::string> emitted_names;
+    std::vector<SemanticSymbol> result;
+    for (const auto& package_scope : package_scopes) {
+        std::vector<SemanticSymbol> scope_symbols;
+        for (const auto& document_entry : documents_) {
+            for (const auto& symbol : document_entry.second.symbols) {
+                if (symbol.scope_path != package_scope || !startsWithInsensitive(prefix, symbol.name) ||
+                    emitted_names.contains(symbol.name)) {
+                    continue;
+                }
+                emitted_names.insert(symbol.name);
+                scope_symbols.push_back(symbol);
+            }
+        }
+        std::sort(scope_symbols.begin(), scope_symbols.end(), symbolLess);
+        result.insert(result.end(), scope_symbols.begin(), scope_symbols.end());
     }
     return result;
 }

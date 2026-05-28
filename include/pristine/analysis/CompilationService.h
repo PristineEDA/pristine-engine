@@ -113,6 +113,15 @@ struct IncludeDirective {
     ParseRange range;
 };
 
+struct MacroDefinition {
+    std::string name;
+    std::vector<std::string> parameters;
+    std::string body;
+    ParseRange range;
+    ParseRange selection_range;
+    bool function_like = false;
+};
+
 struct PackageImport {
     std::string package_name;
     std::optional<std::string> item_name;
@@ -148,6 +157,7 @@ public:
                                                int line,
                                                int character) const;
     [[nodiscard]] std::vector<IncludeDirective> includeDirectives(std::string_view text) const;
+    [[nodiscard]] std::vector<MacroDefinition> macroDefinitions(std::string_view text) const;
     [[nodiscard]] std::vector<PackageImport> packageImports(std::string_view text) const;
 };
 

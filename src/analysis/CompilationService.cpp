@@ -503,6 +503,125 @@ std::vector<IncludeDirective> collectIncludeDirectives(std::string_view text) {
     return result;
 }
 
+std::optional<MacroDefinition> tryCollectMacroDefinition(std::string_view text,
+                                                         const ScanState& state) {
+    if (state.offset >= text.size() || text[state.offset] != '`') {
+        return std::nullopt;
+    }
+
+    ScanState cursor = state;
+    const auto directive_start_line = cursor.line;
+    const auto directive_start_character = cursor.character;
+    advanceAscii(text, cursor);
+
+    constexpr std::string_view define_keyword = "define";
+    if (!startsWith(text, cursor.offset, define_keyword)) {
+        return std::nullopt;
+    }
+    for (size_t index = 0; index < define_keyword.size(); ++index) {
+        advanceAscii(text, cursor);
+    }
+    if (cursor.offset < text.size() && isIdentifierContinue(text[cursor.offset])) {
+        return std::nullopt;
+    }
+
+    skipHorizontalWhitespace(text, cursor);
+    if (cursor.offset >= text.size() || !isIdentifierStart(text[cursor.offset])) {
+        return std::nullopt;
+    }
+
+    const auto name_start_line = cursor.line;
+    const auto name_start_character = cursor.character;
+    std::string name;
+    while (cursor.offset < text.size() && isIdentifierContinue(text[cursor.offset])) {
+        name.push_back(text[cursor.offset]);
+        advanceAscii(text, cursor);
+    }
+    const auto name_end_line = cursor.line;
+    const auto name_end_character = cursor.character;
+
+    std::vector<std::string> parameters;
+    bool function_like = false;
+    if (cursor.offset < text.size() && text[cursor.offset] == '(') {
+        function_like = true;
+        advanceAscii(text, cursor);
+        while (cursor.offset < text.size()) {
+            skipHorizontalWhitespace(text, cursor);
+            if (cursor.offset < text.size() && text[cursor.offset] == ')') {
+                advanceAscii(text, cursor);
+                break;
+            }
+            if (cursor.offset >= text.size() || !isIdentifierStart(text[cursor.offset])) {
+                return std::nullopt;
+            }
+
+            std::string parameter;
+            while (cursor.offset < text.size() && isIdentifierContinue(text[cursor.offset])) {
+                parameter.push_back(text[cursor.offset]);
+                advanceAscii(text, cursor);
+            }
+            parameters.push_back(std::move(parameter));
+
+            skipHorizontalWhitespace(text, cursor);
+            if (cursor.offset < text.size() && text[cursor.offset] == ',') {
+                advanceAscii(text, cursor);
+                continue;
+            }
+            if (cursor.offset < text.size() && text[cursor.offset] == ')') {
+                advanceAscii(text, cursor);
+                break;
+            }
+            return std::nullopt;
+        }
+    }
+
+    skipHorizontalWhitespace(text, cursor);
+    const auto body_start_offset = cursor.offset;
+    while (cursor.offset < text.size() && text[cursor.offset] != '\n' && text[cursor.offset] != '\r') {
+        advanceOne(text, cursor);
+    }
+
+    return MacroDefinition{
+        .name = std::move(name),
+        .parameters = std::move(parameters),
+        .body = trimWhitespace(std::string(text.substr(body_start_offset, cursor.offset - body_start_offset))),
+        .range = ParseRange{.start_line = directive_start_line,
+                            .start_character = directive_start_character,
+                            .end_line = cursor.line,
+                            .end_character = cursor.character},
+        .selection_range = ParseRange{.start_line = name_start_line,
+                                      .start_character = name_start_character,
+                                      .end_line = name_end_line,
+                                      .end_character = name_end_character},
+        .function_like = function_like};
+}
+
+std::vector<MacroDefinition> collectMacroDefinitions(std::string_view text) {
+    std::vector<MacroDefinition> result;
+    ScanState state{};
+    while (state.offset < text.size()) {
+        if (startsWith(text, state.offset, "//")) {
+            skipLineComment(text, state);
+            continue;
+        }
+        if (startsWith(text, state.offset, "/*")) {
+            skipBlockComment(text, state);
+            continue;
+        }
+        if (text[state.offset] == '"') {
+            skipStringLiteral(text, state);
+            continue;
+        }
+
+        if (const auto macro = tryCollectMacroDefinition(text, state)) {
+            result.push_back(*macro);
+        }
+
+        advanceOne(text, state);
+    }
+    return result;
+}
+
 std::optional<Identifier> tryReadIdentifier(std::string_view text, ScanState& state) {
     if (state.offset >= text.size() || !isIdentifierStart(text[state.offset])) {
         return std::nullopt;
@@ -2334,6 +2453,10 @@ std::string CompilationService::completionPrefix(std::string_view text,
 
 std::vector<IncludeDirective> CompilationService::includeDirectives(std::string_view text) const {
     return collectIncludeDirectives(text);
+}
+
+std::vector<MacroDefinition> CompilationService::macroDefinitions(std::string_view text) const {
+    return collectMacroDefinitions(text);
 }
 
 std::vector<PackageImport> CompilationService::packageImports(std::string_view text) const {

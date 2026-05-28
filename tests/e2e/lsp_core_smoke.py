@@ -71,6 +71,9 @@ def main() -> int:
         child = rtl / "child.sv"
         top = rtl / "top.sv"
         typed = rtl / "typed.sv"
+        module_context = rtl / "module_context.sv"
+        macro_context = rtl / "macro_context.sv"
+        port_filter = rtl / "port_filter.sv"
         defs = rtl / "defs.svh"
         missing = rtl / "missing.svh"
         leaf.write_text("module leaf; endmodule\n", encoding="utf-8")
@@ -80,7 +83,11 @@ def main() -> int:
             "endmodule\n",
             encoding="utf-8",
         )
-        defs.write_text("`define FEATURE 1\n", encoding="utf-8")
+        defs_text = (
+            "`define FEATURE 1\n"
+            "`define ADD_ONE(value) ((value) + 1)\n"
+        )
+        defs.write_text(defs_text, encoding="utf-8")
         top_text = (
             "`include \"defs.svh\"\n"
             "`include \"missing.svh\"\n"
@@ -98,9 +105,37 @@ def main() -> int:
             "endmodule\n"
         )
         typed.write_text(typed_text, encoding="utf-8")
+        module_context.write_text(
+            "module child; endmodule\n"
+            "module chip; endmodule\n"
+            "module top;\n"
+            "  logic chip_count;\n"
+            "  ch\n"
+            "endmodule\n",
+            encoding="utf-8",
+        )
+        macro_context_text = (
+            "`include \"defs.svh\"\n"
+            "module macro_top;\n"
+            "  logic ready;\n"
+            "  assign ready = `FE\n"
+            "endmodule\n"
+        )
+        macro_context.write_text(macro_context_text, encoding="utf-8")
+        port_filter.write_text(
+            "module port_child(input logic clk, output logic rst_n, input logic data); endmodule\n"
+            "module port_top;\n"
+            "  logic sig;\n"
+            "  port_child u_child(.clk(sig), .);\n"
+            "endmodule\n",
+            encoding="utf-8",
+        )
         leaf_uri = leaf.resolve().as_uri()
         child_uri = child.resolve().as_uri()
         typed_uri = typed.resolve().as_uri()
+        module_context_uri = module_context.resolve().as_uri()
+        macro_context_uri = macro_context.resolve().as_uri()
+        port_filter_uri = port_filter.resolve().as_uri()
         defs_uri = defs.resolve().as_uri()
         missing_uri = missing.resolve().as_uri()
         top_uri = top.resolve().as_uri()
@@ -139,7 +174,7 @@ def main() -> int:
             assert capabilities["referencesProvider"] is True
             assert capabilities["renameProvider"]["prepareProvider"] is True
             assert capabilities["workspaceSymbolProvider"] is True
-            assert capabilities["completionProvider"]["resolveProvider"] is False
+            assert capabilities["completionProvider"]["resolveProvider"] is True
 
             notify(process, "initialized", {})
             notify(
@@ -159,10 +194,58 @@ def main() -> int:
                 "textDocument/didOpen",
                 {
                     "textDocument": {
+                        "uri": defs_uri,
+                        "languageId": "systemverilog",
+                        "version": 1,
+                        "text": defs_text,
+                    }
+                },
+            )
+            notify(
+                process,
+                "textDocument/didOpen",
+                {
+                    "textDocument": {
+                        "uri": macro_context_uri,
+                        "languageId": "systemverilog",
+                        "version": 1,
+                        "text": macro_context_text,
+                    }
+                },
+            )
+            notify(
+                process,
+                "textDocument/didOpen",
+                {
+                    "textDocument": {
                         "uri": typed_uri,
                         "languageId": "systemverilog",
                         "version": 1,
                         "text": typed_text,
+                    }
+                },
+            )
+            notify(
+                process,
+                "textDocument/didOpen",
+                {
+                    "textDocument": {
+                        "uri": module_context_uri,
+                        "languageId": "systemverilog",
+                        "version": 1,
+                        "text": module_context.read_text(encoding="utf-8"),
+                    }
+                },
+            )
+            notify(
+                process,
+                "textDocument/didOpen",
+                {
+                    "textDocument": {
+                        "uri": port_filter_uri,
+                        "languageId": "systemverilog",
+                        "version": 1,
+                        "text": port_filter.read_text(encoding="utf-8"),
                     }
                 },
             )
@@ -231,6 +314,91 @@ def main() -> int:
             labels = {item["label"] for item in completions}
             assert "child" in labels
             assert "child_i" in labels
+            child_completion = next(item for item in completions if item["label"] == "child")
+            assert child_completion["data"]["source"] == "semantic"
+            resolved_child = request(
+                process,
+                25,
+                "completionItem/resolve",
+                child_completion,
+            )["result"]
+            assert resolved_child["detail"] == "child(input logic clk, output logic rst_n)"
+            assert resolved_child["documentation"]["kind"] == "markdown"
+            assert "Ports:" in resolved_child["documentation"]["value"]
+            assert resolved_child["insertTextFormat"] == 2
+            assert ".clk(${2:clk})" in resolved_child["insertText"]
+
+            port_completions = request(
+                process,
+                26,
+                "textDocument/completion",
+                {
+                    "textDocument": {"uri": top_uri},
+                    "position": {"line": 3, "character": 26},
+                    "context": {"triggerKind": 1},
+                },
+            )["result"]
+            rst_completion = next(item for item in port_completions if item["label"] == "rst_n")
+            assert rst_completion["data"]["source"] == "port"
+            resolved_port = request(
+                process,
+                27,
+                "completionItem/resolve",
+                rst_completion,
+            )["result"]
+            assert resolved_port["detail"] == "output logic rst_n"
+            assert resolved_port["insertText"] == "rst_n(${1:rst_n})"
+
+            module_context_completions = request(
+                process,
+                28,
+                "textDocument/completion",
+                {
+                    "textDocument": {"uri": module_context_uri},
+                    "position": {"line": 4, "character": 4},
+                    "context": {"triggerKind": 1},
+                },
+            )["result"]
+            assert module_context_completions[0]["label"] == "child"
+            assert module_context_completions[1]["label"] == "chip"
+
+            filtered_port_completions = request(
+                process,
+                29,
+                "textDocument/completion",
+                {
+                    "textDocument": {"uri": port_filter_uri},
+                    "position": {"line": 3, "character": 33},
+                    "context": {"triggerKind": 2, "triggerCharacter": "."},
+                },
+            )["result"]
+            filtered_labels = {item["label"] for item in filtered_port_completions}
+            assert "clk" not in filtered_labels
+            assert "rst_n" in filtered_labels
+            assert "data" in filtered_labels
+
+            macro_completions = request(
+                process,
+                30,
+                "textDocument/completion",
+                {
+                    "textDocument": {"uri": macro_context_uri},
+                    "position": {"line": 3, "character": 20},
+                    "context": {"triggerKind": 1},
+                },
+            )["result"]
+            feature_completion = next(item for item in macro_completions if item["label"] == "FEATURE")
+            assert feature_completion["detail"] == "Macro"
+            assert feature_completion["data"]["source"] == "macro"
+            resolved_feature = request(
+                process,
+                31,
+                "completionItem/resolve",
+                feature_completion,
+            )["result"]
+            assert resolved_feature["insertText"] == "FEATURE"
+            assert "Body:" in resolved_feature["documentation"]["value"]
+            assert "1" in resolved_feature["documentation"]["value"]
 
             highlights = request(
                 process,

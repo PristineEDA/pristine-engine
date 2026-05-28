@@ -183,7 +183,7 @@ TEST_CASE("ServerSession handles initialize-shutdown-exit", "[server][lifecycle]
               "prepareProvider") == true);
     CHECK(initialize_response.at("result").at("capabilities").at("workspaceSymbolProvider") == true);
     CHECK(initialize_response.at("result").at("capabilities").at("completionProvider").at(
-              "resolveProvider") == false);
+              "resolveProvider") == true);
     CHECK(initialize_response.at("result").at("capabilities").at("textDocumentSync").at(
               "openClose") == true);
 
@@ -674,10 +674,10 @@ TEST_CASE("ServerSession handles Tier 1 LSP navigation and completion", "[server
     CHECK(completion_response.at("id") == 5);
     const auto& completions = completion_response.at("result");
     CHECK(std::any_of(completions.begin(), completions.end(), [](const jsonrpc::Json& item) {
-        return item.at("label") == "child";
+        return item.at("label") == "child" && item.at("data").at("source") == "semantic";
     }));
     CHECK(std::any_of(completions.begin(), completions.end(), [](const jsonrpc::Json& item) {
-        return item.at("label") == "child_i";
+        return item.at("label") == "child_i" && item.at("data").at("source") == "semantic";
     }));
 
     const auto implementation_response = parseOutput(transport, 6);
@@ -829,6 +829,141 @@ TEST_CASE("ServerSession prefers scoped semantic completions", "[server][lsp-cor
     REQUIRE_FALSE(completion_response->at("result").empty());
     CHECK(completion_response->at("result").at(0).at("label") == "ready");
     CHECK(completion_response->at("result").at(0).at("detail") == "Variable");
+}
+
+TEST_CASE("ServerSession resolves completion items lazily", "[server][lsp-core]") {
+    jsonrpc::JsonRpcServer rpc_server;
+    ServerSession session{"pristine-lsp", kTestServerVersion};
+    session.bind(rpc_server);
+
+    constexpr std::string_view uri = "file:///workspace/resolve-completion.sv";
+    ScriptedTransport transport{
+        R"({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}})",
+        R"({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///workspace/resolve-completion.sv","languageId":"systemverilog","version":1,"text":"module child(input logic clk, output logic rst_n); endmodule\nmodule top;\n  child child_i();\nendmodule\n"}}})",
+        R"({"jsonrpc":"2.0","id":2,"method":"completionItem/resolve","params":{"label":"child","kind":9,"detail":"Module","data":{"source":"semantic","symbolId":"file:///workspace/resolve-completion.sv|$root|child|0:7"}}})"};
+
+    CHECK(rpc_server.run(transport) == 0);
+    const auto resolve_response = findResponse(transport, 2);
+    REQUIRE(resolve_response.has_value());
+    const auto& item = resolve_response->at("result");
+    CHECK(item.at("label") == "child");
+    CHECK(item.at("detail").get<std::string>().find("child(input logic clk, output logic rst_n)") !=
+          std::string::npos);
+    CHECK(item.at("documentation").at("kind") == "markdown");
+    CHECK(item.at("documentation").at("value").get<std::string>().find("Ports:") != std::string::npos);
+    CHECK(item.at("insertTextFormat") == 2);
+    CHECK(item.at("insertText").get<std::string>().find(".clk(${2:clk})") != std::string::npos);
+    CHECK(item.at("data").at("symbolId").get<std::string>().find(std::string(uri)) != std::string::npos);
+}
+
+TEST_CASE("ServerSession returns context-aware completion items", "[server][lsp-core]") {
+    jsonrpc::JsonRpcServer rpc_server;
+    ServerSession session{"pristine-lsp", kTestServerVersion};
+    session.bind(rpc_server);
+
+    ScriptedTransport transport{
+        R"({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}})",
+        R"({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///workspace/context-completion.sv","languageId":"systemverilog","version":1,"text":"package defs;\n  parameter int WIDTH = 8;\nendpackage\nmodule child(input logic clk, output logic rst_n);\nendmodule\nmodule top;\n  localparam int USE = defs::W;\n  child child_i(.r());\nendmodule\n"}}})",
+        R"({"jsonrpc":"2.0","id":2,"method":"textDocument/completion","params":{"textDocument":{"uri":"file:///workspace/context-completion.sv"},"position":{"line":6,"character":30},"context":{"triggerKind":1}}})",
+        R"({"jsonrpc":"2.0","id":3,"method":"textDocument/completion","params":{"textDocument":{"uri":"file:///workspace/context-completion.sv"},"position":{"line":7,"character":18},"context":{"triggerKind":1}}})"};
+
+    CHECK(rpc_server.run(transport) == 0);
+
+    const auto package_completion_response = findResponse(transport, 2);
+    REQUIRE(package_completion_response.has_value());
+    const auto& package_items = package_completion_response->at("result");
+    REQUIRE_FALSE(package_items.empty());
+    CHECK(package_items.at(0).at("label") == "WIDTH");
+    CHECK(package_items.at(0).at("data").at("source") == "semantic");
+
+    const auto port_completion_response = findResponse(transport, 3);
+    REQUIRE(port_completion_response.has_value());
+    const auto& port_items = port_completion_response->at("result");
+    REQUIRE_FALSE(port_items.empty());
+    CHECK(port_items.at(0).at("label") == "rst_n");
+    CHECK(port_items.at(0).at("detail") == "output logic rst_n");
+    CHECK(port_items.at(0).at("data").at("source") == "port");
+}
+
+TEST_CASE("ServerSession returns macro completions and resolves macro documentation",
+          "[server][lsp-core]") {
+    jsonrpc::JsonRpcServer rpc_server;
+    ServerSession session{"pristine-lsp", kTestServerVersion};
+    session.bind(rpc_server);
+
+    ScriptedTransport transport{
+        R"({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}})",
+        R"({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///workspace/macro-completion.sv","languageId":"systemverilog","version":1,"text":"`define LOCAL_FLAG 1\n`define LOCAL_ADD(a, b) ((a) + (b))\nmodule top;\n  logic ready;\n  assign ready = `LOC\nendmodule\n"}}})",
+        R"({"jsonrpc":"2.0","id":2,"method":"textDocument/completion","params":{"textDocument":{"uri":"file:///workspace/macro-completion.sv"},"position":{"line":4,"character":21},"context":{"triggerKind":1}}})",
+        R"json({"jsonrpc":"2.0","id":3,"method":"completionItem/resolve","params":{"label":"LOCAL_ADD","kind":3,"detail":"Macro function","data":{"source":"macro","name":"LOCAL_ADD","parameters":["a","b"],"body":"((a) + (b))","functionLike":true,"uri":"file:///workspace/macro-completion.sv","range":{"start":{"line":1,"character":0},"end":{"line":1,"character":35}},"selectionRange":{"start":{"line":1,"character":8},"end":{"line":1,"character":17}}}}})json"};
+
+    CHECK(rpc_server.run(transport) == 0);
+
+    const auto completion_response = findResponse(transport, 2);
+    REQUIRE(completion_response.has_value());
+    const auto& items = completion_response->at("result");
+    REQUIRE(items.size() == 2);
+    CHECK(items.at(0).at("label") == "LOCAL_FLAG");
+    CHECK(items.at(0).at("detail") == "Macro");
+    CHECK(items.at(0).at("data").at("source") == "macro");
+    CHECK(items.at(1).at("label") == "LOCAL_ADD");
+    CHECK(items.at(1).at("kind") == 3);
+
+    const auto resolve_response = findResponse(transport, 3);
+    REQUIRE(resolve_response.has_value());
+    const auto& resolved = resolve_response->at("result");
+    CHECK(resolved.at("detail") == "Macro function LOCAL_ADD(a, b)");
+    CHECK(resolved.at("insertText") == "LOCAL_ADD(${1:a}, ${2:b})");
+    CHECK(resolved.at("insertTextFormat") == 2);
+    CHECK(resolved.at("documentation").at("value").get<std::string>().find("((a) + (b))") !=
+          std::string::npos);
+}
+
+TEST_CASE("ServerSession prioritizes module completions in instantiation context",
+          "[server][lsp-core]") {
+    jsonrpc::JsonRpcServer rpc_server;
+    ServerSession session{"pristine-lsp", kTestServerVersion};
+    session.bind(rpc_server);
+
+    ScriptedTransport transport{
+        R"({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}})",
+        R"({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///workspace/module-context.sv","languageId":"systemverilog","version":1,"text":"module child; endmodule\nmodule chip; endmodule\nmodule top;\n  logic chip_count;\n  ch\nendmodule\n"}}})",
+        R"({"jsonrpc":"2.0","id":2,"method":"textDocument/completion","params":{"textDocument":{"uri":"file:///workspace/module-context.sv"},"position":{"line":4,"character":4},"context":{"triggerKind":1}}})"};
+
+    CHECK(rpc_server.run(transport) == 0);
+    const auto completion_response = findResponse(transport, 2);
+    REQUIRE(completion_response.has_value());
+    const auto& items = completion_response->at("result");
+    REQUIRE(items.size() >= 2);
+    CHECK(items.at(0).at("label") == "child");
+    CHECK(items.at(0).at("detail") == "Module");
+    CHECK(items.at(1).at("label") == "chip");
+}
+
+TEST_CASE("ServerSession excludes already connected named ports from completion",
+          "[server][lsp-core]") {
+    jsonrpc::JsonRpcServer rpc_server;
+    ServerSession session{"pristine-lsp", kTestServerVersion};
+    session.bind(rpc_server);
+
+    ScriptedTransport transport{
+        R"({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}})",
+        R"({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///workspace/port-filter.sv","languageId":"systemverilog","version":1,"text":"module child(input logic clk, output logic rst_n, input logic data); endmodule\nmodule top;\n  logic sig;\n  child u_child(.clk(sig), .);\nendmodule\n"}}})",
+        R"({"jsonrpc":"2.0","id":2,"method":"textDocument/completion","params":{"textDocument":{"uri":"file:///workspace/port-filter.sv"},"position":{"line":3,"character":28},"context":{"triggerKind":2,"triggerCharacter":"."}}})"};
+
+    CHECK(rpc_server.run(transport) == 0);
+    const auto completion_response = findResponse(transport, 2);
+    REQUIRE(completion_response.has_value());
+    const auto& items = completion_response->at("result");
+    CHECK(std::none_of(items.begin(), items.end(), [](const jsonrpc::Json& item) {
+        return item.at("label") == "clk";
+    }));
+    CHECK(std::any_of(items.begin(), items.end(), [](const jsonrpc::Json& item) {
+        return item.at("label") == "rst_n";
+    }));
+    CHECK(std::any_of(items.begin(), items.end(), [](const jsonrpc::Json& item) {
+        return item.at("label") == "data";
+    }));
 }
 
 TEST_CASE("ServerSession handles Tier 2 rename highlight and document links", "[server][lsp-core]") {

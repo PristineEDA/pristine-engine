@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstddef>
+#include <iterator>
 #include <string>
 #include <unordered_set>
 
@@ -58,6 +60,20 @@ void appendSymbolEntries(std::vector<SymbolEntry>& entries,
     }
 }
 
+void appendMacroEntries(std::vector<MacroEntry>& entries,
+                        std::string_view uri,
+                        const std::vector<MacroDefinition>& macros) {
+    for (const auto& macro : macros) {
+        entries.push_back(MacroEntry{.name = macro.name,
+                                     .parameters = macro.parameters,
+                                     .body = macro.body,
+                                     .location = Location{.uri = std::string(uri),
+                                                          .range = macro.selection_range},
+                                     .selection_range = macro.selection_range,
+                                     .function_like = macro.function_like});
+    }
+}
+
 bool fuzzyMatch(std::string_view query, std::string_view candidate) {
     if (query.empty()) {
         return true;
@@ -92,6 +108,32 @@ bool startsWithInsensitive(std::string_view prefix, std::string_view candidate) 
     return true;
 }
 
+bool completionEntryLess(const CompletionEntry& lhs, const CompletionEntry& rhs) {
+    if (lhs.label != rhs.label) {
+        return lhs.label < rhs.label;
+    }
+    if (lhs.location.uri != rhs.location.uri) {
+        return lhs.location.uri < rhs.location.uri;
+    }
+    if (lhs.selection_range.start_line != rhs.selection_range.start_line) {
+        return lhs.selection_range.start_line < rhs.selection_range.start_line;
+    }
+    return lhs.selection_range.start_character < rhs.selection_range.start_character;
+}
+
+bool macroEntryLess(const MacroEntry& lhs, const MacroEntry& rhs) {
+    if (lhs.name != rhs.name) {
+        return lhs.name < rhs.name;
+    }
+    if (lhs.location.uri != rhs.location.uri) {
+        return lhs.location.uri < rhs.location.uri;
+    }
+    if (lhs.selection_range.start_line != rhs.selection_range.start_line) {
+        return lhs.selection_range.start_line < rhs.selection_range.start_line;
+    }
+    return lhs.selection_range.start_character < rhs.selection_range.start_character;
+}
+
 bool isDeclarationReference(const ReferenceEntry& reference, const std::vector<SymbolEntry>& symbols) {
     return std::any_of(symbols.begin(), symbols.end(), [&](const SymbolEntry& symbol) {
         return symbol.name == reference.name && symbol.location.uri == reference.location.uri &&
@@ -120,6 +162,13 @@ void SymbolIndex::updateDocument(std::string_view uri, std::string_view text) {
         indexed.references.push_back(ReferenceEntry{.name = identifier.name,
                                                     .location = Location{.uri = std::string(uri),
                                                                          .range = identifier.range}});
+    }
+
+    try {
+        appendMacroEntries(indexed.macros, uri, compilation_service_.macroDefinitions(text));
+    }
+    catch (...) {
+        indexed.macros.clear();
     }
 
     documents_.insert_or_assign(std::string(uri), std::move(indexed));
@@ -237,30 +286,71 @@ std::vector<CompletionEntry> SymbolIndex::completions(std::string_view prefix,
     std::vector<CompletionEntry> result;
     std::unordered_set<std::string> labels;
 
-    const auto append_matches = [&](const auto& document) {
+    const auto append_matches = [&](const auto& document, std::vector<CompletionEntry>& destination) {
         for (const auto& symbol : document.second.symbols) {
             if (!startsWithInsensitive(prefix, symbol.name) || labels.contains(symbol.name)) {
                 continue;
             }
             labels.insert(symbol.name);
-            result.push_back(CompletionEntry{.label = symbol.name,
-                                             .kind = symbol.kind,
-                                             .detail = symbolKindLabel(symbol.kind)});
+            destination.push_back(CompletionEntry{.label = symbol.name,
+                                                  .kind = symbol.kind,
+                                                  .detail = symbolKindLabel(symbol.kind),
+                                                  .location = symbol.location,
+                                                  .selection_range = symbol.selection_range});
         }
     };
 
     const auto preferred_it = documents_.find(std::string(preferred_uri));
     if (preferred_it != documents_.end()) {
-        append_matches(*preferred_it);
+        append_matches(*preferred_it, result);
     }
 
+    std::vector<CompletionEntry> workspace_matches;
     for (const auto& document : documents_) {
         if (document.first == preferred_uri) {
             continue;
         }
-        append_matches(document);
+        append_matches(document, workspace_matches);
     }
 
+    std::sort(workspace_matches.begin(), workspace_matches.end(), completionEntryLess);
+    result.insert(result.end(), std::make_move_iterator(workspace_matches.begin()),
+                  std::make_move_iterator(workspace_matches.end()));
+
+    return result;
+}
+
+std::vector<MacroEntry> SymbolIndex::macroCompletions(std::string_view prefix,
+                                                      std::string_view preferred_uri) const {
+    std::vector<MacroEntry> result;
+    std::unordered_set<std::string> labels;
+
+    const auto append_matches = [&](const auto& document, std::vector<MacroEntry>& destination) {
+        for (const auto& macro : document.second.macros) {
+            if (!startsWithInsensitive(prefix, macro.name) || labels.contains(macro.name)) {
+                continue;
+            }
+            labels.insert(macro.name);
+            destination.push_back(macro);
+        }
+    };
+
+    const auto preferred_it = documents_.find(std::string(preferred_uri));
+    if (preferred_it != documents_.end()) {
+        append_matches(*preferred_it, result);
+    }
+
+    std::vector<MacroEntry> workspace_matches;
+    for (const auto& document : documents_) {
+        if (document.first == preferred_uri) {
+            continue;
+        }
+        append_matches(document, workspace_matches);
+    }
+
+    std::sort(workspace_matches.begin(), workspace_matches.end(), macroEntryLess);
+    result.insert(result.end(), std::make_move_iterator(workspace_matches.begin()),
+                  std::make_move_iterator(workspace_matches.end()));
     return result;
 }
 

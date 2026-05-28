@@ -82,7 +82,7 @@ Json makeInitializeResult(std::string_view server_name, std::string_view server_
               {"renameProvider", Json{{"prepareProvider", true}}},
               {"workspaceSymbolProvider", true},
               {"completionProvider",
-               Json{{"resolveProvider", false},
+                Json{{"resolveProvider", true},
                     {"triggerCharacters", Json::array({".", "`", ":"})}}},
               {"textDocumentSync",
                Json{{"openClose", true}, {"change", 2}, {"save", Json{{"includeText", false}}}}},

@@ -113,6 +113,29 @@ TEST_CASE("CompilationService extracts include directives", "[analysis][links]")
     CHECK(includes[1].range.start_character == 10);
 }
 
+TEST_CASE("CompilationService extracts macro definitions", "[analysis][macros]") {
+    CompilationService service;
+
+    const auto macros = service.macroDefinitions(
+        "// `define IGNORED 0\n"
+        "`define FEATURE 1\n"
+        "`define ADD(a, b) ((a) + (b))\n"
+        "string text = \"`define FAKE 1\";\n");
+
+    REQUIRE(macros.size() == 2);
+    CHECK(macros[0].name == "FEATURE");
+    CHECK(macros[0].body == "1");
+    CHECK_FALSE(macros[0].function_like);
+    CHECK(macros[0].selection_range.start_line == 1);
+    CHECK(macros[0].selection_range.start_character == 8);
+    CHECK(macros[1].name == "ADD");
+    REQUIRE(macros[1].parameters.size() == 2);
+    CHECK(macros[1].parameters[0] == "a");
+    CHECK(macros[1].parameters[1] == "b");
+    CHECK(macros[1].body == "((a) + (b))");
+    CHECK(macros[1].function_like);
+}
+
 TEST_CASE("CompilationService extracts package imports", "[analysis][imports]") {
     CompilationService service;
 

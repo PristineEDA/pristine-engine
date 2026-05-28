@@ -129,6 +129,8 @@ struct SignatureInvocation {
     std::string module_name;
     std::string instance_name;
     int active_parameter = 0;
+    size_t open_paren_offset = 0;
+    size_t position_offset = 0;
 };
 
 void collectFoldingRanges(jsonrpc::Json& result, const std::vector<analysis::DocumentSymbol>& symbols) {
@@ -255,6 +257,381 @@ std::string completionDetailForSymbolKind(int symbol_kind) {
         default:
             return "Symbol";
     }
+}
+
+bool startsWithInsensitive(std::string_view prefix, std::string_view candidate) {
+    if (prefix.size() > candidate.size()) {
+        return false;
+    }
+    for (size_t index = 0; index < prefix.size(); ++index) {
+        const auto lhs = static_cast<char>(std::tolower(static_cast<unsigned char>(prefix[index])));
+        const auto rhs = static_cast<char>(std::tolower(static_cast<unsigned char>(candidate[index])));
+        if (lhs != rhs) {
+            return false;
+        }
+    }
+    return true;
+}
+
+std::optional<std::string> jsonStringField(const jsonrpc::Json& object, std::string_view key) {
+    if (!object.is_object()) {
+        return std::nullopt;
+    }
+    const auto field_it = object.find(std::string(key));
+    if (field_it == object.end() || !field_it->is_string()) {
+        return std::nullopt;
+    }
+    return field_it->get<std::string>();
+}
+
+std::optional<analysis::ParseRange> jsonRangeField(const jsonrpc::Json& object, std::string_view key) {
+    if (!object.is_object()) {
+        return std::nullopt;
+    }
+    const auto range_it = object.find(std::string(key));
+    if (range_it == object.end() || !range_it->is_object()) {
+        return std::nullopt;
+    }
+    const auto start_it = range_it->find("start");
+    const auto end_it = range_it->find("end");
+    if (start_it == range_it->end() || end_it == range_it->end() ||
+        !start_it->is_object() || !end_it->is_object()) {
+        return std::nullopt;
+    }
+
+    const auto start_line_it = start_it->find("line");
+    const auto start_character_it = start_it->find("character");
+    const auto end_line_it = end_it->find("line");
+    const auto end_character_it = end_it->find("character");
+    if (start_line_it == start_it->end() || start_character_it == start_it->end() ||
+        end_line_it == end_it->end() || end_character_it == end_it->end() ||
+        !start_line_it->is_number_integer() || !start_character_it->is_number_integer() ||
+        !end_line_it->is_number_integer() || !end_character_it->is_number_integer()) {
+        return std::nullopt;
+    }
+
+    return analysis::ParseRange{.start_line = start_line_it->get<int>(),
+                                .start_character = start_character_it->get<int>(),
+                                .end_line = end_line_it->get<int>(),
+                                .end_character = end_character_it->get<int>()};
+}
+
+jsonrpc::Json markdownDocumentation(std::string value) {
+    return jsonrpc::Json{{"kind", "markdown"}, {"value", std::move(value)}};
+}
+
+std::string declarationLocationLabel(const analysis::Location& location) {
+    return location.uri + ":" + std::to_string(location.range.start_line + 1) + ":" +
+           std::to_string(location.range.start_character + 1);
+}
+
+std::string snippetEscape(std::string_view value) {
+    std::string result;
+    result.reserve(value.size());
+    for (const char character : value) {
+        if (character == '\\' || character == '$' || character == '}') {
+            result.push_back('\\');
+        }
+        result.push_back(character);
+    }
+    return result;
+}
+
+std::string moduleInstantiationSnippet(const analysis::ModuleDefinition& module) {
+    std::string snippet = module.name + " ${1:" + snippetEscape(module.name) + "_i}(";
+    const auto port_count = module.port_details.empty() ? module.ports.size() : module.port_details.size();
+    for (size_t index = 0; index < port_count; ++index) {
+        if (index != 0) {
+            snippet += ", ";
+        }
+        const auto& port_name = module.port_details.empty() ? module.ports[index]
+                                                            : module.port_details[index].name;
+        snippet += ".";
+        snippet += port_name;
+        snippet += "(${";
+        snippet += std::to_string(index + 2);
+        snippet += ":";
+        snippet += snippetEscape(port_name);
+        snippet += "})";
+    }
+    snippet += ");";
+    return snippet;
+}
+
+std::string portConnectionSnippet(const analysis::SchematicPort& port) {
+    return port.name + "(${1:" + snippetEscape(port.name) + "})";
+}
+
+std::string macroSignatureLabel(const analysis::MacroEntry& macro) {
+    std::string label = macro.name;
+    if (!macro.function_like) {
+        return label;
+    }
+
+    label += "(";
+    for (size_t index = 0; index < macro.parameters.size(); ++index) {
+        if (index != 0) {
+            label += ", ";
+        }
+        label += macro.parameters[index];
+    }
+    label += ")";
+    return label;
+}
+
+std::string macroInsertText(const analysis::MacroEntry& macro) {
+    if (!macro.function_like) {
+        return macro.name;
+    }
+
+    std::string text = macro.name + "(";
+    for (size_t index = 0; index < macro.parameters.size(); ++index) {
+        if (index != 0) {
+            text += ", ";
+        }
+        text += "${";
+        text += std::to_string(index + 1);
+        text += ":";
+        text += snippetEscape(macro.parameters[index]);
+        text += "}";
+    }
+    text += ")";
+    return text;
+}
+
+std::string symbolTypeLabel(const analysis::SemanticSymbol& symbol) {
+    if (!symbol.type.has_value()) {
+        return {};
+    }
+    if (!symbol.type->display_name.empty()) {
+        return symbol.type->display_name;
+    }
+    return symbol.type->name;
+}
+
+std::string richCompletionDetail(const analysis::SemanticSymbol& symbol,
+                                 const analysis::ModuleDefinition* module) {
+    if (module && symbol.kind == 2) {
+        return moduleSignatureLabel(*module);
+    }
+
+    auto detail = completionDetailForSymbolKind(symbol.kind);
+    const auto type_label = symbolTypeLabel(symbol);
+    if (!type_label.empty() && (symbol.kind == 13 || symbol.kind == 14 || symbol.kind == 19 ||
+                                symbol.kind == 22 || symbol.kind == 26)) {
+        detail += ": ";
+        detail += type_label;
+    }
+    if (symbol.kind == 14 && symbol.constant_value.has_value()) {
+        detail += " = ";
+        detail += std::to_string(*symbol.constant_value);
+    }
+    return detail;
+}
+
+std::string completionDocumentationForSymbol(const analysis::SemanticSymbol& symbol,
+                                             const analysis::ModuleDefinition* module) {
+    std::string documentation = "**";
+    documentation += completionDetailForSymbolKind(symbol.kind);
+    documentation += "** `";
+    documentation += module && symbol.kind == 2 ? moduleSignatureLabel(*module) : symbol.name;
+    documentation += "`";
+
+    const auto type_label = symbolTypeLabel(symbol);
+    if (!type_label.empty() && symbol.kind != 2) {
+        documentation += "\n\nType: `" + type_label + "`";
+    }
+    if (!symbol.direction.empty()) {
+        documentation += "\n\nDirection: `" + symbol.direction + "`";
+    }
+    if (symbol.type.has_value() && symbol.type->bit_width.has_value()) {
+        documentation += "\n\nWidth: `" + std::to_string(*symbol.type->bit_width) + " bit";
+        if (*symbol.type->bit_width != 1) {
+            documentation += "s";
+        }
+        documentation += "`";
+    }
+    if (symbol.constant_value.has_value()) {
+        documentation += "\n\nValue: `" + std::to_string(*symbol.constant_value) + "`";
+    }
+    if (symbol.type.has_value() && !symbol.type->alias_target.empty()) {
+        documentation += "\n\nAlias: `" + symbol.type->alias_target + "`";
+    }
+    const auto port_count = module ? (module->port_details.empty() ? module->ports.size()
+                                                                   : module->port_details.size())
+                                   : 0;
+    if (port_count > 0) {
+        documentation += "\n\nPorts: `";
+        for (size_t index = 0; index < port_count; ++index) {
+            if (index != 0) {
+                documentation += ", ";
+            }
+            documentation += module->port_details.empty() ? module->ports[index]
+                                                          : portSignatureLabel(module->port_details[index]);
+        }
+        documentation += "`";
+    }
+    documentation += "\n\nDeclared: `" + declarationLocationLabel(symbol.location) + "`";
+    if (!symbol.scope_path.empty()) {
+        documentation += "\n\nScope: `" + symbol.scope_path + "`";
+    }
+    return documentation;
+}
+
+std::string portCompletionDetail(const analysis::SchematicPort& port) {
+    return portSignatureLabel(port);
+}
+
+std::string completionDocumentationForPort(const analysis::ModuleDefinition& module,
+                                           const analysis::SchematicPort& port,
+                                           std::string_view declaration_uri) {
+    std::string documentation = "**Port** `";
+    documentation += portSignatureLabel(port);
+    documentation += "`";
+    documentation += "\n\nModule: `" + module.name + "`";
+    if (!declaration_uri.empty()) {
+        documentation += "\n\nDeclared: `" + std::string(declaration_uri) + ":" +
+                         std::to_string(port.selection_range.start_line + 1) + ":" +
+                         std::to_string(port.selection_range.start_character + 1) + "`";
+    }
+    return documentation;
+}
+
+std::string completionDocumentationForMacro(const analysis::MacroEntry& macro) {
+    std::string documentation = "**Macro** `";
+    documentation += macroSignatureLabel(macro);
+    documentation += "`";
+    if (!macro.parameters.empty()) {
+        documentation += "\n\nParameters: `";
+        for (size_t index = 0; index < macro.parameters.size(); ++index) {
+            if (index != 0) {
+                documentation += ", ";
+            }
+            documentation += macro.parameters[index];
+        }
+        documentation += "`";
+    }
+    if (!macro.body.empty()) {
+        documentation += "\n\nBody:\n```systemverilog\n";
+        documentation += macro.body;
+        documentation += "\n```";
+    }
+    documentation += "\n\nDeclared: `" + declarationLocationLabel(macro.location) + "`";
+    return documentation;
+}
+
+jsonrpc::Json semanticCompletionData(const analysis::SemanticSymbol& symbol) {
+    return jsonrpc::Json{{"source", "semantic"},
+                         {"symbolId", symbol.id},
+                         {"uri", symbol.location.uri},
+                         {"range", toRangeJson(symbol.location.range)},
+                         {"selectionRange", toRangeJson(symbol.selection_range)},
+                         {"kind", symbol.kind},
+                         {"scopePath", symbol.scope_path}};
+}
+
+jsonrpc::Json indexCompletionData(const analysis::CompletionEntry& entry) {
+    return jsonrpc::Json{{"source", "index"},
+                         {"label", entry.label},
+                         {"uri", entry.location.uri},
+                         {"range", toRangeJson(entry.location.range)},
+                         {"selectionRange", toRangeJson(entry.selection_range)},
+                         {"kind", entry.kind}};
+}
+
+jsonrpc::Json portCompletionData(const analysis::ModuleDefinition& module,
+                                 const analysis::SchematicPort& port,
+                                 std::string_view declaration_uri) {
+    return jsonrpc::Json{{"source", "port"},
+                         {"moduleName", module.name},
+                         {"portName", port.name},
+                         {"uri", std::string(declaration_uri)},
+                         {"range", toRangeJson(port.range)},
+                         {"selectionRange", toRangeJson(port.selection_range)}};
+}
+
+jsonrpc::Json macroCompletionData(const analysis::MacroEntry& macro) {
+    jsonrpc::Json parameters = jsonrpc::Json::array();
+    for (const auto& parameter : macro.parameters) {
+        parameters.push_back(parameter);
+    }
+    return jsonrpc::Json{{"source", "macro"},
+                         {"name", macro.name},
+                         {"parameters", std::move(parameters)},
+                         {"body", macro.body},
+                         {"functionLike", macro.function_like},
+                         {"uri", macro.location.uri},
+                         {"range", toRangeJson(macro.location.range)},
+                         {"selectionRange", toRangeJson(macro.selection_range)}};
+}
+
+jsonrpc::Json toSemanticCompletionItem(const analysis::SemanticSymbol& symbol) {
+    return jsonrpc::Json{{"label", symbol.name},
+                         {"kind", toCompletionItemKind(symbol.kind)},
+                         {"detail", completionDetailForSymbolKind(symbol.kind)},
+                         {"data", semanticCompletionData(symbol)}};
+}
+
+jsonrpc::Json toIndexCompletionItem(const analysis::CompletionEntry& entry) {
+    return jsonrpc::Json{{"label", entry.label},
+                         {"kind", toCompletionItemKind(entry.kind)},
+                         {"detail", entry.detail},
+                         {"data", indexCompletionData(entry)}};
+}
+
+jsonrpc::Json toPortCompletionItem(const analysis::ModuleDefinition& module,
+                                   const analysis::SchematicPort& port,
+                                   std::string_view declaration_uri) {
+    return jsonrpc::Json{{"label", port.name},
+                         {"kind", 5},
+                         {"detail", portCompletionDetail(port)},
+                         {"data", portCompletionData(module, port, declaration_uri)}};
+}
+
+jsonrpc::Json toMacroCompletionItem(const analysis::MacroEntry& macro) {
+    return jsonrpc::Json{{"label", macro.name},
+                         {"kind", macro.function_like ? 3 : 21},
+                         {"detail", macro.function_like ? "Macro function" : "Macro"},
+                         {"data", macroCompletionData(macro)}};
+}
+
+std::optional<analysis::MacroEntry> macroEntryFromCompletionData(const jsonrpc::Json& data) {
+    const auto name = jsonStringField(data, "name");
+    const auto uri = jsonStringField(data, "uri");
+    if (!name.has_value() || !uri.has_value()) {
+        return std::nullopt;
+    }
+
+    std::vector<std::string> parameters;
+    const auto parameters_it = data.find("parameters");
+    if (parameters_it != data.end() && parameters_it->is_array()) {
+        for (const auto& parameter : *parameters_it) {
+            if (parameter.is_string()) {
+                parameters.push_back(parameter.get<std::string>());
+            }
+        }
+    }
+
+    auto body = jsonStringField(data, "body").value_or("");
+    bool function_like = false;
+    const auto function_like_it = data.find("functionLike");
+    if (function_like_it != data.end() && function_like_it->is_boolean()) {
+        function_like = function_like_it->get<bool>();
+    }
+
+    const auto range = jsonRangeField(data, "range").value_or(analysis::ParseRange{});
+    const auto selection_range = jsonRangeField(data, "selectionRange").value_or(range);
+
+    return analysis::MacroEntry{.name = *name,
+                                .parameters = std::move(parameters),
+                                .body = std::move(body),
+                                .location = analysis::Location{.uri = *uri, .range = range},
+                                .selection_range = selection_range,
+                                .function_like = function_like};
+}
+
+bool isModuleLikeCompletionSymbol(int symbol_kind) {
+    return symbol_kind == 2 || symbol_kind == 11;
 }
 
 bool isTypeDefinitionSymbol(int symbol_kind) {
@@ -465,6 +842,134 @@ std::optional<size_t> offsetAtParsePosition(std::string_view text, int line, int
     return offsetAtPosition(text, lsp::Position{.line = line, .character = character});
 }
 
+std::optional<size_t> completionPrefixStartOffset(std::string_view text,
+                                                  const lsp::Position& position,
+                                                  std::string_view prefix) {
+    const auto offset = offsetAtPosition(text, position);
+    if (!offset.has_value() || *offset < prefix.size()) {
+        return std::nullopt;
+    }
+    return *offset - prefix.size();
+}
+
+bool hasOnlyWhitespaceSinceLineStart(std::string_view text, size_t offset) {
+    size_t line_start = offset;
+    while (line_start > 0 && text[line_start - 1] != '\n' && text[line_start - 1] != '\r') {
+        --line_start;
+    }
+    for (size_t index = line_start; index < offset; ++index) {
+        const auto ch = static_cast<unsigned char>(text[index]);
+        if (std::isspace(ch) == 0) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool isModuleInstantiationCompletionContext(std::string_view text,
+                                            const lsp::Position& position,
+                                            std::string_view prefix) {
+    const auto prefix_start = completionPrefixStartOffset(text, position, prefix);
+    return prefix_start.has_value() && hasOnlyWhitespaceSinceLineStart(text, *prefix_start);
+}
+
+bool isMacroCompletionContext(std::string_view text,
+                              const lsp::Position& position,
+                              std::string_view prefix) {
+    const auto prefix_start = completionPrefixStartOffset(text, position, prefix);
+    return prefix_start.has_value() && *prefix_start > 0 && text[*prefix_start - 1] == '`';
+}
+
+bool isNamedPortCompletionContext(std::string_view text,
+                                  const lsp::Position& position,
+                                  std::string_view prefix) {
+    const auto prefix_start = completionPrefixStartOffset(text, position, prefix);
+    return prefix_start.has_value() && *prefix_start > 0 && text[*prefix_start - 1] == '.';
+}
+
+std::optional<std::string> packageQualifierBeforeCompletion(std::string_view text,
+                                                            const lsp::Position& position,
+                                                            std::string_view prefix) {
+    const auto prefix_start = completionPrefixStartOffset(text, position, prefix);
+    if (!prefix_start.has_value() || *prefix_start < 2 || text[*prefix_start - 1] != ':' ||
+        text[*prefix_start - 2] != ':') {
+        return std::nullopt;
+    }
+
+    size_t name_end = *prefix_start - 2;
+    size_t name_start = name_end;
+    while (name_start > 0 && isIdentifierContinue(text[name_start - 1])) {
+        --name_start;
+    }
+
+    const auto qualifier = text.substr(name_start, name_end - name_start);
+    if (!isValidIdentifier(qualifier)) {
+        return std::nullopt;
+    }
+    return std::string(qualifier);
+}
+
+std::set<std::string> connectedNamedPortsBeforePosition(std::string_view text,
+                                                        const SignatureInvocation& invocation) {
+    std::set<std::string> connected_ports;
+    int depth = 0;
+    for (size_t offset = invocation.open_paren_offset + 1;
+         offset < invocation.position_offset && offset < text.size();
+         ++offset) {
+        const char value = text[offset];
+        if (value == '(') {
+            ++depth;
+            continue;
+        }
+        if (value == ')') {
+            if (depth == 0) {
+                break;
+            }
+            --depth;
+            continue;
+        }
+        if (value != '.' || depth != 0) {
+            continue;
+        }
+
+        const auto name_start = offset + 1;
+        if (name_start >= invocation.position_offset || !isIdentifierStart(text[name_start])) {
+            continue;
+        }
+
+        size_t name_end = name_start + 1;
+        while (name_end < invocation.position_offset && isIdentifierContinue(text[name_end])) {
+            ++name_end;
+        }
+
+        size_t cursor = name_end;
+        while (cursor < invocation.position_offset &&
+               std::isspace(static_cast<unsigned char>(text[cursor])) != 0) {
+            ++cursor;
+        }
+        if (cursor < invocation.position_offset && text[cursor] == '(') {
+            connected_ports.insert(std::string(text.substr(name_start, name_end - name_start)));
+        }
+
+        offset = name_end;
+    }
+    return connected_ports;
+}
+
+bool appendCompletionItem(jsonrpc::Json& result,
+                          std::set<std::string>& emitted_labels,
+                          jsonrpc::Json item) {
+    const auto label_it = item.find("label");
+    if (label_it == item.end() || !label_it->is_string()) {
+        return false;
+    }
+    if (!emitted_labels.insert(label_it->get<std::string>()).second) {
+        return false;
+    }
+    result.push_back(std::move(item));
+    return true;
+}
+
 int activeParameterAt(std::string_view text, size_t open_paren_offset, size_t position_offset) {
     int active_parameter = 0;
     int depth = 0;
@@ -526,7 +1031,9 @@ std::optional<SignatureInvocation> findSignatureInvocation(
                                        .instance_name = instance.instance_name,
                                        .active_parameter = activeParameterAt(document.text,
                                                                             open_paren_offset,
-                                                                            *position_offset)};
+                                                                            *position_offset),
+                                       .open_paren_offset = open_paren_offset,
+                                       .position_offset = *position_offset};
         }
     }
 
@@ -1205,6 +1712,9 @@ void ServerSession::bind(jsonrpc::JsonRpcServer& server) {
     server.registerRequestHandler("textDocument/completion", [this](const jsonrpc::Json& params) {
         return handleCompletion(params);
     });
+    server.registerRequestHandler("completionItem/resolve", [this](const jsonrpc::Json& params) {
+        return handleCompletionItemResolve(params);
+    });
     server.registerRequestHandler("textDocument/prepareRename", [this](const jsonrpc::Json& params) {
         return handlePrepareRename(params);
     });
@@ -1830,26 +2340,210 @@ jsonrpc::Json ServerSession::handleCompletion(const jsonrpc::Json& params) {
                                                               completion.position.character);
     jsonrpc::Json result = jsonrpc::Json::array();
     std::set<std::string> emitted_labels;
+
+    if (isMacroCompletionContext(document->text, completion.position, prefix)) {
+        for (const auto& macro : symbol_index_.macroCompletions(prefix, document->uri)) {
+            appendCompletionItem(result, emitted_labels, toMacroCompletionItem(macro));
+        }
+        return result;
+    }
+
+    if (isModuleInstantiationCompletionContext(document->text, completion.position, prefix)) {
+        for (const auto& symbol : semantic_workspace_.visibleSymbolsAt(document->uri,
+                                                                       completion.position.line,
+                                                                       completion.position.character,
+                                                                       prefix)) {
+            if (!isModuleLikeCompletionSymbol(symbol.kind)) {
+                continue;
+            }
+            appendCompletionItem(result, emitted_labels, toSemanticCompletionItem(symbol));
+        }
+
+        for (const auto& item : symbol_index_.completions(prefix, document->uri)) {
+            if (!isModuleLikeCompletionSymbol(item.kind)) {
+                continue;
+            }
+            appendCompletionItem(result, emitted_labels, toIndexCompletionItem(item));
+        }
+    }
+
+    if (isNamedPortCompletionContext(document->text, completion.position, prefix)) {
+        const auto invocation = findSignatureInvocation(compilation_service_, *document, completion.position);
+        if (invocation.has_value()) {
+            const auto modules = buildModuleLookup(sortedModuleDefinitions(hierarchy_documents_));
+            const auto module_it = modules.find(invocation->module_name);
+            if (module_it != modules.end()) {
+                const auto& module = module_it->second.definition;
+                const auto connected_ports = connectedNamedPortsBeforePosition(document->text, *invocation);
+                if (module.port_details.empty()) {
+                    for (const auto& port_name : module.ports) {
+                        if (!startsWithInsensitive(prefix, port_name) ||
+                            connected_ports.contains(port_name)) {
+                            continue;
+                        }
+                        analysis::SchematicPort port{.name = port_name,
+                                                     .direction = {},
+                                                     .width_text = {},
+                                                     .range = module.selection_range,
+                                                     .selection_range = module.selection_range};
+                        appendCompletionItem(result, emitted_labels,
+                                             toPortCompletionItem(module, port, module_it->second.uri));
+                    }
+                }
+                else {
+                    for (const auto& port : module.port_details) {
+                        if (!startsWithInsensitive(prefix, port.name) ||
+                            connected_ports.contains(port.name)) {
+                            continue;
+                        }
+                        appendCompletionItem(result, emitted_labels,
+                                             toPortCompletionItem(module, port, module_it->second.uri));
+                    }
+                }
+            }
+        }
+        return result;
+    }
+
+    if (const auto package_name = packageQualifierBeforeCompletion(document->text, completion.position, prefix)) {
+        for (const auto& symbol : semantic_workspace_.packageMembersAt(document->uri,
+                                                                       completion.position.line,
+                                                                       completion.position.character,
+                                                                       *package_name,
+                                                                       prefix)) {
+            appendCompletionItem(result, emitted_labels, toSemanticCompletionItem(symbol));
+        }
+        return result;
+    }
+
     for (const auto& symbol : semantic_workspace_.visibleSymbolsAt(document->uri, completion.position.line,
                                                                    completion.position.character, prefix)) {
-        if (!emitted_labels.insert(symbol.name).second) {
-            continue;
-        }
-        result.push_back(jsonrpc::Json{{"label", symbol.name},
-                                       {"kind", toCompletionItemKind(symbol.kind)},
-                                       {"detail", completionDetailForSymbolKind(symbol.kind)}});
+        appendCompletionItem(result, emitted_labels, toSemanticCompletionItem(symbol));
     }
 
     for (const auto& item : symbol_index_.completions(prefix, document->uri)) {
-        if (!emitted_labels.insert(item.label).second) {
-            continue;
-        }
-        result.push_back(jsonrpc::Json{{"label", item.label},
-                                       {"kind", toCompletionItemKind(item.kind)},
-                                       {"detail", item.detail}});
+        appendCompletionItem(result, emitted_labels, toIndexCompletionItem(item));
     }
 
     return result;
+}
+
+jsonrpc::Json ServerSession::handleCompletionItemResolve(const jsonrpc::Json& params) {
+    if (!initialized_) {
+        throw std::runtime_error("completionItem/resolve received before initialize");
+    }
+
+    jsonrpc::Json item = params;
+    const auto data_it = item.find("data");
+    if (data_it == item.end() || !data_it->is_object()) {
+        return item;
+    }
+
+    const auto source = jsonStringField(*data_it, "source");
+    if (!source.has_value()) {
+        return item;
+    }
+
+    if (*source == "semantic") {
+        const auto symbol_id = jsonStringField(*data_it, "symbolId");
+        if (!symbol_id.has_value()) {
+            return item;
+        }
+        const auto symbol = semantic_workspace_.findSymbolById(*symbol_id);
+        if (!symbol.has_value()) {
+            return item;
+        }
+
+        const analysis::ModuleDefinition* module = nullptr;
+        const auto modules = buildModuleLookup(sortedModuleDefinitions(hierarchy_documents_));
+        const auto module_it = modules.find(symbol->name);
+        if (symbol->kind == 2 && module_it != modules.end()) {
+            module = &module_it->second.definition;
+        }
+
+        item["detail"] = richCompletionDetail(*symbol, module);
+        item["documentation"] = markdownDocumentation(completionDocumentationForSymbol(*symbol, module));
+        if (module) {
+            item["insertText"] = moduleInstantiationSnippet(*module);
+            item["insertTextFormat"] = 2;
+        }
+        return item;
+    }
+
+    if (*source == "index") {
+        const auto label = jsonStringField(*data_it, "label");
+        const auto uri = jsonStringField(*data_it, "uri");
+        if (label.has_value() && uri.has_value()) {
+            std::string documentation = "**Indexed Symbol** `";
+            documentation += *label;
+            documentation += "`";
+            documentation += "\n\nDeclared: `" + *uri + "`";
+            item["documentation"] = markdownDocumentation(std::move(documentation));
+        }
+        return item;
+    }
+
+    if (*source == "port") {
+        const auto module_name = jsonStringField(*data_it, "moduleName");
+        const auto port_name = jsonStringField(*data_it, "portName");
+        if (!module_name.has_value() || !port_name.has_value()) {
+            return item;
+        }
+
+        const auto modules = buildModuleLookup(sortedModuleDefinitions(hierarchy_documents_));
+        const auto module_it = modules.find(*module_name);
+        if (module_it == modules.end()) {
+            return item;
+        }
+
+        const auto& module = module_it->second.definition;
+        if (module.port_details.empty()) {
+            for (const auto& fallback_port_name : module.ports) {
+                if (fallback_port_name != *port_name) {
+                    continue;
+                }
+                analysis::SchematicPort port{.name = fallback_port_name,
+                                             .direction = {},
+                                             .width_text = {},
+                                             .range = module.selection_range,
+                                             .selection_range = module.selection_range};
+                item["detail"] = portCompletionDetail(port);
+                item["documentation"] = markdownDocumentation(
+                    completionDocumentationForPort(module, port, module_it->second.uri));
+                item["insertText"] = portConnectionSnippet(port);
+                item["insertTextFormat"] = 2;
+                return item;
+            }
+        }
+        for (const auto& port : module.port_details) {
+            if (port.name != *port_name) {
+                continue;
+            }
+            item["detail"] = portCompletionDetail(port);
+            item["documentation"] = markdownDocumentation(
+                completionDocumentationForPort(module, port, module_it->second.uri));
+            item["insertText"] = portConnectionSnippet(port);
+            item["insertTextFormat"] = 2;
+            return item;
+        }
+    }
+
+    if (*source == "macro") {
+        const auto macro = macroEntryFromCompletionData(*data_it);
+        if (!macro.has_value()) {
+            return item;
+        }
+        item["detail"] = macro->function_like ? "Macro function " + macroSignatureLabel(*macro)
+                                                : "Macro";
+        item["documentation"] = markdownDocumentation(completionDocumentationForMacro(*macro));
+        item["insertText"] = macroInsertText(*macro);
+        if (macro->function_like) {
+            item["insertTextFormat"] = 2;
+        }
+        return item;
+    }
+
+    return item;
 }
 
 jsonrpc::Json ServerSession::handlePrepareRename(const jsonrpc::Json& params) {

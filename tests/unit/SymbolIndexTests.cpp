@@ -55,6 +55,27 @@ TEST_CASE("SymbolIndex returns workspace symbols and completions", "[analysis][i
     }));
 }
 
+TEST_CASE("SymbolIndex returns macro completions", "[analysis][index]") {
+    SymbolIndex index;
+    index.updateDocument("file:///workspace/defs.svh",
+                         "`define FEATURE 1\n"
+                         "`define FANCY(value) ((value) + 1)\n");
+    index.updateDocument("file:///workspace/top.sv",
+                         "`define FILE_LOCAL 1\n"
+                         "module top; endmodule\n");
+
+    const auto completions = index.macroCompletions("F", "file:///workspace/top.sv");
+    REQUIRE(completions.size() == 3);
+    CHECK(completions[0].name == "FILE_LOCAL");
+    CHECK(completions[0].location.uri == "file:///workspace/top.sv");
+    CHECK(completions[1].name == "FANCY");
+    REQUIRE(completions[1].parameters.size() == 1);
+    CHECK(completions[1].parameters[0] == "value");
+    CHECK(completions[1].function_like);
+    CHECK(completions[2].name == "FEATURE");
+    CHECK(completions[2].body == "1");
+}
+
 TEST_CASE("SymbolIndex detects ambiguous definitions", "[analysis][index]") {
     SymbolIndex index;
     index.updateDocument("file:///workspace/a.sv", "module child; endmodule\n");

@@ -103,6 +103,7 @@ public:
     [[nodiscard]] std::optional<SemanticSymbol> findResolvedSymbolAt(std::string_view uri,
                                                                       int line,
                                                                       int character) const;
+    [[nodiscard]] std::optional<SemanticSymbol> findSymbolById(std::string_view symbol_id) const;
     [[nodiscard]] std::vector<SemanticSymbol> findDefinitionsAt(std::string_view uri,
                                                                 int line,
                                                                 int character) const;
@@ -137,6 +138,11 @@ public:
     [[nodiscard]] std::vector<SemanticSymbol> visibleSymbolsAt(std::string_view uri,
                                                                int line,
                                                                int character,
+                                                               std::string_view prefix) const;
+    [[nodiscard]] std::vector<SemanticSymbol> packageMembersAt(std::string_view uri,
+                                                               int line,
+                                                               int character,
+                                                               std::string_view package_name,
                                                                std::string_view prefix) const;
     [[nodiscard]] size_t documentCount() const { return documents_.size(); }
 
