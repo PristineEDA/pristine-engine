@@ -1620,6 +1620,46 @@ jsonrpc::Json toSchematicModuleJson(const IndexedModuleSchematic& indexed,
                          {"nets", buildSchematicNetsJson(indexed.schematic, modules)}};
 }
 
+jsonrpc::Json toConeNodeJson(const analysis::SemanticConeNode& node) {
+    jsonrpc::Json result{{"id", node.id},
+                         {"name", node.name},
+                         {"uri", node.location.uri},
+                         {"range", toRangeJson(node.location.range)}};
+    result["bitWidth"] = node.bit_width.has_value() ? jsonrpc::Json(*node.bit_width) : jsonrpc::Json(nullptr);
+    return result;
+}
+
+jsonrpc::Json toConeEdgeJson(const analysis::SemanticConeEdge& edge) {
+    return jsonrpc::Json{{"from", edge.from_symbol_id},
+                         {"to", edge.to_symbol_id},
+                         {"range", toRangeJson(edge.location.range)},
+                         {"expression", edge.expression}};
+}
+
+jsonrpc::Json toConeTraceJson(const analysis::SemanticConeTrace& trace) {
+    jsonrpc::Json nodes = jsonrpc::Json::array();
+    for (const auto& node : trace.nodes) {
+        nodes.push_back(toConeNodeJson(node));
+    }
+
+    jsonrpc::Json edges = jsonrpc::Json::array();
+    for (const auto& edge : trace.edges) {
+        edges.push_back(toConeEdgeJson(edge));
+    }
+
+    jsonrpc::Json messages = jsonrpc::Json::array();
+    for (const auto& message : trace.messages) {
+        messages.push_back(message);
+    }
+
+    return jsonrpc::Json{{"rootSymbolId",
+                          trace.root_symbol_id.has_value() ? jsonrpc::Json(*trace.root_symbol_id)
+                                                            : jsonrpc::Json(nullptr)},
+                         {"nodes", std::move(nodes)},
+                         {"edges", std::move(edges)},
+                         {"messages", std::move(messages)}};
+}
+
 jsonrpc::Json toCallHierarchyItemJson(const IndexedModuleDefinition& module) {
     return jsonrpc::Json{{"name", module.definition.name},
                          {"kind", module.definition.kind == "interface" ? 11 : 2},
@@ -1848,6 +1888,9 @@ void ServerSession::bind(jsonrpc::JsonRpcServer& server) {
     server.registerRequestHandler("systemverilog/schematic", [this](const jsonrpc::Json& params) {
         return handleSchematic(params);
     });
+    server.registerRequestHandler("systemverilog/backwardCone", [this](const jsonrpc::Json& params) {
+        return handleBackwardCone(params);
+    });
     server.registerRequestHandler("textDocument/hover", [this](const jsonrpc::Json& params) {
         return handleHover(params);
     });
@@ -2048,6 +2091,18 @@ jsonrpc::Json ServerSession::handleSchematic(const jsonrpc::Json& params) {
     return jsonrpc::Json{{"rootModuleId", *root_module_name},
                          {"modules", std::move(modules)},
                          {"messages", std::move(messages)}};
+}
+
+jsonrpc::Json ServerSession::handleBackwardCone(const jsonrpc::Json& params) {
+    if (!initialized_) {
+        throw std::runtime_error("systemverilog/backwardCone received before initialize");
+    }
+
+    const auto uri = params.at("textDocument").at("uri").get<std::string>();
+    const auto& position = params.at("position");
+    const auto line = position.at("line").get<int>();
+    const auto character = position.at("character").get<int>();
+    return toConeTraceJson(semantic_workspace_.backwardConeAt(uri, line, character));
 }
 
 jsonrpc::Json ServerSession::handleHover(const jsonrpc::Json& params) {

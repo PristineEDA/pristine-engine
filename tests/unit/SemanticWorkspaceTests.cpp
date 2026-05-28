@@ -380,6 +380,48 @@ TEST_CASE("SemanticWorkspace does not report matching assignment widths",
     }));
 }
 
+TEST_CASE("SemanticWorkspace traces local backward assignment cones",
+          "[analysis][semantic][cone]") {
+    SemanticWorkspace workspace;
+    workspace.updateDocument("file:///workspace/cone.sv",
+                             "module top;\n"
+                             "  logic a;\n"
+                             "  logic b;\n"
+                             "  logic mid;\n"
+                             "  logic out;\n"
+                             "  assign mid = a & b;\n"
+                             "  assign out = mid;\n"
+                             "endmodule\n");
+
+    const auto trace = workspace.backwardConeAt("file:///workspace/cone.sv", 4, 9);
+
+    REQUIRE(trace.root_symbol_id.has_value());
+    CHECK(trace.messages.empty());
+    const auto find_node = [&](std::string_view name) {
+        return std::find_if(trace.nodes.begin(), trace.nodes.end(), [&](const SemanticConeNode& node) {
+            return node.name == name;
+        });
+    };
+    const auto out = find_node("out");
+    const auto mid = find_node("mid");
+    const auto a = find_node("a");
+    const auto b = find_node("b");
+    REQUIRE(out != trace.nodes.end());
+    REQUIRE(mid != trace.nodes.end());
+    REQUIRE(a != trace.nodes.end());
+    REQUIRE(b != trace.nodes.end());
+    CHECK(*trace.root_symbol_id == out->id);
+
+    const auto has_edge = [&](const SemanticConeNode& from, const SemanticConeNode& to) {
+        return std::any_of(trace.edges.begin(), trace.edges.end(), [&](const SemanticConeEdge& edge) {
+            return edge.from_symbol_id == from.id && edge.to_symbol_id == to.id;
+        });
+    };
+    CHECK(has_edge(*out, *mid));
+    CHECK(has_edge(*mid, *a));
+    CHECK(has_edge(*mid, *b));
+}
+
 TEST_CASE("SemanticWorkspace tracks include directives per document", "[analysis][semantic]") {
     SemanticWorkspace workspace;
     workspace.setWorkspaceRoot("file:///workspace");

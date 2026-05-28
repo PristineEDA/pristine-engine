@@ -89,6 +89,7 @@ def main() -> int:
         unresolved_package = rtl / "unresolved_package.sv"
         unresolved_type = rtl / "unresolved_type.sv"
         width_mismatch = rtl / "width_mismatch.sv"
+        cone = rtl / "cone.sv"
         duplicate_symbol = rtl / "duplicate_symbol.sv"
         ambiguous_pkg_a = rtl / "ambiguous_pkg_a.sv"
         ambiguous_pkg_b = rtl / "ambiguous_pkg_b.sv"
@@ -183,6 +184,17 @@ def main() -> int:
             "endmodule\n"
         )
         width_mismatch.write_text(width_mismatch_text, encoding="utf-8")
+        cone_text = (
+            "module cone_top;\n"
+            "  logic a;\n"
+            "  logic b;\n"
+            "  logic mid;\n"
+            "  logic out;\n"
+            "  assign mid = a & b;\n"
+            "  assign out = mid;\n"
+            "endmodule\n"
+        )
+        cone.write_text(cone_text, encoding="utf-8")
         duplicate_symbol_text = (
             "module duplicate_top;\n"
             "  logic ready;\n"
@@ -221,6 +233,7 @@ def main() -> int:
         unresolved_package_uri = unresolved_package.resolve().as_uri()
         unresolved_type_uri = unresolved_type.resolve().as_uri()
         width_mismatch_uri = width_mismatch.resolve().as_uri()
+        cone_uri = cone.resolve().as_uri()
         duplicate_symbol_uri = duplicate_symbol.resolve().as_uri()
         ambiguous_pkg_a_uri = ambiguous_pkg_a.resolve().as_uri()
         ambiguous_pkg_b_uri = ambiguous_pkg_b.resolve().as_uri()
@@ -510,6 +523,19 @@ def main() -> int:
                 and item["range"]["start"] == {"line": 3, "character": 15}
                 and item["range"]["end"] == {"line": 3, "character": 18}
                 for item in width_mismatch_diagnostics
+            )
+
+            notify(
+                process,
+                "textDocument/didOpen",
+                {
+                    "textDocument": {
+                        "uri": cone_uri,
+                        "languageId": "systemverilog",
+                        "version": 1,
+                        "text": cone_text,
+                    }
+                },
             )
 
             definition = request(
@@ -824,6 +850,24 @@ def main() -> int:
                 },
                 "newText": "\ntypedef logic missing_t;\n",
             }
+
+            cone_trace = request(
+                process,
+                35,
+                "systemverilog/backwardCone",
+                {
+                    "textDocument": {"uri": cone_uri},
+                    "position": {"line": 4, "character": 9},
+                },
+            )["result"]
+            assert cone_trace["messages"] == []
+            cone_nodes = {node["name"]: node for node in cone_trace["nodes"]}
+            assert set(cone_nodes) == {"out", "mid", "a", "b"}
+            assert cone_trace["rootSymbolId"] == cone_nodes["out"]["id"]
+            cone_edges = {(edge["from"], edge["to"]) for edge in cone_trace["edges"]}
+            assert (cone_nodes["out"]["id"], cone_nodes["mid"]["id"]) in cone_edges
+            assert (cone_nodes["mid"]["id"], cone_nodes["a"]["id"]) in cone_edges
+            assert (cone_nodes["mid"]["id"], cone_nodes["b"]["id"]) in cone_edges
 
             prepare_top = request(
                 process,

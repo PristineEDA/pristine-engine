@@ -486,7 +486,7 @@ TEST_CASE("ServerSession publishes semantic diagnostics for ambiguous references
 
     CHECK(exit_code == 0);
     const auto diagnostics = findNotifications(transport, "textDocument/publishDiagnostics");
-    const auto diagnostic_notification = std::find_if(diagnostics.begin(), diagnostics.end(), [](const jsonrpc::Json& item) {
+    const auto diagnostic_notification = std::find_if(diagnostics.begin(), diagnostics.end(), [uri](const jsonrpc::Json& item) {
         return item.at("params").at("uri") == std::string(uri);
     });
     REQUIRE(diagnostic_notification != diagnostics.end());
@@ -1532,6 +1532,51 @@ TEST_CASE("ServerSession returns schematic data for a selected top module", "[se
     CHECK(std::any_of(nets.begin(), nets.end(), [](const jsonrpc::Json& net) {
         return net.at("name") == "y" && !net.at("drivers").empty() && !net.at("loads").empty();
     }));
+}
+
+TEST_CASE("ServerSession returns local backward cone data for a selected signal",
+          "[server][cone]") {
+    jsonrpc::JsonRpcServer rpc_server;
+    ServerSession session{"pristine-lsp", kTestServerVersion};
+    session.bind(rpc_server);
+
+    constexpr std::string_view uri = "file:///workspace/cone.sv";
+    ScriptedTransport transport{
+        R"({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}})",
+        R"({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///workspace/cone.sv","languageId":"systemverilog","version":1,"text":"module top;\n  logic a;\n  logic b;\n  logic mid;\n  logic out;\n  assign mid = a & b;\n  assign out = mid;\nendmodule\n"}}})",
+        R"({"jsonrpc":"2.0","id":2,"method":"systemverilog/backwardCone","params":{"textDocument":{"uri":"file:///workspace/cone.sv"},"position":{"line":4,"character":9}}})"};
+
+    CHECK(rpc_server.run(transport) == 0);
+    const auto cone_response = findResponse(transport, 2);
+    REQUIRE(cone_response.has_value());
+    const auto& result = cone_response->at("result");
+    CHECK(result.at("messages").empty());
+
+    const auto node_id = [&](std::string_view name) -> std::string {
+        const auto& nodes = result.at("nodes");
+        const auto node = std::find_if(nodes.begin(), nodes.end(), [&](const jsonrpc::Json& item) {
+            return item.at("name") == std::string(name);
+        });
+        REQUIRE(node != nodes.end());
+        CHECK(node->at("uri") == std::string(uri));
+        return node->at("id").get<std::string>();
+    };
+
+    const auto out_id = node_id("out");
+    const auto mid_id = node_id("mid");
+    const auto a_id = node_id("a");
+    const auto b_id = node_id("b");
+    CHECK(result.at("rootSymbolId") == out_id);
+
+    const auto has_edge = [&](const std::string& from, const std::string& to) {
+        const auto& edges = result.at("edges");
+        return std::any_of(edges.begin(), edges.end(), [&](const jsonrpc::Json& edge) {
+            return edge.at("from") == from && edge.at("to") == to;
+        });
+    };
+    CHECK(has_edge(out_id, mid_id));
+    CHECK(has_edge(mid_id, a_id));
+    CHECK(has_edge(mid_id, b_id));
 }
 
 TEST_CASE("ServerSession handles standard call hierarchy", "[server][hierarchy]") {

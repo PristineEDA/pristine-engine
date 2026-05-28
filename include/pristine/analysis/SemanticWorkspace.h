@@ -90,6 +90,27 @@ struct SemanticDiagnostic {
     int severity = 1;
 };
 
+struct SemanticConeNode {
+    std::string id;
+    std::string name;
+    Location location;
+    std::optional<std::int64_t> bit_width;
+};
+
+struct SemanticConeEdge {
+    std::string from_symbol_id;
+    std::string to_symbol_id;
+    Location location;
+    std::string expression;
+};
+
+struct SemanticConeTrace {
+    std::optional<std::string> root_symbol_id;
+    std::vector<SemanticConeNode> nodes;
+    std::vector<SemanticConeEdge> edges;
+    std::vector<std::string> messages;
+};
+
 struct SemanticDocument {
     std::string uri;
     int version = -1;
@@ -163,6 +184,9 @@ public:
                                                                std::string_view package_name,
                                                                std::string_view prefix) const;
     [[nodiscard]] std::vector<SemanticDiagnostic> diagnosticsFor(std::string_view uri) const;
+    [[nodiscard]] SemanticConeTrace backwardConeAt(std::string_view uri,
+                                                   int line,
+                                                   int character) const;
     [[nodiscard]] size_t documentCount() const { return documents_.size(); }
 
 private:

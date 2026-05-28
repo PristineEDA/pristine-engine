@@ -224,6 +224,47 @@ std::string widthMismatchMessage(std::string_view left_name,
            std::string(left_name) + "'.";
 }
 
+std::vector<std::string> identifierNamesInExpression(std::string_view expression) {
+    std::vector<std::string> result;
+    std::set<std::string> emitted;
+    size_t offset = 0;
+    while (offset < expression.size()) {
+        const auto first = static_cast<unsigned char>(expression[offset]);
+        if (std::isalpha(first) == 0 && expression[offset] != '_') {
+            ++offset;
+            continue;
+        }
+
+        const auto start = offset;
+        ++offset;
+        while (offset < expression.size()) {
+            const auto current = static_cast<unsigned char>(expression[offset]);
+            if (std::isalnum(current) == 0 && expression[offset] != '_' && expression[offset] != '$') {
+                break;
+            }
+            ++offset;
+        }
+
+        std::string name(expression.substr(start, offset - start));
+        if (emitted.insert(name).second) {
+            result.push_back(std::move(name));
+        }
+    }
+    return result;
+}
+
+SemanticConeNode makeConeNode(const SemanticSymbol& symbol) {
+    std::optional<std::int64_t> bit_width;
+    if (symbol.type.has_value()) {
+        bit_width = symbol.type->bit_width;
+    }
+
+    return SemanticConeNode{.id = symbol.id,
+                            .name = symbol.name,
+                            .location = symbol.location,
+                            .bit_width = bit_width};
+}
+
 std::optional<SemanticReference> typeReferenceForSymbol(const SemanticDocument& document,
                                                         const SemanticSymbol& symbol) {
     if (!symbol.type.has_value() || symbol.type->name.empty() || isBuiltinTypeName(symbol.type->name) ||
@@ -1383,6 +1424,103 @@ std::vector<SemanticDiagnostic> SemanticWorkspace::diagnosticsFor(std::string_vi
         return lhs.message < rhs.message;
     });
     return result;
+}
+
+SemanticConeTrace SemanticWorkspace::backwardConeAt(std::string_view uri,
+                                                    int line,
+                                                    int character) const {
+    SemanticConeTrace trace{};
+    const auto* source = document(uri);
+    if (!source) {
+        trace.messages.push_back("Document is not indexed in the semantic workspace.");
+        return trace;
+    }
+
+    const auto root = findResolvedSymbolAt(uri, line, character);
+    if (!root.has_value() || !isAssignableSignalSymbol(*root)) {
+        trace.messages.push_back("No signal symbol was found at the requested position.");
+        return trace;
+    }
+    if (root->location.uri != source->uri) {
+        trace.messages.push_back("Selected signal resolves outside the current document.");
+        return trace;
+    }
+
+    std::map<std::string, SemanticConeNode> emitted_nodes;
+    const auto append_node = [&](const SemanticSymbol& symbol) {
+        auto [it, inserted] = emitted_nodes.try_emplace(symbol.id, makeConeNode(symbol));
+        if (inserted) {
+            trace.nodes.push_back(it->second);
+        }
+    };
+
+    const auto resolve_local_signal = [&](std::string_view name,
+                                          std::string_view scope_path) -> std::optional<SemanticSymbol> {
+        if (!isSimpleIdentifierExpression(name)) {
+            return std::nullopt;
+        }
+
+        auto definitions = resolveName(name, scope_path, source->uri);
+        definitions.erase(std::remove_if(definitions.begin(), definitions.end(), [&](const SemanticSymbol& symbol) {
+                              return !isAssignableSignalSymbol(symbol) || symbol.location.uri != source->uri;
+                          }),
+                          definitions.end());
+        std::sort(definitions.begin(), definitions.end(), symbolLess);
+        definitions.erase(std::unique(definitions.begin(), definitions.end(), [](const SemanticSymbol& lhs,
+                                                                                 const SemanticSymbol& rhs) {
+                              return lhs.id == rhs.id;
+                          }),
+                          definitions.end());
+        if (definitions.size() != 1) {
+            return std::nullopt;
+        }
+        return definitions.front();
+    };
+
+    trace.root_symbol_id = root->id;
+    append_node(*root);
+
+    std::vector<std::string> pending{root->id};
+    std::set<std::string> visited;
+    std::set<std::string> emitted_edges;
+    for (size_t index = 0; index < pending.size(); ++index) {
+        const auto current_id = pending[index];
+        if (!visited.insert(current_id).second) {
+            continue;
+        }
+
+        for (const auto& assignment : source->assignments) {
+            const auto left_symbol = resolve_local_signal(assignment.left_expression,
+                                                          assignment.scope_path);
+            if (!left_symbol.has_value() || left_symbol->id != current_id) {
+                continue;
+            }
+
+            for (const auto& input_name : identifierNamesInExpression(assignment.right_expression)) {
+                const auto input_symbol = resolve_local_signal(input_name, assignment.scope_path);
+                if (!input_symbol.has_value()) {
+                    continue;
+                }
+
+                append_node(*input_symbol);
+                const auto edge_key = current_id + "\n" + input_symbol->id + "\n" +
+                                      std::to_string(assignment.location.range.start_line) + ":" +
+                                      std::to_string(assignment.location.range.start_character);
+                if (emitted_edges.insert(edge_key).second) {
+                    trace.edges.push_back(SemanticConeEdge{.from_symbol_id = current_id,
+                                                           .to_symbol_id = input_symbol->id,
+                                                           .location = assignment.location,
+                                                           .expression = assignment.right_expression});
+                }
+
+                if (!visited.contains(input_symbol->id)) {
+                    pending.push_back(input_symbol->id);
+                }
+            }
+        }
+    }
+
+    return trace;
 }
 
 std::vector<std::string> SemanticWorkspace::resolveIncludeUris(std::string_view including_uri,
