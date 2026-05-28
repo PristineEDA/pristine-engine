@@ -131,6 +131,7 @@ class SemanticWorkspace {
 public:
     void clear();
     void setWorkspaceRoot(std::string_view root_uri);
+    void configureSemanticEngine(SemanticEngineConfig config);
     void updateDocument(std::string_view uri,
                         std::string_view text,
                         SemanticDocumentState state = {});

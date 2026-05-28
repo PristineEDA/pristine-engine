@@ -19,6 +19,8 @@ struct Config {
     std::optional<std::string> build_pattern;
     bool build_relative_paths = false;
     std::optional<std::string> flags;
+    std::optional<std::string> top;
+    std::vector<std::string> top_modules;
     std::vector<IndexConfig> index;
 };
 

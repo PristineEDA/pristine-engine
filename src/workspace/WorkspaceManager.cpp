@@ -201,6 +201,14 @@ Config WorkspaceManager::parseConfig(const lsp::Json& config_json) {
     result.build = getOptionalString(config_json, "build");
     result.build_pattern = getOptionalString(config_json, "buildPattern");
     result.flags = getOptionalString(config_json, "flags");
+    result.top = getOptionalString(config_json, "top");
+    result.top_modules = parseStringArray(config_json, "topModules");
+    if (result.top.has_value()) {
+        result.top_modules.push_back(*result.top);
+        std::sort(result.top_modules.begin(), result.top_modules.end());
+        result.top_modules.erase(std::unique(result.top_modules.begin(), result.top_modules.end()),
+                                 result.top_modules.end());
+    }
 
     const auto build_relative_paths_it = config_json.find("buildRelativePaths");
     if (build_relative_paths_it != config_json.end() && !build_relative_paths_it->is_null()) {

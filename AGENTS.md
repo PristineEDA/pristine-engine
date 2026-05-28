@@ -65,6 +65,8 @@ Recognized `.slang/server.json` fields:
 - `buildPattern`
 - `buildRelativePaths`
 - `flags`
+- `top`
+- `topModules`
 - `index[].dirs`
 - `index[].excludeDirs`
 
@@ -76,6 +78,7 @@ Use the nearest owning layer instead of patching around it from a wrapper.
 - LSP protocol structures and JSON payload parsing: `src/lsp/Protocol.cpp`
 - deep semantic ownership, slang AST/Compilation snapshots, query-time rebuilds, and semantic diagnostics: `src/analysis/SemanticEngine.cpp`
 - compatibility facade for semantic document state and legacy syntax/text fallback queries: `src/analysis/SemanticWorkspace.cpp`
+- shared URI/path/source-range conversion helpers for analysis code: `src/analysis/SourceUtil.cpp`
 - parse pipeline, syntax symbol extraction, identifier scanning, syntax hover content, and syntax diagnostics: `src/analysis/CompilationService.cpp`
 - lightweight workspace symbol/reference/completion index used for cold workspace indexing and fallback: `src/analysis/SymbolIndex.cpp`
 - open-document state and UTF-16 incremental edits: `src/document/DocumentStore.cpp`
@@ -92,6 +95,8 @@ Use the nearest owning layer instead of patching around it from a wrapper.
 - Preserve the current architecture split: transport -> jsonrpc -> lsp/workspace/document/analysis -> server.
 - Do not add new SystemVerilog semantic logic to `ServerSession.cpp`; put it in `SemanticEngine` or the nearest analysis-layer helper.
 - Do not use string matching as the primary semantic authority when slang AST lookup / symbol identity can answer the question.
+- Do not duplicate URI/path/source-range conversion logic; use `SourceUtil` from analysis code.
+- Keep `SemanticEngine` public APIs value-type based. Do not expose slang AST pointers outside snapshot-owned internals.
 - All semantic behavior changes must update the nearest unit, golden-style, or e2e coverage.
 - Changes that scan or rebuild workspace-wide state must include or update a performance-oriented test/benchmark plan before being considered complete.
 - Avoid broad refactors unless the user asks for them or the local change cannot be made safely otherwise.

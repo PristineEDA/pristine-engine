@@ -4,6 +4,7 @@ add_executable(
 	unit/MessageStreamTests.cpp
 	unit/SemanticEngineTests.cpp
 	unit/SemanticWorkspaceTests.cpp
+	unit/SourceUtilTests.cpp
 	unit/ServerLifecycleTests.cpp
 	unit/SymbolIndexTests.cpp)
 target_link_libraries(pristine_unit_tests PRIVATE pristine_core Catch2::Catch2WithMain)

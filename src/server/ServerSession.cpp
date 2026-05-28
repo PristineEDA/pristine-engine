@@ -1984,6 +1984,13 @@ void ServerSession::bind(jsonrpc::JsonRpcServer& server) {
 jsonrpc::Json ServerSession::handleInitialize(const jsonrpc::Json& params) {
     workspace_manager_.initialize(lsp::parseInitializeParams(params));
     semantic_workspace_.clear();
+    const auto& workspace_config = workspace_manager_.state().config;
+    semantic_workspace_.configureSemanticEngine(
+        analysis::SemanticEngineConfig{.build = workspace_config.build,
+                                       .build_pattern = workspace_config.build_pattern,
+                                       .build_relative_paths = workspace_config.build_relative_paths,
+                                       .flags = workspace_config.flags,
+                                       .top_modules = workspace_config.top_modules});
     if (const auto& root_path = workspace_manager_.state().root_path) {
         semantic_workspace_.setWorkspaceRoot(toFileUri(*root_path));
     }

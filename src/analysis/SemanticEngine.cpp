@@ -1,5 +1,7 @@
 #include "pristine/analysis/SemanticEngine.h"
 
+#include "pristine/analysis/SourceUtil.h"
+
 #include "slang/ast/Compilation.h"
 #include "slang/diagnostics/DiagnosticEngine.h"
 #include "slang/diagnostics/Diagnostics.h"
@@ -8,141 +10,11 @@
 #include "slang/util/Bag.h"
 
 #include <algorithm>
-#include <cctype>
-#include <filesystem>
 #include <set>
 #include <utility>
 
 namespace pristine::analysis {
 namespace {
-
-bool isFileUri(std::string_view value) {
-    return value.starts_with("file://");
-}
-
-bool isWindowsAbsolutePath(std::string_view value) {
-    return value.size() >= 3 && std::isalpha(static_cast<unsigned char>(value[0])) != 0 &&
-           value[1] == ':' && (value[2] == '/' || value[2] == '\\');
-}
-
-std::string toForwardSlashes(std::string_view value) {
-    std::string result(value);
-    std::replace(result.begin(), result.end(), '\\', '/');
-    return result;
-}
-
-bool isDriveSegment(std::string_view value) {
-    return value.size() == 2 && std::isalpha(static_cast<unsigned char>(value[0])) != 0 &&
-           value[1] == ':';
-}
-
-std::string normalizeFileUri(std::string_view uri) {
-    if (!isFileUri(uri)) {
-        const auto normalized_path = toForwardSlashes(uri);
-        if (isWindowsAbsolutePath(normalized_path)) {
-            return std::string("file:///") + normalized_path;
-        }
-        return normalized_path;
-    }
-
-    constexpr std::string_view prefix = "file://";
-    const auto path = toForwardSlashes(uri.substr(prefix.size()));
-    const bool absolute = !path.empty() && path.front() == '/';
-    std::vector<std::string> segments;
-
-    size_t position = 0;
-    while (position <= path.size()) {
-        const auto separator = path.find('/', position);
-        const auto segment = path.substr(position, separator == std::string::npos
-                                                       ? std::string::npos
-                                                       : separator - position);
-        if (!segment.empty() && segment != ".") {
-            if (segment == "..") {
-                if (!segments.empty() && !isDriveSegment(segments.back())) {
-                    segments.pop_back();
-                }
-                else if (!absolute) {
-                    segments.emplace_back(segment);
-                }
-            }
-            else {
-                segments.emplace_back(segment);
-            }
-        }
-        if (separator == std::string::npos) {
-            break;
-        }
-        position = separator + 1;
-    }
-
-    std::string normalized_path = absolute ? "/" : "";
-    for (size_t index = 0; index < segments.size(); ++index) {
-        if (index > 0) {
-            normalized_path.push_back('/');
-        }
-        normalized_path += segments[index];
-    }
-    return std::string(prefix) + normalized_path;
-}
-
-std::string withoutTrailingSlash(std::string value) {
-    constexpr std::string_view root_uri = "file:///";
-    while (value.size() > root_uri.size() && value.ends_with('/')) {
-        value.pop_back();
-    }
-    return value;
-}
-
-std::string fileUriToPath(std::string_view uri) {
-    auto normalized = withoutTrailingSlash(normalizeFileUri(uri));
-    constexpr std::string_view prefix = "file://";
-    if (!normalized.starts_with(prefix)) {
-        return std::string(normalized);
-    }
-
-    auto path = std::string(normalized.substr(prefix.size()));
-    if (path.size() >= 3 && path.front() == '/' && isDriveSegment(std::string_view(path).substr(1, 2))) {
-        path.erase(path.begin());
-    }
-    return path;
-}
-
-std::string pathToFileUri(const std::filesystem::path& path) {
-    auto normalized = toForwardSlashes(path.string());
-    if (normalized.empty()) {
-        return {};
-    }
-    if (!normalized.empty() && normalized.front() == '/') {
-        return withoutTrailingSlash(normalizeFileUri(std::string("file://") + normalized));
-    }
-    if (isWindowsAbsolutePath(normalized)) {
-        return withoutTrailingSlash(normalizeFileUri(std::string("file:///") + normalized));
-    }
-    return withoutTrailingSlash(normalizeFileUri(std::string("file://") + normalized));
-}
-
-ParseRange sourceRangeForDiagnostic(const slang::SourceManager& source_manager,
-                                    const slang::Diagnostic& diagnostic) {
-    slang::SourceLocation start = diagnostic.location;
-    slang::SourceLocation end = diagnostic.location;
-    if (!diagnostic.ranges.empty()) {
-        start = diagnostic.ranges.front().start();
-        end = diagnostic.ranges.front().end();
-    }
-
-    if (!start.valid()) {
-        return {};
-    }
-    if (!end.valid() || end.buffer() != start.buffer() || end.offset() < start.offset()) {
-        end = start + 1;
-    }
-
-    return ParseRange{
-        .start_line = static_cast<int>(source_manager.getLineNumber(start)) - 1,
-        .start_character = static_cast<int>(source_manager.getColumnNumber(start)) - 1,
-        .end_line = static_cast<int>(source_manager.getLineNumber(end)) - 1,
-        .end_character = static_cast<int>(source_manager.getColumnNumber(end)) - 1};
-}
 
 int toLspSeverity(slang::DiagnosticSeverity severity) {
     switch (severity) {
@@ -193,7 +65,11 @@ slang::Bag makeCompilationOptions() {
 } // namespace
 
 void SemanticEngine::clear() {
+    workspace_root_uri_.clear();
+    config_ = {};
     documents_.clear();
+    includes_.clear();
+    reverse_includes_.clear();
     snapshot_.reset();
     snapshot_dirty_ = true;
     ++generation_;
@@ -201,6 +77,15 @@ void SemanticEngine::clear() {
 
 void SemanticEngine::setWorkspaceRoot(std::string_view root_uri) {
     workspace_root_uri_ = root_uri.empty() ? std::string{} : withoutTrailingSlash(normalizeFileUri(root_uri));
+    snapshot_dirty_ = true;
+    ++generation_;
+}
+
+void SemanticEngine::configure(SemanticEngineConfig config) {
+    config_ = std::move(config);
+    std::sort(config_.top_modules.begin(), config_.top_modules.end());
+    config_.top_modules.erase(std::unique(config_.top_modules.begin(), config_.top_modules.end()),
+                              config_.top_modules.end());
     snapshot_dirty_ = true;
     ++generation_;
 }
@@ -215,12 +100,20 @@ void SemanticEngine::updateDocument(std::string_view uri,
                                                        .version = state.version,
                                                        .is_open = state.is_open,
                                                        .dirty = state.dirty});
+    rebuildDependenciesFor(document_uri, text);
     snapshot_dirty_ = true;
     ++generation_;
 }
 
 void SemanticEngine::removeDocument(std::string_view uri) {
-    documents_.erase(withoutTrailingSlash(normalizeFileUri(uri)));
+    const auto document_uri = withoutTrailingSlash(normalizeFileUri(uri));
+    documents_.erase(document_uri);
+    includes_.erase(document_uri);
+    for (auto& [_, including_uris] : reverse_includes_) {
+        including_uris.erase(std::remove(including_uris.begin(), including_uris.end(), document_uri),
+                             including_uris.end());
+    }
+    reverse_includes_.erase(document_uri);
     snapshot_dirty_ = true;
     ++generation_;
 }
@@ -231,6 +124,57 @@ const SemanticEngineDocument* SemanticEngine::document(std::string_view uri) con
         return nullptr;
     }
     return &document_it->second;
+}
+
+std::vector<std::string> SemanticEngine::includedUris(std::string_view uri) const {
+    const auto document_uri = withoutTrailingSlash(normalizeFileUri(uri));
+    const auto include_it = includes_.find(document_uri);
+    if (include_it == includes_.end()) {
+        return {};
+    }
+    return include_it->second;
+}
+
+std::vector<std::string> SemanticEngine::includingUris(std::string_view uri) const {
+    const auto document_uri = withoutTrailingSlash(normalizeFileUri(uri));
+    const auto include_it = reverse_includes_.find(document_uri);
+    if (include_it == reverse_includes_.end()) {
+        return {};
+    }
+    return include_it->second;
+}
+
+std::vector<std::string> SemanticEngine::dirtyDocumentUris() const {
+    std::vector<std::string> result;
+    for (const auto& [uri, document] : documents_) {
+        if (document.dirty) {
+            result.push_back(uri);
+        }
+    }
+    std::sort(result.begin(), result.end());
+    return result;
+}
+
+std::vector<std::string> SemanticEngine::affectedDocumentUris(std::string_view uri) const {
+    const auto document_uri = withoutTrailingSlash(normalizeFileUri(uri));
+    std::vector<std::string> result;
+    std::set<std::string> seen;
+    std::vector<std::string> pending{document_uri};
+    while (!pending.empty()) {
+        const auto current = pending.back();
+        pending.pop_back();
+        if (!seen.insert(current).second) {
+            continue;
+        }
+        result.push_back(current);
+        const auto reverse_it = reverse_includes_.find(current);
+        if (reverse_it == reverse_includes_.end()) {
+            continue;
+        }
+        pending.insert(pending.end(), reverse_it->second.begin(), reverse_it->second.end());
+    }
+    std::sort(result.begin(), result.end());
+    return result;
 }
 
 const SemanticEngineSnapshot& SemanticEngine::snapshot() const {
@@ -251,6 +195,30 @@ std::vector<SemanticEngineDiagnostic> SemanticEngine::diagnosticsFor(std::string
     return result;
 }
 
+void SemanticEngine::rebuildDependenciesFor(std::string_view document_uri, std::string_view text) {
+    const auto normalized_uri = withoutTrailingSlash(normalizeFileUri(document_uri));
+    for (auto& [_, including_uris] : reverse_includes_) {
+        including_uris.erase(std::remove(including_uris.begin(), including_uris.end(), normalized_uri),
+                             including_uris.end());
+    }
+
+    CompilationService compilation_service;
+    std::vector<std::string> included_uris;
+    for (const auto& include : compilation_service.includeDirectives(text)) {
+        included_uris.push_back(joinFileUri(uriDirectory(normalized_uri), include.target));
+    }
+    std::sort(included_uris.begin(), included_uris.end());
+    included_uris.erase(std::unique(included_uris.begin(), included_uris.end()), included_uris.end());
+    includes_[normalized_uri] = included_uris;
+
+    for (const auto& included_uri : included_uris) {
+        auto& including_uris = reverse_includes_[included_uri];
+        including_uris.push_back(normalized_uri);
+        std::sort(including_uris.begin(), including_uris.end());
+        including_uris.erase(std::unique(including_uris.begin(), including_uris.end()), including_uris.end());
+    }
+}
+
 void SemanticEngine::rebuildSnapshot() const {
     auto source_manager = std::make_unique<slang::SourceManager>();
     source_manager->setDisableProximatePaths(true);
@@ -261,7 +229,14 @@ void SemanticEngine::rebuildSnapshot() const {
 
     SemanticEngineSnapshot next{};
     next.generation = generation_;
-    next.has_ast = false;
+    next.mode = config_.build.has_value() || config_.build_pattern.has_value() ||
+                        !config_.top_modules.empty()
+                    ? SemanticEngineMode::Design
+                    : SemanticEngineMode::Shallow;
+    next.top_modules = config_.top_modules;
+    next.dirty_document_uris = dirtyDocumentUris();
+    next.has_shallow_ast = false;
+    next.has_design_ast = false;
 
     for (const auto& document_entry : documents_) {
         next.document_uris.push_back(document_entry.first);
@@ -290,7 +265,8 @@ void SemanticEngine::rebuildSnapshot() const {
             for (auto& tree : syntax_trees) {
                 compilation.addSyntaxTree(tree);
             }
-            next.has_ast = true;
+            next.has_shallow_ast = true;
+            next.has_design_ast = next.mode == SemanticEngineMode::Design;
 
             slang::DiagnosticEngine diagnostic_engine(*source_manager);
             for (const auto& diagnostic : compilation.getSemanticDiagnostics()) {
@@ -309,7 +285,8 @@ void SemanticEngine::rebuildSnapshot() const {
             }
         }
         catch (...) {
-            next.has_ast = false;
+            next.has_shallow_ast = false;
+            next.has_design_ast = false;
         }
     }
 

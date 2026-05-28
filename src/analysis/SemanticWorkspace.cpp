@@ -1,4 +1,5 @@
 #include "pristine/analysis/SemanticWorkspace.h"
+#include "pristine/analysis/SourceUtil.h"
 
 #include <algorithm>
 #include <cctype>
@@ -684,107 +685,6 @@ std::string packageScopePath(std::string_view package_name) {
     return childScopePath(kRootScope, package_name);
 }
 
-bool isFileUri(std::string_view value) {
-    return value.starts_with("file://");
-}
-
-bool isWindowsAbsolutePath(std::string_view value) {
-    return value.size() >= 3 && std::isalpha(static_cast<unsigned char>(value[0])) != 0 && value[1] == ':' &&
-           (value[2] == '/' || value[2] == '\\');
-}
-
-std::string toForwardSlashes(std::string_view value) {
-    std::string result(value);
-    std::replace(result.begin(), result.end(), '\\', '/');
-    return result;
-}
-
-bool isDriveSegment(std::string_view value) {
-    return value.size() == 2 && std::isalpha(static_cast<unsigned char>(value[0])) != 0 && value[1] == ':';
-}
-
-std::string normalizeFileUri(std::string_view uri) {
-    if (!isFileUri(uri)) {
-        return toForwardSlashes(uri);
-    }
-
-    constexpr std::string_view prefix = "file://";
-    const auto path = toForwardSlashes(uri.substr(prefix.size()));
-    const bool absolute = !path.empty() && path.front() == '/';
-    std::vector<std::string> segments;
-
-    size_t position = 0;
-    while (position <= path.size()) {
-        const auto separator = path.find('/', position);
-        const auto segment = path.substr(position, separator == std::string::npos ? std::string::npos
-                                                                                  : separator - position);
-        if (!segment.empty() && segment != ".") {
-            if (segment == "..") {
-                if (!segments.empty() && !isDriveSegment(segments.back())) {
-                    segments.pop_back();
-                }
-                else if (!absolute) {
-                    segments.push_back(segment);
-                }
-            }
-            else {
-                segments.push_back(segment);
-            }
-        }
-        if (separator == std::string::npos) {
-            break;
-        }
-        position = separator + 1;
-    }
-
-    std::string normalized_path = absolute ? "/" : "";
-    for (size_t index = 0; index < segments.size(); ++index) {
-        if (index > 0) {
-            normalized_path.push_back('/');
-        }
-        normalized_path += segments[index];
-    }
-    return std::string(prefix) + normalized_path;
-}
-
-std::string withoutTrailingSlash(std::string value) {
-    constexpr std::string_view root_uri = "file:///";
-    while (value.size() > root_uri.size() && value.ends_with('/')) {
-        value.pop_back();
-    }
-    return value;
-}
-
-std::string uriDirectory(std::string_view uri) {
-    auto normalized = withoutTrailingSlash(normalizeFileUri(uri));
-    constexpr std::string_view prefix = "file://";
-    const auto separator = normalized.rfind('/');
-    if (separator == std::string::npos || separator <= prefix.size()) {
-        return normalized;
-    }
-    return normalized.substr(0, separator);
-}
-
-std::string joinFileUri(std::string_view base_uri, std::string_view target) {
-    if (target.empty()) {
-        return {};
-    }
-    if (isFileUri(target)) {
-        return withoutTrailingSlash(normalizeFileUri(target));
-    }
-
-    const auto normalized_target = toForwardSlashes(target);
-    if (!normalized_target.empty() && normalized_target.front() == '/') {
-        return withoutTrailingSlash(normalizeFileUri(std::string("file://") + normalized_target));
-    }
-    if (isWindowsAbsolutePath(normalized_target)) {
-        return withoutTrailingSlash(normalizeFileUri(std::string("file:///") + normalized_target));
-    }
-
-    auto base = withoutTrailingSlash(normalizeFileUri(base_uri));
-    return withoutTrailingSlash(normalizeFileUri(base + "/" + normalized_target));
-}
-
 } // namespace
 
 void SemanticWorkspace::clear() {
@@ -796,6 +696,10 @@ void SemanticWorkspace::clear() {
 void SemanticWorkspace::setWorkspaceRoot(std::string_view root_uri) {
     workspace_root_uri_ = root_uri.empty() ? std::string{} : withoutTrailingSlash(normalizeFileUri(root_uri));
     semantic_engine_.setWorkspaceRoot(workspace_root_uri_);
+}
+
+void SemanticWorkspace::configureSemanticEngine(SemanticEngineConfig config) {
+    semantic_engine_.configure(std::move(config));
 }
 
 void SemanticWorkspace::updateDocument(std::string_view uri,

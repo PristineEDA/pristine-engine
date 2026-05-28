@@ -1749,6 +1749,8 @@ TEST_CASE("ServerSession loads workspace config from .slang server json", "[serv
         "buildPattern": "builds/{}.f",
         "buildRelativePaths": true,
         "flags": "-Iinclude -DDEBUG",
+        "top": "top",
+        "topModules": ["top", "tb_top"],
         "index": [
             {
                 "dirs": ["rtl", "tb"],
@@ -1777,6 +1779,9 @@ TEST_CASE("ServerSession loads workspace config from .slang server json", "[serv
     CHECK(state.config.build_relative_paths == true);
     REQUIRE(state.config.flags.has_value());
     CHECK(*state.config.flags == "-Iinclude -DDEBUG");
+    REQUIRE(state.config.top.has_value());
+    CHECK(*state.config.top == "top");
+    CHECK(state.config.top_modules == std::vector<std::string>{"tb_top", "top"});
     REQUIRE(state.config.index.size() == 1);
     CHECK(state.config.index[0].dirs == std::vector<std::string>{"rtl", "tb"});
     CHECK(state.config.index[0].exclude_dirs == std::vector<std::string>{"third_party"});

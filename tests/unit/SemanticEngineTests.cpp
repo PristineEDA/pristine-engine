@@ -19,7 +19,8 @@ TEST_CASE("SemanticEngine lazily builds an AST compilation snapshot",
 
     const auto& snapshot = engine.snapshot();
 
-    CHECK(snapshot.has_ast);
+    CHECK(snapshot.has_shallow_ast);
+    CHECK_FALSE(snapshot.has_design_ast);
     CHECK(snapshot.document_uris.size() == 1);
     CHECK(snapshot.document_uris.front() == "file:///workspace/top.sv");
     CHECK_FALSE(engine.snapshotDirty());
@@ -62,9 +63,49 @@ TEST_CASE("SemanticEngine refreshes snapshots after document updates",
     CHECK(engine.snapshotDirty());
     const auto& snapshot = engine.snapshot();
 
-    CHECK(snapshot.has_ast);
+    CHECK(snapshot.has_shallow_ast);
     CHECK(snapshot.generation > first_generation);
+    CHECK(snapshot.dirty_document_uris == std::vector<std::string>{"file:///workspace/top.sv"});
     CHECK_FALSE(engine.snapshotDirty());
+}
+
+TEST_CASE("SemanticEngine tracks include dependencies and affected documents",
+          "[analysis][semantic-engine][dependencies]") {
+    SemanticEngine engine;
+    engine.updateDocument("file:///workspace/rtl/top.sv",
+                          "`include \"../include/defs.svh\"\n"
+                          "module top;\n"
+                          "endmodule\n",
+                          SemanticEngineDocumentState{.version = 1, .is_open = true});
+    engine.updateDocument("file:///workspace/include/defs.svh",
+                          "`define READY 1\n",
+                          SemanticEngineDocumentState{.version = 1});
+
+    CHECK(engine.includedUris("file:///workspace/rtl/top.sv") ==
+          std::vector<std::string>{"file:///workspace/include/defs.svh"});
+    CHECK(engine.includingUris("file:///workspace/include/defs.svh") ==
+          std::vector<std::string>{"file:///workspace/rtl/top.sv"});
+    CHECK(engine.affectedDocumentUris("file:///workspace/include/defs.svh") ==
+          std::vector<std::string>{"file:///workspace/include/defs.svh",
+                                   "file:///workspace/rtl/top.sv"});
+}
+
+TEST_CASE("SemanticEngine switches snapshot mode when design config is present",
+          "[analysis][semantic-engine][config]") {
+    SemanticEngine engine;
+    engine.configure(SemanticEngineConfig{.build = std::string("rtl/top.f"),
+                                          .top_modules = {"top", "top"}});
+    engine.updateDocument("file:///workspace/top.sv",
+                          "module top;\n"
+                          "endmodule\n",
+                          SemanticEngineDocumentState{.version = 1});
+
+    const auto& snapshot = engine.snapshot();
+
+    CHECK(snapshot.mode == SemanticEngineMode::Design);
+    CHECK(snapshot.has_shallow_ast);
+    CHECK(snapshot.has_design_ast);
+    CHECK(snapshot.top_modules == std::vector<std::string>{"top"});
 }
 
 } // namespace pristine::analysis

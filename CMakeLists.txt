@@ -70,6 +70,7 @@ add_library(
   src/analysis/CompilationService.cpp
   src/analysis/SemanticEngine.cpp
   src/analysis/SemanticWorkspace.cpp
+  src/analysis/SourceUtil.cpp
   src/analysis/SymbolIndex.cpp
   src/document/DocumentStore.cpp
   src/jsonrpc/JsonRpcServer.cpp
