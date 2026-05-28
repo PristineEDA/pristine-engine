@@ -789,6 +789,27 @@ TEST_CASE("ServerSession resolves references within semantic scopes", "[server][
     CHECK(references_response->at("result").at(0).at("uri").get<std::string>() == std::string(uri));
 }
 
+TEST_CASE("ServerSession renames only the resolved scoped symbol", "[server][lsp-core]") {
+    jsonrpc::JsonRpcServer rpc_server;
+    ServerSession session{"pristine-lsp", kTestServerVersion};
+    session.bind(rpc_server);
+
+    constexpr std::string_view uri = "file:///workspace/rename-shadowed.sv";
+    ScriptedTransport transport{
+        R"({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}})",
+        R"({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///workspace/rename-shadowed.sv","languageId":"systemverilog","version":1,"text":"module first;\n  logic ready;\n  assign ready = ready;\nendmodule\nmodule second;\n  logic ready;\n  assign ready = ready;\nendmodule\n"}}})",
+        R"({"jsonrpc":"2.0","id":2,"method":"textDocument/rename","params":{"textDocument":{"uri":"file:///workspace/rename-shadowed.sv"},"position":{"line":1,"character":9},"newName":"valid"}})"};
+
+    CHECK(rpc_server.run(transport) == 0);
+    const auto rename_response = findResponse(transport, 2);
+    REQUIRE(rename_response.has_value());
+    const auto& edits = rename_response->at("result").at("changes").at(std::string(uri));
+    REQUIRE(edits.size() == 3);
+    CHECK(edits.at(0).at("range").at("start").at("line") == 1);
+    CHECK(edits.at(1).at("range").at("start").at("line") == 2);
+    CHECK(edits.at(2).at("range").at("start").at("line") == 2);
+}
+
 TEST_CASE("ServerSession prefers scoped semantic completions", "[server][lsp-core]") {
     jsonrpc::JsonRpcServer rpc_server;
     ServerSession session{"pristine-lsp", kTestServerVersion};

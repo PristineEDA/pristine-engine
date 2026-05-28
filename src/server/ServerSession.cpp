@@ -1356,9 +1356,9 @@ jsonrpc::Json ServerSession::handleDefinition(const jsonrpc::Json& params) {
         return nullptr;
     }
 
-    const auto semantic_definitions = semantic_workspace_.definitionsAt(document->uri,
-                                                                        definition.position.line,
-                                                                        definition.position.character);
+    const auto semantic_definitions = semantic_workspace_.findDefinitionsAt(document->uri,
+                                                                            definition.position.line,
+                                                                            definition.position.character);
     if (!semantic_definitions.empty()) {
         jsonrpc::Json result = jsonrpc::Json::array();
         for (const auto& symbol : semantic_definitions) {
@@ -1399,12 +1399,10 @@ jsonrpc::Json ServerSession::handleTypeDefinition(const jsonrpc::Json& params) {
     }
 
     jsonrpc::Json result = jsonrpc::Json::array();
-    for (const auto& symbol : semantic_workspace_.definitionsAt(document->uri,
-                                                                type_definition.position.line,
-                                                                type_definition.position.character)) {
-        if (isTypeDefinitionSymbol(symbol.kind)) {
-            result.push_back(toLocationJson(symbol.location));
-        }
+    for (const auto& symbol : semantic_workspace_.findTypeDefinitionsAt(document->uri,
+                                                                        type_definition.position.line,
+                                                                        type_definition.position.character)) {
+        result.push_back(toLocationJson(symbol.location));
     }
     if (!result.empty()) {
         return result;
@@ -1437,11 +1435,11 @@ jsonrpc::Json ServerSession::handleReferences(const jsonrpc::Json& params) {
     }
 
     jsonrpc::Json result = jsonrpc::Json::array();
-    const auto semantic_references = semantic_workspace_.referencesAt(
+    const auto semantic_references = semantic_workspace_.findReferencesAt(
         document->uri, references.position.line, references.position.character,
         references.context.include_declaration);
-    if (semantic_workspace_.resolvedSymbolAt(document->uri, references.position.line,
-                                             references.position.character).has_value()) {
+    if (semantic_workspace_.findResolvedSymbolAt(document->uri, references.position.line,
+                                                 references.position.character).has_value()) {
         for (const auto& reference : semantic_references) {
             result.push_back(toLocationJson(reference.location));
         }
@@ -1511,10 +1509,10 @@ jsonrpc::Json ServerSession::handleDocumentHighlight(const jsonrpc::Json& params
     }
 
     jsonrpc::Json result = jsonrpc::Json::array();
-    const auto semantic_references = semantic_workspace_.documentReferencesAt(
+    const auto semantic_references = semantic_workspace_.findDocumentReferencesAt(
         document->uri, highlight.position.line, highlight.position.character, true);
-    if (semantic_workspace_.resolvedSymbolAt(document->uri, highlight.position.line,
-                                             highlight.position.character).has_value()) {
+    if (semantic_workspace_.findResolvedSymbolAt(document->uri, highlight.position.line,
+                                                 highlight.position.character).has_value()) {
         for (const auto& reference : semantic_references) {
             result.push_back(toDocumentHighlightJson(reference.location));
         }
@@ -1827,8 +1825,8 @@ jsonrpc::Json ServerSession::handlePrepareRename(const jsonrpc::Json& params) {
         return nullptr;
     }
 
-    if (semantic_workspace_.resolvedSymbolAt(document->uri, prepare.position.line,
-                                             prepare.position.character).has_value()) {
+    if (semantic_workspace_.findResolvedSymbolAt(document->uri, prepare.position.line,
+                                                 prepare.position.character).has_value()) {
         return jsonrpc::Json{{"range", toRangeJson(identifier->range)}, {"placeholder", identifier->name}};
     }
 
@@ -1861,13 +1859,13 @@ jsonrpc::Json ServerSession::handleRename(const jsonrpc::Json& params) {
         return nullptr;
     }
 
-    if (semantic_workspace_.resolvedSymbolAt(document->uri, rename.position.line,
-                                             rename.position.character).has_value()) {
+    if (semantic_workspace_.findResolvedSymbolAt(document->uri, rename.position.line,
+                                                 rename.position.character).has_value()) {
         std::map<std::string, jsonrpc::Json> changes;
-        for (const auto& reference : semantic_workspace_.referencesAt(document->uri,
-                                                                      rename.position.line,
-                                                                      rename.position.character,
-                                                                      true)) {
+        for (const auto& reference : semantic_workspace_.findReferencesAt(document->uri,
+                                                                          rename.position.line,
+                                                                          rename.position.character,
+                                                                          true)) {
             auto [entry_it, inserted] = changes.try_emplace(reference.location.uri, jsonrpc::Json::array());
             entry_it->second.push_back(toTextEditJson(reference.location.range, rename.new_name));
         }

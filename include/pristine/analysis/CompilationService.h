@@ -100,6 +100,12 @@ struct IncludeDirective {
     ParseRange range;
 };
 
+struct PackageImport {
+    std::string package_name;
+    std::optional<std::string> item_name;
+    ParseRange range;
+};
+
 struct ParseResult {
     std::shared_ptr<slang::syntax::SyntaxTree> syntax_tree;
     std::vector<ParseDiagnostic> diagnostics;
@@ -127,6 +133,7 @@ public:
                                                int line,
                                                int character) const;
     [[nodiscard]] std::vector<IncludeDirective> includeDirectives(std::string_view text) const;
+    [[nodiscard]] std::vector<PackageImport> packageImports(std::string_view text) const;
 };
 
 } // namespace pristine::analysis

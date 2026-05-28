@@ -45,6 +45,62 @@ TEST_CASE("SemanticWorkspace keeps same-name references scoped", "[analysis][sem
     CHECK(std::all_of(second_references.begin(), second_references.end(), [](const SemanticReference& reference) {
         return reference.location.range.start_line == 6;
     }));
+
+    const auto* document = workspace.document("file:///workspace/shadowed.sv");
+    REQUIRE(document != nullptr);
+    const auto declaration_it = std::find_if(document->references.begin(), document->references.end(),
+                                            [](const SemanticReference& reference) {
+                                                return reference.name == "ready" && reference.is_declaration &&
+                                                       reference.location.range.start_line == 1;
+                                            });
+    REQUIRE(declaration_it != document->references.end());
+    REQUIRE(declaration_it->target_symbol_id.has_value());
+    CHECK(std::all_of(first_references.begin(), first_references.end(), [&](const SemanticReference& reference) {
+        return reference.target_symbol_id == declaration_it->target_symbol_id;
+    }));
+}
+
+TEST_CASE("SemanticWorkspace resolves imported package symbols", "[analysis][semantic]") {
+    SemanticWorkspace workspace;
+    workspace.updateDocument("file:///workspace/defs.sv",
+                             "package defs;\n"
+                             "  typedef logic [7:0] word_t;\n"
+                             "endpackage\n");
+    workspace.updateDocument("file:///workspace/top.sv",
+                             "module top;\n"
+                             "  import defs::*;\n"
+                             "  word_t value;\n"
+                             "endmodule\n");
+
+    const auto definitions = workspace.findTypeDefinitionsAt("file:///workspace/top.sv", 2, 3);
+
+    REQUIRE(definitions.size() == 1);
+    CHECK(definitions.front().name == "word_t");
+    CHECK(definitions.front().scope_path == "$root::defs");
+    CHECK(definitions.front().location.uri == "file:///workspace/defs.sv");
+}
+
+TEST_CASE("SemanticWorkspace scopes named generate blocks", "[analysis][semantic]") {
+    SemanticWorkspace workspace;
+    workspace.updateDocument("file:///workspace/generate.sv",
+                             "module top;\n"
+                             "  logic ready;\n"
+                             "  if (1) begin : g\n"
+                             "    logic ready;\n"
+                             "    assign ready = ready;\n"
+                             "  end\n"
+                             "endmodule\n");
+
+    const auto definitions = workspace.findDefinitionsAt("file:///workspace/generate.sv", 4, 11);
+    const auto references = workspace.findReferencesAt("file:///workspace/generate.sv", 3, 11, false);
+
+    REQUIRE(definitions.size() == 1);
+    CHECK(definitions.front().name == "ready");
+    CHECK(definitions.front().scope_path == "$root::top::g");
+    REQUIRE(references.size() == 2);
+    CHECK(std::all_of(references.begin(), references.end(), [](const SemanticReference& reference) {
+        return reference.location.range.start_line == 4;
+    }));
 }
 
 TEST_CASE("SemanticWorkspace reports visible symbols from nearest scope outward", "[analysis][semantic]") {

@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <iterator>
 #include <map>
 #include <optional>
 #include <span>
@@ -416,6 +417,126 @@ std::vector<IncludeDirective> collectIncludeDirectives(std::string_view text) {
 
         if (const auto directive = tryCollectIncludeDirective(text, state)) {
             result.push_back(*directive);
+        }
+
+        advanceOne(text, state);
+    }
+
+    return result;
+}
+
+std::optional<Identifier> tryReadIdentifier(std::string_view text, ScanState& state) {
+    if (state.offset >= text.size() || !isIdentifierStart(text[state.offset])) {
+        return std::nullopt;
+    }
+
+    const auto start_line = state.line;
+    const auto start_character = state.character;
+    std::string name;
+    while (state.offset < text.size() && isIdentifierContinue(text[state.offset])) {
+        name.push_back(text[state.offset]);
+        advanceAscii(text, state);
+    }
+
+    return Identifier{.name = std::move(name),
+                      .range = ParseRange{.start_line = start_line,
+                                          .start_character = start_character,
+                                          .end_line = state.line,
+                                          .end_character = state.character}};
+}
+
+std::vector<PackageImport> tryCollectPackageImports(std::string_view text, ScanState& state) {
+    constexpr std::string_view import_keyword = "import";
+    if (!startsWith(text, state.offset, import_keyword)) {
+        return {};
+    }
+    if (state.offset > 0 && isIdentifierContinue(text[state.offset - 1])) {
+        return {};
+    }
+    if (state.offset + import_keyword.size() < text.size() &&
+        isIdentifierContinue(text[state.offset + import_keyword.size()])) {
+        return {};
+    }
+
+    ScanState cursor = state;
+    for (size_t index = 0; index < import_keyword.size(); ++index) {
+        advanceAscii(text, cursor);
+    }
+
+    std::vector<PackageImport> result;
+    while (cursor.offset < text.size()) {
+        skipHorizontalWhitespace(text, cursor);
+        const auto package = tryReadIdentifier(text, cursor);
+        if (!package.has_value()) {
+            return {};
+        }
+
+        skipHorizontalWhitespace(text, cursor);
+        if (!startsWith(text, cursor.offset, "::")) {
+            return {};
+        }
+        advanceAscii(text, cursor);
+        advanceAscii(text, cursor);
+
+        skipHorizontalWhitespace(text, cursor);
+        std::optional<Identifier> item;
+        bool wildcard = false;
+        if (cursor.offset < text.size() && text[cursor.offset] == '*') {
+            wildcard = true;
+            advanceAscii(text, cursor);
+        }
+        else {
+            item = tryReadIdentifier(text, cursor);
+            if (!item.has_value()) {
+                return {};
+            }
+        }
+
+        result.push_back(PackageImport{.package_name = package->name,
+                                       .item_name = wildcard ? std::nullopt
+                                                             : std::optional<std::string>(item->name),
+                                       .range = item.has_value() ? item->range : package->range});
+
+        skipHorizontalWhitespace(text, cursor);
+        if (cursor.offset >= text.size()) {
+            return {};
+        }
+        if (text[cursor.offset] == ';') {
+            advanceAscii(text, cursor);
+            state = cursor;
+            return result;
+        }
+        if (text[cursor.offset] != ',') {
+            return {};
+        }
+        advanceAscii(text, cursor);
+    }
+
+    return {};
+}
+
+std::vector<PackageImport> collectPackageImports(std::string_view text) {
+    std::vector<PackageImport> result;
+    ScanState state{};
+    while (state.offset < text.size()) {
+        if (startsWith(text, state.offset, "//")) {
+            skipLineComment(text, state);
+            continue;
+        }
+        if (startsWith(text, state.offset, "/*")) {
+            skipBlockComment(text, state);
+            continue;
+        }
+        if (text[state.offset] == '"') {
+            skipStringLiteral(text, state);
+            continue;
+        }
+
+        auto imports = tryCollectPackageImports(text, state);
+        if (!imports.empty()) {
+            result.insert(result.end(), std::make_move_iterator(imports.begin()),
+                          std::make_move_iterator(imports.end()));
+            continue;
         }
 
         advanceOne(text, state);
@@ -1758,6 +1879,10 @@ std::string CompilationService::completionPrefix(std::string_view text,
 
 std::vector<IncludeDirective> CompilationService::includeDirectives(std::string_view text) const {
     return collectIncludeDirectives(text);
+}
+
+std::vector<PackageImport> CompilationService::packageImports(std::string_view text) const {
+    return collectPackageImports(text);
 }
 
 } // namespace pristine::analysis

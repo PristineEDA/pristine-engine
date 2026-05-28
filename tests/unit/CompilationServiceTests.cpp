@@ -113,6 +113,27 @@ TEST_CASE("CompilationService extracts include directives", "[analysis][links]")
     CHECK(includes[1].range.start_character == 10);
 }
 
+TEST_CASE("CompilationService extracts package imports", "[analysis][imports]") {
+    CompilationService service;
+
+    const auto imports = service.packageImports(
+        "// import ignored::*;\n"
+        "import defs::*;\n"
+        "string text = \"import fake::*;\";\n"
+        "module top; import defs::word_t, util::flag_t; endmodule\n");
+
+    REQUIRE(imports.size() == 3);
+    CHECK(imports[0].package_name == "defs");
+    CHECK_FALSE(imports[0].item_name.has_value());
+    CHECK(imports[0].range.start_line == 1);
+    CHECK(imports[1].package_name == "defs");
+    REQUIRE(imports[1].item_name.has_value());
+    CHECK(*imports[1].item_name == "word_t");
+    CHECK(imports[2].package_name == "util");
+    REQUIRE(imports[2].item_name.has_value());
+    CHECK(*imports[2].item_name == "flag_t");
+}
+
 TEST_CASE("CompilationService extracts top-level document symbols", "[analysis][symbols]") {
     CompilationService service;
 

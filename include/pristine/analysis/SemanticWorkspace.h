@@ -54,6 +54,15 @@ struct SemanticReference {
     std::string name;
     std::string scope_path;
     Location location;
+    std::optional<std::string> target_symbol_id;
+    bool is_declaration = false;
+};
+
+struct SemanticImport {
+    std::string package_name;
+    std::optional<std::string> item_name;
+    std::string scope_path;
+    ParseRange range;
 };
 
 struct SemanticDocument {
@@ -64,6 +73,7 @@ struct SemanticDocument {
     bool stale = false;
     std::vector<IncludeDirective> includes;
     std::vector<std::string> included_uris;
+    std::vector<SemanticImport> imports;
     std::vector<SemanticScope> scopes;
     std::vector<SemanticSymbol> symbols;
     std::vector<SemanticReference> references;
@@ -82,6 +92,23 @@ public:
     [[nodiscard]] std::vector<std::string> includedUris(std::string_view uri) const;
     [[nodiscard]] std::vector<std::string> includingUris(std::string_view uri) const;
     [[nodiscard]] std::vector<std::string> staleDocumentUris() const;
+    [[nodiscard]] std::optional<SemanticSymbol> findResolvedSymbolAt(std::string_view uri,
+                                                                      int line,
+                                                                      int character) const;
+    [[nodiscard]] std::vector<SemanticSymbol> findDefinitionsAt(std::string_view uri,
+                                                                int line,
+                                                                int character) const;
+    [[nodiscard]] std::vector<SemanticSymbol> findTypeDefinitionsAt(std::string_view uri,
+                                                                    int line,
+                                                                    int character) const;
+    [[nodiscard]] std::vector<SemanticReference> findReferencesAt(std::string_view uri,
+                                                                  int line,
+                                                                  int character,
+                                                                  bool include_declaration) const;
+    [[nodiscard]] std::vector<SemanticReference> findDocumentReferencesAt(std::string_view uri,
+                                                                          int line,
+                                                                          int character,
+                                                                          bool include_declaration) const;
     [[nodiscard]] std::optional<SemanticSymbol> resolvedSymbolAt(std::string_view uri,
                                                                   int line,
                                                                   int character) const;
@@ -103,6 +130,7 @@ public:
     [[nodiscard]] size_t documentCount() const { return documents_.size(); }
 
 private:
+    [[nodiscard]] std::optional<SemanticSymbol> symbolById(std::string_view symbol_id) const;
     [[nodiscard]] std::optional<SemanticSymbol> symbolAt(std::string_view uri,
                                                          int line,
                                                          int character) const;
@@ -115,6 +143,7 @@ private:
                                                           std::string_view preferred_uri) const;
     [[nodiscard]] std::vector<std::string> resolveIncludeUris(std::string_view including_uri,
                                                               std::string_view target) const;
+    void rebuildReferenceBindings();
     void rebuildReverseIncludes();
     void markDependentsStale(std::string_view uri);
 
