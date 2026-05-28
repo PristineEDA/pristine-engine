@@ -797,6 +797,7 @@ TEST_CASE("ServerSession returns inferred SystemVerilog module hierarchy", "[ser
 
     TempWorkspace workspace;
     const auto leaf_path = workspace.writeFile("rtl/leaf.sv", "module leaf; endmodule\n");
+    const auto interface_path = workspace.writeFile("rtl/bus_if.sv", "interface bus_if; endinterface\n");
     const auto child_path = workspace.writeFile(
         "rtl/child.sv",
         "module child;\n"
@@ -806,6 +807,7 @@ TEST_CASE("ServerSession returns inferred SystemVerilog module hierarchy", "[ser
         "rtl/top.sv",
         "module top;\n"
         "  child u_child();\n"
+        "  bus_if bus();\n"
         "endmodule\n");
 
     ScriptedTransport transport{
@@ -826,11 +828,13 @@ TEST_CASE("ServerSession returns inferred SystemVerilog module hierarchy", "[ser
 
     const auto& top = result.at("roots").at(0);
     CHECK(top.at("moduleName") == "top");
+    CHECK(top.at("kind") == "module");
     CHECK(top.at("uri") == toFileUri(top_path));
-    REQUIRE(top.at("children").size() == 1);
+    REQUIRE(top.at("children").size() == 2);
 
     const auto& child = top.at("children").at(0);
     CHECK(child.at("moduleName") == "child");
+    CHECK(child.at("kind") == "module");
     CHECK(child.at("instanceName") == "u_child");
     CHECK(child.at("uri") == toFileUri(child_path));
     CHECK(child.at("instanceSelectionRange").at("start").at("line") == 1);
@@ -838,9 +842,17 @@ TEST_CASE("ServerSession returns inferred SystemVerilog module hierarchy", "[ser
 
     const auto& leaf = child.at("children").at(0);
     CHECK(leaf.at("moduleName") == "leaf");
+    CHECK(leaf.at("kind") == "module");
     CHECK(leaf.at("instanceName") == "u_leaf");
     CHECK(leaf.at("uri") == toFileUri(leaf_path));
     CHECK(leaf.at("children").empty());
+
+    const auto& interface_instance = top.at("children").at(1);
+    CHECK(interface_instance.at("moduleName") == "bus_if");
+    CHECK(interface_instance.at("kind") == "interface");
+    CHECK(interface_instance.at("instanceName") == "bus");
+    CHECK(interface_instance.at("uri") == toFileUri(interface_path));
+    CHECK(interface_instance.at("children").empty());
 }
 
 TEST_CASE("ServerSession returns schematic data for a selected top module", "[server][schematic]") {

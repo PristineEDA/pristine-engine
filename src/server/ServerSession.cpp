@@ -844,8 +844,8 @@ jsonrpc::Json toSchematicModuleJson(const IndexedModuleSchematic& indexed,
 
 jsonrpc::Json toCallHierarchyItemJson(const IndexedModuleDefinition& module) {
     return jsonrpc::Json{{"name", module.definition.name},
-                         {"kind", 2},
-                         {"detail", "module"},
+                         {"kind", module.definition.kind == "interface" ? 11 : 2},
+                         {"detail", module.definition.kind},
                          {"uri", module.uri},
                          {"range", toRangeJson(module.definition.range)},
                          {"selectionRange", toRangeJson(module.definition.selection_range)}};
@@ -891,6 +891,7 @@ std::optional<IndexedModuleDefinition> findCallHierarchyModuleAt(
 
 jsonrpc::Json makeUnresolvedHierarchyNode(const analysis::ModuleInstantiation& instance) {
     return jsonrpc::Json{{"moduleName", instance.module_name},
+                         {"kind", "module"},
                          {"instanceName", instance.instance_name},
                          {"uri", nullptr},
                          {"range", nullptr},
@@ -916,6 +917,7 @@ jsonrpc::Json buildHierarchyNode(const std::map<std::string, IndexedModuleDefini
         }
 
         return jsonrpc::Json{{"moduleName", std::string(module_name)},
+                             {"kind", "module"},
                              {"uri", nullptr},
                              {"range", nullptr},
                              {"selectionRange", nullptr},
@@ -929,6 +931,7 @@ jsonrpc::Json buildHierarchyNode(const std::map<std::string, IndexedModuleDefini
     const auto is_cycle = std::find(stack.begin(), stack.end(), definition.name) != stack.end();
 
     jsonrpc::Json node{{"moduleName", definition.name},
+                       {"kind", definition.kind},
                        {"uri", indexed_definition.uri},
                        {"range", toRangeJson(definition.range)},
                        {"selectionRange", toRangeJson(definition.selection_range)},

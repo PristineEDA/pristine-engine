@@ -45,6 +45,7 @@ struct ModuleInstantiation {
 
 struct ModuleDefinition {
     std::string name;
+    std::string kind = "module";
     ParseRange range;
     ParseRange selection_range;
     std::vector<std::string> ports;

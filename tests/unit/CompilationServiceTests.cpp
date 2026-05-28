@@ -250,6 +250,7 @@ TEST_CASE("CompilationService extracts module definitions and direct instantiati
 
     REQUIRE(modules.size() == 3);
     CHECK(modules[0].name == "leaf");
+    CHECK(modules[0].kind == "module");
     REQUIRE(modules[0].ports.size() == 2);
     CHECK(modules[0].ports[0] == "clk");
     CHECK(modules[0].ports[1] == "done");
@@ -268,6 +269,29 @@ TEST_CASE("CompilationService extracts module definitions and direct instantiati
     CHECK(modules[2].instances[0].instance_name == "u_child");
     CHECK(modules[2].instances[0].module_selection_range.start_line == 5);
     CHECK(modules[2].instances[0].module_selection_range.start_character == 2);
+}
+
+TEST_CASE("CompilationService extracts interface definitions and instantiations", "[analysis][hierarchy]") {
+    CompilationService service;
+
+    const auto definitions = service.moduleDefinitions(
+        "interface bus_if(input logic clk); endinterface\n"
+        "module top;\n"
+        "  bus_if bus();\n"
+        "endmodule\n",
+        "file:///workspace/interface-hierarchy.sv");
+
+    REQUIRE(definitions.size() == 2);
+    CHECK(definitions[0].name == "bus_if");
+    CHECK(definitions[0].kind == "interface");
+    REQUIRE(definitions[0].ports.size() == 1);
+    CHECK(definitions[0].ports[0] == "clk");
+
+    CHECK(definitions[1].name == "top");
+    CHECK(definitions[1].kind == "module");
+    REQUIRE(definitions[1].instances.size() == 1);
+    CHECK(definitions[1].instances[0].module_name == "bus_if");
+    CHECK(definitions[1].instances[0].instance_name == "bus");
 }
 
 TEST_CASE("CompilationService extracts hierarchy instantiations inside generate blocks", "[analysis][hierarchy]") {

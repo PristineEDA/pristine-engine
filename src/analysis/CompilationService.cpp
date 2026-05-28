@@ -1581,7 +1581,8 @@ void collectModuleInstantiations(std::vector<ModuleInstantiation>& result,
 std::optional<ModuleDefinition> toModuleDefinition(const slang::SourceManager& source_manager,
                                                    std::string_view text,
                                                    const slang::syntax::MemberSyntax& member) {
-    if (member.kind != slang::syntax::SyntaxKind::ModuleDeclaration) {
+    if (member.kind != slang::syntax::SyntaxKind::ModuleDeclaration &&
+        member.kind != slang::syntax::SyntaxKind::InterfaceDeclaration) {
         return std::nullopt;
     }
 
@@ -1590,6 +1591,7 @@ std::optional<ModuleDefinition> toModuleDefinition(const slang::SourceManager& s
     collectModuleInstantiations(instances, source_manager, text, declaration.members);
 
     return ModuleDefinition{.name = std::string(declaration.header->name.valueText()),
+                            .kind = member.kind == slang::syntax::SyntaxKind::InterfaceDeclaration ? "interface" : "module",
                             .range = toParseRange(source_manager, text, declaration.sourceRange()),
                             .selection_range = toParseRange(source_manager, text, declaration.header->name.range()),
                             .ports = collectHeaderPortNames(source_manager, text, *declaration.header),
