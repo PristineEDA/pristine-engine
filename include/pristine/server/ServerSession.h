@@ -1,6 +1,7 @@
 #pragma once
 
 #include "pristine/analysis/CompilationService.h"
+#include "pristine/analysis/SemanticWorkspace.h"
 #include "pristine/analysis/SymbolIndex.h"
 #include "pristine/document/DocumentStore.h"
 #include "pristine/workspace/WorkspaceManager.h"
@@ -73,6 +74,7 @@ private:
     bool shutdown_requested_ = false;
     jsonrpc::JsonRpcServer* server_ = nullptr;
     analysis::CompilationService compilation_service_;
+    analysis::SemanticWorkspace semantic_workspace_;
     analysis::SymbolIndex symbol_index_;
     std::unordered_map<std::string, std::vector<analysis::ModuleDefinition>> hierarchy_documents_;
     std::unordered_map<std::string, std::vector<analysis::ModuleSchematic>> schematic_documents_;

@@ -1177,6 +1177,7 @@ void ServerSession::bind(jsonrpc::JsonRpcServer& server) {
 
 jsonrpc::Json ServerSession::handleInitialize(const jsonrpc::Json& params) {
     workspace_manager_.initialize(lsp::parseInitializeParams(params));
+    semantic_workspace_.clear();
     symbol_index_.clear();
     hierarchy_documents_.clear();
     schematic_documents_.clear();
@@ -1318,6 +1319,17 @@ jsonrpc::Json ServerSession::handleDefinition(const jsonrpc::Json& params) {
         return nullptr;
     }
 
+    const auto semantic_definitions = semantic_workspace_.definitionsAt(document->uri,
+                                                                        definition.position.line,
+                                                                        definition.position.character);
+    if (!semantic_definitions.empty()) {
+        jsonrpc::Json result = jsonrpc::Json::array();
+        for (const auto& symbol : semantic_definitions) {
+            result.push_back(toLocationJson(symbol.location));
+        }
+        return result;
+    }
+
     const auto definitions = symbol_index_.definitions(identifier->name, document->uri);
     if (definitions.empty()) {
         return nullptr;
@@ -1350,6 +1362,17 @@ jsonrpc::Json ServerSession::handleTypeDefinition(const jsonrpc::Json& params) {
     }
 
     jsonrpc::Json result = jsonrpc::Json::array();
+    for (const auto& symbol : semantic_workspace_.definitionsAt(document->uri,
+                                                                type_definition.position.line,
+                                                                type_definition.position.character)) {
+        if (isTypeDefinitionSymbol(symbol.kind)) {
+            result.push_back(toLocationJson(symbol.location));
+        }
+    }
+    if (!result.empty()) {
+        return result;
+    }
+
     for (const auto& symbol : symbol_index_.definitions(identifier->name, document->uri)) {
         if (isTypeDefinitionSymbol(symbol.kind)) {
             result.push_back(toLocationJson(symbol.location));
@@ -1377,6 +1400,17 @@ jsonrpc::Json ServerSession::handleReferences(const jsonrpc::Json& params) {
     }
 
     jsonrpc::Json result = jsonrpc::Json::array();
+    const auto semantic_references = semantic_workspace_.referencesAt(
+        document->uri, references.position.line, references.position.character,
+        references.context.include_declaration);
+    if (semantic_workspace_.resolvedSymbolAt(document->uri, references.position.line,
+                                             references.position.character).has_value()) {
+        for (const auto& reference : semantic_references) {
+            result.push_back(toLocationJson(reference.location));
+        }
+        return result;
+    }
+
     for (const auto& reference : symbol_index_.references(identifier->name,
                                                           references.context.include_declaration)) {
         result.push_back(toLocationJson(reference.location));
@@ -1440,6 +1474,16 @@ jsonrpc::Json ServerSession::handleDocumentHighlight(const jsonrpc::Json& params
     }
 
     jsonrpc::Json result = jsonrpc::Json::array();
+    const auto semantic_references = semantic_workspace_.documentReferencesAt(
+        document->uri, highlight.position.line, highlight.position.character, true);
+    if (semantic_workspace_.resolvedSymbolAt(document->uri, highlight.position.line,
+                                             highlight.position.character).has_value()) {
+        for (const auto& reference : semantic_references) {
+            result.push_back(toDocumentHighlightJson(reference.location));
+        }
+        return result;
+    }
+
     for (const auto& reference : symbol_index_.documentReferences(document->uri, identifier->name, true)) {
         result.push_back(toDocumentHighlightJson(reference.location));
     }
@@ -1732,6 +1776,11 @@ jsonrpc::Json ServerSession::handlePrepareRename(const jsonrpc::Json& params) {
         return nullptr;
     }
 
+    if (semantic_workspace_.resolvedSymbolAt(document->uri, prepare.position.line,
+                                             prepare.position.character).has_value()) {
+        return jsonrpc::Json{{"range", toRangeJson(identifier->range)}, {"placeholder", identifier->name}};
+    }
+
     const auto definitions = symbol_index_.definitions(identifier->name, document->uri);
     if (definitions.empty() || symbol_index_.hasAmbiguousDefinitions(identifier->name, document->uri)) {
         return nullptr;
@@ -1759,6 +1808,29 @@ jsonrpc::Json ServerSession::handleRename(const jsonrpc::Json& params) {
                                                               rename.position.character);
     if (!identifier) {
         return nullptr;
+    }
+
+    if (semantic_workspace_.resolvedSymbolAt(document->uri, rename.position.line,
+                                             rename.position.character).has_value()) {
+        std::map<std::string, jsonrpc::Json> changes;
+        for (const auto& reference : semantic_workspace_.referencesAt(document->uri,
+                                                                      rename.position.line,
+                                                                      rename.position.character,
+                                                                      true)) {
+            auto [entry_it, inserted] = changes.try_emplace(reference.location.uri, jsonrpc::Json::array());
+            entry_it->second.push_back(toTextEditJson(reference.location.range, rename.new_name));
+        }
+
+        if (changes.empty()) {
+            return nullptr;
+        }
+
+        jsonrpc::Json changes_json = jsonrpc::Json::object();
+        for (auto& [uri, edits] : changes) {
+            changes_json[uri] = std::move(edits);
+        }
+
+        return jsonrpc::Json{{"changes", std::move(changes_json)}};
     }
 
     const auto definitions = symbol_index_.definitions(identifier->name, document->uri);
@@ -1896,6 +1968,7 @@ void ServerSession::indexWorkspaceSources() {
 }
 
 void ServerSession::updateSymbolIndex(std::string_view uri, std::string_view text) {
+    semantic_workspace_.updateDocument(uri, text);
     symbol_index_.updateDocument(uri, text);
     updateHierarchyIndex(uri, text);
 }
@@ -1939,6 +2012,7 @@ void ServerSession::restoreClosedDocumentIndex(std::string_view uri) {
 }
 
 void ServerSession::removeDocumentIndexes(std::string_view uri) {
+    semantic_workspace_.removeDocument(uri);
     symbol_index_.removeDocument(uri);
     hierarchy_documents_.erase(std::string(uri));
     schematic_documents_.erase(std::string(uri));
