@@ -73,7 +73,7 @@ def main() -> int:
         return 2
 
     server_path = pathlib.Path(sys.argv[1]).resolve()
-    with tempfile.TemporaryDirectory(prefix="pristine-lsp-e2e-") as temp_dir:
+    with tempfile.TemporaryDirectory(prefix="pristine-engine-e2e-") as temp_dir:
         root = pathlib.Path(temp_dir)
         rtl = root / "rtl"
         rtl.mkdir()

@@ -108,4 +108,46 @@ TEST_CASE("SemanticEngine switches snapshot mode when design config is present",
     CHECK(snapshot.top_modules == std::vector<std::string>{"top"});
 }
 
+TEST_CASE("SemanticEngine exposes first-batch LSP-neutral query contracts",
+          "[analysis][semantic-engine][query]") {
+    SemanticEngine engine;
+    engine.updateDocument("file:///workspace/top.sv",
+                          "module top;\n"
+                          "  logic ready;\n"
+                          "  assign ready = ready;\n"
+                          "endmodule\n",
+                          SemanticEngineDocumentState{.version = 1, .is_open = true});
+
+    const auto lookup = engine.lookupAt("file:///workspace/top.sv", 1, 9);
+    REQUIRE_FALSE(lookup.unresolved);
+    REQUIRE(lookup.symbol.has_value());
+    CHECK(lookup.symbol->name == "ready");
+    CHECK(lookup.symbol->location.range.start_line == 1);
+    CHECK(lookup.symbol->location.range.start_character == 8);
+
+    const auto definitions = engine.definitionsAt("file:///workspace/top.sv", 1, 9);
+    REQUIRE_FALSE(definitions.unresolved);
+    REQUIRE(definitions.locations.size() == 1);
+    CHECK(definitions.locations.front().uri == "file:///workspace/top.sv");
+
+    const auto references = engine.referencesAt("file:///workspace/top.sv", 1, 9, true);
+    REQUIRE_FALSE(references.unresolved);
+    CHECK(references.locations.size() == 3);
+
+    const auto highlights = engine.documentHighlightsAt("file:///workspace/top.sv", 1, 9);
+    REQUIRE_FALSE(highlights.unresolved);
+    CHECK(highlights.locations.size() == 3);
+
+    const auto prepare = engine.prepareRenameAt("file:///workspace/top.sv", 1, 9);
+    REQUIRE_FALSE(prepare.unresolved);
+    CHECK(prepare.placeholder == "ready");
+
+    const auto rename = engine.renameAt("file:///workspace/top.sv", 1, 9, "valid");
+    REQUIRE_FALSE(rename.unresolved);
+    REQUIRE(rename.edits.size() == 3);
+    CHECK(std::all_of(rename.edits.begin(), rename.edits.end(), [](const SemanticTextEdit& edit) {
+        return edit.new_text == "valid";
+    }));
+}
+
 } // namespace pristine::analysis

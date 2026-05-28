@@ -852,6 +852,36 @@ std::vector<std::string> SemanticWorkspace::staleDocumentUris() const {
     return result;
 }
 
+SemanticLookupResult SemanticWorkspace::lookupAt(std::string_view uri, int line, int character) const {
+    return semantic_engine_.lookupAt(uri, line, character);
+}
+
+SemanticReferenceResult SemanticWorkspace::engineDefinitionsAt(std::string_view uri,
+                                                               int line,
+                                                               int character) const {
+    return semantic_engine_.definitionsAt(uri, line, character);
+}
+
+SemanticReferenceResult SemanticWorkspace::engineReferencesAt(std::string_view uri,
+                                                              int line,
+                                                              int character,
+                                                              bool include_declaration) const {
+    return semantic_engine_.referencesAt(uri, line, character, include_declaration);
+}
+
+SemanticPrepareRenameResult SemanticWorkspace::enginePrepareRenameAt(std::string_view uri,
+                                                                     int line,
+                                                                     int character) const {
+    return semantic_engine_.prepareRenameAt(uri, line, character);
+}
+
+SemanticRenameResult SemanticWorkspace::engineRenameAt(std::string_view uri,
+                                                       int line,
+                                                       int character,
+                                                       std::string_view new_name) const {
+    return semantic_engine_.renameAt(uri, line, character, new_name);
+}
+
 std::optional<SemanticSymbol> SemanticWorkspace::symbolById(std::string_view symbol_id) const {
     for (const auto& document_entry : documents_) {
         for (const auto& symbol : document_entry.second.symbols) {

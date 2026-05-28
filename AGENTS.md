@@ -52,6 +52,7 @@ Current behavior follows an AST-backed semantic model with syntax/text fallback 
 
 - `SemanticEngine` is the owning layer for slang AST/Compilation snapshots, dependency invalidation, and deep semantic facts
 - semantic queries prefer slang AST/Compilation facts when available
+- hover, definition, type definition, references, document highlights, prepare rename, and rename should route through `SemanticEngine` first, with syntax/text fallback only when AST-backed lookup cannot answer
 - `CompilationService` remains the syntax fast path for parse diagnostics, document symbols, syntax extraction, hierarchy/schematic extraction, and text utilities
 - `SymbolIndex` and the legacy syntax/text `SemanticWorkspace` resolution are fallback and cold-workspace indexing aids, not the preferred semantic authority
 - `ServerSession` should route LSP requests and serialize responses; it should not grow new SystemVerilog semantic rules
@@ -163,6 +164,8 @@ ctest --test-dir build/dev --output-on-failure
 
 Add or update focused semantic unit tests for AST-backed diagnostics, lookup, hover, definition, references, completion, inlay hints, hierarchy, or schematic behavior as appropriate. For workspace-wide indexing or invalidation changes, include a performance baseline plan covering initialize, didOpen, didChange, hover, completion, references, rename, and workspace/symbol on small and large synthetic workspaces.
 
+For opt-in performance baselines, configure with `PRISTINE_BUILD_PERF_TESTS=ON` and run `pristine_perf_tests`; the perf target prints JSON and is not part of the default `ctest` suite.
+
 If `ctest` is not on `PATH` in the current Windows shell, use:
 
 ```powershell
@@ -221,13 +224,14 @@ Installed notice destination:
 
 ## Naming Contract
 
-- The CMake executable target remains `pristine-lsp`.
-- The produced runtime binary name is `pristine-engine` via `OUTPUT_NAME`.
+- The CMake executable target is `pristine-engine`.
+- The produced runtime binary name is `pristine-engine`.
 - CLI smoke tests, install validation, and CI all expect the runtime artifact to be named `pristine-engine`.
 
 If you change this contract, update all affected surfaces in the same change:
 
 - `CMakeLists.txt`
+- `tests/CMakeLists.txt`
 - `src/main.cpp`
 - `scripts/validate-install-tree.cmake`
 - `.github/workflows/ci.yml`

@@ -11,6 +11,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 option(PRISTINE_BUILD_TESTS "Build unit tests" ON)
+option(PRISTINE_BUILD_PERF_TESTS "Build opt-in performance baseline tests" OFF)
 option(PRISTINE_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" ON)
 
 if(MSVC)
@@ -96,11 +97,10 @@ else()
   endif()
 endif()
 
-add_executable(pristine-lsp src/main.cpp)
-target_link_libraries(pristine-lsp PRIVATE pristine_core)
-set_target_properties(pristine-lsp PROPERTIES OUTPUT_NAME pristine-engine)
+add_executable(pristine-engine src/main.cpp)
+target_link_libraries(pristine-engine PRIVATE pristine_core)
 
-install(TARGETS pristine-lsp RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+install(TARGETS pristine-engine RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 install(
   FILES
     ${PROJECT_SOURCE_DIR}/LICENSE

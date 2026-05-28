@@ -141,6 +141,21 @@ public:
     [[nodiscard]] std::vector<std::string> includedUris(std::string_view uri) const;
     [[nodiscard]] std::vector<std::string> includingUris(std::string_view uri) const;
     [[nodiscard]] std::vector<std::string> staleDocumentUris() const;
+    [[nodiscard]] SemanticLookupResult lookupAt(std::string_view uri, int line, int character) const;
+    [[nodiscard]] SemanticReferenceResult engineDefinitionsAt(std::string_view uri,
+                                                              int line,
+                                                              int character) const;
+    [[nodiscard]] SemanticReferenceResult engineReferencesAt(std::string_view uri,
+                                                            int line,
+                                                            int character,
+                                                            bool include_declaration) const;
+    [[nodiscard]] SemanticPrepareRenameResult enginePrepareRenameAt(std::string_view uri,
+                                                                    int line,
+                                                                    int character) const;
+    [[nodiscard]] SemanticRenameResult engineRenameAt(std::string_view uri,
+                                                      int line,
+                                                      int character,
+                                                      std::string_view new_name) const;
     [[nodiscard]] std::optional<SemanticSymbol> findResolvedSymbolAt(std::string_view uri,
                                                                       int line,
                                                                       int character) const;

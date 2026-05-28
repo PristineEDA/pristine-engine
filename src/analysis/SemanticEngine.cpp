@@ -10,6 +10,7 @@
 #include "slang/util/Bag.h"
 
 #include <algorithm>
+#include <map>
 #include <set>
 #include <utility>
 
@@ -60,6 +61,52 @@ slang::Bag makeCompilationOptions() {
     slang::Bag options;
     options.set(compilation_options);
     return options;
+}
+
+bool containsPosition(const ParseRange& range, int line, int character) {
+    if (line < range.start_line || line > range.end_line) {
+        return false;
+    }
+    if (line == range.start_line && character < range.start_character) {
+        return false;
+    }
+    if (line == range.end_line && character >= range.end_character) {
+        return false;
+    }
+    return true;
+}
+
+bool locationLess(const SemanticLocation& lhs, const SemanticLocation& rhs) {
+    if (lhs.uri != rhs.uri) {
+        return lhs.uri < rhs.uri;
+    }
+    if (lhs.range.start_line != rhs.range.start_line) {
+        return lhs.range.start_line < rhs.range.start_line;
+    }
+    if (lhs.range.start_character != rhs.range.start_character) {
+        return lhs.range.start_character < rhs.range.start_character;
+    }
+    if (lhs.range.end_line != rhs.range.end_line) {
+        return lhs.range.end_line < rhs.range.end_line;
+    }
+    return lhs.range.end_character < rhs.range.end_character;
+}
+
+bool sameLocation(const SemanticLocation& lhs, const SemanticLocation& rhs) {
+    return lhs.uri == rhs.uri && lhs.range.start_line == rhs.range.start_line &&
+           lhs.range.start_character == rhs.range.start_character &&
+           lhs.range.end_line == rhs.range.end_line && lhs.range.end_character == rhs.range.end_character;
+}
+
+std::optional<Identifier> identifierAtDocument(const SemanticEngineDocument& document,
+                                               int line,
+                                               int character) {
+    CompilationService compilation_service;
+    return compilation_service.identifierAt(document.text, line, character);
+}
+
+SemanticLocation makeLocation(std::string uri, const ParseRange& range) {
+    return SemanticLocation{.uri = std::move(uri), .range = range};
 }
 
 } // namespace
@@ -191,6 +238,154 @@ std::vector<SemanticEngineDiagnostic> SemanticEngine::diagnosticsFor(std::string
         if (diagnostic.uri == document_uri) {
             result.push_back(diagnostic);
         }
+    }
+    return result;
+}
+
+SemanticLookupResult SemanticEngine::lookupAt(std::string_view uri, int line, int character) const {
+    const auto& current_snapshot = snapshot();
+    const auto document_uri = withoutTrailingSlash(normalizeFileUri(uri));
+    SemanticLookupResult result{.mode = current_snapshot.mode,
+                                .generation = current_snapshot.generation,
+                                .query_location = SemanticLocation{.uri = document_uri,
+                                                                   .range = ParseRange{.start_line = line,
+                                                                                       .start_character = character,
+                                                                                       .end_line = line,
+                                                                                       .end_character = character}},
+                                .unresolved = true};
+    const auto document_it = documents_.find(document_uri);
+    if (document_it == documents_.end()) {
+        result.messages.push_back("document is not indexed by SemanticEngine");
+        return result;
+    }
+
+    const auto identifier = identifierAtDocument(document_it->second, line, character);
+    if (!identifier.has_value()) {
+        result.messages.push_back("no identifier at position");
+        return result;
+    }
+
+    result.query_location.range = identifier->range;
+    result.symbol = SemanticSymbolIdentity{.stable_id = document_uri + "|" + identifier->name + "|" +
+                                                        std::to_string(identifier->range.start_line) + ":" +
+                                                        std::to_string(identifier->range.start_character),
+                                           .name = identifier->name,
+                                           .kind = "identifier",
+                                           .location = makeLocation(document_uri, identifier->range)};
+    result.unresolved = false;
+    return result;
+}
+
+SemanticReferenceResult SemanticEngine::definitionsAt(std::string_view uri,
+                                                      int line,
+                                                      int character) const {
+    const auto lookup = lookupAt(uri, line, character);
+    SemanticReferenceResult result{.generation = lookup.generation,
+                                   .messages = lookup.messages,
+                                   .unresolved = lookup.unresolved};
+    if (lookup.symbol.has_value()) {
+        result.locations.push_back(lookup.symbol->location);
+    }
+    return result;
+}
+
+SemanticReferenceResult SemanticEngine::typeDefinitionsAt(std::string_view uri,
+                                                          int line,
+                                                          int character) const {
+    auto result = definitionsAt(uri, line, character);
+    if (!result.unresolved) {
+        result.messages.push_back("type definition is using identifier-level SemanticEngine fallback");
+    }
+    return result;
+}
+
+SemanticReferenceResult SemanticEngine::referencesAt(std::string_view uri,
+                                                     int line,
+                                                     int character,
+                                                     bool include_declaration) const {
+    const auto lookup = lookupAt(uri, line, character);
+    SemanticReferenceResult result{.generation = lookup.generation,
+                                   .messages = lookup.messages,
+                                   .unresolved = lookup.unresolved};
+    if (!lookup.symbol.has_value()) {
+        return result;
+    }
+
+    const auto target_name = lookup.symbol->name;
+    for (const auto& [document_uri, document] : documents_) {
+        CompilationService compilation_service;
+        for (const auto& identifier : compilation_service.identifiers(document.text)) {
+            if (identifier.name != target_name) {
+                continue;
+            }
+            const auto location = makeLocation(document_uri, identifier.range);
+            if (!include_declaration && sameLocation(location, lookup.symbol->location)) {
+                continue;
+            }
+            result.locations.push_back(location);
+        }
+    }
+
+    std::sort(result.locations.begin(), result.locations.end(), locationLess);
+    result.locations.erase(std::unique(result.locations.begin(), result.locations.end(), sameLocation),
+                           result.locations.end());
+    return result;
+}
+
+SemanticReferenceResult SemanticEngine::documentHighlightsAt(std::string_view uri,
+                                                             int line,
+                                                             int character) const {
+    auto result = referencesAt(uri, line, character, true);
+    const auto document_uri = withoutTrailingSlash(normalizeFileUri(uri));
+    result.locations.erase(std::remove_if(result.locations.begin(),
+                                          result.locations.end(),
+                                          [&](const SemanticLocation& location) {
+                                              return location.uri != document_uri;
+                                          }),
+                           result.locations.end());
+    return result;
+}
+
+SemanticHoverResult SemanticEngine::hoverAt(std::string_view uri, int line, int character) const {
+    const auto lookup = lookupAt(uri, line, character);
+    SemanticHoverResult result{.generation = lookup.generation,
+                               .messages = lookup.messages,
+                               .unresolved = lookup.unresolved};
+    if (!lookup.symbol.has_value()) {
+        return result;
+    }
+    result.contents = "**Identifier** `" + lookup.symbol->name + "`";
+    result.range = lookup.symbol->location.range;
+    return result;
+}
+
+SemanticPrepareRenameResult SemanticEngine::prepareRenameAt(std::string_view uri,
+                                                            int line,
+                                                            int character) const {
+    const auto lookup = lookupAt(uri, line, character);
+    SemanticPrepareRenameResult result{.generation = lookup.generation,
+                                       .messages = lookup.messages,
+                                       .unresolved = lookup.unresolved};
+    if (!lookup.symbol.has_value()) {
+        return result;
+    }
+    result.placeholder = lookup.symbol->name;
+    result.range = lookup.symbol->location.range;
+    return result;
+}
+
+SemanticRenameResult SemanticEngine::renameAt(std::string_view uri,
+                                              int line,
+                                              int character,
+                                              std::string_view new_name) const {
+    const auto references = referencesAt(uri, line, character, true);
+    SemanticRenameResult result{.generation = references.generation,
+                                .messages = references.messages,
+                                .unresolved = references.unresolved,
+                                .truncated = references.truncated};
+    for (const auto& location : references.locations) {
+        result.edits.push_back(SemanticTextEdit{.location = location,
+                                                .new_text = std::string(new_name)});
     }
     return result;
 }

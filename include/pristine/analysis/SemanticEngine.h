@@ -51,10 +51,48 @@ struct SemanticSymbolIdentity {
 
 struct SemanticLookupResult {
     SemanticEngineMode mode = SemanticEngineMode::Shallow;
+    std::uint64_t generation = 0;
     std::optional<SemanticSymbolIdentity> symbol;
     SemanticLocation query_location;
     std::vector<std::string> messages;
     bool unresolved = false;
+};
+
+struct SemanticReferenceResult {
+    std::uint64_t generation = 0;
+    std::vector<SemanticLocation> locations;
+    std::vector<std::string> messages;
+    bool unresolved = false;
+    bool truncated = false;
+};
+
+struct SemanticHoverResult {
+    std::uint64_t generation = 0;
+    std::string contents;
+    ParseRange range;
+    std::vector<std::string> messages;
+    bool unresolved = false;
+};
+
+struct SemanticPrepareRenameResult {
+    std::uint64_t generation = 0;
+    std::string placeholder;
+    ParseRange range;
+    std::vector<std::string> messages;
+    bool unresolved = false;
+};
+
+struct SemanticTextEdit {
+    SemanticLocation location;
+    std::string new_text;
+};
+
+struct SemanticRenameResult {
+    std::uint64_t generation = 0;
+    std::vector<SemanticTextEdit> edits;
+    std::vector<std::string> messages;
+    bool unresolved = false;
+    bool truncated = false;
 };
 
 struct SemanticCompletionItem {
@@ -141,6 +179,28 @@ public:
 
     [[nodiscard]] const SemanticEngineSnapshot& snapshot() const;
     [[nodiscard]] std::vector<SemanticEngineDiagnostic> diagnosticsFor(std::string_view uri) const;
+    [[nodiscard]] SemanticLookupResult lookupAt(std::string_view uri, int line, int character) const;
+    [[nodiscard]] SemanticReferenceResult definitionsAt(std::string_view uri,
+                                                        int line,
+                                                        int character) const;
+    [[nodiscard]] SemanticReferenceResult typeDefinitionsAt(std::string_view uri,
+                                                            int line,
+                                                            int character) const;
+    [[nodiscard]] SemanticReferenceResult referencesAt(std::string_view uri,
+                                                       int line,
+                                                       int character,
+                                                       bool include_declaration) const;
+    [[nodiscard]] SemanticReferenceResult documentHighlightsAt(std::string_view uri,
+                                                               int line,
+                                                               int character) const;
+    [[nodiscard]] SemanticHoverResult hoverAt(std::string_view uri, int line, int character) const;
+    [[nodiscard]] SemanticPrepareRenameResult prepareRenameAt(std::string_view uri,
+                                                              int line,
+                                                              int character) const;
+    [[nodiscard]] SemanticRenameResult renameAt(std::string_view uri,
+                                                int line,
+                                                int character,
+                                                std::string_view new_name) const;
 
 private:
     void rebuildDependenciesFor(std::string_view document_uri, std::string_view text);
