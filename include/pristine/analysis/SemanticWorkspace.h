@@ -3,6 +3,7 @@
 #include "pristine/analysis/SymbolIndex.h"
 
 #include <cstddef>
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -25,7 +26,10 @@ struct SemanticType {
     SemanticTypeKind kind = SemanticTypeKind::Unknown;
     std::string name;
     std::string display_name;
+    std::string alias_target;
+    std::optional<std::int64_t> bit_width;
     std::optional<Location> declaration;
+    std::vector<std::string> enum_members;
 };
 
 struct SemanticDocumentState {
@@ -48,6 +52,10 @@ struct SemanticSymbol {
     std::string scope_path;
     Location location;
     ParseRange selection_range;
+    std::optional<SemanticType> type;
+    std::string direction;
+    std::string constant_expression;
+    std::optional<std::int64_t> constant_value;
 };
 
 struct SemanticReference {
@@ -109,6 +117,9 @@ public:
                                                                           int line,
                                                                           int character,
                                                                           bool include_declaration) const;
+    [[nodiscard]] std::optional<HoverResult> hoverAt(std::string_view uri,
+                                                     int line,
+                                                     int character) const;
     [[nodiscard]] std::optional<SemanticSymbol> resolvedSymbolAt(std::string_view uri,
                                                                   int line,
                                                                   int character) const;
@@ -143,6 +154,7 @@ private:
                                                           std::string_view preferred_uri) const;
     [[nodiscard]] std::vector<std::string> resolveIncludeUris(std::string_view including_uri,
                                                               std::string_view target) const;
+    void rebuildSemanticMetadata();
     void rebuildReferenceBindings();
     void rebuildReverseIncludes();
     void markDependentsStale(std::string_view uri);

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <functional>
 #include <limits>
 #include <optional>
 #include <set>
@@ -179,6 +180,360 @@ bool isTypeDefinitionSymbol(int symbol_kind) {
     }
 }
 
+std::string symbolKindLabel(int kind) {
+    switch (kind) {
+        case 2:
+            return "Module";
+        case 3:
+            return "Namespace";
+        case 4:
+            return "Package";
+        case 5:
+            return "Class";
+        case 10:
+            return "Enum";
+        case 11:
+            return "Interface / Modport";
+        case 12:
+            return "Callable";
+        case 13:
+            return "Variable";
+        case 14:
+            return "Parameter";
+        case 19:
+            return "Instance";
+        case 22:
+            return "Enum Member";
+        case 26:
+            return "Typedef";
+        default:
+            return "Symbol";
+    }
+}
+
+bool isBuiltinTypeName(std::string_view name) {
+    return name == "bit" || name == "logic" || name == "reg" || name == "wire" || name == "tri" ||
+           name == "byte" || name == "shortint" || name == "int" || name == "integer" ||
+           name == "longint" || name == "time" || name == "genvar";
+}
+
+std::optional<std::int64_t> scalarBuiltinWidth(std::string_view name) {
+    if (name == "bit" || name == "logic" || name == "reg" || name == "wire" || name == "tri") {
+        return 1;
+    }
+    if (name == "byte") {
+        return 8;
+    }
+    if (name == "shortint") {
+        return 16;
+    }
+    if (name == "int" || name == "integer" || name == "genvar") {
+        return 32;
+    }
+    if (name == "longint" || name == "time") {
+        return 64;
+    }
+    return std::nullopt;
+}
+
+SemanticTypeKind semanticTypeKindFor(const SemanticSymbolMetadata& metadata, int symbol_kind) {
+    switch (symbol_kind) {
+        case 2:
+            return SemanticTypeKind::Module;
+        case 5:
+            return SemanticTypeKind::Class;
+        case 10:
+        case 22:
+            return SemanticTypeKind::Enum;
+        case 11:
+            return SemanticTypeKind::Interface;
+        case 19:
+            return SemanticTypeKind::Module;
+        case 26:
+            return SemanticTypeKind::Alias;
+        default:
+            break;
+    }
+
+    if (metadata.type_name == "enum") {
+        return SemanticTypeKind::Enum;
+    }
+    if (isBuiltinTypeName(metadata.type_name)) {
+        return SemanticTypeKind::Builtin;
+    }
+    if (!metadata.type_name.empty()) {
+        return SemanticTypeKind::Alias;
+    }
+    return SemanticTypeKind::Unknown;
+}
+
+bool metadataMatchesSymbol(const SemanticSymbolMetadata& metadata, const SemanticSymbol& symbol) {
+    return metadata.name == symbol.name && metadata.kind == symbol.kind &&
+           rangesEqual(metadata.selection_range, symbol.selection_range);
+}
+
+std::optional<SemanticSymbolMetadata> metadataForSymbol(const std::vector<SemanticSymbolMetadata>& metadata,
+                                                        const SemanticSymbol& symbol) {
+    for (const auto& candidate : metadata) {
+        if (metadataMatchesSymbol(candidate, symbol)) {
+            return candidate;
+        }
+    }
+    return std::nullopt;
+}
+
+std::string removeUnderscores(std::string_view value) {
+    std::string result;
+    for (const char ch : value) {
+        if (ch != '_') {
+            result.push_back(ch);
+        }
+    }
+    return result;
+}
+
+std::optional<std::int64_t> parseIntegerDigits(std::string_view digits, int base) {
+    if (digits.empty()) {
+        return std::nullopt;
+    }
+
+    std::int64_t result = 0;
+    for (const char raw : digits) {
+        const auto ch = static_cast<unsigned char>(raw);
+        int value = -1;
+        if (std::isdigit(ch) != 0) {
+            value = raw - '0';
+        }
+        else if (std::isalpha(ch) != 0) {
+            value = static_cast<char>(std::tolower(ch)) - 'a' + 10;
+        }
+        if (value < 0 || value >= base) {
+            return std::nullopt;
+        }
+        if (result > (std::numeric_limits<std::int64_t>::max() - value) / base) {
+            return std::nullopt;
+        }
+        result = result * base + value;
+    }
+    return result;
+}
+
+std::optional<std::int64_t> parseIntegerLiteral(std::string_view literal) {
+    auto normalized = removeUnderscores(literal);
+    if (normalized.empty()) {
+        return std::nullopt;
+    }
+
+    const auto apostrophe = normalized.find('\'');
+    if (apostrophe == std::string::npos) {
+        return parseIntegerDigits(normalized, 10);
+    }
+
+    auto digits = std::string_view(normalized).substr(apostrophe + 1);
+    if (!digits.empty() && (digits.front() == 's' || digits.front() == 'S')) {
+        digits.remove_prefix(1);
+    }
+    if (digits.empty()) {
+        return std::nullopt;
+    }
+
+    int base = 10;
+    const auto base_char = static_cast<char>(std::tolower(static_cast<unsigned char>(digits.front())));
+    switch (base_char) {
+        case 'b':
+            base = 2;
+            break;
+        case 'o':
+            base = 8;
+            break;
+        case 'd':
+            base = 10;
+            break;
+        case 'h':
+            base = 16;
+            break;
+        default:
+            return std::nullopt;
+    }
+    digits.remove_prefix(1);
+    return parseIntegerDigits(digits, base);
+}
+
+class ConstantExpressionParser {
+public:
+    using Resolver = std::function<std::optional<std::int64_t>(std::string_view)>;
+
+    ConstantExpressionParser(std::string_view text, Resolver resolver) : text_(text), resolver_(std::move(resolver)) {}
+
+    [[nodiscard]] std::optional<std::int64_t> parse() {
+        auto value = parseShift();
+        skipWhitespace();
+        if (position_ != text_.size()) {
+            return std::nullopt;
+        }
+        return value;
+    }
+
+private:
+    void skipWhitespace() {
+        while (position_ < text_.size() && std::isspace(static_cast<unsigned char>(text_[position_])) != 0) {
+            ++position_;
+        }
+    }
+
+    bool consume(std::string_view token) {
+        skipWhitespace();
+        if (text_.substr(position_, token.size()) != token) {
+            return false;
+        }
+        position_ += token.size();
+        return true;
+    }
+
+    std::optional<std::int64_t> parseShift() {
+        auto lhs = parseAdditive();
+        while (lhs.has_value()) {
+            if (consume("<<")) {
+                const auto rhs = parseAdditive();
+                if (!rhs.has_value() || *rhs < 0 || *rhs >= 63) {
+                    return std::nullopt;
+                }
+                *lhs <<= *rhs;
+            }
+            else if (consume(">>")) {
+                const auto rhs = parseAdditive();
+                if (!rhs.has_value() || *rhs < 0 || *rhs >= 63) {
+                    return std::nullopt;
+                }
+                *lhs >>= *rhs;
+            }
+            else {
+                break;
+            }
+        }
+        return lhs;
+    }
+
+    std::optional<std::int64_t> parseAdditive() {
+        auto lhs = parseMultiplicative();
+        while (lhs.has_value()) {
+            if (consume("+")) {
+                const auto rhs = parseMultiplicative();
+                if (!rhs.has_value()) {
+                    return std::nullopt;
+                }
+                *lhs += *rhs;
+            }
+            else if (consume("-")) {
+                const auto rhs = parseMultiplicative();
+                if (!rhs.has_value()) {
+                    return std::nullopt;
+                }
+                *lhs -= *rhs;
+            }
+            else {
+                break;
+            }
+        }
+        return lhs;
+    }
+
+    std::optional<std::int64_t> parseMultiplicative() {
+        auto lhs = parseUnary();
+        while (lhs.has_value()) {
+            if (consume("*")) {
+                const auto rhs = parseUnary();
+                if (!rhs.has_value()) {
+                    return std::nullopt;
+                }
+                *lhs *= *rhs;
+            }
+            else if (consume("/")) {
+                const auto rhs = parseUnary();
+                if (!rhs.has_value() || *rhs == 0) {
+                    return std::nullopt;
+                }
+                *lhs /= *rhs;
+            }
+            else if (consume("%")) {
+                const auto rhs = parseUnary();
+                if (!rhs.has_value() || *rhs == 0) {
+                    return std::nullopt;
+                }
+                *lhs %= *rhs;
+            }
+            else {
+                break;
+            }
+        }
+        return lhs;
+    }
+
+    std::optional<std::int64_t> parseUnary() {
+        if (consume("+")) {
+            return parseUnary();
+        }
+        if (consume("-")) {
+            const auto value = parseUnary();
+            if (!value.has_value()) {
+                return std::nullopt;
+            }
+            return -*value;
+        }
+        return parsePrimary();
+    }
+
+    std::optional<std::int64_t> parsePrimary() {
+        skipWhitespace();
+        if (consume("(")) {
+            auto value = parseShift();
+            if (!consume(")")) {
+                return std::nullopt;
+            }
+            return value;
+        }
+
+        if (position_ < text_.size() && std::isdigit(static_cast<unsigned char>(text_[position_])) != 0) {
+            const auto start = position_;
+            while (position_ < text_.size()) {
+                const auto ch = static_cast<unsigned char>(text_[position_]);
+                if (std::isalnum(ch) == 0 && text_[position_] != '_' && text_[position_] != '\'') {
+                    break;
+                }
+                ++position_;
+            }
+            return parseIntegerLiteral(text_.substr(start, position_ - start));
+        }
+
+        if (position_ < text_.size() && (std::isalpha(static_cast<unsigned char>(text_[position_])) != 0 ||
+                                        text_[position_] == '_' || text_[position_] == '$')) {
+            const auto start = position_;
+            while (position_ < text_.size()) {
+                const auto ch = static_cast<unsigned char>(text_[position_]);
+                if (std::isalnum(ch) == 0 && text_[position_] != '_' && text_[position_] != '$') {
+                    break;
+                }
+                ++position_;
+            }
+            return resolver_(text_.substr(start, position_ - start));
+        }
+
+        return std::nullopt;
+    }
+
+    std::string_view text_;
+    size_t position_ = 0;
+    Resolver resolver_;
+};
+
+std::optional<std::int64_t> checkedDimensionWidth(std::int64_t left, std::int64_t right) {
+    const auto distance = left > right ? left - right : right - left;
+    if (distance == std::numeric_limits<std::int64_t>::max()) {
+        return std::nullopt;
+    }
+    return distance + 1;
+}
+
 std::string packageScopePath(std::string_view package_name) {
     return childScopePath(kRootScope, package_name);
 }
@@ -330,6 +685,27 @@ void SemanticWorkspace::updateDocument(std::string_view uri,
         for (const auto& symbol : compilation_service_.documentSymbols(text, document_uri)) {
             appendSymbols(document, document_uri, kRootScope, symbol);
         }
+
+        const auto metadata = compilation_service_.semanticSymbolMetadata(text, document_uri);
+        for (auto& symbol : document.symbols) {
+            const auto symbol_metadata = metadataForSymbol(metadata, symbol);
+            if (!symbol_metadata.has_value()) {
+                continue;
+            }
+
+            symbol.direction = symbol_metadata->direction;
+            symbol.constant_expression = symbol_metadata->value_expression;
+            if (!symbol_metadata->type_name.empty() || !symbol_metadata->type_display_name.empty() ||
+                !symbol_metadata->alias_target.empty() || !symbol_metadata->enum_members.empty()) {
+                symbol.type = SemanticType{.kind = semanticTypeKindFor(*symbol_metadata, symbol.kind),
+                                           .name = symbol_metadata->type_name,
+                                           .display_name = symbol_metadata->type_display_name,
+                                           .alias_target = symbol_metadata->alias_target,
+                                           .bit_width = std::nullopt,
+                                           .declaration = std::nullopt,
+                                           .enum_members = symbol_metadata->enum_members};
+            }
+        }
     }
     catch (...) {
         document.scopes.resize(1);
@@ -359,6 +735,7 @@ void SemanticWorkspace::updateDocument(std::string_view uri,
     documents_.insert_or_assign(document_uri, std::move(document));
     rebuildReverseIncludes();
     rebuildReferenceBindings();
+    rebuildSemanticMetadata();
 }
 
 void SemanticWorkspace::removeDocument(std::string_view uri) {
@@ -367,6 +744,7 @@ void SemanticWorkspace::removeDocument(std::string_view uri) {
     documents_.erase(document_uri);
     rebuildReverseIncludes();
     rebuildReferenceBindings();
+    rebuildSemanticMetadata();
 }
 
 const SemanticDocument* SemanticWorkspace::document(std::string_view uri) const {
@@ -684,6 +1062,202 @@ std::vector<std::string> SemanticWorkspace::resolveIncludeUris(std::string_view 
     }
 
     return std::vector<std::string>(result.begin(), result.end());
+}
+
+void SemanticWorkspace::rebuildSemanticMetadata() {
+    const auto evaluate_expression = [&](std::string_view expression,
+                                         std::string_view scope_path,
+                                         std::string_view uri) -> std::optional<std::int64_t> {
+        ConstantExpressionParser parser(expression, [&](std::string_view name) -> std::optional<std::int64_t> {
+            for (const auto& definition : resolveName(name, scope_path, uri)) {
+                if (definition.constant_value.has_value()) {
+                    return definition.constant_value;
+                }
+            }
+            return std::nullopt;
+        });
+        return parser.parse();
+    };
+
+    const auto evaluate_width = [&](const SemanticType& type,
+                                    std::string_view scope_path,
+                                    std::string_view uri) -> std::optional<std::int64_t> {
+        const auto type_text = type.alias_target.empty() ? std::string_view(type.display_name)
+                                                         : std::string_view(type.alias_target);
+        std::optional<std::int64_t> total_width;
+        size_t search_position = 0;
+        while (search_position < type_text.size()) {
+            const auto open = type_text.find('[', search_position);
+            if (open == std::string_view::npos) {
+                break;
+            }
+            const auto close = type_text.find(']', open + 1);
+            if (close == std::string_view::npos) {
+                break;
+            }
+
+            const auto body = type_text.substr(open + 1, close - open - 1);
+            const auto colon = body.find(':');
+            std::optional<std::int64_t> dimension_width;
+            if (colon == std::string_view::npos) {
+                dimension_width = evaluate_expression(body, scope_path, uri);
+            }
+            else {
+                const auto left = evaluate_expression(body.substr(0, colon), scope_path, uri);
+                const auto right = evaluate_expression(body.substr(colon + 1), scope_path, uri);
+                if (left.has_value() && right.has_value()) {
+                    dimension_width = checkedDimensionWidth(*left, *right);
+                }
+            }
+
+            if (!dimension_width.has_value() || *dimension_width <= 0) {
+                return std::nullopt;
+            }
+            total_width = total_width.has_value() ? *total_width * *dimension_width : *dimension_width;
+            search_position = close + 1;
+        }
+
+        if (total_width.has_value()) {
+            return total_width;
+        }
+        return scalarBuiltinWidth(type.name);
+    };
+
+    for (int iteration = 0; iteration < 8; ++iteration) {
+        bool changed = false;
+        for (auto& document_entry : documents_) {
+            for (auto& symbol : document_entry.second.symbols) {
+                if (!symbol.constant_expression.empty()) {
+                    const auto value = evaluate_expression(symbol.constant_expression,
+                                                           symbol.scope_path,
+                                                           symbol.location.uri);
+                    if (symbol.constant_value != value) {
+                        symbol.constant_value = value;
+                        changed = true;
+                    }
+                }
+
+                if (!symbol.type.has_value()) {
+                    continue;
+                }
+
+                const auto width = evaluate_width(*symbol.type, symbol.scope_path, symbol.location.uri);
+                if (symbol.type->bit_width != width) {
+                    symbol.type->bit_width = width;
+                    changed = true;
+                }
+            }
+        }
+
+        for (auto& document_entry : documents_) {
+            for (auto& symbol : document_entry.second.symbols) {
+                if (!symbol.type.has_value() || (symbol.type->kind != SemanticTypeKind::Alias &&
+                                                symbol.type->kind != SemanticTypeKind::Enum)) {
+                    continue;
+                }
+
+                for (const auto& definition : resolveName(symbol.type->name, symbol.scope_path,
+                                                          symbol.location.uri)) {
+                    if (definition.id == symbol.id || !definition.type.has_value() ||
+                        (definition.kind != 10 && definition.kind != 26)) {
+                        continue;
+                    }
+
+                    if (!symbol.type->declaration.has_value()) {
+                        symbol.type->declaration = definition.location;
+                        changed = true;
+                    }
+                    if (symbol.type->alias_target.empty() && !definition.type->alias_target.empty()) {
+                        symbol.type->alias_target = definition.type->alias_target;
+                        changed = true;
+                    }
+                    if (!symbol.type->bit_width.has_value() && definition.type->bit_width.has_value()) {
+                        symbol.type->bit_width = definition.type->bit_width;
+                        changed = true;
+                    }
+                    if (symbol.type->enum_members.empty() && !definition.type->enum_members.empty()) {
+                        symbol.type->enum_members = definition.type->enum_members;
+                        changed = true;
+                    }
+                    break;
+                }
+            }
+        }
+
+        if (!changed) {
+            break;
+        }
+    }
+}
+
+std::optional<HoverResult> SemanticWorkspace::hoverAt(std::string_view uri,
+                                                      int line,
+                                                      int character) const {
+    std::optional<SemanticSymbol> symbol = symbolAt(uri, line, character);
+    std::optional<ParseRange> range;
+    if (symbol.has_value()) {
+        range = symbol->selection_range;
+    }
+    else {
+        const auto reference = referenceAt(uri, line, character);
+        if (!reference.has_value()) {
+            return std::nullopt;
+        }
+        symbol = resolveReference(*reference);
+        if (!symbol.has_value()) {
+            return std::nullopt;
+        }
+        range = reference->location.range;
+    }
+
+    std::string label = symbol->name;
+    if (symbol->type.has_value()) {
+        const auto& type = *symbol->type;
+        if ((symbol->kind == 13 || symbol->kind == 14 || symbol->kind == 19 || symbol->kind == 22) &&
+            !type.display_name.empty()) {
+            label += ": ";
+            label += type.display_name;
+        }
+        else if ((symbol->kind == 10 || symbol->kind == 26) && !type.alias_target.empty()) {
+            label += " = ";
+            label += type.alias_target;
+        }
+    }
+    if (symbol->kind == 14 && symbol->constant_value.has_value()) {
+        label += " = ";
+        label += std::to_string(*symbol->constant_value);
+    }
+
+    std::string contents = "**" + symbolKindLabel(symbol->kind) + "** `" + label + "`";
+    if (!symbol->direction.empty()) {
+        contents += "\n\nDirection: `" + symbol->direction + "`";
+    }
+    if (symbol->type.has_value() && symbol->type->bit_width.has_value()) {
+        contents += "\n\nWidth: `" + std::to_string(*symbol->type->bit_width) + " bit";
+        if (*symbol->type->bit_width != 1) {
+            contents += "s";
+        }
+        contents += "`";
+    }
+    if (symbol->type.has_value() && !symbol->type->alias_target.empty() && symbol->kind != 10 &&
+        symbol->kind != 26) {
+        contents += "\n\nAlias: `" + symbol->type->alias_target + "`";
+    }
+    if (symbol->kind != 14 && symbol->constant_value.has_value()) {
+        contents += "\n\nValue: `" + std::to_string(*symbol->constant_value) + "`";
+    }
+    if (symbol->type.has_value() && !symbol->type->enum_members.empty()) {
+        contents += "\n\nEnum members: `";
+        for (size_t index = 0; index < symbol->type->enum_members.size(); ++index) {
+            if (index != 0) {
+                contents += ", ";
+            }
+            contents += symbol->type->enum_members[index];
+        }
+        contents += "`";
+    }
+
+    return HoverResult{.contents = std::move(contents), .range = *range};
 }
 
 void SemanticWorkspace::rebuildReverseIncludes() {

@@ -292,6 +292,7 @@ def main() -> int:
                     "position": {"line": 3, "character": 15},
                     "label": ": child",
                     "kind": 1,
+                    "tooltip": "child(input logic clk, output logic rst_n)",
                 }
             ]
 
@@ -420,10 +421,13 @@ def main() -> int:
                     "position": {"line": 3, "character": 25},
                 },
             )["result"]
-            assert signature_help["signatures"][0]["label"] == "child(clk, rst_n)"
+            assert (
+                signature_help["signatures"][0]["label"]
+                == "child(input logic clk, output logic rst_n)"
+            )
             assert signature_help["signatures"][0]["parameters"] == [
-                {"label": "clk"},
-                {"label": "rst_n"},
+                {"label": "input logic clk"},
+                {"label": "output logic rst_n"},
             ]
             assert signature_help["activeParameter"] == 1
 

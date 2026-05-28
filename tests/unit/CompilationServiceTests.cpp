@@ -134,6 +134,41 @@ TEST_CASE("CompilationService extracts package imports", "[analysis][imports]") 
     CHECK(*imports[2].item_name == "flag_t");
 }
 
+TEST_CASE("CompilationService extracts semantic type metadata", "[analysis][types]") {
+    CompilationService service;
+
+    const auto metadata = service.semanticSymbolMetadata(
+        "module top #(parameter int WIDTH = 8) (input logic [WIDTH-1:0] data);\n"
+        "  typedef logic [7:0] byte_t;\n"
+        "endmodule\n",
+        "file:///workspace/types.sv");
+
+    const auto find_metadata = [&](std::string_view name) {
+        return std::find_if(metadata.begin(), metadata.end(), [&](const SemanticSymbolMetadata& candidate) {
+            return candidate.name == name;
+        });
+    };
+
+    const auto width = find_metadata("WIDTH");
+    REQUIRE(width != metadata.end());
+    CHECK(width->kind == 14);
+    CHECK(width->type_name == "int");
+    CHECK(width->value_expression == "8");
+
+    const auto data = find_metadata("data");
+    REQUIRE(data != metadata.end());
+    CHECK(data->kind == 13);
+    CHECK(data->direction == "input");
+    CHECK(data->type_name == "logic");
+    CHECK(data->type_display_name.find("WIDTH") != std::string::npos);
+
+    const auto byte_t = find_metadata("byte_t");
+    REQUIRE(byte_t != metadata.end());
+    CHECK(byte_t->kind == 26);
+    CHECK(byte_t->alias_target.find("logic") != std::string::npos);
+    CHECK(byte_t->alias_target.find("[7:0]") != std::string::npos);
+}
+
 TEST_CASE("CompilationService extracts top-level document symbols", "[analysis][symbols]") {
     CompilationService service;
 
@@ -275,6 +310,10 @@ TEST_CASE("CompilationService extracts module definitions and direct instantiati
     REQUIRE(modules[0].ports.size() == 2);
     CHECK(modules[0].ports[0] == "clk");
     CHECK(modules[0].ports[1] == "done");
+    REQUIRE(modules[0].port_details.size() == 2);
+    CHECK(modules[0].port_details[0].direction == "input");
+    CHECK(modules[0].port_details[0].width_text == "logic");
+    CHECK(modules[0].port_details[1].direction == "output");
     CHECK(modules[0].instances.empty());
 
     CHECK(modules[1].name == "child");

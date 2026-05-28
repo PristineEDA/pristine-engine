@@ -147,6 +147,84 @@ std::string trimWhitespace(std::string value) {
     return value;
 }
 
+std::string appendWithSpace(std::string lhs, std::string_view rhs) {
+    if (rhs.empty()) {
+        return lhs;
+    }
+    if (!lhs.empty()) {
+        lhs.push_back(' ');
+    }
+    lhs += rhs;
+    return lhs;
+}
+
+std::string dimensionsText(const slang::syntax::SyntaxList<slang::syntax::VariableDimensionSyntax>& dimensions) {
+    std::string result;
+    for (const auto* dimension : dimensions) {
+        result += trimWhitespace(dimension->toString());
+    }
+    return result;
+}
+
+std::string typeDisplayName(const slang::syntax::DataTypeSyntax& type) {
+    return trimWhitespace(type.toString());
+}
+
+std::string typeDisplayName(const slang::syntax::DataTypeSyntax& type,
+                            const slang::syntax::SyntaxList<slang::syntax::VariableDimensionSyntax>& dimensions) {
+    auto result = typeDisplayName(type);
+    const auto dimension_text = dimensionsText(dimensions);
+    if (!dimension_text.empty()) {
+        result = appendWithSpace(std::move(result), dimension_text);
+    }
+    return result;
+}
+
+std::string typeDisplayName(std::string type_text,
+                            const slang::syntax::DeclaratorSyntax& declarator) {
+    const auto dimension_text = dimensionsText(declarator.dimensions);
+    if (!dimension_text.empty()) {
+        type_text = appendWithSpace(std::move(type_text), dimension_text);
+    }
+    return type_text;
+}
+
+bool isTypeNameCharacter(char value) {
+    const auto ch = static_cast<unsigned char>(value);
+    return std::isalnum(ch) != 0 || value == '_' || value == '$';
+}
+
+std::string typeNameFromDisplay(std::string_view display_name) {
+    auto text = trimWhitespace(std::string(display_name));
+    if (text.empty()) {
+        return {};
+    }
+
+    if (text.starts_with("enum")) {
+        return "enum";
+    }
+
+    size_t position = 0;
+    while (position < text.size() && !isTypeNameCharacter(text[position])) {
+        ++position;
+    }
+    const auto start = position;
+    while (position < text.size() && isTypeNameCharacter(text[position])) {
+        ++position;
+    }
+    if (start == position) {
+        return {};
+    }
+    return text.substr(start, position - start);
+}
+
+std::string declaratorInitializerText(const slang::syntax::DeclaratorSyntax& declarator) {
+    if (!declarator.initializer) {
+        return {};
+    }
+    return trimWhitespace(declarator.initializer->expr->toString());
+}
+
 std::string symbolKindLabel(int kind) {
     switch (kind) {
         case 2:
@@ -731,6 +809,147 @@ std::vector<std::string> collectHeaderPortNames(const slang::SourceManager& sour
         result.push_back(symbol.name);
     }
     return result;
+}
+
+template<typename TDeclaratorRange>
+void appendDeclaratorMetadata(std::vector<SemanticSymbolMetadata>& result,
+                              const slang::SourceManager& source_manager,
+                              std::string_view text,
+                              const TDeclaratorRange& declarators,
+                              int kind,
+                              std::string type_display_name,
+                              std::string direction = {}) {
+    for (const auto* declarator : declarators) {
+        auto declarator_type = typeDisplayName(type_display_name, *declarator);
+        result.push_back(SemanticSymbolMetadata{
+            .name = std::string(declarator->name.valueText()),
+            .kind = kind,
+            .selection_range = toParseRange(source_manager, text, declarator->name.range()),
+            .type_name = typeNameFromDisplay(declarator_type),
+            .type_display_name = std::move(declarator_type),
+            .direction = direction,
+            .value_expression = declaratorInitializerText(*declarator),
+            .alias_target = {},
+            .enum_members = {}});
+    }
+}
+
+void appendTypeAssignmentMetadata(
+    std::vector<SemanticSymbolMetadata>& result,
+    const slang::SourceManager& source_manager,
+    std::string_view text,
+    const slang::syntax::SeparatedSyntaxList<slang::syntax::TypeAssignmentSyntax>& declarators) {
+    for (const auto* declarator : declarators) {
+        const auto type_display = declarator->assignment
+            ? typeDisplayName(*declarator->assignment->type)
+            : std::string{};
+        result.push_back(SemanticSymbolMetadata{
+            .name = std::string(declarator->name.valueText()),
+            .kind = 26,
+            .selection_range = toParseRange(source_manager, text, declarator->name.range()),
+            .type_name = std::string(declarator->name.valueText()),
+            .type_display_name = std::string(declarator->name.valueText()),
+            .direction = {},
+            .value_expression = {},
+            .alias_target = type_display,
+            .enum_members = {}});
+    }
+}
+
+void appendParameterMetadata(std::vector<SemanticSymbolMetadata>& result,
+                             const slang::SourceManager& source_manager,
+                             std::string_view text,
+                             const slang::syntax::ParameterDeclarationBaseSyntax& parameter) {
+    switch (parameter.kind) {
+        case slang::syntax::SyntaxKind::ParameterDeclaration: {
+            const auto& declaration = parameter.as<slang::syntax::ParameterDeclarationSyntax>();
+            appendDeclaratorMetadata(result, source_manager, text, declaration.declarators, 14,
+                                     typeDisplayName(*declaration.type));
+            return;
+        }
+        case slang::syntax::SyntaxKind::TypeParameterDeclaration: {
+            const auto& declaration = parameter.as<slang::syntax::TypeParameterDeclarationSyntax>();
+            appendTypeAssignmentMetadata(result, source_manager, text, declaration.declarators);
+            return;
+        }
+        default:
+            return;
+    }
+}
+
+void appendHeaderParameterMetadata(std::vector<SemanticSymbolMetadata>& result,
+                                   const slang::SourceManager& source_manager,
+                                   std::string_view text,
+                                   const slang::syntax::ModuleHeaderSyntax& header) {
+    if (!header.parameters) {
+        return;
+    }
+
+    for (const auto* declaration : header.parameters->declarations) {
+        appendParameterMetadata(result, source_manager, text, *declaration);
+    }
+}
+
+void appendMemberMetadata(std::vector<SemanticSymbolMetadata>& result,
+                          const slang::SourceManager& source_manager,
+                          std::string_view text,
+                          const slang::syntax::MemberSyntax& member);
+
+void appendNodeMetadata(std::vector<SemanticSymbolMetadata>& result,
+                        const slang::SourceManager& source_manager,
+                        std::string_view text,
+                        const slang::syntax::SyntaxNode& node) {
+    if (slang::syntax::MemberSyntax::isKind(node.kind)) {
+        appendMemberMetadata(result, source_manager, text,
+                             static_cast<const slang::syntax::MemberSyntax&>(node));
+    }
+}
+
+void appendHeaderPortMetadata(std::vector<SemanticSymbolMetadata>& result,
+                              const slang::SourceManager& source_manager,
+                              std::string_view text,
+                              const slang::syntax::ModuleHeaderSyntax& header) {
+    if (!header.ports || header.ports->kind != slang::syntax::SyntaxKind::AnsiPortList) {
+        return;
+    }
+
+    const auto& ports = header.ports->as<slang::syntax::AnsiPortListSyntax>();
+    for (const auto* port : ports.ports) {
+        appendMemberMetadata(result, source_manager, text, *port);
+    }
+}
+
+std::vector<std::string> enumMemberLabels(const slang::syntax::EnumTypeSyntax& enum_type) {
+    std::vector<std::string> result;
+    for (const auto* member : enum_type.members) {
+        auto label = std::string(member->name.valueText());
+        const auto initializer = declaratorInitializerText(*member);
+        if (!initializer.empty()) {
+            label += " = ";
+            label += initializer;
+        }
+        result.push_back(std::move(label));
+    }
+    return result;
+}
+
+void appendEnumMemberMetadata(std::vector<SemanticSymbolMetadata>& result,
+                              const slang::SourceManager& source_manager,
+                              std::string_view text,
+                              const slang::syntax::EnumTypeSyntax& enum_type,
+                              std::string_view enum_name) {
+    for (const auto* member : enum_type.members) {
+        result.push_back(SemanticSymbolMetadata{
+            .name = std::string(member->name.valueText()),
+            .kind = 22,
+            .selection_range = toParseRange(source_manager, text, member->name.range()),
+            .type_name = std::string(enum_name),
+            .type_display_name = std::string(enum_name),
+            .direction = {},
+            .value_expression = declaratorInitializerText(*member),
+            .alias_target = {},
+            .enum_members = {}});
+    }
 }
 
 std::string toLowerAscii(std::string value) {
@@ -1610,6 +1829,223 @@ void appendMemberSymbols(std::vector<DocumentSymbol>& result,
     }
 }
 
+void appendMemberMetadata(std::vector<SemanticSymbolMetadata>& result,
+                          const slang::SourceManager& source_manager,
+                          std::string_view text,
+                          const slang::syntax::MemberSyntax& member) {
+    switch (member.kind) {
+        case slang::syntax::SyntaxKind::ImplicitAnsiPort: {
+            const auto& declaration = member.as<slang::syntax::ImplicitAnsiPortSyntax>();
+            const auto type_display = portHeaderWidthText(*declaration.header);
+            result.push_back(SemanticSymbolMetadata{
+                .name = std::string(declaration.declarator->name.valueText()),
+                .kind = 13,
+                .selection_range = toParseRange(source_manager, text, declaration.declarator->name.range()),
+                .type_name = typeNameFromDisplay(type_display),
+                .type_display_name = type_display,
+                .direction = portHeaderDirection(*declaration.header),
+                .value_expression = declaratorInitializerText(*declaration.declarator),
+                .alias_target = {},
+                .enum_members = {}});
+            return;
+        }
+        case slang::syntax::SyntaxKind::ExplicitAnsiPort: {
+            const auto& declaration = member.as<slang::syntax::ExplicitAnsiPortSyntax>();
+            result.push_back(SemanticSymbolMetadata{.name = std::string(declaration.name.valueText()),
+                                                    .kind = 13,
+                                                    .selection_range = toParseRange(source_manager, text,
+                                                                                   declaration.name.range()),
+                                                    .type_name = {},
+                                                    .type_display_name = {},
+                                                    .direction = tokenDirection(declaration.direction.valueText()),
+                                                    .value_expression = {},
+                                                    .alias_target = {},
+                                                    .enum_members = {}});
+            return;
+        }
+        case slang::syntax::SyntaxKind::PortDeclaration: {
+            const auto& declaration = member.as<slang::syntax::PortDeclarationSyntax>();
+            appendDeclaratorMetadata(result, source_manager, text, declaration.declarators, 13,
+                                     portHeaderWidthText(*declaration.header),
+                                     portHeaderDirection(*declaration.header));
+            return;
+        }
+        case slang::syntax::SyntaxKind::DataDeclaration: {
+            const auto& declaration = member.as<slang::syntax::DataDeclarationSyntax>();
+            appendDeclaratorMetadata(result, source_manager, text, declaration.declarators, 13,
+                                     typeDisplayName(*declaration.type));
+            return;
+        }
+        case slang::syntax::SyntaxKind::CheckerDataDeclaration: {
+            const auto& declaration = member.as<slang::syntax::CheckerDataDeclarationSyntax>();
+            appendDeclaratorMetadata(result, source_manager, text, declaration.data->declarators, 13,
+                                     typeDisplayName(*declaration.data->type));
+            return;
+        }
+        case slang::syntax::SyntaxKind::NetDeclaration: {
+            const auto& declaration = member.as<slang::syntax::NetDeclarationSyntax>();
+            appendDeclaratorMetadata(result, source_manager, text, declaration.declarators, 13,
+                                     typeDisplayName(*declaration.type));
+            return;
+        }
+        case slang::syntax::SyntaxKind::UserDefinedNetDeclaration: {
+            const auto& declaration = member.as<slang::syntax::UserDefinedNetDeclarationSyntax>();
+            appendDeclaratorMetadata(result, source_manager, text, declaration.declarators, 13,
+                                     std::string(declaration.netType.valueText()));
+            return;
+        }
+        case slang::syntax::SyntaxKind::TypedefDeclaration: {
+            const auto& declaration = member.as<slang::syntax::TypedefDeclarationSyntax>();
+            const auto typedef_name = std::string(declaration.name.valueText());
+            auto alias_target = typeDisplayName(*declaration.type, declaration.dimensions);
+            std::vector<std::string> enum_members;
+            int kind = 26;
+            std::string type_name = typedef_name;
+            if (declaration.type->kind == slang::syntax::SyntaxKind::EnumType) {
+                const auto& enum_type = declaration.type->as<slang::syntax::EnumTypeSyntax>();
+                kind = 10;
+                type_name = "enum";
+                enum_members = enumMemberLabels(enum_type);
+                if (enum_type.baseType) {
+                    alias_target = typeDisplayName(*enum_type.baseType, enum_type.dimensions);
+                }
+                appendEnumMemberMetadata(result, source_manager, text, enum_type, typedef_name);
+            }
+            result.push_back(SemanticSymbolMetadata{.name = typedef_name,
+                                                    .kind = kind,
+                                                    .selection_range = toParseRange(source_manager, text,
+                                                                                   declaration.name.range()),
+                                                    .type_name = std::move(type_name),
+                                                    .type_display_name = typedef_name,
+                                                    .direction = {},
+                                                    .value_expression = {},
+                                                    .alias_target = std::move(alias_target),
+                                                    .enum_members = std::move(enum_members)});
+            return;
+        }
+        case slang::syntax::SyntaxKind::ClassPropertyDeclaration: {
+            const auto& declaration = member.as<slang::syntax::ClassPropertyDeclarationSyntax>();
+            appendMemberMetadata(result, source_manager, text, *declaration.declaration);
+            return;
+        }
+        case slang::syntax::SyntaxKind::ClassMethodDeclaration: {
+            const auto& declaration = member.as<slang::syntax::ClassMethodDeclarationSyntax>();
+            appendMemberMetadata(result, source_manager, text, *declaration.declaration);
+            return;
+        }
+        case slang::syntax::SyntaxKind::ClassDeclaration: {
+            const auto& declaration = member.as<slang::syntax::ClassDeclarationSyntax>();
+            result.push_back(SemanticSymbolMetadata{.name = std::string(declaration.name.valueText()),
+                                                    .kind = toDocumentSymbolKind(member.kind),
+                                                    .selection_range = toParseRange(source_manager, text,
+                                                                                   declaration.name.range()),
+                                                    .type_name = std::string(declaration.name.valueText()),
+                                                    .type_display_name = std::string(declaration.name.valueText()),
+                                                    .direction = {},
+                                                    .value_expression = {},
+                                                    .alias_target = {},
+                                                    .enum_members = {}});
+            for (const auto* child : declaration.items) {
+                appendMemberMetadata(result, source_manager, text, *child);
+            }
+            return;
+        }
+        case slang::syntax::SyntaxKind::GenerateRegion: {
+            const auto& declaration = member.as<slang::syntax::GenerateRegionSyntax>();
+            for (const auto* child : declaration.members) {
+                appendMemberMetadata(result, source_manager, text, *child);
+            }
+            return;
+        }
+        case slang::syntax::SyntaxKind::GenerateBlock: {
+            const auto& declaration = member.as<slang::syntax::GenerateBlockSyntax>();
+            for (const auto* child : declaration.members) {
+                appendMemberMetadata(result, source_manager, text, *child);
+            }
+            return;
+        }
+        case slang::syntax::SyntaxKind::IfGenerate: {
+            const auto& declaration = member.as<slang::syntax::IfGenerateSyntax>();
+            appendMemberMetadata(result, source_manager, text, *declaration.block);
+            if (declaration.elseClause) {
+                appendNodeMetadata(result, source_manager, text, *declaration.elseClause->clause);
+            }
+            return;
+        }
+        case slang::syntax::SyntaxKind::LoopGenerate: {
+            const auto& declaration = member.as<slang::syntax::LoopGenerateSyntax>();
+            appendMemberMetadata(result, source_manager, text, *declaration.block);
+            return;
+        }
+        case slang::syntax::SyntaxKind::ParameterDeclarationStatement: {
+            const auto& declaration = member.as<slang::syntax::ParameterDeclarationStatementSyntax>();
+            appendParameterMetadata(result, source_manager, text, *declaration.parameter);
+            return;
+        }
+        case slang::syntax::SyntaxKind::HierarchyInstantiation: {
+            const auto& declaration = member.as<slang::syntax::HierarchyInstantiationSyntax>();
+            const auto module_name = std::string(declaration.type.valueText());
+            for (const auto* instance : declaration.instances) {
+                if (!instance->decl) {
+                    continue;
+                }
+                result.push_back(SemanticSymbolMetadata{.name = std::string(instance->decl->name.valueText()),
+                                                        .kind = 19,
+                                                        .selection_range = toParseRange(source_manager, text,
+                                                                                       instance->decl->name.range()),
+                                                        .type_name = module_name,
+                                                        .type_display_name = module_name,
+                                                        .direction = {},
+                                                        .value_expression = {},
+                                                        .alias_target = {},
+                                                        .enum_members = {}});
+            }
+            return;
+        }
+        case slang::syntax::SyntaxKind::GenvarDeclaration: {
+            const auto& declaration = member.as<slang::syntax::GenvarDeclarationSyntax>();
+            for (const auto* identifier : declaration.identifiers) {
+                result.push_back(SemanticSymbolMetadata{.name = std::string(identifier->identifier.valueText()),
+                                                        .kind = 13,
+                                                        .selection_range = toParseRange(source_manager, text,
+                                                                                       identifier->identifier.range()),
+                                                        .type_name = "genvar",
+                                                        .type_display_name = "genvar",
+                                                        .direction = {},
+                                                        .value_expression = {},
+                                                        .alias_target = {},
+                                                        .enum_members = {}});
+            }
+            return;
+        }
+        case slang::syntax::SyntaxKind::ModuleDeclaration:
+        case slang::syntax::SyntaxKind::InterfaceDeclaration:
+        case slang::syntax::SyntaxKind::PackageDeclaration:
+        case slang::syntax::SyntaxKind::ProgramDeclaration: {
+            const auto& declaration = member.as<slang::syntax::ModuleDeclarationSyntax>();
+            const auto name = std::string(declaration.header->name.valueText());
+            result.push_back(SemanticSymbolMetadata{.name = name,
+                                                    .kind = toDocumentSymbolKind(member.kind),
+                                                    .selection_range = toParseRange(source_manager, text,
+                                                                                   declaration.header->name.range()),
+                                                    .type_name = name,
+                                                    .type_display_name = name,
+                                                    .direction = {},
+                                                    .value_expression = {},
+                                                    .alias_target = {},
+                                                    .enum_members = {}});
+            appendHeaderParameterMetadata(result, source_manager, text, *declaration.header);
+            appendHeaderPortMetadata(result, source_manager, text, *declaration.header);
+            for (const auto* child : declaration.members) {
+                appendMemberMetadata(result, source_manager, text, *child);
+            }
+            return;
+        }
+        default:
+            return;
+    }
+}
+
 std::vector<DocumentSymbol> collectMemberSymbols(const slang::SourceManager& source_manager,
                                                  std::string_view text,
                                                  std::span<slang::syntax::MemberSyntax* const> members) {
@@ -1710,12 +2146,15 @@ std::optional<ModuleDefinition> toModuleDefinition(const slang::SourceManager& s
     const auto& declaration = member.as<slang::syntax::ModuleDeclarationSyntax>();
     std::vector<ModuleInstantiation> instances;
     collectModuleInstantiations(instances, source_manager, text, declaration.members);
+    auto port_details = collectHeaderSchematicPorts(source_manager, text, *declaration.header);
+    collectMemberPortDeclarations(port_details, source_manager, text, declaration.members);
 
     return ModuleDefinition{.name = std::string(declaration.header->name.valueText()),
                             .kind = member.kind == slang::syntax::SyntaxKind::InterfaceDeclaration ? "interface" : "module",
                             .range = toParseRange(source_manager, text, declaration.sourceRange()),
                             .selection_range = toParseRange(source_manager, text, declaration.header->name.range()),
                             .ports = collectHeaderPortNames(source_manager, text, *declaration.header),
+                            .port_details = std::move(port_details),
                             .instances = std::move(instances)};
 }
 
@@ -1825,6 +2264,22 @@ std::vector<ModuleSchematic> CompilationService::moduleSchematics(std::string_vi
         }
     }
 
+    return result;
+}
+
+std::vector<SemanticSymbolMetadata> CompilationService::semanticSymbolMetadata(std::string_view text,
+                                                                               std::string_view uri) const {
+    slang::SourceManager source_manager;
+    auto syntax_tree = slang::syntax::SyntaxTree::fromFileInMemory(text, source_manager, "source", uri);
+    if (!syntax_tree || syntax_tree->root().kind != slang::syntax::SyntaxKind::CompilationUnit) {
+        return {};
+    }
+
+    const auto& compilation_unit = syntax_tree->root().as<slang::syntax::CompilationUnitSyntax>();
+    std::vector<SemanticSymbolMetadata> result;
+    for (const auto* member : compilation_unit.members) {
+        appendMemberMetadata(result, source_manager, text, *member);
+    }
     return result;
 }
 

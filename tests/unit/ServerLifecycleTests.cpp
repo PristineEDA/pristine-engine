@@ -604,7 +604,9 @@ TEST_CASE("ServerSession returns hover for declaration symbols", "[server][hover
     const auto hover_response = parseOutput(transport, 2);
     CHECK(hover_response.at("id") == 2);
     CHECK(hover_response.at("result").at("contents").at("kind") == "markdown");
-    CHECK(hover_response.at("result").at("contents").at("value") == "**Variable** `ready`");
+    const auto hover_value = hover_response.at("result").at("contents").at("value").get<std::string>();
+    CHECK(hover_value.find("ready: logic") != std::string::npos);
+    CHECK(hover_value.find("Width: `1 bit`") != std::string::npos);
     CHECK(hover_response.at("result").at("range").at("start").at("line") == 1);
     CHECK(hover_response.at("result").at("range").at("start").at("character") == 8);
     CHECK(hover_response.at("result").at("range").at("end").at("character") == 13);
@@ -952,10 +954,13 @@ TEST_CASE("ServerSession handles Tier 2 rename highlight and document links", "[
     CHECK(signature_help_response.at("id") == 11);
     const auto& signature_help = signature_help_response.at("result");
     REQUIRE(signature_help.at("signatures").size() == 1);
-    CHECK(signature_help.at("signatures").at(0).at("label") == "child(clk, rst_n)");
+        CHECK(signature_help.at("signatures").at(0).at("label") ==
+            "child(input logic clk, output logic rst_n)");
     REQUIRE(signature_help.at("signatures").at(0).at("parameters").size() == 2);
-    CHECK(signature_help.at("signatures").at(0).at("parameters").at(0).at("label") == "clk");
-    CHECK(signature_help.at("signatures").at(0).at("parameters").at(1).at("label") == "rst_n");
+        CHECK(signature_help.at("signatures").at(0).at("parameters").at(0).at("label") ==
+            "input logic clk");
+        CHECK(signature_help.at("signatures").at(0).at("parameters").at(1).at("label") ==
+            "output logic rst_n");
     CHECK(signature_help.at("activeParameter") == 1);
 
     const auto prepare_rename_response = parseOutput(transport, 12);

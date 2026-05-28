@@ -43,21 +43,34 @@ struct ModuleInstantiation {
     ParseRange module_selection_range;
 };
 
-struct ModuleDefinition {
-    std::string name;
-    std::string kind = "module";
-    ParseRange range;
-    ParseRange selection_range;
-    std::vector<std::string> ports;
-    std::vector<ModuleInstantiation> instances;
-};
-
 struct SchematicPort {
     std::string name;
     std::string direction;
     std::string width_text;
     ParseRange range;
     ParseRange selection_range;
+};
+
+struct ModuleDefinition {
+    std::string name;
+    std::string kind = "module";
+    ParseRange range;
+    ParseRange selection_range;
+    std::vector<std::string> ports;
+    std::vector<SchematicPort> port_details;
+    std::vector<ModuleInstantiation> instances;
+};
+
+struct SemanticSymbolMetadata {
+    std::string name;
+    int kind = 0;
+    ParseRange selection_range;
+    std::string type_name;
+    std::string type_display_name;
+    std::string direction;
+    std::string value_expression;
+    std::string alias_target;
+    std::vector<std::string> enum_members;
 };
 
 struct SchematicConnection {
@@ -121,6 +134,8 @@ public:
                                                                   std::string_view uri) const;
     [[nodiscard]] std::vector<ModuleSchematic> moduleSchematics(std::string_view text,
                                                                 std::string_view uri) const;
+    [[nodiscard]] std::vector<SemanticSymbolMetadata> semanticSymbolMetadata(std::string_view text,
+                                                                             std::string_view uri) const;
     [[nodiscard]] std::optional<HoverResult> hover(std::string_view text,
                                                    std::string_view uri,
                                                    int line,

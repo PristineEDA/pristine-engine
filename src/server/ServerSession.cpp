@@ -47,11 +47,47 @@ jsonrpc::Json toDocumentHighlightJson(const analysis::Location& location) {
     return jsonrpc::Json{{"range", toRangeJson(location.range)}, {"kind", 1}};
 }
 
-jsonrpc::Json toInlayHintJson(const analysis::ModuleInstantiation& instance) {
-    return jsonrpc::Json{{"position", toPositionJson(instance.selection_range.end_line,
+void appendLabelPart(std::string& label, std::string_view part) {
+    if (part.empty()) {
+        return;
+    }
+    if (!label.empty()) {
+        label.push_back(' ');
+    }
+    label += part;
+}
+
+std::string portSignatureLabel(const analysis::SchematicPort& port) {
+    std::string label;
+    appendLabelPart(label, port.direction);
+    appendLabelPart(label, port.width_text);
+    appendLabelPart(label, port.name);
+    return label.empty() ? port.name : label;
+}
+
+std::string moduleSignatureLabel(const analysis::ModuleDefinition& module) {
+    std::string label = module.name + "(";
+    const auto port_count = module.port_details.empty() ? module.ports.size() : module.port_details.size();
+    for (size_t index = 0; index < port_count; ++index) {
+        if (index != 0) {
+            label += ", ";
+        }
+        label += module.port_details.empty() ? module.ports[index] : portSignatureLabel(module.port_details[index]);
+    }
+    label += ")";
+    return label;
+}
+
+jsonrpc::Json toInlayHintJson(const analysis::ModuleInstantiation& instance,
+                              const analysis::ModuleDefinition* module) {
+    jsonrpc::Json result{{"position", toPositionJson(instance.selection_range.end_line,
                                                       instance.selection_range.end_character)},
                          {"label", std::string(": ") + instance.module_name},
                          {"kind", 1}};
+    if (module) {
+        result["tooltip"] = moduleSignatureLabel(*module);
+    }
+    return result;
 }
 
 std::optional<int> semanticTokenTypeForSymbolKind(int symbol_kind) {
@@ -497,30 +533,26 @@ std::optional<SignatureInvocation> findSignatureInvocation(
     return std::nullopt;
 }
 
-std::string signatureLabel(const analysis::ModuleDefinition& module) {
-    std::string label = module.name + "(";
-    for (size_t index = 0; index < module.ports.size(); ++index) {
-        if (index != 0) {
-            label += ", ";
-        }
-        label += module.ports[index];
-    }
-    label += ")";
-    return label;
-}
-
 jsonrpc::Json toSignatureHelpJson(const analysis::ModuleDefinition& module, int active_parameter) {
     jsonrpc::Json parameters = jsonrpc::Json::array();
-    for (const auto& port : module.ports) {
-        parameters.push_back(jsonrpc::Json{{"label", port}});
+    if (module.port_details.empty()) {
+        for (const auto& port : module.ports) {
+            parameters.push_back(jsonrpc::Json{{"label", port}});
+        }
+    }
+    else {
+        for (const auto& port : module.port_details) {
+            parameters.push_back(jsonrpc::Json{{"label", portSignatureLabel(port)}});
+        }
     }
 
-    const auto bounded_parameter = module.ports.empty()
+    const auto parameter_count = module.port_details.empty() ? module.ports.size() : module.port_details.size();
+    const auto bounded_parameter = parameter_count == 0
         ? 0
-        : std::min(active_parameter, static_cast<int>(module.ports.size()) - 1);
+        : std::min(active_parameter, static_cast<int>(parameter_count) - 1);
 
     return jsonrpc::Json{{"signatures",
-                          jsonrpc::Json::array({jsonrpc::Json{{"label", signatureLabel(module)},
+                          jsonrpc::Json::array({jsonrpc::Json{{"label", moduleSignatureLabel(module)},
                                                                {"parameters", std::move(parameters)}}})},
                          {"activeSignature", 0},
                          {"activeParameter", bounded_parameter}};
@@ -1329,6 +1361,14 @@ jsonrpc::Json ServerSession::handleHover(const jsonrpc::Json& params) {
         return nullptr;
     }
 
+    const auto semantic_result = semantic_workspace_.hoverAt(document->uri, hover.position.line,
+                                                             hover.position.character);
+    if (semantic_result) {
+        return jsonrpc::Json{{"contents", jsonrpc::Json{{"kind", "markdown"},
+                                                         {"value", semantic_result->contents}}},
+                             {"range", toRangeJson(semantic_result->range)}};
+    }
+
     const auto result = compilation_service_.hover(document->text, document->uri, hover.position.line,
                                                    hover.position.character);
     if (!result) {
@@ -1562,12 +1602,16 @@ jsonrpc::Json ServerSession::handleInlayHint(const jsonrpc::Json& params) {
     }
 
     jsonrpc::Json result = jsonrpc::Json::array();
+    const auto module_lookup = buildModuleLookup(sortedModuleDefinitions(hierarchy_documents_));
     for (const auto& module : compilation_service_.moduleDefinitions(document->text, document->uri)) {
         for (const auto& instance : module.instances) {
             if (positionInRange(instance.selection_range.end_line,
                                 instance.selection_range.end_character,
                                 hints.range)) {
-                result.push_back(toInlayHintJson(instance));
+                const auto definition_it = module_lookup.find(instance.module_name);
+                result.push_back(toInlayHintJson(instance, definition_it == module_lookup.end()
+                                                              ? nullptr
+                                                              : &definition_it->second.definition));
             }
         }
     }
