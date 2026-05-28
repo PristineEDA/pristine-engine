@@ -4,6 +4,7 @@
 #include <cctype>
 #include <functional>
 #include <limits>
+#include <map>
 #include <optional>
 #include <set>
 #include <string>
@@ -13,6 +14,8 @@ namespace pristine::analysis {
 namespace {
 
 constexpr std::string_view kRootScope = "$root";
+
+bool isBuiltinTypeName(std::string_view name);
 
 bool containsPosition(const ParseRange& range, int line, int character) {
     if (line < range.start_line || line > range.end_line) {
@@ -156,6 +159,91 @@ bool symbolLess(const SemanticSymbol& lhs, const SemanticSymbol& rhs) {
         return lhs.location.range.start_character < rhs.location.range.start_character;
     }
     return lhs.id < rhs.id;
+}
+
+std::string duplicateSymbolMessage(std::string_view name) {
+    return std::string("Duplicate symbol '") + std::string(name) + "' in the same scope.";
+}
+
+std::string ambiguousReferenceMessage(std::string_view name, size_t definition_count) {
+    return std::string("Symbol '") + std::string(name) + "' has " +
+           std::to_string(definition_count) + " possible definitions in scope.";
+}
+
+std::string unresolvedPackageMessage(std::string_view name) {
+    return std::string("Package '") + std::string(name) + "' could not be resolved.";
+}
+
+std::string unresolvedTypeMessage(std::string_view name) {
+    return std::string("Type '") + std::string(name) + "' could not be resolved.";
+}
+
+bool isDeclarationIdentifier(const SemanticDocument& document, const SemanticReference& reference) {
+    return std::any_of(document.symbols.begin(), document.symbols.end(), [&](const SemanticSymbol& symbol) {
+        return symbol.name == reference.name && rangesEqual(symbol.selection_range, reference.location.range);
+    });
+}
+
+bool isPackageSymbol(const SemanticSymbol& symbol) {
+    return symbol.kind == 4;
+}
+
+bool canHaveUserDefinedTypeReference(const SemanticSymbol& symbol) {
+    return symbol.kind == 13 || symbol.kind == 14;
+}
+
+bool isAssignableSignalSymbol(const SemanticSymbol& symbol) {
+    return symbol.kind == 13;
+}
+
+bool isSimpleIdentifierExpression(std::string_view text) {
+    if (text.empty()) {
+        return false;
+    }
+
+    const auto first = static_cast<unsigned char>(text.front());
+    if (std::isalpha(first) == 0 && text.front() != '_') {
+        return false;
+    }
+
+    for (const char value : text) {
+        const auto ch = static_cast<unsigned char>(value);
+        if (std::isalnum(ch) == 0 && value != '_' && value != '$') {
+            return false;
+        }
+    }
+    return true;
+}
+
+std::string widthMismatchMessage(std::string_view left_name,
+                                 std::int64_t left_width,
+                                 std::string_view right_name,
+                                 std::int64_t right_width) {
+    return std::string("Width mismatch: assigning ") + std::to_string(right_width) + "-bit '" +
+           std::string(right_name) + "' to " + std::to_string(left_width) + "-bit '" +
+           std::string(left_name) + "'.";
+}
+
+std::optional<SemanticReference> typeReferenceForSymbol(const SemanticDocument& document,
+                                                        const SemanticSymbol& symbol) {
+    if (!symbol.type.has_value() || symbol.type->name.empty() || isBuiltinTypeName(symbol.type->name) ||
+        symbol.type->name == "enum" || symbol.type->display_name.find("::") != std::string::npos) {
+        return std::nullopt;
+    }
+
+    std::optional<SemanticReference> result;
+    for (const auto& reference : document.references) {
+        if (reference.name != symbol.type->name || reference.location.range.start_line != symbol.selection_range.start_line ||
+            reference.location.range.end_line != symbol.selection_range.start_line ||
+            reference.location.range.end_character > symbol.selection_range.start_character ||
+            isDeclarationIdentifier(document, reference)) {
+            continue;
+        }
+        if (!result.has_value() || reference.location.range.start_character > result->location.range.start_character) {
+            result = reference;
+        }
+    }
+    return result;
 }
 
 bool referenceLess(const SemanticReference& lhs, const SemanticReference& rhs) {
@@ -679,6 +767,7 @@ void SemanticWorkspace::updateDocument(std::string_view uri,
                               .included_uris = std::vector<std::string>(included_uris.begin(),
                                                                         included_uris.end()),
                               .imports = {},
+                              .assignments = {},
                               .scopes = {SemanticScope{.path = std::string(kRootScope),
                                                        .parent_path = {},
                                                        .range = rootRange()}},
@@ -721,7 +810,18 @@ void SemanticWorkspace::updateDocument(std::string_view uri,
             .package_name = import.package_name,
             .item_name = import.item_name,
             .scope_path = scopePathAt(document, import.range.start_line, import.range.start_character),
+            .package_range = import.package_range,
             .range = import.range});
+    }
+
+    for (const auto& assignment : compilation_service_.continuousAssignments(text, document_uri)) {
+        document.assignments.push_back(SemanticAssignment{
+            .left_expression = assignment.left_expression,
+            .right_expression = assignment.right_expression,
+            .scope_path = scopePathAt(document, assignment.range.start_line, assignment.range.start_character),
+            .location = Location{.uri = document_uri, .range = assignment.range},
+            .left_range = assignment.left_range,
+            .right_range = assignment.right_range});
     }
 
     for (const auto& identifier : compilation_service_.identifiers(text)) {
@@ -1092,6 +1192,196 @@ std::vector<SemanticSymbol> SemanticWorkspace::packageMembersAt(std::string_view
         std::sort(scope_symbols.begin(), scope_symbols.end(), symbolLess);
         result.insert(result.end(), scope_symbols.begin(), scope_symbols.end());
     }
+    return result;
+}
+
+std::vector<SemanticDiagnostic> SemanticWorkspace::diagnosticsFor(std::string_view uri) const {
+    const auto* source = document(uri);
+    if (!source) {
+        return {};
+    }
+
+    std::map<std::pair<std::string, std::string>, std::vector<SemanticSymbol>> symbols_by_scope_name;
+    for (const auto& document_entry : documents_) {
+        for (const auto& symbol : document_entry.second.symbols) {
+            symbols_by_scope_name[{symbol.scope_path, symbol.name}].push_back(symbol);
+        }
+    }
+
+    std::vector<SemanticDiagnostic> result;
+    for (auto& [_, symbols] : symbols_by_scope_name) {
+        if (symbols.size() < 2) {
+            continue;
+        }
+        std::sort(symbols.begin(), symbols.end(), symbolLess);
+        for (size_t index = 1; index < symbols.size(); ++index) {
+            const auto& duplicate = symbols[index];
+            if (duplicate.location.uri != source->uri) {
+                continue;
+            }
+            result.push_back(SemanticDiagnostic{.code = "duplicateSymbol",
+                                                .message = duplicateSymbolMessage(duplicate.name),
+                                                .range = duplicate.selection_range,
+                                                .severity = 1});
+        }
+    }
+
+    for (const auto& import : source->imports) {
+        const auto definitions = resolveName(import.package_name, import.scope_path, source->uri);
+        const auto package_it = std::find_if(definitions.begin(), definitions.end(), isPackageSymbol);
+        if (package_it != definitions.end()) {
+            continue;
+        }
+
+        bool has_workspace_package = false;
+        for (const auto& document_entry : documents_) {
+            has_workspace_package = std::any_of(document_entry.second.symbols.begin(),
+                                                document_entry.second.symbols.end(),
+                                                [&](const SemanticSymbol& symbol) {
+                                                    return isPackageSymbol(symbol) &&
+                                                           symbol.name == import.package_name;
+                                                });
+            if (has_workspace_package) {
+                break;
+            }
+        }
+        if (has_workspace_package) {
+            continue;
+        }
+
+        result.push_back(SemanticDiagnostic{.code = "unresolvedPackage",
+                                            .message = unresolvedPackageMessage(import.package_name),
+                                            .range = import.package_range,
+                                            .severity = 1});
+    }
+
+    std::set<std::pair<int, int>> reported_type_ranges;
+    for (const auto& symbol : source->symbols) {
+        if (!canHaveUserDefinedTypeReference(symbol) || !symbol.type.has_value() ||
+            symbol.type->declaration.has_value()) {
+            continue;
+        }
+
+        const auto type_reference = typeReferenceForSymbol(*source, symbol);
+        if (!type_reference.has_value()) {
+            continue;
+        }
+
+        const auto definitions = resolveName(type_reference->name,
+                                             type_reference->scope_path,
+                                             type_reference->location.uri);
+        if (std::any_of(definitions.begin(), definitions.end(), [](const SemanticSymbol& definition) {
+                return isTypeDefinitionSymbol(definition.kind);
+            })) {
+            continue;
+        }
+
+        const auto range_key = std::pair(type_reference->location.range.start_line,
+                                         type_reference->location.range.start_character);
+        if (!reported_type_ranges.insert(range_key).second) {
+            continue;
+        }
+
+        result.push_back(SemanticDiagnostic{.code = "unresolvedType",
+                                            .message = unresolvedTypeMessage(type_reference->name),
+                                            .range = type_reference->location.range,
+                                            .severity = 1});
+    }
+
+    const auto resolve_assignment_symbol = [&](std::string_view expression,
+                                               std::string_view scope_path) -> std::optional<SemanticSymbol> {
+        if (!isSimpleIdentifierExpression(expression)) {
+            return std::nullopt;
+        }
+
+        auto definitions = resolveName(expression, scope_path, source->uri);
+        definitions.erase(std::remove_if(definitions.begin(), definitions.end(), [](const SemanticSymbol& symbol) {
+                              return !isAssignableSignalSymbol(symbol) || !symbol.type.has_value() ||
+                                     !symbol.type->bit_width.has_value();
+                          }),
+                          definitions.end());
+        std::sort(definitions.begin(), definitions.end(), symbolLess);
+        definitions.erase(std::unique(definitions.begin(), definitions.end(), [](const SemanticSymbol& lhs,
+                                                                                 const SemanticSymbol& rhs) {
+                              return lhs.id == rhs.id;
+                          }),
+                          definitions.end());
+        if (definitions.size() != 1) {
+            return std::nullopt;
+        }
+        return definitions.front();
+    };
+
+    std::set<std::pair<int, int>> reported_width_ranges;
+    for (const auto& assignment : source->assignments) {
+        const auto left_symbol = resolve_assignment_symbol(assignment.left_expression, assignment.scope_path);
+        const auto right_symbol = resolve_assignment_symbol(assignment.right_expression, assignment.scope_path);
+        if (!left_symbol.has_value() || !right_symbol.has_value()) {
+            continue;
+        }
+
+        const auto left_width = left_symbol->type->bit_width;
+        const auto right_width = right_symbol->type->bit_width;
+        if (!left_width.has_value() || !right_width.has_value() || *left_width <= 0 || *right_width <= 0 ||
+            *left_width == *right_width) {
+            continue;
+        }
+
+        const auto range_key = std::pair(assignment.right_range.start_line,
+                                         assignment.right_range.start_character);
+        if (!reported_width_ranges.insert(range_key).second) {
+            continue;
+        }
+
+        result.push_back(SemanticDiagnostic{.code = "widthMismatch",
+                                            .message = widthMismatchMessage(assignment.left_expression,
+                                                                            *left_width,
+                                                                            assignment.right_expression,
+                                                                            *right_width),
+                                            .range = assignment.right_range,
+                                            .severity = 2});
+    }
+
+    for (const auto& reference : source->references) {
+        if (reference.is_declaration || isDeclarationIdentifier(*source, reference)) {
+            continue;
+        }
+
+        auto definitions = resolveName(reference.name, reference.scope_path, reference.location.uri);
+        if (definitions.size() < 2) {
+            continue;
+        }
+
+        std::sort(definitions.begin(), definitions.end(), symbolLess);
+        definitions.erase(std::unique(definitions.begin(), definitions.end(), [](const SemanticSymbol& lhs,
+                                                                                 const SemanticSymbol& rhs) {
+                              return lhs.id == rhs.id;
+                          }),
+                          definitions.end());
+        if (definitions.size() < 2) {
+            continue;
+        }
+
+        result.push_back(SemanticDiagnostic{.code = "ambiguousReference",
+                                            .message = ambiguousReferenceMessage(reference.name,
+                                                                                definitions.size()),
+                                            .range = reference.location.range,
+                                            .severity = 2});
+    }
+
+    std::sort(result.begin(), result.end(), [](const SemanticDiagnostic& lhs,
+                                               const SemanticDiagnostic& rhs) {
+        if (lhs.range.start_line != rhs.range.start_line) {
+            return lhs.range.start_line < rhs.range.start_line;
+        }
+        if (lhs.range.start_character != rhs.range.start_character) {
+            return lhs.range.start_character < rhs.range.start_character;
+        }
+        if (lhs.code != rhs.code) {
+            return lhs.code < rhs.code;
+        }
+        return lhs.message < rhs.message;
+    });
     return result;
 }
 

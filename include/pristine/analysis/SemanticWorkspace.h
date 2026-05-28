@@ -70,7 +70,24 @@ struct SemanticImport {
     std::string package_name;
     std::optional<std::string> item_name;
     std::string scope_path;
+    ParseRange package_range;
     ParseRange range;
+};
+
+struct SemanticAssignment {
+    std::string left_expression;
+    std::string right_expression;
+    std::string scope_path;
+    Location location;
+    ParseRange left_range;
+    ParseRange right_range;
+};
+
+struct SemanticDiagnostic {
+    std::string code;
+    std::string message;
+    ParseRange range;
+    int severity = 1;
 };
 
 struct SemanticDocument {
@@ -82,6 +99,7 @@ struct SemanticDocument {
     std::vector<IncludeDirective> includes;
     std::vector<std::string> included_uris;
     std::vector<SemanticImport> imports;
+    std::vector<SemanticAssignment> assignments;
     std::vector<SemanticScope> scopes;
     std::vector<SemanticSymbol> symbols;
     std::vector<SemanticReference> references;
@@ -144,6 +162,7 @@ public:
                                                                int character,
                                                                std::string_view package_name,
                                                                std::string_view prefix) const;
+    [[nodiscard]] std::vector<SemanticDiagnostic> diagnosticsFor(std::string_view uri) const;
     [[nodiscard]] size_t documentCount() const { return documents_.size(); }
 
 private:

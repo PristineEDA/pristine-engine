@@ -692,6 +692,7 @@ std::vector<PackageImport> tryCollectPackageImports(std::string_view text, ScanS
         result.push_back(PackageImport{.package_name = package->name,
                                        .item_name = wildcard ? std::nullopt
                                                              : std::optional<std::string>(item->name),
+                                       .package_range = package->range,
                                        .range = item.has_value() ? item->range : package->range});
 
         skipHorizontalWhitespace(text, cursor);
@@ -1646,6 +1647,109 @@ void appendSchematicCellsFromNode(ModuleSchematic& module,
     }
 }
 
+void appendContinuousAssignments(std::vector<ContinuousAssignment>& result,
+                                 const slang::SourceManager& source_manager,
+                                 std::string_view text,
+                                 const slang::syntax::ContinuousAssignSyntax& declaration) {
+    for (const auto* assignment : declaration.assignments) {
+        if (!assignment || assignment->kind != slang::syntax::SyntaxKind::AssignmentExpression) {
+            continue;
+        }
+
+        const auto& binary = assignment->as<slang::syntax::BinaryExpressionSyntax>();
+        if (!binary.left || !binary.right) {
+            continue;
+        }
+
+        result.push_back(ContinuousAssignment{
+            .left_expression = expressionText(*binary.left),
+            .right_expression = expressionText(*binary.right),
+            .range = toParseRange(source_manager, text, binary.sourceRange()),
+            .left_range = toParseRange(source_manager, text, binary.left->sourceRange()),
+            .right_range = toParseRange(source_manager, text, binary.right->sourceRange())});
+    }
+}
+
+void appendContinuousAssignmentsFromNode(std::vector<ContinuousAssignment>& result,
+                                         const slang::SourceManager& source_manager,
+                                         std::string_view text,
+                                         const slang::syntax::SyntaxNode& node);
+
+void appendContinuousAssignmentsFromMember(std::vector<ContinuousAssignment>& result,
+                                           const slang::SourceManager& source_manager,
+                                           std::string_view text,
+                                           const slang::syntax::MemberSyntax& member);
+
+void appendContinuousAssignmentsFromMembers(std::vector<ContinuousAssignment>& result,
+                                            const slang::SourceManager& source_manager,
+                                            std::string_view text,
+                                            const slang::syntax::SyntaxList<slang::syntax::MemberSyntax>& members) {
+    for (const auto* child : members) {
+        appendContinuousAssignmentsFromMember(result, source_manager, text, *child);
+    }
+}
+
+void appendContinuousAssignmentsFromMember(std::vector<ContinuousAssignment>& result,
+                                           const slang::SourceManager& source_manager,
+                                           std::string_view text,
+                                           const slang::syntax::MemberSyntax& member) {
+    switch (member.kind) {
+        case slang::syntax::SyntaxKind::ModuleDeclaration:
+        case slang::syntax::SyntaxKind::InterfaceDeclaration:
+        case slang::syntax::SyntaxKind::PackageDeclaration:
+        case slang::syntax::SyntaxKind::ProgramDeclaration: {
+            const auto& declaration = member.as<slang::syntax::ModuleDeclarationSyntax>();
+            appendContinuousAssignmentsFromMembers(result, source_manager, text, declaration.members);
+            return;
+        }
+        case slang::syntax::SyntaxKind::CheckerDeclaration: {
+            const auto& declaration = member.as<slang::syntax::CheckerDeclarationSyntax>();
+            appendContinuousAssignmentsFromMembers(result, source_manager, text, declaration.members);
+            return;
+        }
+        case slang::syntax::SyntaxKind::ContinuousAssign:
+            appendContinuousAssignments(result, source_manager, text,
+                                        member.as<slang::syntax::ContinuousAssignSyntax>());
+            return;
+        case slang::syntax::SyntaxKind::GenerateRegion: {
+            const auto& declaration = member.as<slang::syntax::GenerateRegionSyntax>();
+            appendContinuousAssignmentsFromMembers(result, source_manager, text, declaration.members);
+            return;
+        }
+        case slang::syntax::SyntaxKind::GenerateBlock: {
+            const auto& declaration = member.as<slang::syntax::GenerateBlockSyntax>();
+            appendContinuousAssignmentsFromMembers(result, source_manager, text, declaration.members);
+            return;
+        }
+        case slang::syntax::SyntaxKind::IfGenerate: {
+            const auto& declaration = member.as<slang::syntax::IfGenerateSyntax>();
+            appendContinuousAssignmentsFromMember(result, source_manager, text, *declaration.block);
+            if (declaration.elseClause) {
+                appendContinuousAssignmentsFromNode(result, source_manager, text,
+                                                    *declaration.elseClause->clause);
+            }
+            return;
+        }
+        case slang::syntax::SyntaxKind::LoopGenerate: {
+            const auto& declaration = member.as<slang::syntax::LoopGenerateSyntax>();
+            appendContinuousAssignmentsFromMember(result, source_manager, text, *declaration.block);
+            return;
+        }
+        default:
+            return;
+    }
+}
+
+void appendContinuousAssignmentsFromNode(std::vector<ContinuousAssignment>& result,
+                                         const slang::SourceManager& source_manager,
+                                         std::string_view text,
+                                         const slang::syntax::SyntaxNode& node) {
+    if (slang::syntax::MemberSyntax::isKind(node.kind)) {
+        appendContinuousAssignmentsFromMember(result, source_manager, text,
+                                             static_cast<const slang::syntax::MemberSyntax&>(node));
+    }
+}
+
 std::optional<ModuleSchematic> toModuleSchematic(const slang::SourceManager& source_manager,
                                                  std::string_view text,
                                                  const slang::syntax::MemberSyntax& member) {
@@ -2381,6 +2485,23 @@ std::vector<ModuleSchematic> CompilationService::moduleSchematics(std::string_vi
         if (auto schematic = toModuleSchematic(source_manager, text, *member)) {
             result.push_back(std::move(*schematic));
         }
+    }
+
+    return result;
+}
+
+std::vector<ContinuousAssignment> CompilationService::continuousAssignments(std::string_view text,
+                                                                            std::string_view uri) const {
+    slang::SourceManager source_manager;
+    auto syntax_tree = slang::syntax::SyntaxTree::fromFileInMemory(text, source_manager, "source", uri);
+    if (!syntax_tree || syntax_tree->root().kind != slang::syntax::SyntaxKind::CompilationUnit) {
+        return {};
+    }
+
+    const auto& compilation_unit = syntax_tree->root().as<slang::syntax::CompilationUnitSyntax>();
+    std::vector<ContinuousAssignment> result;
+    for (const auto* member : compilation_unit.members) {
+        appendContinuousAssignmentsFromMember(result, source_manager, text, *member);
     }
 
     return result;

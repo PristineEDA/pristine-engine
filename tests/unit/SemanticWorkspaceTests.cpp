@@ -199,6 +199,187 @@ TEST_CASE("SemanticWorkspace reports visible symbols from nearest scope outward"
     CHECK(local_it < root_it);
 }
 
+TEST_CASE("SemanticWorkspace reports duplicate symbols in the same scope",
+          "[analysis][semantic][diagnostics]") {
+    SemanticWorkspace workspace;
+    workspace.updateDocument("file:///workspace/duplicates.sv",
+                             "module top;\n"
+                             "  logic ready;\n"
+                             "  logic ready;\n"
+                             "endmodule\n");
+
+    const auto diagnostics = workspace.diagnosticsFor("file:///workspace/duplicates.sv");
+
+    REQUIRE(diagnostics.size() == 1);
+    CHECK(diagnostics.front().code == "duplicateSymbol");
+    CHECK(diagnostics.front().message == "Duplicate symbol 'ready' in the same scope.");
+    CHECK(diagnostics.front().range.start_line == 2);
+    CHECK(diagnostics.front().range.start_character == 8);
+}
+
+TEST_CASE("SemanticWorkspace reports ambiguous imported references",
+          "[analysis][semantic][diagnostics]") {
+    SemanticWorkspace workspace;
+    workspace.updateDocument("file:///workspace/pkg_a.sv",
+                             "package pkg_a;\n"
+                             "  typedef logic [7:0] word_t;\n"
+                             "endpackage\n");
+    workspace.updateDocument("file:///workspace/pkg_b.sv",
+                             "package pkg_b;\n"
+                             "  typedef logic [15:0] word_t;\n"
+                             "endpackage\n");
+    workspace.updateDocument("file:///workspace/top.sv",
+                             "module top;\n"
+                             "  import pkg_a::*;\n"
+                             "  import pkg_b::*;\n"
+                             "  word_t value;\n"
+                             "endmodule\n");
+
+    const auto diagnostics = workspace.diagnosticsFor("file:///workspace/top.sv");
+
+    const auto diagnostic = std::find_if(diagnostics.begin(), diagnostics.end(), [](const SemanticDiagnostic& item) {
+        return item.code == "ambiguousReference";
+    });
+    REQUIRE(diagnostic != diagnostics.end());
+    CHECK(diagnostic->message == "Symbol 'word_t' has 2 possible definitions in scope.");
+    CHECK(diagnostic->range.start_line == 3);
+    CHECK(diagnostic->range.start_character == 2);
+    CHECK(diagnostic->severity == 2);
+}
+
+TEST_CASE("SemanticWorkspace does not report local shadowing as ambiguous",
+          "[analysis][semantic][diagnostics]") {
+    SemanticWorkspace workspace;
+    workspace.updateDocument("file:///workspace/shadowing.sv",
+                             "module top;\n"
+                             "  logic flag;\n"
+                             "  if (1) begin : g\n"
+                             "    logic flag;\n"
+                             "    assign flag = flag;\n"
+                             "  end\n"
+                             "endmodule\n");
+
+    const auto diagnostics = workspace.diagnosticsFor("file:///workspace/shadowing.sv");
+
+    CHECK(std::none_of(diagnostics.begin(), diagnostics.end(), [](const SemanticDiagnostic& item) {
+        return item.code == "ambiguousReference";
+    }));
+}
+
+TEST_CASE("SemanticWorkspace reports unresolved package imports",
+          "[analysis][semantic][diagnostics]") {
+    SemanticWorkspace workspace;
+    workspace.updateDocument("file:///workspace/missing-package.sv",
+                             "module top;\n"
+                             "  import missing_pkg::*;\n"
+                             "endmodule\n");
+
+    const auto diagnostics = workspace.diagnosticsFor("file:///workspace/missing-package.sv");
+
+    const auto diagnostic = std::find_if(diagnostics.begin(), diagnostics.end(), [](const SemanticDiagnostic& item) {
+        return item.code == "unresolvedPackage";
+    });
+    REQUIRE(diagnostic != diagnostics.end());
+    CHECK(diagnostic->message == "Package 'missing_pkg' could not be resolved.");
+    CHECK(diagnostic->range.start_line == 1);
+    CHECK(diagnostic->range.start_character == 9);
+    CHECK(diagnostic->severity == 1);
+}
+
+TEST_CASE("SemanticWorkspace resolves packages despite local same-name symbols",
+          "[analysis][semantic][diagnostics]") {
+    SemanticWorkspace workspace;
+    workspace.updateDocument("file:///workspace/defs.sv", "package defs; endpackage\n");
+    workspace.updateDocument("file:///workspace/top.sv",
+                             "module top;\n"
+                             "  logic defs;\n"
+                             "  import defs::*;\n"
+                             "endmodule\n");
+
+    const auto diagnostics = workspace.diagnosticsFor("file:///workspace/top.sv");
+
+    CHECK(std::none_of(diagnostics.begin(), diagnostics.end(), [](const SemanticDiagnostic& item) {
+        return item.code == "unresolvedPackage";
+    }));
+}
+
+TEST_CASE("SemanticWorkspace reports unresolved type references",
+          "[analysis][semantic][diagnostics]") {
+    SemanticWorkspace workspace;
+    workspace.updateDocument("file:///workspace/unresolved-type.sv",
+                             "module top;\n"
+                             "  missing_t value;\n"
+                             "endmodule\n");
+
+    const auto diagnostics = workspace.diagnosticsFor("file:///workspace/unresolved-type.sv");
+
+    const auto diagnostic = std::find_if(diagnostics.begin(), diagnostics.end(), [](const SemanticDiagnostic& item) {
+        return item.code == "unresolvedType";
+    });
+    REQUIRE(diagnostic != diagnostics.end());
+    CHECK(diagnostic->message == "Type 'missing_t' could not be resolved.");
+    CHECK(diagnostic->range.start_line == 1);
+    CHECK(diagnostic->range.start_character == 2);
+    CHECK(diagnostic->range.end_character == 11);
+    CHECK(diagnostic->severity == 1);
+}
+
+TEST_CASE("SemanticWorkspace does not report resolved typedef references as unresolved",
+          "[analysis][semantic][diagnostics]") {
+    SemanticWorkspace workspace;
+    workspace.updateDocument("file:///workspace/resolved-type.sv",
+                             "typedef logic [7:0] byte_t;\n"
+                             "module top;\n"
+                             "  byte_t value;\n"
+                             "endmodule\n");
+
+    const auto diagnostics = workspace.diagnosticsFor("file:///workspace/resolved-type.sv");
+
+    CHECK(std::none_of(diagnostics.begin(), diagnostics.end(), [](const SemanticDiagnostic& item) {
+        return item.code == "unresolvedType";
+    }));
+}
+
+TEST_CASE("SemanticWorkspace reports simple assignment width mismatches",
+          "[analysis][semantic][diagnostics]") {
+    SemanticWorkspace workspace;
+    workspace.updateDocument("file:///workspace/width-mismatch.sv",
+                             "module top;\n"
+                             "  logic [3:0] lhs;\n"
+                             "  logic [7:0] rhs;\n"
+                             "  assign lhs = rhs;\n"
+                             "endmodule\n");
+
+    const auto diagnostics = workspace.diagnosticsFor("file:///workspace/width-mismatch.sv");
+
+    const auto diagnostic = std::find_if(diagnostics.begin(), diagnostics.end(), [](const SemanticDiagnostic& item) {
+        return item.code == "widthMismatch";
+    });
+    REQUIRE(diagnostic != diagnostics.end());
+    CHECK(diagnostic->message == "Width mismatch: assigning 8-bit 'rhs' to 4-bit 'lhs'.");
+    CHECK(diagnostic->range.start_line == 3);
+    CHECK(diagnostic->range.start_character == 15);
+    CHECK(diagnostic->range.end_character == 18);
+    CHECK(diagnostic->severity == 2);
+}
+
+TEST_CASE("SemanticWorkspace does not report matching assignment widths",
+          "[analysis][semantic][diagnostics]") {
+    SemanticWorkspace workspace;
+    workspace.updateDocument("file:///workspace/width-match.sv",
+                             "module top;\n"
+                             "  logic [3:0] lhs;\n"
+                             "  logic [3:0] rhs;\n"
+                             "  assign lhs = rhs;\n"
+                             "endmodule\n");
+
+    const auto diagnostics = workspace.diagnosticsFor("file:///workspace/width-match.sv");
+
+    CHECK(std::none_of(diagnostics.begin(), diagnostics.end(), [](const SemanticDiagnostic& item) {
+        return item.code == "widthMismatch";
+    }));
+}
+
 TEST_CASE("SemanticWorkspace tracks include directives per document", "[analysis][semantic]") {
     SemanticWorkspace workspace;
     workspace.setWorkspaceRoot("file:///workspace");

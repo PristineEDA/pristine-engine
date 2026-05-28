@@ -98,6 +98,14 @@ struct ModuleSchematic {
     std::vector<SchematicCell> cells;
 };
 
+struct ContinuousAssignment {
+    std::string left_expression;
+    std::string right_expression;
+    ParseRange range;
+    ParseRange left_range;
+    ParseRange right_range;
+};
+
 struct HoverResult {
     std::string contents;
     ParseRange range;
@@ -125,6 +133,7 @@ struct MacroDefinition {
 struct PackageImport {
     std::string package_name;
     std::optional<std::string> item_name;
+    ParseRange package_range;
     ParseRange range;
 };
 
@@ -143,6 +152,8 @@ public:
                                                                   std::string_view uri) const;
     [[nodiscard]] std::vector<ModuleSchematic> moduleSchematics(std::string_view text,
                                                                 std::string_view uri) const;
+    [[nodiscard]] std::vector<ContinuousAssignment> continuousAssignments(std::string_view text,
+                                                                          std::string_view uri) const;
     [[nodiscard]] std::vector<SemanticSymbolMetadata> semanticSymbolMetadata(std::string_view text,
                                                                              std::string_view uri) const;
     [[nodiscard]] std::optional<HoverResult> hover(std::string_view text,

@@ -376,6 +376,221 @@ TEST_CASE("ServerSession publishes parse diagnostics for invalid text", "[server
           "pristine-lsp");
 }
 
+TEST_CASE("ServerSession publishes semantic diagnostics for unresolved includes",
+          "[server][diagnostics]") {
+    jsonrpc::JsonRpcServer rpc_server;
+    ServerSession session{"pristine-lsp", kTestServerVersion};
+    session.bind(rpc_server);
+
+    TempWorkspace workspace;
+    const auto top_text = std::string("`include \"missing.svh\"\nmodule top; endmodule\n");
+    const auto top_path = workspace.writeFile("rtl/top.sv", top_text);
+    const auto top_uri = toFileUri(top_path);
+    const auto top_text_json = jsonrpc::Json(top_text).dump();
+
+    ScriptedTransport transport{
+        std::string(R"({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"rootUri":")") +
+            toFileUri(workspace.root()) + R"("}})",
+        std::string(R"({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":")") +
+            top_uri + R"(","languageId":"systemverilog","version":1,"text":)" + top_text_json + R"(}}})"};
+
+    const int exit_code = rpc_server.run(transport);
+
+    CHECK(exit_code == 0);
+    const auto diagnostics = findNotifications(transport, "textDocument/publishDiagnostics");
+    REQUIRE(diagnostics.size() == 1);
+    const auto& items = diagnostics.front().at("params").at("diagnostics");
+    const auto semantic_diagnostic = std::find_if(items.begin(), items.end(), [](const jsonrpc::Json& item) {
+        const auto code_it = item.find("code");
+        return code_it != item.end() && *code_it == "unknownInclude";
+    });
+    REQUIRE(semantic_diagnostic != items.end());
+    CHECK(semantic_diagnostic->at("severity") == 1);
+    CHECK(semantic_diagnostic->at("source") == "pristine-lsp");
+    CHECK(semantic_diagnostic->at("message") == "Include file 'missing.svh' could not be resolved.");
+    CHECK(semantic_diagnostic->at("range").at("start").at("line") == 0);
+    CHECK(semantic_diagnostic->at("range").at("start").at("character") == 10);
+}
+
+TEST_CASE("ServerSession publishes semantic diagnostics for unresolved module instances",
+          "[server][diagnostics]") {
+    jsonrpc::JsonRpcServer rpc_server;
+    ServerSession session{"pristine-lsp", kTestServerVersion};
+    session.bind(rpc_server);
+
+    constexpr std::string_view uri = "file:///workspace/unresolved-module.sv";
+    ScriptedTransport transport{
+        R"({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}})",
+        R"({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///workspace/unresolved-module.sv","languageId":"systemverilog","version":1,"text":"module top;\n  missing_child u_missing();\nendmodule\n"}}})"};
+
+    const int exit_code = rpc_server.run(transport);
+
+    CHECK(exit_code == 0);
+    const auto diagnostics = findNotifications(transport, "textDocument/publishDiagnostics");
+    REQUIRE(diagnostics.size() == 1);
+    CHECK(diagnostics.front().at("params").at("uri") == std::string(uri));
+    const auto& items = diagnostics.front().at("params").at("diagnostics");
+    const auto semantic_diagnostic = std::find_if(items.begin(), items.end(), [](const jsonrpc::Json& item) {
+        const auto code_it = item.find("code");
+        return code_it != item.end() && *code_it == "unresolvedModule";
+    });
+    REQUIRE(semantic_diagnostic != items.end());
+    CHECK(semantic_diagnostic->at("message") == "Module 'missing_child' could not be resolved.");
+    CHECK(semantic_diagnostic->at("range").at("start").at("line") == 1);
+    CHECK(semantic_diagnostic->at("range").at("start").at("character") == 2);
+    CHECK(semantic_diagnostic->at("range").at("end").at("character") == 15);
+}
+
+TEST_CASE("ServerSession publishes semantic diagnostics for duplicate symbols",
+          "[server][diagnostics]") {
+    jsonrpc::JsonRpcServer rpc_server;
+    ServerSession session{"pristine-lsp", kTestServerVersion};
+    session.bind(rpc_server);
+
+    constexpr std::string_view uri = "file:///workspace/duplicate-symbol.sv";
+    ScriptedTransport transport{
+        R"({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}})",
+        R"({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///workspace/duplicate-symbol.sv","languageId":"systemverilog","version":1,"text":"module top;\n  logic ready;\n  logic ready;\nendmodule\n"}}})"};
+
+    const int exit_code = rpc_server.run(transport);
+
+    CHECK(exit_code == 0);
+    const auto diagnostics = findNotifications(transport, "textDocument/publishDiagnostics");
+    REQUIRE(diagnostics.size() == 1);
+    CHECK(diagnostics.front().at("params").at("uri") == std::string(uri));
+    const auto& items = diagnostics.front().at("params").at("diagnostics");
+    const auto semantic_diagnostic = std::find_if(items.begin(), items.end(), [](const jsonrpc::Json& item) {
+        const auto code_it = item.find("code");
+        return code_it != item.end() && *code_it == "duplicateSymbol";
+    });
+    REQUIRE(semantic_diagnostic != items.end());
+    CHECK(semantic_diagnostic->at("message") == "Duplicate symbol 'ready' in the same scope.");
+    CHECK(semantic_diagnostic->at("range").at("start").at("line") == 2);
+    CHECK(semantic_diagnostic->at("range").at("start").at("character") == 8);
+}
+
+TEST_CASE("ServerSession publishes semantic diagnostics for ambiguous references",
+          "[server][diagnostics]") {
+    jsonrpc::JsonRpcServer rpc_server;
+    ServerSession session{"pristine-lsp", kTestServerVersion};
+    session.bind(rpc_server);
+
+    constexpr std::string_view uri = "file:///workspace/ambiguous-reference.sv";
+    ScriptedTransport transport{
+        R"({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}})",
+        R"({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///workspace/pkg-a.sv","languageId":"systemverilog","version":1,"text":"package pkg_a;\n  typedef logic [7:0] word_t;\nendpackage\n"}}})",
+        R"({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///workspace/pkg-b.sv","languageId":"systemverilog","version":1,"text":"package pkg_b;\n  typedef logic [15:0] word_t;\nendpackage\n"}}})",
+        R"({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///workspace/ambiguous-reference.sv","languageId":"systemverilog","version":1,"text":"module top;\n  import pkg_a::*;\n  import pkg_b::*;\n  word_t value;\nendmodule\n"}}})"};
+
+    const int exit_code = rpc_server.run(transport);
+
+    CHECK(exit_code == 0);
+    const auto diagnostics = findNotifications(transport, "textDocument/publishDiagnostics");
+    const auto diagnostic_notification = std::find_if(diagnostics.begin(), diagnostics.end(), [](const jsonrpc::Json& item) {
+        return item.at("params").at("uri") == std::string(uri);
+    });
+    REQUIRE(diagnostic_notification != diagnostics.end());
+    const auto& items = diagnostic_notification->at("params").at("diagnostics");
+    const auto semantic_diagnostic = std::find_if(items.begin(), items.end(), [](const jsonrpc::Json& item) {
+        const auto code_it = item.find("code");
+        return code_it != item.end() && *code_it == "ambiguousReference";
+    });
+    REQUIRE(semantic_diagnostic != items.end());
+    CHECK(semantic_diagnostic->at("severity") == 2);
+    CHECK(semantic_diagnostic->at("message") == "Symbol 'word_t' has 2 possible definitions in scope.");
+    CHECK(semantic_diagnostic->at("range").at("start").at("line") == 3);
+    CHECK(semantic_diagnostic->at("range").at("start").at("character") == 2);
+}
+
+TEST_CASE("ServerSession publishes semantic diagnostics for unresolved packages",
+          "[server][diagnostics]") {
+    jsonrpc::JsonRpcServer rpc_server;
+    ServerSession session{"pristine-lsp", kTestServerVersion};
+    session.bind(rpc_server);
+
+    constexpr std::string_view uri = "file:///workspace/unresolved-package.sv";
+    ScriptedTransport transport{
+        R"({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}})",
+        R"({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///workspace/unresolved-package.sv","languageId":"systemverilog","version":1,"text":"module top;\n  import missing_pkg::*;\nendmodule\n"}}})"};
+
+    const int exit_code = rpc_server.run(transport);
+
+    CHECK(exit_code == 0);
+    const auto diagnostics = findNotifications(transport, "textDocument/publishDiagnostics");
+    REQUIRE(diagnostics.size() == 1);
+    CHECK(diagnostics.front().at("params").at("uri") == std::string(uri));
+    const auto& items = diagnostics.front().at("params").at("diagnostics");
+    const auto semantic_diagnostic = std::find_if(items.begin(), items.end(), [](const jsonrpc::Json& item) {
+        const auto code_it = item.find("code");
+        return code_it != item.end() && *code_it == "unresolvedPackage";
+    });
+    REQUIRE(semantic_diagnostic != items.end());
+    CHECK(semantic_diagnostic->at("message") == "Package 'missing_pkg' could not be resolved.");
+    CHECK(semantic_diagnostic->at("severity") == 1);
+    CHECK(semantic_diagnostic->at("range").at("start").at("line") == 1);
+    CHECK(semantic_diagnostic->at("range").at("start").at("character") == 9);
+}
+
+TEST_CASE("ServerSession publishes semantic diagnostics for unresolved types",
+          "[server][diagnostics]") {
+    jsonrpc::JsonRpcServer rpc_server;
+    ServerSession session{"pristine-lsp", kTestServerVersion};
+    session.bind(rpc_server);
+
+    constexpr std::string_view uri = "file:///workspace/unresolved-type.sv";
+    ScriptedTransport transport{
+        R"({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}})",
+        R"({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///workspace/unresolved-type.sv","languageId":"systemverilog","version":1,"text":"module top;\n  missing_t value;\nendmodule\n"}}})"};
+
+    const int exit_code = rpc_server.run(transport);
+
+    CHECK(exit_code == 0);
+    const auto diagnostics = findNotifications(transport, "textDocument/publishDiagnostics");
+    REQUIRE(diagnostics.size() == 1);
+    CHECK(diagnostics.front().at("params").at("uri") == std::string(uri));
+    const auto& items = diagnostics.front().at("params").at("diagnostics");
+    const auto semantic_diagnostic = std::find_if(items.begin(), items.end(), [](const jsonrpc::Json& item) {
+        const auto code_it = item.find("code");
+        return code_it != item.end() && *code_it == "unresolvedType";
+    });
+    REQUIRE(semantic_diagnostic != items.end());
+    CHECK(semantic_diagnostic->at("message") == "Type 'missing_t' could not be resolved.");
+    CHECK(semantic_diagnostic->at("severity") == 1);
+    CHECK(semantic_diagnostic->at("range").at("start").at("line") == 1);
+    CHECK(semantic_diagnostic->at("range").at("start").at("character") == 2);
+    CHECK(semantic_diagnostic->at("range").at("end").at("character") == 11);
+}
+
+TEST_CASE("ServerSession publishes semantic diagnostics for assignment width mismatches",
+          "[server][diagnostics]") {
+    jsonrpc::JsonRpcServer rpc_server;
+    ServerSession session{"pristine-lsp", kTestServerVersion};
+    session.bind(rpc_server);
+
+    constexpr std::string_view uri = "file:///workspace/width-mismatch.sv";
+    ScriptedTransport transport{
+        R"({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}})",
+        R"({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///workspace/width-mismatch.sv","languageId":"systemverilog","version":1,"text":"module top;\n  logic [3:0] lhs;\n  logic [7:0] rhs;\n  assign lhs = rhs;\nendmodule\n"}}})"};
+
+    const int exit_code = rpc_server.run(transport);
+
+    CHECK(exit_code == 0);
+    const auto diagnostics = findNotifications(transport, "textDocument/publishDiagnostics");
+    REQUIRE(diagnostics.size() == 1);
+    CHECK(diagnostics.front().at("params").at("uri") == std::string(uri));
+    const auto& items = diagnostics.front().at("params").at("diagnostics");
+    const auto semantic_diagnostic = std::find_if(items.begin(), items.end(), [](const jsonrpc::Json& item) {
+        const auto code_it = item.find("code");
+        return code_it != item.end() && *code_it == "widthMismatch";
+    });
+    REQUIRE(semantic_diagnostic != items.end());
+    CHECK(semantic_diagnostic->at("message") == "Width mismatch: assigning 8-bit 'rhs' to 4-bit 'lhs'.");
+    CHECK(semantic_diagnostic->at("severity") == 2);
+    CHECK(semantic_diagnostic->at("range").at("start").at("line") == 3);
+    CHECK(semantic_diagnostic->at("range").at("start").at("character") == 15);
+    CHECK(semantic_diagnostic->at("range").at("end").at("character") == 18);
+}
+
 TEST_CASE("ServerSession returns top-level document symbols", "[server][symbols]") {
     jsonrpc::JsonRpcServer rpc_server;
     ServerSession session{"pristine-lsp", kTestServerVersion};
@@ -966,6 +1181,88 @@ TEST_CASE("ServerSession excludes already connected named ports from completion"
     }));
 }
 
+TEST_CASE("ServerSession offers a quickfix for missing named port connections",
+          "[server][code-action]") {
+    jsonrpc::JsonRpcServer rpc_server;
+    ServerSession session{"pristine-lsp", kTestServerVersion};
+    session.bind(rpc_server);
+
+    constexpr std::string_view uri = "file:///workspace/missing-ports.sv";
+    ScriptedTransport transport{
+        R"({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}})",
+        R"({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///workspace/missing-ports.sv","languageId":"systemverilog","version":1,"text":"module child(input logic clk, output logic rst_n, input logic data); endmodule\nmodule top;\n  logic sig;\n  child u_child(.clk(sig));\nendmodule\n"}}})",
+        R"({"jsonrpc":"2.0","id":2,"method":"textDocument/codeAction","params":{"textDocument":{"uri":"file:///workspace/missing-ports.sv"},"range":{"start":{"line":3,"character":8},"end":{"line":3,"character":15}},"context":{"diagnostics":[]}}})"};
+
+    CHECK(rpc_server.run(transport) == 0);
+    const auto code_action_response = findResponse(transport, 2);
+    REQUIRE(code_action_response.has_value());
+    const auto& actions = code_action_response->at("result");
+    REQUIRE(actions.size() == 1);
+    const auto& action = actions.at(0);
+    CHECK(action.at("title") == "Add missing port connections to 'u_child'");
+    CHECK(action.at("kind") == "quickfix");
+    const auto& edit = action.at("edit").at("changes").at(std::string(uri)).at(0);
+    CHECK(edit.at("range").at("start").at("line") == 3);
+    CHECK(edit.at("range").at("start").at("character") == 25);
+    CHECK(edit.at("newText") == ", .rst_n(rst_n), .data(data)");
+}
+
+TEST_CASE("ServerSession offers a quickfix for unresolved type references",
+          "[server][code-action]") {
+    jsonrpc::JsonRpcServer rpc_server;
+    ServerSession session{"pristine-lsp", kTestServerVersion};
+    session.bind(rpc_server);
+
+    constexpr std::string_view uri = "file:///workspace/create-typedef.sv";
+    ScriptedTransport transport{
+        R"({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}})",
+        R"({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///workspace/create-typedef.sv","languageId":"systemverilog","version":1,"text":"module top;\n  missing_t value;\nendmodule\n"}}})",
+        R"({"jsonrpc":"2.0","id":2,"method":"textDocument/codeAction","params":{"textDocument":{"uri":"file:///workspace/create-typedef.sv"},"range":{"start":{"line":1,"character":2},"end":{"line":1,"character":11}},"context":{"diagnostics":[]}}})"};
+
+    CHECK(rpc_server.run(transport) == 0);
+    const auto code_action_response = findResponse(transport, 2);
+    REQUIRE(code_action_response.has_value());
+    const auto& actions = code_action_response->at("result");
+    REQUIRE(actions.size() == 1);
+    const auto& action = actions.at(0);
+    CHECK(action.at("title") == "Create typedef 'missing_t'");
+    CHECK(action.at("kind") == "quickfix");
+    REQUIRE(action.at("diagnostics").size() == 1);
+    CHECK(action.at("diagnostics").at(0).at("code") == "unresolvedType");
+    const auto& edit = action.at("edit").at("changes").at(std::string(uri)).at(0);
+    CHECK(edit.at("range").at("start").at("line") == 3);
+    CHECK(edit.at("range").at("start").at("character") == 0);
+    CHECK(edit.at("newText") == "\ntypedef logic missing_t;\n");
+}
+
+TEST_CASE("ServerSession offers a quickfix for unresolved module instances",
+          "[server][code-action]") {
+    jsonrpc::JsonRpcServer rpc_server;
+    ServerSession session{"pristine-lsp", kTestServerVersion};
+    session.bind(rpc_server);
+
+    constexpr std::string_view uri = "file:///workspace/create-module.sv";
+    ScriptedTransport transport{
+        R"({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}})",
+        R"({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///workspace/create-module.sv","languageId":"systemverilog","version":1,"text":"module top;\n  missing_child u_missing();\nendmodule\n"}}})",
+        R"({"jsonrpc":"2.0","id":2,"method":"textDocument/codeAction","params":{"textDocument":{"uri":"file:///workspace/create-module.sv"},"range":{"start":{"line":1,"character":2},"end":{"line":1,"character":15}},"context":{"diagnostics":[]}}})"};
+
+    CHECK(rpc_server.run(transport) == 0);
+    const auto code_action_response = findResponse(transport, 2);
+    REQUIRE(code_action_response.has_value());
+    const auto& actions = code_action_response->at("result");
+    REQUIRE(actions.size() == 1);
+    const auto& action = actions.at(0);
+    CHECK(action.at("title") == "Create stub module 'missing_child'");
+    CHECK(action.at("kind") == "quickfix");
+    REQUIRE(action.at("diagnostics").size() == 1);
+    CHECK(action.at("diagnostics").at(0).at("code") == "unresolvedModule");
+    const auto& edit = action.at("edit").at("changes").at(std::string(uri)).at(0);
+    CHECK(edit.at("range").at("start").at("line") == 3);
+    CHECK(edit.at("range").at("start").at("character") == 0);
+    CHECK(edit.at("newText") == "\nmodule missing_child;\nendmodule\n");
+}
+
 TEST_CASE("ServerSession handles Tier 2 rename highlight and document links", "[server][lsp-core]") {
     jsonrpc::JsonRpcServer rpc_server;
     ServerSession session{"pristine-lsp", kTestServerVersion};
@@ -1061,6 +1358,10 @@ TEST_CASE("ServerSession handles Tier 2 rename highlight and document links", "[
     const auto& code_action = code_action_response.at("result").at(0);
     CHECK(code_action.at("title") == "Create include file 'missing.svh'");
     CHECK(code_action.at("kind") == "quickfix");
+    REQUIRE(code_action.at("diagnostics").size() == 1);
+    CHECK(code_action.at("diagnostics").at(0).at("code") == "unknownInclude");
+    CHECK(code_action.at("diagnostics").at(0).at("message") ==
+          "Include file 'missing.svh' could not be resolved.");
     CHECK(code_action.at("edit").at("documentChanges").at(0).at("kind") == "create");
     CHECK(code_action.at("edit").at("documentChanges").at(0).at("uri") == missing_uri);
 

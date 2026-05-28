@@ -148,13 +148,62 @@ TEST_CASE("CompilationService extracts package imports", "[analysis][imports]") 
     REQUIRE(imports.size() == 3);
     CHECK(imports[0].package_name == "defs");
     CHECK_FALSE(imports[0].item_name.has_value());
+    CHECK(imports[0].package_range.start_line == 1);
+    CHECK(imports[0].package_range.start_character == 7);
     CHECK(imports[0].range.start_line == 1);
     CHECK(imports[1].package_name == "defs");
     REQUIRE(imports[1].item_name.has_value());
     CHECK(*imports[1].item_name == "word_t");
+    CHECK(imports[1].package_range.start_line == 3);
+    CHECK(imports[1].package_range.start_character == 19);
+    CHECK(imports[1].range.start_character == 25);
     CHECK(imports[2].package_name == "util");
     REQUIRE(imports[2].item_name.has_value());
     CHECK(*imports[2].item_name == "flag_t");
+}
+
+TEST_CASE("CompilationService extracts continuous assignments", "[analysis][assignments]") {
+    CompilationService service;
+
+    const auto assignments = service.continuousAssignments(
+        "module top;\n"
+        "  logic [3:0] lhs;\n"
+        "  logic [7:0] rhs;\n"
+        "  assign lhs = rhs;\n"
+        "endmodule\n",
+        "file:///workspace/assignments.sv");
+
+    REQUIRE(assignments.size() == 1);
+    CHECK(assignments.front().left_expression == "lhs");
+    CHECK(assignments.front().right_expression == "rhs");
+    CHECK(assignments.front().left_range.start_line == 3);
+    CHECK(assignments.front().left_range.start_character == 9);
+    CHECK(assignments.front().right_range.start_line == 3);
+    CHECK(assignments.front().right_range.start_character == 15);
+}
+
+TEST_CASE("CompilationService extracts nested continuous assignments", "[analysis][assignments]") {
+    CompilationService service;
+
+    const auto assignments = service.continuousAssignments(
+        "interface bus_if;\n"
+        "  logic [3:0] lhs;\n"
+        "  logic [7:0] rhs;\n"
+        "  generate\n"
+        "    if (1) begin : g\n"
+        "      assign lhs = rhs;\n"
+        "    end\n"
+        "  endgenerate\n"
+        "endinterface\n",
+        "file:///workspace/nested-assignments.sv");
+
+    REQUIRE(assignments.size() == 1);
+    CHECK(assignments.front().left_expression == "lhs");
+    CHECK(assignments.front().right_expression == "rhs");
+    CHECK(assignments.front().left_range.start_line == 5);
+    CHECK(assignments.front().left_range.start_character == 13);
+    CHECK(assignments.front().right_range.start_line == 5);
+    CHECK(assignments.front().right_range.start_character == 19);
 }
 
 TEST_CASE("CompilationService extracts semantic type metadata", "[analysis][types]") {

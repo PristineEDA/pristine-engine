@@ -57,6 +57,16 @@ def notify(process: subprocess.Popen[bytes], method: str, params: dict | None) -
     write_message(process, message)
 
 
+def read_notification(process: subprocess.Popen[bytes], method: str, uri: str) -> dict:
+    while True:
+        message = read_message(process)
+        if message.get("method") != method:
+            continue
+        params = message.get("params", {})
+        if params.get("uri") == uri:
+            return message
+
+
 def main() -> int:
     if len(sys.argv) != 2:
         print("usage: lsp_core_smoke.py <pristine-engine>", file=sys.stderr)
@@ -74,6 +84,15 @@ def main() -> int:
         module_context = rtl / "module_context.sv"
         macro_context = rtl / "macro_context.sv"
         port_filter = rtl / "port_filter.sv"
+        port_quickfix = rtl / "port_quickfix.sv"
+        unresolved_module = rtl / "unresolved_module.sv"
+        unresolved_package = rtl / "unresolved_package.sv"
+        unresolved_type = rtl / "unresolved_type.sv"
+        width_mismatch = rtl / "width_mismatch.sv"
+        duplicate_symbol = rtl / "duplicate_symbol.sv"
+        ambiguous_pkg_a = rtl / "ambiguous_pkg_a.sv"
+        ambiguous_pkg_b = rtl / "ambiguous_pkg_b.sv"
+        ambiguous_top = rtl / "ambiguous_top.sv"
         defs = rtl / "defs.svh"
         missing = rtl / "missing.svh"
         leaf.write_text("module leaf; endmodule\n", encoding="utf-8")
@@ -130,12 +149,82 @@ def main() -> int:
             "endmodule\n",
             encoding="utf-8",
         )
+        port_quickfix_text = (
+            "module quick_child(input logic clk, output logic rst_n, input logic data); endmodule\n"
+            "module quick_top;\n"
+            "  logic sig;\n"
+            "  quick_child u_child(.clk(sig));\n"
+            "endmodule\n"
+        )
+        port_quickfix.write_text(port_quickfix_text, encoding="utf-8")
+        unresolved_module_text = (
+            "module unresolved_top;\n"
+            "  missing_child u_missing();\n"
+            "endmodule\n"
+        )
+        unresolved_module.write_text(unresolved_module_text, encoding="utf-8")
+        unresolved_package_text = (
+            "module unresolved_package_top;\n"
+            "  import missing_pkg::*;\n"
+            "endmodule\n"
+        )
+        unresolved_package.write_text(unresolved_package_text, encoding="utf-8")
+        unresolved_type_text = (
+            "module unresolved_type_top;\n"
+            "  missing_t value;\n"
+            "endmodule\n"
+        )
+        unresolved_type.write_text(unresolved_type_text, encoding="utf-8")
+        width_mismatch_text = (
+            "module width_mismatch_top;\n"
+            "  logic [3:0] lhs;\n"
+            "  logic [7:0] rhs;\n"
+            "  assign lhs = rhs;\n"
+            "endmodule\n"
+        )
+        width_mismatch.write_text(width_mismatch_text, encoding="utf-8")
+        duplicate_symbol_text = (
+            "module duplicate_top;\n"
+            "  logic ready;\n"
+            "  logic ready;\n"
+            "endmodule\n"
+        )
+        duplicate_symbol.write_text(duplicate_symbol_text, encoding="utf-8")
+        ambiguous_pkg_a_text = (
+            "package ambiguous_pkg_a;\n"
+            "  typedef logic [7:0] word_t;\n"
+            "endpackage\n"
+        )
+        ambiguous_pkg_a.write_text(ambiguous_pkg_a_text, encoding="utf-8")
+        ambiguous_pkg_b_text = (
+            "package ambiguous_pkg_b;\n"
+            "  typedef logic [15:0] word_t;\n"
+            "endpackage\n"
+        )
+        ambiguous_pkg_b.write_text(ambiguous_pkg_b_text, encoding="utf-8")
+        ambiguous_top_text = (
+            "module ambiguous_top;\n"
+            "  import ambiguous_pkg_a::*;\n"
+            "  import ambiguous_pkg_b::*;\n"
+            "  word_t value;\n"
+            "endmodule\n"
+        )
+        ambiguous_top.write_text(ambiguous_top_text, encoding="utf-8")
         leaf_uri = leaf.resolve().as_uri()
         child_uri = child.resolve().as_uri()
         typed_uri = typed.resolve().as_uri()
         module_context_uri = module_context.resolve().as_uri()
         macro_context_uri = macro_context.resolve().as_uri()
         port_filter_uri = port_filter.resolve().as_uri()
+        port_quickfix_uri = port_quickfix.resolve().as_uri()
+        unresolved_module_uri = unresolved_module.resolve().as_uri()
+        unresolved_package_uri = unresolved_package.resolve().as_uri()
+        unresolved_type_uri = unresolved_type.resolve().as_uri()
+        width_mismatch_uri = width_mismatch.resolve().as_uri()
+        duplicate_symbol_uri = duplicate_symbol.resolve().as_uri()
+        ambiguous_pkg_a_uri = ambiguous_pkg_a.resolve().as_uri()
+        ambiguous_pkg_b_uri = ambiguous_pkg_b.resolve().as_uri()
+        ambiguous_top_uri = ambiguous_top.resolve().as_uri()
         defs_uri = defs.resolve().as_uri()
         missing_uri = missing.resolve().as_uri()
         top_uri = top.resolve().as_uri()
@@ -186,6 +275,18 @@ def main() -> int:
                         "languageId": "systemverilog",
                         "version": 1,
                         "text": top_text,
+                    }
+                },
+            )
+            notify(
+                process,
+                "textDocument/didOpen",
+                {
+                    "textDocument": {
+                        "uri": port_quickfix_uri,
+                        "languageId": "systemverilog",
+                        "version": 1,
+                        "text": port_quickfix_text,
                     }
                 },
             )
@@ -248,6 +349,167 @@ def main() -> int:
                         "text": port_filter.read_text(encoding="utf-8"),
                     }
                 },
+            )
+            notify(
+                process,
+                "textDocument/didOpen",
+                {
+                    "textDocument": {
+                        "uri": unresolved_module_uri,
+                        "languageId": "systemverilog",
+                        "version": 1,
+                        "text": unresolved_module_text,
+                    }
+                },
+            )
+            notify(
+                process,
+                "textDocument/didOpen",
+                {
+                    "textDocument": {
+                        "uri": duplicate_symbol_uri,
+                        "languageId": "systemverilog",
+                        "version": 1,
+                        "text": duplicate_symbol_text,
+                    }
+                },
+            )
+            duplicate_diagnostics = read_notification(
+                process,
+                "textDocument/publishDiagnostics",
+                duplicate_symbol_uri,
+            )["params"]["diagnostics"]
+            assert any(
+                item["code"] == "duplicateSymbol"
+                and item["message"] == "Duplicate symbol 'ready' in the same scope."
+                and item["range"]["start"] == {"line": 2, "character": 8}
+                for item in duplicate_diagnostics
+            )
+
+            notify(
+                process,
+                "textDocument/didOpen",
+                {
+                    "textDocument": {
+                        "uri": ambiguous_pkg_a_uri,
+                        "languageId": "systemverilog",
+                        "version": 1,
+                        "text": ambiguous_pkg_a_text,
+                    }
+                },
+            )
+            notify(
+                process,
+                "textDocument/didOpen",
+                {
+                    "textDocument": {
+                        "uri": ambiguous_pkg_b_uri,
+                        "languageId": "systemverilog",
+                        "version": 1,
+                        "text": ambiguous_pkg_b_text,
+                    }
+                },
+            )
+            notify(
+                process,
+                "textDocument/didOpen",
+                {
+                    "textDocument": {
+                        "uri": ambiguous_top_uri,
+                        "languageId": "systemverilog",
+                        "version": 1,
+                        "text": ambiguous_top_text,
+                    }
+                },
+            )
+            ambiguous_diagnostics = read_notification(
+                process,
+                "textDocument/publishDiagnostics",
+                ambiguous_top_uri,
+            )["params"]["diagnostics"]
+            assert any(
+                item["code"] == "ambiguousReference"
+                and item["severity"] == 2
+                and item["message"] == "Symbol 'word_t' has 2 possible definitions in scope."
+                and item["range"]["start"] == {"line": 3, "character": 2}
+                for item in ambiguous_diagnostics
+            )
+
+            notify(
+                process,
+                "textDocument/didOpen",
+                {
+                    "textDocument": {
+                        "uri": unresolved_package_uri,
+                        "languageId": "systemverilog",
+                        "version": 1,
+                        "text": unresolved_package_text,
+                    }
+                },
+            )
+            unresolved_package_diagnostics = read_notification(
+                process,
+                "textDocument/publishDiagnostics",
+                unresolved_package_uri,
+            )["params"]["diagnostics"]
+            assert any(
+                item["code"] == "unresolvedPackage"
+                and item["severity"] == 1
+                and item["message"] == "Package 'missing_pkg' could not be resolved."
+                and item["range"]["start"] == {"line": 1, "character": 9}
+                for item in unresolved_package_diagnostics
+            )
+
+            notify(
+                process,
+                "textDocument/didOpen",
+                {
+                    "textDocument": {
+                        "uri": unresolved_type_uri,
+                        "languageId": "systemverilog",
+                        "version": 1,
+                        "text": unresolved_type_text,
+                    }
+                },
+            )
+            unresolved_type_diagnostics = read_notification(
+                process,
+                "textDocument/publishDiagnostics",
+                unresolved_type_uri,
+            )["params"]["diagnostics"]
+            assert any(
+                item["code"] == "unresolvedType"
+                and item["severity"] == 1
+                and item["message"] == "Type 'missing_t' could not be resolved."
+                and item["range"]["start"] == {"line": 1, "character": 2}
+                and item["range"]["end"] == {"line": 1, "character": 11}
+                for item in unresolved_type_diagnostics
+            )
+
+            notify(
+                process,
+                "textDocument/didOpen",
+                {
+                    "textDocument": {
+                        "uri": width_mismatch_uri,
+                        "languageId": "systemverilog",
+                        "version": 1,
+                        "text": width_mismatch_text,
+                    }
+                },
+            )
+            width_mismatch_diagnostics = read_notification(
+                process,
+                "textDocument/publishDiagnostics",
+                width_mismatch_uri,
+            )["params"]["diagnostics"]
+            assert any(
+                item["code"] == "widthMismatch"
+                and item["severity"] == 2
+                and item["message"] == "Width mismatch: assigning 8-bit 'rhs' to 4-bit 'lhs'."
+                and item["range"]["start"] == {"line": 3, "character": 15}
+                and item["range"]["end"] == {"line": 3, "character": 18}
+                for item in width_mismatch_diagnostics
             )
 
             definition = request(
@@ -480,10 +742,87 @@ def main() -> int:
             assert len(code_actions) == 1
             assert code_actions[0]["title"] == "Create include file 'missing.svh'"
             assert code_actions[0]["kind"] == "quickfix"
+            assert code_actions[0]["diagnostics"][0]["code"] == "unknownInclude"
+            assert (
+                code_actions[0]["diagnostics"][0]["message"]
+                == "Include file 'missing.svh' could not be resolved."
+            )
             assert code_actions[0]["edit"]["documentChanges"][0] == {
                 "kind": "create",
                 "uri": missing_uri,
                 "options": {"ignoreIfExists": True},
+            }
+
+            module_actions = request(
+                process,
+                32,
+                "textDocument/codeAction",
+                {
+                    "textDocument": {"uri": unresolved_module_uri},
+                    "range": {
+                        "start": {"line": 1, "character": 2},
+                        "end": {"line": 1, "character": 15},
+                    },
+                    "context": {"diagnostics": []},
+                },
+            )["result"]
+            assert len(module_actions) == 1
+            assert module_actions[0]["title"] == "Create stub module 'missing_child'"
+            assert module_actions[0]["diagnostics"][0]["code"] == "unresolvedModule"
+            assert module_actions[0]["edit"]["changes"][unresolved_module_uri][0] == {
+                "range": {
+                    "start": {"line": 3, "character": 0},
+                    "end": {"line": 3, "character": 0},
+                },
+                "newText": "\nmodule missing_child;\nendmodule\n",
+            }
+
+            port_actions = request(
+                process,
+                33,
+                "textDocument/codeAction",
+                {
+                    "textDocument": {"uri": port_quickfix_uri},
+                    "range": {
+                        "start": {"line": 3, "character": 14},
+                        "end": {"line": 3, "character": 21},
+                    },
+                    "context": {"diagnostics": []},
+                },
+            )["result"]
+            assert len(port_actions) == 1
+            assert port_actions[0]["title"] == "Add missing port connections to 'u_child'"
+            assert port_actions[0]["kind"] == "quickfix"
+            assert port_actions[0]["edit"]["changes"][port_quickfix_uri][0] == {
+                "range": {
+                    "start": {"line": 3, "character": 31},
+                    "end": {"line": 3, "character": 31},
+                },
+                "newText": ", .rst_n(rst_n), .data(data)",
+            }
+
+            type_actions = request(
+                process,
+                34,
+                "textDocument/codeAction",
+                {
+                    "textDocument": {"uri": unresolved_type_uri},
+                    "range": {
+                        "start": {"line": 1, "character": 2},
+                        "end": {"line": 1, "character": 11},
+                    },
+                    "context": {"diagnostics": []},
+                },
+            )["result"]
+            assert len(type_actions) == 1
+            assert type_actions[0]["title"] == "Create typedef 'missing_t'"
+            assert type_actions[0]["diagnostics"][0]["code"] == "unresolvedType"
+            assert type_actions[0]["edit"]["changes"][unresolved_type_uri][0] == {
+                "range": {
+                    "start": {"line": 3, "character": 0},
+                    "end": {"line": 3, "character": 0},
+                },
+                "newText": "\ntypedef logic missing_t;\n",
             }
 
             prepare_top = request(
