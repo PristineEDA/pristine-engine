@@ -33,6 +33,7 @@ private:
     jsonrpc::Json handleSchematic(const jsonrpc::Json& params);
     jsonrpc::Json handleHover(const jsonrpc::Json& params);
     jsonrpc::Json handleDefinition(const jsonrpc::Json& params);
+    jsonrpc::Json handleTypeDefinition(const jsonrpc::Json& params);
     jsonrpc::Json handleImplementation(const jsonrpc::Json& params);
     jsonrpc::Json handleDocumentHighlight(const jsonrpc::Json& params);
     jsonrpc::Json handleDocumentLink(const jsonrpc::Json& params);
@@ -56,6 +57,7 @@ private:
     void handleDidChange(const jsonrpc::Json& params);
     void handleDidSave(const jsonrpc::Json& params);
     void handleDidClose(const jsonrpc::Json& params);
+    void handleDidChangeWatchedFiles(const jsonrpc::Json& params);
     void handleExit(const jsonrpc::Json& params);
     void indexWorkspaceSources();
     void updateSymbolIndex(std::string_view uri, std::string_view text);

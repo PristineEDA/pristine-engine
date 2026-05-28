@@ -34,6 +34,19 @@ VersionedTextDocumentIdentifier parseVersionedTextDocumentIdentifier(const Json&
                                            .version = value.at("version").get<int>()};
 }
 
+FileChangeType parseFileChangeType(const Json& value) {
+    switch (value.get<int>()) {
+        case 1:
+            return FileChangeType::Created;
+        case 2:
+            return FileChangeType::Changed;
+        case 3:
+            return FileChangeType::Deleted;
+        default:
+            throw std::runtime_error("Unknown file change type");
+    }
+}
+
 } // namespace
 
 Json makeInitializeResult(std::string_view server_name, std::string_view server_version) {
@@ -43,6 +56,7 @@ Json makeInitializeResult(std::string_view server_name, std::string_view server_
               {"documentSymbolProvider", true},
               {"hoverProvider", true},
               {"definitionProvider", true},
+              {"typeDefinitionProvider", true},
               {"implementationProvider", true},
               {"documentHighlightProvider", true},
               {"documentLinkProvider", Json{{"resolveProvider", false}}},
@@ -147,6 +161,15 @@ DidCloseTextDocumentParams parseDidCloseTextDocumentParams(const Json& params) {
                                           parseTextDocumentIdentifier(params.at("textDocument"))};
 }
 
+DidChangeWatchedFilesParams parseDidChangeWatchedFilesParams(const Json& params) {
+    DidChangeWatchedFilesParams result{};
+    for (const auto& change : params.at("changes")) {
+        result.changes.push_back(FileChangeEvent{.uri = change.at("uri").get<std::string>(),
+                                                 .type = parseFileChangeType(change.at("type"))});
+    }
+    return result;
+}
+
 HoverParams parseHoverParams(const Json& params) {
     return HoverParams{.text_document = parseTextDocumentIdentifier(params.at("textDocument")),
                        .position = parsePosition(params.at("position"))};
@@ -155,6 +178,11 @@ HoverParams parseHoverParams(const Json& params) {
 DefinitionParams parseDefinitionParams(const Json& params) {
     return DefinitionParams{.text_document = parseTextDocumentIdentifier(params.at("textDocument")),
                             .position = parsePosition(params.at("position"))};
+}
+
+TypeDefinitionParams parseTypeDefinitionParams(const Json& params) {
+    return TypeDefinitionParams{.text_document = parseTextDocumentIdentifier(params.at("textDocument")),
+                                .position = parsePosition(params.at("position"))};
 }
 
 ImplementationParams parseImplementationParams(const Json& params) {

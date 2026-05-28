@@ -61,12 +61,32 @@ struct DidCloseTextDocumentParams {
 	TextDocumentIdentifier text_document;
 };
 
+enum class FileChangeType {
+	Created = 1,
+	Changed = 2,
+	Deleted = 3,
+};
+
+struct FileChangeEvent {
+	std::string uri;
+	FileChangeType type = FileChangeType::Changed;
+};
+
+struct DidChangeWatchedFilesParams {
+	std::vector<FileChangeEvent> changes;
+};
+
 struct HoverParams {
 	TextDocumentIdentifier text_document;
 	Position position;
 };
 
 struct DefinitionParams {
+	TextDocumentIdentifier text_document;
+	Position position;
+};
+
+struct TypeDefinitionParams {
 	TextDocumentIdentifier text_document;
 	Position position;
 };
@@ -183,8 +203,10 @@ DidOpenTextDocumentParams parseDidOpenTextDocumentParams(const Json& params);
 DidChangeTextDocumentParams parseDidChangeTextDocumentParams(const Json& params);
 DidSaveTextDocumentParams parseDidSaveTextDocumentParams(const Json& params);
 DidCloseTextDocumentParams parseDidCloseTextDocumentParams(const Json& params);
+DidChangeWatchedFilesParams parseDidChangeWatchedFilesParams(const Json& params);
 HoverParams parseHoverParams(const Json& params);
 DefinitionParams parseDefinitionParams(const Json& params);
+TypeDefinitionParams parseTypeDefinitionParams(const Json& params);
 ImplementationParams parseImplementationParams(const Json& params);
 DocumentHighlightParams parseDocumentHighlightParams(const Json& params);
 DocumentLinkParams parseDocumentLinkParams(const Json& params);

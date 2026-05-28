@@ -49,6 +49,17 @@ jsonrpc::Json parseOutput(const ScriptedTransport& transport, size_t index) {
     return jsonrpc::Json::parse(transport.outputs().at(index));
 }
 
+std::optional<jsonrpc::Json> findResponse(const ScriptedTransport& transport, int id) {
+    for (const auto& payload : transport.outputs()) {
+        const auto message = jsonrpc::Json::parse(payload);
+        const auto id_it = message.find("id");
+        if (id_it != message.end() && id_it->is_number_integer() && id_it->get<int>() == id) {
+            return message;
+        }
+    }
+    return std::nullopt;
+}
+
 std::vector<jsonrpc::Json> findNotifications(const ScriptedTransport& transport,
                                              std::string_view method) {
     std::vector<jsonrpc::Json> result;
@@ -151,6 +162,7 @@ TEST_CASE("ServerSession handles initialize-shutdown-exit", "[server][lifecycle]
           true);
     CHECK(initialize_response.at("result").at("capabilities").at("hoverProvider") == true);
     CHECK(initialize_response.at("result").at("capabilities").at("definitionProvider") == true);
+    CHECK(initialize_response.at("result").at("capabilities").at("typeDefinitionProvider") == true);
     CHECK(initialize_response.at("result").at("capabilities").at("implementationProvider") == true);
     CHECK(initialize_response.at("result").at("capabilities").at("documentHighlightProvider") == true);
     CHECK(initialize_response.at("result").at("capabilities").at("documentLinkProvider").at(
@@ -245,6 +257,77 @@ TEST_CASE("ServerSession closes tracked documents", "[server][sync]") {
     const auto diagnostics = findNotifications(transport, "textDocument/publishDiagnostics");
     REQUIRE(diagnostics.size() == 2);
     CHECK(diagnostics.back().at("params").at("uri").get<std::string>() == uri);
+}
+
+TEST_CASE("ServerSession refreshes indexes from watched file changes", "[server][workspace]") {
+    jsonrpc::JsonRpcServer rpc_server;
+    ServerSession session{"pristine-lsp", kTestServerVersion};
+    session.bind(rpc_server);
+
+    TempWorkspace workspace;
+    workspace.writeFile("rtl/existing.sv", "module existing; endmodule\n");
+
+    ScriptedTransport initialize_transport{
+        std::string(R"({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"rootUri":")") +
+            toFileUri(workspace.root()) + R"("}})"};
+
+    CHECK(rpc_server.run(initialize_transport) == 0);
+    REQUIRE(findResponse(initialize_transport, 1).has_value());
+
+    const auto watched_path = workspace.writeFile("rtl/watched.sv", "module watched_new; endmodule\n");
+    const auto watched_uri = toFileUri(watched_path);
+    ScriptedTransport created_transport{
+        std::string(R"({"jsonrpc":"2.0","method":"workspace/didChangeWatchedFiles","params":{"changes":[{"uri":")") +
+            watched_uri + R"(","type":1}]}})" ,
+        R"({"jsonrpc":"2.0","id":2,"method":"workspace/symbol","params":{"query":"watched_new"}})"};
+
+    CHECK(rpc_server.run(created_transport) == 0);
+    const auto created_response = findResponse(created_transport, 2);
+    REQUIRE(created_response.has_value());
+    const auto& created_symbols = created_response->at("result");
+    CHECK(std::any_of(created_symbols.begin(), created_symbols.end(), [&](const jsonrpc::Json& symbol) {
+        return symbol.at("name") == "watched_new" && symbol.at("location").at("uri") == watched_uri;
+    }));
+
+    workspace.writeFile("rtl/watched.sv", "module watched_changed; endmodule\n");
+    ScriptedTransport changed_transport{
+        std::string(R"({"jsonrpc":"2.0","method":"workspace/didChangeWatchedFiles","params":{"changes":[{"uri":")") +
+            watched_uri + R"(","type":2}]}})" ,
+        R"({"jsonrpc":"2.0","id":3,"method":"workspace/symbol","params":{"query":"watched"}})"};
+
+    CHECK(rpc_server.run(changed_transport) == 0);
+    const auto changed_response = findResponse(changed_transport, 3);
+    REQUIRE(changed_response.has_value());
+    const auto& changed_symbols = changed_response->at("result");
+    CHECK(std::any_of(changed_symbols.begin(), changed_symbols.end(), [](const jsonrpc::Json& symbol) {
+        return symbol.at("name") == "watched_changed";
+    }));
+    CHECK(std::none_of(changed_symbols.begin(), changed_symbols.end(), [](const jsonrpc::Json& symbol) {
+        return symbol.at("name") == "watched_new";
+    }));
+
+    const auto text_path = workspace.writeFile("rtl/not-source.txt", "module ignored_text; endmodule\n");
+    const auto text_uri = toFileUri(text_path);
+    ScriptedTransport ignored_transport{
+        std::string(R"({"jsonrpc":"2.0","method":"workspace/didChangeWatchedFiles","params":{"changes":[{"uri":")") +
+            text_uri + R"(","type":1}]}})" ,
+        R"({"jsonrpc":"2.0","id":4,"method":"workspace/symbol","params":{"query":"ignored_text"}})"};
+
+    CHECK(rpc_server.run(ignored_transport) == 0);
+    const auto ignored_response = findResponse(ignored_transport, 4);
+    REQUIRE(ignored_response.has_value());
+    CHECK(ignored_response->at("result").empty());
+
+    fs::remove(watched_path);
+    ScriptedTransport deleted_transport{
+        std::string(R"({"jsonrpc":"2.0","method":"workspace/didChangeWatchedFiles","params":{"changes":[{"uri":")") +
+            watched_uri + R"(","type":3}]}})" ,
+        R"({"jsonrpc":"2.0","id":5,"method":"workspace/symbol","params":{"query":"watched"}})"};
+
+    CHECK(rpc_server.run(deleted_transport) == 0);
+    const auto deleted_response = findResponse(deleted_transport, 5);
+    REQUIRE(deleted_response.has_value());
+    CHECK(deleted_response->at("result").empty());
 }
 
 TEST_CASE("ServerSession applies incremental UTF-16 text edits", "[server][sync]") {
@@ -651,6 +734,39 @@ TEST_CASE("ServerSession returns implementations from module definitions", "[ser
     CHECK(implementation_response->at("result").at(0).at("range").at("start").at("line") == 1);
     CHECK(implementation_response->at("result").at(0).at("range").at("start").at("character") == 2);
     CHECK(implementation_response->at("result").at(0).at("range").at("end").at("character") == 7);
+}
+
+TEST_CASE("ServerSession returns type definitions for typedef references", "[server][lsp-core]") {
+    jsonrpc::JsonRpcServer rpc_server;
+    ServerSession session{"pristine-lsp", kTestServerVersion};
+    session.bind(rpc_server);
+
+    TempWorkspace workspace;
+    const auto typed_text = std::string(
+        "module typed;\n"
+        "  typedef logic [7:0] byte_t;\n"
+        "  byte_t value;\n"
+        "endmodule\n");
+    const auto typed_path = workspace.writeFile("rtl/typed.sv", typed_text);
+    const auto typed_uri = toFileUri(typed_path);
+
+    ScriptedTransport transport{
+        std::string(R"({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"rootUri":")") +
+            toFileUri(workspace.root()) + R"("}})",
+        std::string(R"({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":")") +
+            typed_uri + R"(","languageId":"systemverilog","version":1,"text":)" +
+            jsonrpc::Json(typed_text).dump() + R"(}}})",
+        std::string(R"({"jsonrpc":"2.0","id":2,"method":"textDocument/typeDefinition","params":{"textDocument":{"uri":")") +
+            typed_uri + R"("},"position":{"line":2,"character":3}}})"};
+
+    CHECK(rpc_server.run(transport) == 0);
+    const auto type_definition_response = findResponse(transport, 2);
+    REQUIRE(type_definition_response.has_value());
+    REQUIRE(type_definition_response->at("result").size() == 1);
+    CHECK(type_definition_response->at("result").at(0).at("uri") == typed_uri);
+    CHECK(type_definition_response->at("result").at(0).at("range").at("start").at("line") == 1);
+    CHECK(type_definition_response->at("result").at(0).at("range").at("start").at("character") == 22);
+    CHECK(type_definition_response->at("result").at(0).at("range").at("end").at("character") == 28);
 }
 
 TEST_CASE("ServerSession handles Tier 2 rename highlight and document links", "[server][lsp-core]") {

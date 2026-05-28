@@ -70,6 +70,7 @@ def main() -> int:
         leaf = rtl / "leaf.sv"
         child = rtl / "child.sv"
         top = rtl / "top.sv"
+        typed = rtl / "typed.sv"
         defs = rtl / "defs.svh"
         missing = rtl / "missing.svh"
         leaf.write_text("module leaf; endmodule\n", encoding="utf-8")
@@ -90,8 +91,16 @@ def main() -> int:
             "endmodule\n"
         )
         top.write_text(top_text, encoding="utf-8")
+        typed_text = (
+            "module typed;\n"
+            "  typedef logic [7:0] byte_t;\n"
+            "  byte_t value;\n"
+            "endmodule\n"
+        )
+        typed.write_text(typed_text, encoding="utf-8")
         leaf_uri = leaf.resolve().as_uri()
         child_uri = child.resolve().as_uri()
+        typed_uri = typed.resolve().as_uri()
         defs_uri = defs.resolve().as_uri()
         missing_uri = missing.resolve().as_uri()
         top_uri = top.resolve().as_uri()
@@ -116,6 +125,7 @@ def main() -> int:
             )
             capabilities = initialize["result"]["capabilities"]
             assert capabilities["definitionProvider"] is True
+            assert capabilities["typeDefinitionProvider"] is True
             assert capabilities["implementationProvider"] is True
             assert capabilities["documentHighlightProvider"] is True
             assert capabilities["documentLinkProvider"]["resolveProvider"] is False
@@ -141,6 +151,18 @@ def main() -> int:
                         "languageId": "systemverilog",
                         "version": 1,
                         "text": top_text,
+                    }
+                },
+            )
+            notify(
+                process,
+                "textDocument/didOpen",
+                {
+                    "textDocument": {
+                        "uri": typed_uri,
+                        "languageId": "systemverilog",
+                        "version": 1,
+                        "text": typed_text,
                     }
                 },
             )
@@ -422,7 +444,40 @@ def main() -> int:
                 "placeholder": "ready",
             }
 
-            request(process, 22, "shutdown", None)
+            type_definition = request(
+                process,
+                22,
+                "textDocument/typeDefinition",
+                {
+                    "textDocument": {"uri": typed_uri},
+                    "position": {"line": 2, "character": 3},
+                },
+            )["result"]
+            assert len(type_definition) == 1
+            assert type_definition[0]["uri"] == typed_uri
+            assert type_definition[0]["range"]["start"] == {"line": 1, "character": 22}
+            assert type_definition[0]["range"]["end"] == {"line": 1, "character": 28}
+
+            watched = rtl / "watched.sv"
+            watched.write_text("module watched_live; endmodule\n", encoding="utf-8")
+            watched_uri = watched.resolve().as_uri()
+            notify(
+                process,
+                "workspace/didChangeWatchedFiles",
+                {"changes": [{"uri": watched_uri, "type": 1}]},
+            )
+            watched_symbols = request(
+                process,
+                23,
+                "workspace/symbol",
+                {"query": "watched_live"},
+            )["result"]
+            assert any(
+                item["name"] == "watched_live" and item["location"]["uri"] == watched_uri
+                for item in watched_symbols
+            )
+
+            request(process, 24, "shutdown", None)
             notify(process, "exit", None)
             return_code = process.wait(timeout=5)
             assert return_code == 0

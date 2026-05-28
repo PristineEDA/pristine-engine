@@ -190,6 +190,19 @@ int toCompletionItemKind(int symbol_kind) {
     }
 }
 
+bool isTypeDefinitionSymbol(int symbol_kind) {
+    switch (symbol_kind) {
+        case 2:
+        case 5:
+        case 10:
+        case 11:
+        case 26:
+            return true;
+        default:
+            return false;
+    }
+}
+
 std::string percentEncodePath(std::string_view value) {
     constexpr char hex[] = "0123456789ABCDEF";
 
@@ -227,6 +240,11 @@ std::optional<std::string> readFileText(const fs::path& path) {
     }
 
     return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
+}
+
+bool isIndexableSourcePath(const fs::path& path) {
+    const auto extension = path.extension().string();
+    return extension == ".sv" || extension == ".svh" || extension == ".v" || extension == ".vh";
 }
 
 bool isIdentifierStart(char value) {
@@ -1076,6 +1094,9 @@ void ServerSession::bind(jsonrpc::JsonRpcServer& server) {
     server.registerRequestHandler("textDocument/definition", [this](const jsonrpc::Json& params) {
         return handleDefinition(params);
     });
+    server.registerRequestHandler("textDocument/typeDefinition", [this](const jsonrpc::Json& params) {
+        return handleTypeDefinition(params);
+    });
     server.registerRequestHandler("textDocument/implementation", [this](const jsonrpc::Json& params) {
         return handleImplementation(params);
     });
@@ -1145,6 +1166,9 @@ void ServerSession::bind(jsonrpc::JsonRpcServer& server) {
     });
     server.registerNotificationHandler("textDocument/didClose", [this](const jsonrpc::Json& params) {
         handleDidClose(params);
+    });
+    server.registerNotificationHandler("workspace/didChangeWatchedFiles", [this](const jsonrpc::Json& params) {
+        handleDidChangeWatchedFiles(params);
     });
     server.registerNotificationHandler("exit", [this](const jsonrpc::Json& params) {
         handleExit(params);
@@ -1302,6 +1326,34 @@ jsonrpc::Json ServerSession::handleDefinition(const jsonrpc::Json& params) {
     jsonrpc::Json result = jsonrpc::Json::array();
     for (const auto& symbol : definitions) {
         result.push_back(toLocationJson(symbol.location));
+    }
+
+    return result;
+}
+
+jsonrpc::Json ServerSession::handleTypeDefinition(const jsonrpc::Json& params) {
+    if (!initialized_) {
+        throw std::runtime_error("textDocument/typeDefinition received before initialize");
+    }
+
+    const auto type_definition = lsp::parseTypeDefinitionParams(params);
+    const auto* document = document_store_.find(type_definition.text_document.uri);
+    if (!document) {
+        return jsonrpc::Json::array();
+    }
+
+    const auto identifier = compilation_service_.identifierAt(document->text,
+                                                              type_definition.position.line,
+                                                              type_definition.position.character);
+    if (!identifier) {
+        return jsonrpc::Json::array();
+    }
+
+    jsonrpc::Json result = jsonrpc::Json::array();
+    for (const auto& symbol : symbol_index_.definitions(identifier->name, document->uri)) {
+        if (isTypeDefinitionSymbol(symbol.kind)) {
+            result.push_back(toLocationJson(symbol.location));
+        }
     }
 
     return result;
@@ -1785,6 +1837,44 @@ void ServerSession::handleDidClose(const jsonrpc::Json& params) {
     clearDiagnostics(did_close.text_document.uri);
     document_store_.close(did_close);
     restoreClosedDocumentIndex(did_close.text_document.uri);
+}
+
+void ServerSession::handleDidChangeWatchedFiles(const jsonrpc::Json& params) {
+    if (!initialized_) {
+        throw std::runtime_error("workspace/didChangeWatchedFiles received before initialize");
+    }
+
+    const auto watched_files = lsp::parseDidChangeWatchedFilesParams(params);
+    for (const auto& change : watched_files.changes) {
+        const auto path = workspace::WorkspaceManager::pathFromFileUri(change.uri);
+        if (!path.has_value() || !isIndexableSourcePath(*path)) {
+            continue;
+        }
+
+        if (change.type == lsp::FileChangeType::Deleted) {
+            removeDocumentIndexes(change.uri);
+            continue;
+        }
+
+        if (const auto* document = document_store_.find(change.uri)) {
+            updateSymbolIndex(document->uri, document->text);
+            continue;
+        }
+
+        std::error_code error;
+        if (!fs::exists(*path, error) || !fs::is_regular_file(*path, error)) {
+            removeDocumentIndexes(change.uri);
+            continue;
+        }
+
+        const auto text = readFileText(*path);
+        if (!text.has_value()) {
+            removeDocumentIndexes(change.uri);
+            continue;
+        }
+
+        updateSymbolIndex(change.uri, *text);
+    }
 }
 
 void ServerSession::handleExit(const jsonrpc::Json&) {
