@@ -1,5 +1,6 @@
 #pragma once
 
+#include "pristine/analysis/SemanticEngine.h"
 #include "pristine/analysis/SymbolIndex.h"
 
 #include <cstddef>
@@ -209,6 +210,7 @@ private:
     void markDependentsStale(std::string_view uri);
 
     CompilationService compilation_service_;
+    SemanticEngine semantic_engine_;
     std::string workspace_root_uri_;
     std::unordered_map<std::string, SemanticDocument> documents_;
     std::unordered_map<std::string, std::vector<std::string>> reverse_includes_;

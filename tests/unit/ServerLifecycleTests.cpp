@@ -561,6 +561,37 @@ TEST_CASE("ServerSession publishes semantic diagnostics for unresolved types",
     CHECK(semantic_diagnostic->at("range").at("end").at("character") == 11);
 }
 
+TEST_CASE("ServerSession publishes AST-backed slang semantic diagnostics",
+          "[server][diagnostics][semantic-engine]") {
+    jsonrpc::JsonRpcServer rpc_server;
+    ServerSession session{"pristine-lsp", kTestServerVersion};
+    session.bind(rpc_server);
+
+    constexpr std::string_view uri = "file:///workspace/slang-semantic.sv";
+    ScriptedTransport transport{
+        R"({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}})",
+        R"({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///workspace/slang-semantic.sv","languageId":"systemverilog","version":1,"text":"module top;\n  logic [3:0] value;\n  assign value = missing_signal;\nendmodule\n"}}})"};
+
+    const int exit_code = rpc_server.run(transport);
+
+    CHECK(exit_code == 0);
+    const auto diagnostics = findNotifications(transport, "textDocument/publishDiagnostics");
+    REQUIRE(diagnostics.size() == 1);
+    CHECK(diagnostics.front().at("params").at("uri") == std::string(uri));
+    const auto& items = diagnostics.front().at("params").at("diagnostics");
+    const auto semantic_diagnostic = std::find_if(items.begin(), items.end(), [](const jsonrpc::Json& item) {
+        const auto code_it = item.find("code");
+        const auto message_it = item.find("message");
+        return code_it != item.end() && code_it->is_string() &&
+               code_it->get_ref<const std::string&>().starts_with("slang:") &&
+               message_it != item.end() && message_it->is_string() &&
+               message_it->get_ref<const std::string&>().find("missing_signal") != std::string::npos;
+    });
+    REQUIRE(semantic_diagnostic != items.end());
+    CHECK(semantic_diagnostic->at("severity") == 1);
+    CHECK(semantic_diagnostic->at("source") == "pristine-lsp");
+}
+
 TEST_CASE("ServerSession publishes semantic diagnostics for assignment width mismatches",
           "[server][diagnostics]") {
     jsonrpc::JsonRpcServer rpc_server;

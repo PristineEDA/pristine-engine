@@ -35,6 +35,19 @@ bool rangesEqual(const ParseRange& lhs, const ParseRange& rhs) {
            lhs.end_line == rhs.end_line && lhs.end_character == rhs.end_character;
 }
 
+bool diagnosticLess(const SemanticDiagnostic& lhs, const SemanticDiagnostic& rhs) {
+    if (lhs.range.start_line != rhs.range.start_line) {
+        return lhs.range.start_line < rhs.range.start_line;
+    }
+    if (lhs.range.start_character != rhs.range.start_character) {
+        return lhs.range.start_character < rhs.range.start_character;
+    }
+    if (lhs.code != rhs.code) {
+        return lhs.code < rhs.code;
+    }
+    return lhs.message < rhs.message;
+}
+
 bool startsWithInsensitive(std::string_view prefix, std::string_view candidate) {
     if (prefix.size() > candidate.size()) {
         return false;
@@ -775,18 +788,25 @@ std::string joinFileUri(std::string_view base_uri, std::string_view target) {
 } // namespace
 
 void SemanticWorkspace::clear() {
+    semantic_engine_.clear();
     documents_.clear();
     reverse_includes_.clear();
 }
 
 void SemanticWorkspace::setWorkspaceRoot(std::string_view root_uri) {
     workspace_root_uri_ = root_uri.empty() ? std::string{} : withoutTrailingSlash(normalizeFileUri(root_uri));
+    semantic_engine_.setWorkspaceRoot(workspace_root_uri_);
 }
 
 void SemanticWorkspace::updateDocument(std::string_view uri,
                                        std::string_view text,
                                        SemanticDocumentState state) {
     const auto document_uri = withoutTrailingSlash(normalizeFileUri(uri));
+    semantic_engine_.updateDocument(document_uri,
+                                    text,
+                                    SemanticEngineDocumentState{.version = state.version,
+                                                                .is_open = state.is_open,
+                                                                .dirty = state.dirty});
     if (state.invalidate_dependents) {
         markDependentsStale(document_uri);
     }
@@ -885,6 +905,7 @@ void SemanticWorkspace::updateDocument(std::string_view uri,
 
 void SemanticWorkspace::removeDocument(std::string_view uri) {
     const auto document_uri = withoutTrailingSlash(normalizeFileUri(uri));
+    semantic_engine_.removeDocument(document_uri);
     markDependentsStale(document_uri);
     documents_.erase(document_uri);
     rebuildReverseIncludes();
@@ -1410,19 +1431,16 @@ std::vector<SemanticDiagnostic> SemanticWorkspace::diagnosticsFor(std::string_vi
                                             .severity = 2});
     }
 
-    std::sort(result.begin(), result.end(), [](const SemanticDiagnostic& lhs,
-                                               const SemanticDiagnostic& rhs) {
-        if (lhs.range.start_line != rhs.range.start_line) {
-            return lhs.range.start_line < rhs.range.start_line;
+    if (result.empty()) {
+        for (const auto& diagnostic : semantic_engine_.diagnosticsFor(source->uri)) {
+            result.push_back(SemanticDiagnostic{.code = diagnostic.code,
+                                                .message = diagnostic.message,
+                                                .range = diagnostic.range,
+                                                .severity = diagnostic.severity});
         }
-        if (lhs.range.start_character != rhs.range.start_character) {
-            return lhs.range.start_character < rhs.range.start_character;
-        }
-        if (lhs.code != rhs.code) {
-            return lhs.code < rhs.code;
-        }
-        return lhs.message < rhs.message;
-    });
+    }
+
+    std::sort(result.begin(), result.end(), diagnosticLess);
     return result;
 }
 

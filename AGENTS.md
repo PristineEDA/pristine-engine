@@ -9,7 +9,7 @@ This file is for coding agents working in this repository.
 
 ## Product Snapshot
 
-`pristine-engine` is a standalone SystemVerilog LSP server implemented in C++20.
+`pristine-engine` is a standalone AST-backed SystemVerilog LSP server implemented in C++20.
 
 Current implemented LSP surface:
 
@@ -21,19 +21,41 @@ Current implemented LSP surface:
 - `textDocument/didChange`
 - `textDocument/didSave`
 - `textDocument/didClose`
+- `textDocument/documentSymbol`
 - `textDocument/hover`
 - `textDocument/definition`
+- `textDocument/typeDefinition`
+- `textDocument/implementation`
 - `textDocument/references`
+- `textDocument/documentHighlight`
+- `textDocument/documentLink`
+- `textDocument/inlayHint`
+- `textDocument/codeAction`
+- `textDocument/foldingRange`
+- `textDocument/semanticTokens/full`
+- `textDocument/selectionRange`
+- `textDocument/signatureHelp`
+- `textDocument/prepareCallHierarchy`
+- `callHierarchy/incomingCalls`
+- `callHierarchy/outgoingCalls`
 - `workspace/symbol`
 - `textDocument/completion`
+- `completionItem/resolve`
+- `textDocument/prepareRename`
+- `textDocument/rename`
+- `workspace/didChangeWatchedFiles`
+- `systemverilog/moduleHierarchy`
+- `systemverilog/schematic`
+- `systemverilog/backwardCone`
 
-Current behavior is still a thin MVP:
+Current behavior follows an AST-backed semantic model with syntax/text fallback kept for compatibility:
 
-- parse diagnostics for open documents are implemented
-- `textDocument/documentSymbol` is syntax-driven and supports top-level declarations plus common nested members
-- `textDocument/hover` is declaration-oriented and built from the same syntax symbol tree
-- `textDocument/definition`, `textDocument/references`, `workspace/symbol`, and `textDocument/completion` are backed by a lightweight syntax/text workspace index
-- deeper semantic analysis, rename, document highlights, inlay hints, code actions, call hierarchy, and precise SystemVerilog scope resolution are not implemented yet
+- `SemanticEngine` is the owning layer for slang AST/Compilation snapshots, dependency invalidation, and deep semantic facts
+- semantic queries prefer slang AST/Compilation facts when available
+- `CompilationService` remains the syntax fast path for parse diagnostics, document symbols, syntax extraction, hierarchy/schematic extraction, and text utilities
+- `SymbolIndex` and the legacy syntax/text `SemanticWorkspace` resolution are fallback and cold-workspace indexing aids, not the preferred semantic authority
+- `ServerSession` should route LSP requests and serialize responses; it should not grow new SystemVerilog semantic rules
+- some feature handlers still use syntax/text fallback while AST-backed behavior is phased in; when replacing them, keep LSP response compatibility and add focused tests
 
 The server resolves the workspace root from `initialize` and loads a minimal `.slang/server.json` when present.
 
@@ -50,10 +72,12 @@ Recognized `.slang/server.json` fields:
 
 Use the nearest owning layer instead of patching around it from a wrapper.
 
-- lifecycle, notification handling, diagnostics publishing, `documentSymbol`, `hover`, definition, references, workspace symbols, and completion session wiring: `src/server/ServerSession.cpp`
+- lifecycle, notification handling, diagnostics publishing, LSP request routing, and response serialization: `src/server/ServerSession.cpp`
 - LSP protocol structures and JSON payload parsing: `src/lsp/Protocol.cpp`
-- parse pipeline, syntax symbol extraction, identifier scanning, hover content, and diagnostics: `src/analysis/CompilationService.cpp`
-- lightweight workspace symbol/reference/completion index: `src/analysis/SymbolIndex.cpp`
+- deep semantic ownership, slang AST/Compilation snapshots, query-time rebuilds, and semantic diagnostics: `src/analysis/SemanticEngine.cpp`
+- compatibility facade for semantic document state and legacy syntax/text fallback queries: `src/analysis/SemanticWorkspace.cpp`
+- parse pipeline, syntax symbol extraction, identifier scanning, syntax hover content, and syntax diagnostics: `src/analysis/CompilationService.cpp`
+- lightweight workspace symbol/reference/completion index used for cold workspace indexing and fallback: `src/analysis/SymbolIndex.cpp`
 - open-document state and UTF-16 incremental edits: `src/document/DocumentStore.cpp`
 - workspace root resolution and `.slang/server.json` loading: `src/workspace/WorkspaceManager.cpp`
 - stdio transport and JSON-RPC framing: `src/transport/StdioTransport.cpp`, `src/jsonrpc/MessageStream.cpp`, `src/jsonrpc/JsonRpcServer.cpp`
@@ -66,6 +90,10 @@ Use the nearest owning layer instead of patching around it from a wrapper.
 - Prefer changing the layer that computes behavior, not the layer that only forwards or serializes it.
 - When behavior changes, update or add the closest unit test in `tests/unit`.
 - Preserve the current architecture split: transport -> jsonrpc -> lsp/workspace/document/analysis -> server.
+- Do not add new SystemVerilog semantic logic to `ServerSession.cpp`; put it in `SemanticEngine` or the nearest analysis-layer helper.
+- Do not use string matching as the primary semantic authority when slang AST lookup / symbol identity can answer the question.
+- All semantic behavior changes must update the nearest unit, golden-style, or e2e coverage.
+- Changes that scan or rebuild workspace-wide state must include or update a performance-oriented test/benchmark plan before being considered complete.
 - Avoid broad refactors unless the user asks for them or the local change cannot be made safely otherwise.
 - Do not reintroduce agent process rules into `README.md` unless explicitly requested.
 
@@ -120,6 +148,15 @@ For code changes under `src/` or `include/`:
 cmake --build --preset dev
 ctest --test-dir build/dev --output-on-failure
 ```
+
+For semantic-analysis changes, also validate the closest semantic slice:
+
+```powershell
+cmake --build --preset dev
+ctest --test-dir build/dev --output-on-failure
+```
+
+Add or update focused semantic unit tests for AST-backed diagnostics, lookup, hover, definition, references, completion, inlay hints, hierarchy, or schematic behavior as appropriate. For workspace-wide indexing or invalidation changes, include a performance baseline plan covering initialize, didOpen, didChange, hover, completion, references, rename, and workspace/symbol on small and large synthetic workspaces.
 
 If `ctest` is not on `PATH` in the current Windows shell, use:
 
@@ -236,7 +273,7 @@ The current repository state has been locally verified on Windows with:
 
 ## Likely Near-Term Work
 
-- deepen semantic analysis beyond the current syntax-driven symbol tree
-- deepen semantic analysis beyond the current syntax/text index
-- extend hover beyond the current declaration-oriented slice
-- add rename, document highlights, inlay hints, code actions, and call hierarchy
+- migrate hover, definition, references, rename, completion, inlay hints, semantic tokens, hierarchy, schematic, and backward cone from syntax/text fallback to `SemanticEngine`
+- add AST-backed symbol identity tests for packages, typedefs, structs/enums, interfaces/modports, macros, generate scopes, and parameterized designs
+- add query-time affected rebuilds, generation snapshots, and reference caches for large workspaces
+- split large server helper blocks out of `ServerSession.cpp` once their behavior is owned by analysis-layer APIs
