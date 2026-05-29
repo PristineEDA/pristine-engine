@@ -5,6 +5,7 @@ add_executable(
 	unit/GoldenSemanticTests.cpp
 	unit/MessageStreamTests.cpp
 	unit/SemanticEngineTests.cpp
+	unit/SignatureInlayProviderTests.cpp
 	unit/SemanticWorkspaceTests.cpp
 	unit/SourceUtilTests.cpp
 	unit/ServerLifecycleTests.cpp)

@@ -3,6 +3,7 @@
 #include "semantic/CompletionProvider.h"
 #include "semantic/DiagnosticProvider.h"
 #include "semantic/QueryCache.h"
+#include "semantic/SignatureInlayProvider.h"
 #include "pristine/analysis/SourceUtil.h"
 
 #include "slang/ast/ASTVisitor.h"
@@ -2437,126 +2438,61 @@ SemanticSignatureHelpResult SemanticEngine::signatureHelpAt(std::string_view uri
                                                             int character) const {
     const auto& current_snapshot = snapshot();
     const auto document_uri = withoutTrailingSlash(normalizeFileUri(uri));
-    SemanticSignatureHelpResult result{.generation = current_snapshot.generation};
     const auto* data = snapshotData();
-    if (data == nullptr) {
-        result.unresolved = true;
-        result.messages.push_back("AST-backed SemanticEngine snapshot is unavailable");
-        return result;
-    }
     const auto document_it = documents_.find(document_uri);
-    if (document_it == documents_.end()) {
-        result.unresolved = true;
-        result.messages.push_back("document is not indexed in the AST snapshot");
-        return result;
-    }
-    const auto position_offset = utf8OffsetAtUtf16Position(document_it->second.text, line, character);
-    if (!position_offset.has_value()) {
-        result.unresolved = true;
-        result.messages.push_back("signature help position could not be mapped to a source offset");
-        return result;
-    }
 
-    const auto instances_it = data->module_instances_by_uri.find(document_uri);
-    if (instances_it != data->module_instances_by_uri.end()) {
-        for (const auto& instance : instances_it->second) {
-            if (!parseRangeContainsPosition(instance.range, line, character)) {
-                continue;
+    semantic::SignatureInlayContext context{.generation = current_snapshot.generation,
+                                            .document_uri = document_uri,
+                                            .document_text = document_it == documents_.end()
+                                                                 ? nullptr
+                                                                 : &document_it->second.text,
+                                            .modules_by_name = data == nullptr ? nullptr : &data->modules_by_name,
+                                            .snapshot_available = data != nullptr};
+    if (data != nullptr) {
+        const auto instances_it = data->module_instances_by_uri.find(document_uri);
+        if (instances_it != data->module_instances_by_uri.end()) {
+            context.module_instances.reserve(instances_it->second.size());
+            for (const auto& instance : instances_it->second) {
+                context.module_instances.push_back(semantic::SignatureInlayModuleInstance{
+                    .module_name = instance.module_name,
+                    .range = instance.range,
+                    .selection_range = instance.selection_range});
             }
-            const auto search_start = utf8OffsetAtUtf16Position(document_it->second.text,
-                                                                instance.selection_range.end_line,
-                                                                instance.selection_range.end_character);
-            const auto search_end = utf8OffsetAtUtf16Position(document_it->second.text,
-                                                              instance.range.end_line,
-                                                              instance.range.end_character);
-            if (!search_start.has_value() || !search_end.has_value()) {
-                continue;
-            }
-            const auto open_paren = openParenBeforePosition(document_it->second.text,
-                                                            *search_start,
-                                                            std::min(*position_offset, *search_end));
-            if (!open_paren.has_value()) {
-                continue;
-            }
-            const auto module_it = data->modules_by_name.find(instance.module_name);
-            if (module_it == data->modules_by_name.end()) {
-                result.unresolved = true;
-                result.messages.push_back("signature target module is not indexed in the AST snapshot");
-                return result;
-            }
-
-            result.label = semantic::moduleSignatureLabel(module_it->second);
-            if (module_it->second.port_details.empty()) {
-                result.parameters = module_it->second.ports;
-            }
-            else {
-                for (const auto& port : module_it->second.port_details) {
-                    result.parameters.push_back(semantic::portSignatureLabel(port));
-                }
-            }
-            const auto parameter_count = result.parameters.size();
-            result.active_parameter = parameter_count == 0
-                                          ? 0
-                                          : std::min(activeParameterAt(document_it->second.text,
-                                                                       *open_paren,
-                                                                       *position_offset),
-                                                     static_cast<int>(parameter_count) - 1);
-            return result;
         }
     }
-
-    result.unresolved = true;
-    result.messages.push_back("no AST-backed signature invocation at position");
-    return result;
+    return semantic::signatureHelpAt(context, line, character);
 }
 
 SemanticInlayHintResult SemanticEngine::inlayHints(std::string_view uri, ParseRange range) const {
     const auto& current_snapshot = snapshot();
     const auto document_uri = withoutTrailingSlash(normalizeFileUri(uri));
-    SemanticInlayHintResult result{.generation = current_snapshot.generation};
     const auto* data = snapshotData();
-    if (data == nullptr) {
-        result.unresolved = true;
-        result.messages.push_back("AST-backed SemanticEngine snapshot is unavailable");
-        return result;
-    }
 
-    for (const auto& [_, indexed_symbol] : data->symbols_by_id) {
-        if (indexed_symbol.identity.location.uri != document_uri || indexed_symbol.type_display.empty() ||
-            !rangesOverlapOrTouch(indexed_symbol.identity.location.range, range)) {
-            continue;
+    semantic::SignatureInlayContext context{.generation = current_snapshot.generation,
+                                            .document_uri = document_uri,
+                                            .modules_by_name = data == nullptr ? nullptr : &data->modules_by_name,
+                                            .snapshot_available = data != nullptr};
+    if (data != nullptr) {
+        context.symbols.reserve(data->symbols_by_id.size());
+        for (const auto& [_, indexed_symbol] : data->symbols_by_id) {
+            context.symbols.push_back(semantic::SignatureInlaySymbol{
+                .identity = indexed_symbol.identity,
+                .type_display = indexed_symbol.type_display});
         }
-        result.hints.push_back(SemanticInlayHint{.location = indexed_symbol.identity.location,
-                                                 .label = ": " + indexed_symbol.type_display,
-                                                 .kind = "type",
-                                                 .tooltip = "Resolved type"});
     }
-
-    const auto instances_it = data->module_instances_by_uri.find(document_uri);
-    if (instances_it != data->module_instances_by_uri.end()) {
-        for (const auto& instance : instances_it->second) {
-            if (!rangesOverlapOrTouch(instance.selection_range, range)) {
-                continue;
+    if (data != nullptr) {
+        const auto instances_it = data->module_instances_by_uri.find(document_uri);
+        if (instances_it != data->module_instances_by_uri.end()) {
+            context.module_instances.reserve(instances_it->second.size());
+            for (const auto& instance : instances_it->second) {
+                context.module_instances.push_back(semantic::SignatureInlayModuleInstance{
+                    .module_name = instance.module_name,
+                    .range = instance.range,
+                    .selection_range = instance.selection_range});
             }
-            const auto module_it = data->modules_by_name.find(instance.module_name);
-            result.hints.push_back(SemanticInlayHint{
-                .location = SemanticLocation{.uri = document_uri,
-                                             .range = ParseRange{
-                                                 .start_line = instance.selection_range.end_line,
-                                                 .start_character = instance.selection_range.end_character,
-                                                 .end_line = instance.selection_range.end_line,
-                                                 .end_character = instance.selection_range.end_character}},
-                .label = ": " + instance.module_name,
-                .kind = "type",
-                .tooltip = module_it == data->modules_by_name.end()
-                               ? std::string{}
-                               : semantic::moduleSignatureLabel(module_it->second)});
         }
     }
-    std::sort(result.hints.begin(), result.hints.end(), [](const auto& lhs, const auto& rhs) {
-        return locationLess(lhs.location, rhs.location);
-    });
-    return result;
+    return semantic::inlayHints(context, range);
 }
 
 SemanticTokenResult SemanticEngine::semanticTokens(std::string_view uri) const {
