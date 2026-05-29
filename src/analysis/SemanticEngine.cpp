@@ -1,5 +1,6 @@
 #include "pristine/analysis/SemanticEngine.h"
 
+#include "semantic/AstIndex.h"
 #include "semantic/CompletionProvider.h"
 #include "semantic/DesignGraphProvider.h"
 #include "semantic/DiagnosticProvider.h"
@@ -697,6 +698,22 @@ semantic::DesignGraphContext designGraphContextFor(const SnapshotData* data,
         context.symbol_ranges_by_uri[reference.location.uri].push_back(
             semantic::DesignGraphRangeSymbol{.range = reference.location.range,
                                              .stable_id = reference.stable_id});
+    }
+    return context;
+}
+
+template<typename SnapshotData>
+semantic::AstIndexContext astIndexContextFor(const SnapshotData* data,
+                                             const SemanticEngineSnapshot& snapshot) {
+    semantic::AstIndexContext context{.generation = snapshot.generation,
+                                     .snapshot_available = data != nullptr};
+    if (data == nullptr) {
+        return context;
+    }
+    context.symbols.reserve(data->symbols_by_id.size());
+    for (const auto& [stable_id, indexed_symbol] : data->symbols_by_id) {
+        context.symbols.push_back(semantic::AstIndexSymbol{.stable_id = stable_id,
+                                                           .identity = indexed_symbol.identity});
     }
     return context;
 }
@@ -2902,42 +2919,9 @@ SemanticWorkspaceSymbolResult SemanticEngine::workspaceSymbols(std::string_view 
         return *cached;
     }
 
-    SemanticWorkspaceSymbolResult result{.generation = current_snapshot.generation};
     const auto* data = snapshotData();
-    if (data == nullptr) {
-        result.unresolved = true;
-        result.messages.push_back("AST-backed SemanticEngine snapshot is unavailable");
-        query_cache_->storeWorkspaceSymbols(current_snapshot.generation, query, limit, result);
-        return result;
-    }
-
-    std::set<std::string> emitted_ids;
-    for (const auto& [stable_id, indexed_symbol] : data->symbols_by_id) {
-        const auto& identity = indexed_symbol.identity;
-        if (identity.name.empty() || identity.location.uri.empty() ||
-            !fuzzyMatch(query, identity.name) || !emitted_ids.insert(stable_id).second) {
-            continue;
-        }
-        result.symbols.push_back(SemanticWorkspaceSymbol{.name = identity.name,
-                                                         .kind = lspSymbolKindForSemanticKind(identity.kind),
-                                                         .location = identity.location,
-                                                         .selection_range = identity.location.range,
-                                                         .stable_id = stable_id});
-    }
-
-    std::sort(result.symbols.begin(), result.symbols.end(), [](const auto& lhs, const auto& rhs) {
-        if (lhs.name != rhs.name) {
-            return lhs.name < rhs.name;
-        }
-        return locationLess(lhs.location, rhs.location);
-    });
-
-    if (limit > 0 && result.symbols.size() > limit) {
-        result.symbols.resize(limit);
-        result.truncated = true;
-        result.messages.push_back("workspace/symbol results were truncated at " + std::to_string(limit) +
-                                  " entries");
-    }
+    auto context = astIndexContextFor(data, current_snapshot);
+    auto result = semantic::workspaceSymbols(context, query, limit);
     query_cache_->storeWorkspaceSymbols(current_snapshot.generation, query, limit, result);
     return result;
 }
