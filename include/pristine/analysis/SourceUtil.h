@@ -9,6 +9,7 @@
 namespace slang {
 class Diagnostic;
 class SourceManager;
+class SourceRange;
 } // namespace slang
 
 namespace pristine::analysis {
@@ -24,5 +25,7 @@ namespace pristine::analysis {
 [[nodiscard]] std::string pathToFileUri(const std::filesystem::path& path);
 [[nodiscard]] ParseRange sourceRangeForDiagnostic(const slang::SourceManager& source_manager,
                                                   const slang::Diagnostic& diagnostic);
+[[nodiscard]] ParseRange sourceRangeForSourceRange(const slang::SourceManager& source_manager,
+                                                   slang::SourceRange range);
 
 } // namespace pristine::analysis

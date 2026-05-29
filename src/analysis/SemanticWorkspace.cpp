@@ -876,10 +876,43 @@ SemanticPrepareRenameResult SemanticWorkspace::enginePrepareRenameAt(std::string
 }
 
 SemanticRenameResult SemanticWorkspace::engineRenameAt(std::string_view uri,
-                                                       int line,
-                                                       int character,
-                                                       std::string_view new_name) const {
+                                                      int line,
+                                                      int character,
+                                                      std::string_view new_name) const {
     return semantic_engine_.renameAt(uri, line, character, new_name);
+}
+
+SemanticCompletionResult SemanticWorkspace::engineCompletionsAt(std::string_view uri,
+                                                                int line,
+                                                                int character,
+                                                                std::string_view prefix) const {
+    return semantic_engine_.completionsAt(uri, line, character, prefix);
+}
+
+SemanticCompletionItem SemanticWorkspace::engineResolveCompletion(std::string_view stable_id,
+                                                                  std::string_view label) const {
+    return semantic_engine_.resolveCompletion(stable_id, label);
+}
+
+SemanticSignatureHelpResult SemanticWorkspace::engineSignatureHelpAt(std::string_view uri,
+                                                                     int line,
+                                                                     int character) const {
+    return semantic_engine_.signatureHelpAt(uri, line, character);
+}
+
+SemanticInlayHintResult SemanticWorkspace::engineInlayHints(std::string_view uri,
+                                                           ParseRange range) const {
+    return semantic_engine_.inlayHints(uri, range);
+}
+
+SemanticTokenResult SemanticWorkspace::engineSemanticTokens(std::string_view uri) const {
+    return semantic_engine_.semanticTokens(uri);
+}
+
+SemanticSelectionRangeResult SemanticWorkspace::engineSelectionRangesAt(std::string_view uri,
+                                                                        int line,
+                                                                        int character) const {
+    return semantic_engine_.selectionRangesAt(uri, line, character);
 }
 
 std::optional<SemanticSymbol> SemanticWorkspace::symbolById(std::string_view symbol_id) const {

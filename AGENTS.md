@@ -9,7 +9,7 @@ This file is for coding agents working in this repository.
 
 ## Product Snapshot
 
-`pristine-engine` is a standalone AST-backed SystemVerilog LSP server implemented in C++20.
+`pristine-engine` is a standalone AST symbol identity-backed SystemVerilog LSP server implemented in C++20.
 
 Current implemented LSP surface:
 
@@ -50,9 +50,10 @@ Current implemented LSP surface:
 
 Current behavior follows an AST-backed semantic model with syntax/text fallback kept for compatibility:
 
-- `SemanticEngine` is the owning layer for slang AST/Compilation snapshots, dependency invalidation, and deep semantic facts
-- semantic queries prefer slang AST/Compilation facts when available
-- hover, definition, type definition, references, document highlights, prepare rename, and rename should route through `SemanticEngine` first, with syntax/text fallback only when AST-backed lookup cannot answer
+- `SemanticEngine` is the owning layer for slang AST/Compilation snapshots, AST lookup, symbol identity, dependency invalidation, semantic diagnostics, and reference indexes
+- semantic queries prefer slang AST/Compilation facts when available; fallback must never override an AST-backed answer
+- hover, definition, type definition, references, document highlights, prepare rename, and rename are the first AST-backed query slice owned by `SemanticEngine`
+- completion, completion resolve, signature help, inlay hints, semantic tokens, and selection ranges are the second semantic query slice and should use `SemanticEngine` value-type APIs before syntax/text fallback
 - `CompilationService` remains the syntax fast path for parse diagnostics, document symbols, syntax extraction, hierarchy/schematic extraction, and text utilities
 - `SymbolIndex` and the legacy syntax/text `SemanticWorkspace` resolution are fallback and cold-workspace indexing aids, not the preferred semantic authority
 - `ServerSession` should route LSP requests and serialize responses; it should not grow new SystemVerilog semantic rules
@@ -77,8 +78,8 @@ Use the nearest owning layer instead of patching around it from a wrapper.
 
 - lifecycle, notification handling, diagnostics publishing, LSP request routing, and response serialization: `src/server/ServerSession.cpp`
 - LSP protocol structures and JSON payload parsing: `src/lsp/Protocol.cpp`
-- deep semantic ownership, slang AST/Compilation snapshots, query-time rebuilds, and semantic diagnostics: `src/analysis/SemanticEngine.cpp`
-- compatibility facade for semantic document state and legacy syntax/text fallback queries: `src/analysis/SemanticWorkspace.cpp`
+- deep semantic ownership, slang AST/Compilation snapshots, AST lookup, symbol identity, dependency invalidation, semantic diagnostics, reference index, instance graph, and cone index: `src/analysis/SemanticEngine.cpp`
+- compatibility facade for semantic document state and legacy syntax/text fallback queries; it should delegate to `SemanticEngine` first: `src/analysis/SemanticWorkspace.cpp`
 - shared URI/path/source-range conversion helpers for analysis code: `src/analysis/SourceUtil.cpp`
 - parse pipeline, syntax symbol extraction, identifier scanning, syntax hover content, and syntax diagnostics: `src/analysis/CompilationService.cpp`
 - lightweight workspace symbol/reference/completion index used for cold workspace indexing and fallback: `src/analysis/SymbolIndex.cpp`
@@ -96,6 +97,7 @@ Use the nearest owning layer instead of patching around it from a wrapper.
 - Preserve the current architecture split: transport -> jsonrpc -> lsp/workspace/document/analysis -> server.
 - Do not add new SystemVerilog semantic logic to `ServerSession.cpp`; put it in `SemanticEngine` or the nearest analysis-layer helper.
 - Do not use string matching as the primary semantic authority when slang AST lookup / symbol identity can answer the question.
+- Do not add public APIs that expose slang AST pointers; keep snapshot-owned slang objects behind value-type analysis results.
 - Do not duplicate URI/path/source-range conversion logic; use `SourceUtil` from analysis code.
 - Keep `SemanticEngine` public APIs value-type based. Do not expose slang AST pointers outside snapshot-owned internals.
 - All semantic behavior changes must update the nearest unit, golden-style, or e2e coverage.
@@ -162,7 +164,7 @@ cmake --build --preset dev
 ctest --test-dir build/dev --output-on-failure
 ```
 
-Add or update focused semantic unit tests for AST-backed diagnostics, lookup, hover, definition, references, completion, inlay hints, hierarchy, or schematic behavior as appropriate. For workspace-wide indexing or invalidation changes, include a performance baseline plan covering initialize, didOpen, didChange, hover, completion, references, rename, and workspace/symbol on small and large synthetic workspaces.
+Add or update focused semantic unit tests for AST-backed diagnostics, lookup, hover, definition, references, rename, completion, completion resolve, signature help, inlay hints, semantic tokens, selection ranges, hierarchy, or schematic behavior as appropriate. Golden semantic cases and subprocess LSP smoke tests should change with externally observable semantic behavior. For workspace-wide indexing or invalidation changes, include a performance baseline plan covering initialize, didOpen, didChange, hover, completion, references, rename, workspace/symbol, and moduleHierarchy on small and large synthetic workspaces.
 
 For opt-in performance baselines, configure with `PRISTINE_BUILD_PERF_TESTS=ON` and run `pristine_perf_tests`; the perf target prints JSON and is not part of the default `ctest` suite.
 

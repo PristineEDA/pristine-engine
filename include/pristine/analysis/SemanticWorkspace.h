@@ -156,6 +156,21 @@ public:
                                                       int line,
                                                       int character,
                                                       std::string_view new_name) const;
+    [[nodiscard]] SemanticCompletionResult engineCompletionsAt(std::string_view uri,
+                                                               int line,
+                                                               int character,
+                                                               std::string_view prefix = {}) const;
+    [[nodiscard]] SemanticCompletionItem engineResolveCompletion(std::string_view stable_id,
+                                                                 std::string_view label) const;
+    [[nodiscard]] SemanticSignatureHelpResult engineSignatureHelpAt(std::string_view uri,
+                                                                    int line,
+                                                                    int character) const;
+    [[nodiscard]] SemanticInlayHintResult engineInlayHints(std::string_view uri,
+                                                          ParseRange range) const;
+    [[nodiscard]] SemanticTokenResult engineSemanticTokens(std::string_view uri) const;
+    [[nodiscard]] SemanticSelectionRangeResult engineSelectionRangesAt(std::string_view uri,
+                                                                       int line,
+                                                                       int character) const;
     [[nodiscard]] std::optional<SemanticSymbol> findResolvedSymbolAt(std::string_view uri,
                                                                       int line,
                                                                       int character) const;

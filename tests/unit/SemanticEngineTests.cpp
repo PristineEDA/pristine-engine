@@ -150,4 +150,115 @@ TEST_CASE("SemanticEngine exposes first-batch LSP-neutral query contracts",
     }));
 }
 
+TEST_CASE("SemanticEngine uses AST symbol identity to avoid same-name false references",
+          "[analysis][semantic-engine][ast-identity]") {
+    SemanticEngine engine;
+    engine.updateDocument("file:///workspace/shadow.sv",
+                          "module top;\n"
+                          "  logic ready;\n"
+                          "  assign ready = ready;\n"
+                          "endmodule\n"
+                          "module other;\n"
+                          "  logic ready;\n"
+                          "  assign ready = ready;\n"
+                          "endmodule\n",
+                          SemanticEngineDocumentState{.version = 1, .is_open = true});
+
+    const auto first = engine.referencesAt("file:///workspace/shadow.sv", 1, 9, true);
+    REQUIRE_FALSE(first.unresolved);
+    CHECK(first.locations.size() == 3);
+    CHECK(std::all_of(first.locations.begin(), first.locations.end(), [](const SemanticLocation& location) {
+        return location.range.start_line < 4;
+    }));
+
+    const auto second = engine.referencesAt("file:///workspace/shadow.sv", 5, 9, true);
+    REQUIRE_FALSE(second.unresolved);
+    CHECK(second.locations.size() == 3);
+    CHECK(std::all_of(second.locations.begin(), second.locations.end(), [](const SemanticLocation& location) {
+        return location.range.start_line > 4;
+    }));
+}
+
+TEST_CASE("SemanticEngine resolves cross-file module definitions through AST identity",
+          "[analysis][semantic-engine][ast-identity]") {
+    SemanticEngine engine;
+    engine.updateDocument("file:///workspace/child.sv",
+                          "module child;\n"
+                          "endmodule\n",
+                          SemanticEngineDocumentState{.version = 1});
+    engine.updateDocument("file:///workspace/top.sv",
+                          "module top;\n"
+                          "  child u_child();\n"
+                          "endmodule\n",
+                          SemanticEngineDocumentState{.version = 1, .is_open = true});
+
+    const auto definitions = engine.definitionsAt("file:///workspace/top.sv", 1, 4);
+
+    REQUIRE_FALSE(definitions.unresolved);
+    REQUIRE(definitions.locations.size() == 1);
+    CHECK(definitions.locations.front().uri == "file:///workspace/child.sv");
+    CHECK(definitions.locations.front().range.start_line == 0);
+}
+
+TEST_CASE("SemanticEngine exposes second-batch value-type semantic query contracts",
+          "[analysis][semantic-engine][query]") {
+    SemanticEngine engine;
+    engine.updateDocument("file:///workspace/types.sv",
+                          "module top;\n"
+                          "  typedef logic [3:0] nibble_t;\n"
+                          "  nibble_t value;\n"
+                          "endmodule\n",
+                          SemanticEngineDocumentState{.version = 1, .is_open = true});
+
+    const auto type_definitions = engine.typeDefinitionsAt("file:///workspace/types.sv", 2, 11);
+    REQUIRE_FALSE(type_definitions.unresolved);
+    REQUIRE_FALSE(type_definitions.locations.empty());
+
+    const auto completions = engine.completionsAt("file:///workspace/types.sv", 2, 4, "val");
+    REQUIRE_FALSE(completions.unresolved);
+    CHECK(std::any_of(completions.items.begin(), completions.items.end(), [](const auto& item) {
+        return item.label == "value";
+    }));
+
+    const auto hints = engine.inlayHints("file:///workspace/types.sv",
+                                        ParseRange{.start_line = 0,
+                                                   .start_character = 0,
+                                                   .end_line = 4,
+                                                   .end_character = 0});
+    REQUIRE_FALSE(hints.unresolved);
+    CHECK(std::any_of(hints.hints.begin(), hints.hints.end(), [](const SemanticInlayHint& hint) {
+        return hint.label.find("nibble_t") != std::string::npos ||
+               hint.label.find("logic") != std::string::npos;
+    }));
+
+    const auto tokens = engine.semanticTokens("file:///workspace/types.sv");
+    REQUIRE_FALSE(tokens.unresolved);
+    CHECK(std::any_of(tokens.tokens.begin(), tokens.tokens.end(), [](const SemanticToken& token) {
+        return token.token_modifier == "declaration";
+    }));
+
+    const auto selection = engine.selectionRangesAt("file:///workspace/types.sv", 2, 11);
+    REQUIRE_FALSE(selection.unresolved);
+    CHECK_FALSE(selection.ranges.empty());
+}
+
+TEST_CASE("SemanticEngine reports UTF-16 ranges for AST references",
+          "[analysis][semantic-engine][utf16]") {
+    SemanticEngine engine;
+    engine.updateDocument("file:///workspace/utf.sv",
+                          "module top;\n"
+                          "  // smile \xF0\x9F\x98\x80\n"
+                          "  logic ready;\n"
+                          "  assign ready = ready;\n"
+                          "endmodule\n",
+                          SemanticEngineDocumentState{.version = 1, .is_open = true});
+
+    const auto lookup = engine.lookupAt("file:///workspace/utf.sv", 2, 9);
+
+    REQUIRE_FALSE(lookup.unresolved);
+    REQUIRE(lookup.symbol.has_value());
+    CHECK(lookup.symbol->location.range.start_line == 2);
+    CHECK(lookup.symbol->location.range.start_character == 8);
+}
+
 } // namespace pristine::analysis

@@ -104,10 +104,61 @@ struct SemanticCompletionItem {
     bool unresolved = false;
 };
 
+struct SemanticCompletionResult {
+    std::uint64_t generation = 0;
+    std::vector<SemanticCompletionItem> items;
+    std::vector<std::string> messages;
+    bool unresolved = false;
+    bool truncated = false;
+};
+
 struct SemanticInlayHint {
     SemanticLocation location;
     std::string label;
     std::string kind;
+};
+
+struct SemanticInlayHintResult {
+    std::uint64_t generation = 0;
+    std::vector<SemanticInlayHint> hints;
+    std::vector<std::string> messages;
+    bool unresolved = false;
+    bool truncated = false;
+};
+
+struct SemanticSignatureHelpResult {
+    std::uint64_t generation = 0;
+    std::string label;
+    std::vector<std::string> parameters;
+    int active_parameter = 0;
+    std::vector<std::string> messages;
+    bool unresolved = false;
+};
+
+struct SemanticToken {
+    SemanticLocation location;
+    std::string token_type;
+    std::string token_modifier;
+};
+
+struct SemanticTokenResult {
+    std::uint64_t generation = 0;
+    std::vector<SemanticToken> tokens;
+    std::vector<std::string> messages;
+    bool unresolved = false;
+    bool truncated = false;
+};
+
+struct SemanticSelectionRange {
+    ParseRange range;
+    std::optional<size_t> parent;
+};
+
+struct SemanticSelectionRangeResult {
+    std::uint64_t generation = 0;
+    std::vector<SemanticSelectionRange> ranges;
+    std::vector<std::string> messages;
+    bool unresolved = false;
 };
 
 struct SemanticHierarchyNode {
@@ -160,6 +211,9 @@ struct SemanticEngineSnapshot {
 
 class SemanticEngine {
 public:
+    SemanticEngine();
+    ~SemanticEngine();
+
     void clear();
     void setWorkspaceRoot(std::string_view root_uri);
     void configure(SemanticEngineConfig config);
@@ -201,10 +255,27 @@ public:
                                                 int line,
                                                 int character,
                                                 std::string_view new_name) const;
+    [[nodiscard]] SemanticCompletionResult completionsAt(std::string_view uri,
+                                                         int line,
+                                                         int character,
+                                                         std::string_view prefix = {}) const;
+    [[nodiscard]] SemanticCompletionItem resolveCompletion(std::string_view stable_id,
+                                                           std::string_view label) const;
+    [[nodiscard]] SemanticSignatureHelpResult signatureHelpAt(std::string_view uri,
+                                                              int line,
+                                                              int character) const;
+    [[nodiscard]] SemanticInlayHintResult inlayHints(std::string_view uri, ParseRange range) const;
+    [[nodiscard]] SemanticTokenResult semanticTokens(std::string_view uri) const;
+    [[nodiscard]] SemanticSelectionRangeResult selectionRangesAt(std::string_view uri,
+                                                                 int line,
+                                                                 int character) const;
 
 private:
+    struct SnapshotData;
+
     void rebuildDependenciesFor(std::string_view document_uri, std::string_view text);
     void rebuildSnapshot() const;
+    [[nodiscard]] const SnapshotData* snapshotData() const;
 
     std::string workspace_root_uri_;
     SemanticEngineConfig config_;
@@ -212,6 +283,7 @@ private:
     std::unordered_map<std::string, std::vector<std::string>> includes_;
     std::unordered_map<std::string, std::vector<std::string>> reverse_includes_;
     mutable std::optional<SemanticEngineSnapshot> snapshot_;
+    mutable std::unique_ptr<SnapshotData> snapshot_data_;
     mutable bool snapshot_dirty_ = true;
     std::uint64_t generation_ = 0;
 };

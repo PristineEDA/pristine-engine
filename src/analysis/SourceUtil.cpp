@@ -1,10 +1,13 @@
 #include "pristine/analysis/SourceUtil.h"
 
+#include "pristine/text/Utf.h"
+
 #include "slang/diagnostics/Diagnostics.h"
 #include "slang/text/SourceManager.h"
 
 #include <algorithm>
 #include <cctype>
+#include <stdexcept>
 #include <vector>
 
 namespace pristine::analysis {
@@ -13,6 +16,49 @@ namespace {
 bool isDriveSegment(std::string_view value) {
     return value.size() == 2 && std::isalpha(static_cast<unsigned char>(value[0])) != 0 &&
            value[1] == ':';
+}
+
+int utf16ColumnForLocation(const slang::SourceManager& source_manager,
+                           slang::SourceLocation location) {
+    const auto fallback_character = static_cast<int>(source_manager.getColumnNumber(location)) - 1;
+    const auto byte_offset = location.offset();
+    const auto byte_column = source_manager.getColumnNumber(location);
+    if (byte_column == 0) {
+        return fallback_character;
+    }
+
+    const auto byte_index_in_line = byte_column - 1;
+    const auto text = source_manager.getSourceText(location.buffer());
+    if (byte_offset < byte_index_in_line || byte_offset > text.size()) {
+        return fallback_character;
+    }
+
+    const auto line_start_offset = byte_offset - byte_index_in_line;
+    try {
+        return static_cast<int>(
+            text::utf16UnitsForUtf8Prefix(text.substr(line_start_offset, byte_offset - line_start_offset),
+                                          byte_offset - line_start_offset));
+    }
+    catch (const std::runtime_error&) {
+        return fallback_character;
+    }
+}
+
+ParseRange sourceRangeForLocations(const slang::SourceManager& source_manager,
+                                   slang::SourceLocation start,
+                                   slang::SourceLocation end) {
+    if (!start.valid()) {
+        return {};
+    }
+    if (!end.valid() || end.buffer() != start.buffer() || end.offset() < start.offset()) {
+        end = start + 1;
+    }
+
+    return ParseRange{
+        .start_line = static_cast<int>(source_manager.getLineNumber(start)) - 1,
+        .start_character = utf16ColumnForLocation(source_manager, start),
+        .end_line = static_cast<int>(source_manager.getLineNumber(end)) - 1,
+        .end_character = utf16ColumnForLocation(source_manager, end)};
 }
 
 } // namespace
@@ -156,18 +202,12 @@ ParseRange sourceRangeForDiagnostic(const slang::SourceManager& source_manager,
         end = diagnostic.ranges.front().end();
     }
 
-    if (!start.valid()) {
-        return {};
-    }
-    if (!end.valid() || end.buffer() != start.buffer() || end.offset() < start.offset()) {
-        end = start + 1;
-    }
+    return sourceRangeForLocations(source_manager, start, end);
+}
 
-    return ParseRange{
-        .start_line = static_cast<int>(source_manager.getLineNumber(start)) - 1,
-        .start_character = static_cast<int>(source_manager.getColumnNumber(start)) - 1,
-        .end_line = static_cast<int>(source_manager.getLineNumber(end)) - 1,
-        .end_character = static_cast<int>(source_manager.getColumnNumber(end)) - 1};
+ParseRange sourceRangeForSourceRange(const slang::SourceManager& source_manager,
+                                     slang::SourceRange range) {
+    return sourceRangeForLocations(source_manager, range.start(), range.end());
 }
 
 } // namespace pristine::analysis
