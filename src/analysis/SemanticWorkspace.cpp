@@ -715,7 +715,13 @@ void SemanticWorkspace::updateDocument(std::string_view uri,
         markDependentsStale(document_uri);
     }
 
-    auto includes = compilation_service_.includeDirectives(text);
+    std::vector<IncludeDirective> includes;
+    try {
+        includes = compilation_service_.includeDirectives(text);
+    }
+    catch (...) {
+        includes.clear();
+    }
     std::set<std::string> included_uris;
     for (const auto& include : includes) {
         for (const auto& included_uri : resolveIncludeUris(document_uri, include.target)) {
@@ -770,32 +776,47 @@ void SemanticWorkspace::updateDocument(std::string_view uri,
         document.symbols.clear();
     }
 
-    for (const auto& import : compilation_service_.packageImports(text)) {
-        document.imports.push_back(SemanticImport{
-            .package_name = import.package_name,
-            .item_name = import.item_name,
-            .scope_path = scopePathAt(document, import.range.start_line, import.range.start_character),
-            .package_range = import.package_range,
-            .range = import.range});
+    try {
+        for (const auto& import : compilation_service_.packageImports(text)) {
+            document.imports.push_back(SemanticImport{
+                .package_name = import.package_name,
+                .item_name = import.item_name,
+                .scope_path = scopePathAt(document, import.range.start_line, import.range.start_character),
+                .package_range = import.package_range,
+                .range = import.range});
+        }
+    }
+    catch (...) {
+        document.imports.clear();
     }
 
-    for (const auto& assignment : compilation_service_.continuousAssignments(text, document_uri)) {
-        document.assignments.push_back(SemanticAssignment{
-            .left_expression = assignment.left_expression,
-            .right_expression = assignment.right_expression,
-            .scope_path = scopePathAt(document, assignment.range.start_line, assignment.range.start_character),
-            .location = Location{.uri = document_uri, .range = assignment.range},
-            .left_range = assignment.left_range,
-            .right_range = assignment.right_range});
+    try {
+        for (const auto& assignment : compilation_service_.continuousAssignments(text, document_uri)) {
+            document.assignments.push_back(SemanticAssignment{
+                .left_expression = assignment.left_expression,
+                .right_expression = assignment.right_expression,
+                .scope_path = scopePathAt(document, assignment.range.start_line, assignment.range.start_character),
+                .location = Location{.uri = document_uri, .range = assignment.range},
+                .left_range = assignment.left_range,
+                .right_range = assignment.right_range});
+        }
+    }
+    catch (...) {
+        document.assignments.clear();
     }
 
-    for (const auto& identifier : compilation_service_.identifiers(text)) {
-        document.references.push_back(SemanticReference{
-            .name = identifier.name,
-            .scope_path = scopePathAt(document, identifier.range.start_line, identifier.range.start_character),
-            .location = Location{.uri = document_uri, .range = identifier.range},
-            .target_symbol_id = std::nullopt,
-            .is_declaration = false});
+    try {
+        for (const auto& identifier : compilation_service_.identifiers(text)) {
+            document.references.push_back(SemanticReference{
+                .name = identifier.name,
+                .scope_path = scopePathAt(document, identifier.range.start_line, identifier.range.start_character),
+                .location = Location{.uri = document_uri, .range = identifier.range},
+                .target_symbol_id = std::nullopt,
+                .is_declaration = false});
+        }
+    }
+    catch (...) {
+        document.references.clear();
     }
 
     std::sort(document.symbols.begin(), document.symbols.end(), symbolLess);
@@ -1398,13 +1419,28 @@ std::vector<SemanticDiagnostic> SemanticWorkspace::diagnosticsFor(std::string_vi
                                             .severity = 2});
     }
 
-    if (result.empty()) {
-        for (const auto& diagnostic : semantic_engine_.diagnosticsFor(source->uri)) {
-            result.push_back(SemanticDiagnostic{.code = diagnostic.code,
-                                                .message = diagnostic.message,
-                                                .range = diagnostic.range,
-                                                .severity = diagnostic.severity});
+    std::set<std::tuple<std::string, int, int, std::string>> emitted_diagnostics;
+    for (const auto& diagnostic : result) {
+        emitted_diagnostics.emplace(diagnostic.code,
+                                    diagnostic.range.start_line,
+                                    diagnostic.range.start_character,
+                                    diagnostic.message);
+    }
+    for (const auto& diagnostic : semantic_engine_.diagnosticsFor(source->uri)) {
+        if (!result.empty() && diagnostic.code.starts_with("slang:")) {
+            continue;
         }
+        auto key = std::tuple(diagnostic.code,
+                              diagnostic.range.start_line,
+                              diagnostic.range.start_character,
+                              diagnostic.message);
+        if (!emitted_diagnostics.insert(std::move(key)).second) {
+            continue;
+        }
+        result.push_back(SemanticDiagnostic{.code = diagnostic.code,
+                                            .message = diagnostic.message,
+                                            .range = diagnostic.range,
+                                            .severity = diagnostic.severity});
     }
 
     std::sort(result.begin(), result.end(), diagnosticLess);

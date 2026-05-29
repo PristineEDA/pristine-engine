@@ -193,6 +193,108 @@ std::string pathToFileUri(const std::filesystem::path& path) {
     return withoutTrailingSlash(normalizeFileUri(std::string("file://") + normalized));
 }
 
+bool parseRangeContainsPosition(const ParseRange& range, int line, int character) {
+    if (line < range.start_line || line > range.end_line) {
+        return false;
+    }
+    if (line == range.start_line && character < range.start_character) {
+        return false;
+    }
+    if (line == range.end_line && character >= range.end_character) {
+        return false;
+    }
+    return true;
+}
+
+ParseRange pointRangeAtPosition(int line, int character) {
+    return ParseRange{.start_line = line,
+                      .start_character = character,
+                      .end_line = line,
+                      .end_character = character};
+}
+
+std::optional<size_t> utf8OffsetAtUtf16Position(std::string_view text,
+                                                int line,
+                                                int character) {
+    if (line < 0 || character < 0) {
+        return std::nullopt;
+    }
+
+    int current_line = 0;
+    size_t line_start = 0;
+    for (size_t offset = 0; offset < text.size() && current_line < line; ++offset) {
+        if (text[offset] == '\n') {
+            ++current_line;
+            line_start = offset + 1;
+        }
+    }
+    if (current_line != line) {
+        return std::nullopt;
+    }
+
+    size_t offset = line_start;
+    int current_character = 0;
+    while (offset < text.size() && text[offset] != '\n' && text[offset] != '\r') {
+        if (current_character == character) {
+            return offset;
+        }
+        try {
+            const auto decoded = text::decodeNextCodePoint(text, offset);
+            const auto width = static_cast<int>(text::utf16CodeUnitWidth(decoded.value));
+            if (current_character + width > character) {
+                return std::nullopt;
+            }
+            current_character += width;
+            offset += decoded.byte_length;
+        }
+        catch (const std::runtime_error&) {
+            return std::nullopt;
+        }
+    }
+
+    return current_character == character ? std::optional<size_t>{offset} : std::nullopt;
+}
+
+std::optional<ParseRange> lineRangeAtPosition(std::string_view text, int line, int character) {
+    const auto offset = utf8OffsetAtUtf16Position(text, line, character);
+    if (!offset.has_value()) {
+        return std::nullopt;
+    }
+
+    size_t line_start = *offset;
+    while (line_start > 0 && text[line_start - 1] != '\n' && text[line_start - 1] != '\r') {
+        --line_start;
+    }
+
+    size_t line_end = *offset;
+    while (line_end < text.size() && text[line_end] != '\n' && text[line_end] != '\r') {
+        ++line_end;
+    }
+
+    const auto end_character = [&]() -> int {
+        try {
+            return static_cast<int>(text::utf16UnitsForUtf8Prefix(text.substr(line_start, line_end - line_start),
+                                                                  line_end - line_start));
+        }
+        catch (const std::runtime_error&) {
+            return character;
+        }
+    }();
+    return ParseRange{.start_line = line,
+                      .start_character = 0,
+                      .end_line = line,
+                      .end_character = end_character};
+}
+
+std::optional<std::string> textForParseRange(std::string_view text, const ParseRange& range) {
+    const auto start_offset = utf8OffsetAtUtf16Position(text, range.start_line, range.start_character);
+    const auto end_offset = utf8OffsetAtUtf16Position(text, range.end_line, range.end_character);
+    if (!start_offset.has_value() || !end_offset.has_value() || *end_offset < *start_offset) {
+        return std::nullopt;
+    }
+    return std::string(text.substr(*start_offset, *end_offset - *start_offset));
+}
+
 ParseRange sourceRangeForDiagnostic(const slang::SourceManager& source_manager,
                                     const slang::Diagnostic& diagnostic) {
     slang::SourceLocation start = diagnostic.location;

@@ -242,6 +242,75 @@ TEST_CASE("SemanticEngine exposes second-batch value-type semantic query contrac
     CHECK_FALSE(selection.ranges.empty());
 }
 
+TEST_CASE("SemanticEngine provides AST-backed module signature help and port completions",
+          "[analysis][semantic-engine][completion][signature]") {
+    SemanticEngine engine;
+    engine.updateDocument("file:///workspace/child.sv",
+                          "module child(input logic clk, output logic rst_n, input logic [3:0] data);\n"
+                          "endmodule\n",
+                          SemanticEngineDocumentState{.version = 1});
+    engine.updateDocument("file:///workspace/top.sv",
+                          "module top;\n"
+                          "  child u_child(.clk(clk), .r);\n"
+                          "endmodule\n",
+                          SemanticEngineDocumentState{.version = 1, .is_open = true});
+
+    const auto signature = engine.signatureHelpAt("file:///workspace/top.sv", 1, 28);
+    REQUIRE_FALSE(signature.unresolved);
+    CHECK(signature.label == "child(input logic clk, output logic rst_n, input logic [3:0] data)");
+    REQUIRE(signature.parameters.size() == 3);
+    CHECK(signature.parameters[1] == "output logic rst_n");
+    CHECK(signature.active_parameter == 1);
+
+    const auto completions = engine.completionsAt("file:///workspace/top.sv", 1, 28, "");
+    REQUIRE_FALSE(completions.unresolved);
+    CHECK(std::any_of(completions.items.begin(), completions.items.end(), [](const auto& item) {
+        return item.label == "rst_n" && item.detail == "output logic rst_n" &&
+               item.insert_text.find(".rst_n(") != std::string::npos &&
+               !item.stable_id.empty();
+    }));
+}
+
+TEST_CASE("SemanticEngine provides AST-backed macro completions and resolve docs",
+          "[analysis][semantic-engine][completion][macro]") {
+    SemanticEngine engine;
+    engine.updateDocument("file:///workspace/macros.sv",
+                          "`define ADD(lhs, rhs) ((lhs) + (rhs))\n"
+                          "module top;\n"
+                          "  logic value = `AD\n"
+                          "endmodule\n",
+                          SemanticEngineDocumentState{.version = 1, .is_open = true});
+
+    const auto completions = engine.completionsAt("file:///workspace/macros.sv", 2, 19, "AD");
+    REQUIRE_FALSE(completions.unresolved);
+    const auto completion = std::find_if(completions.items.begin(), completions.items.end(), [](const auto& item) {
+        return item.label == "ADD";
+    });
+    REQUIRE(completion != completions.items.end());
+    CHECK(completion->detail == "Macro function");
+    CHECK(completion->insert_text.find("${1:lhs}") != std::string::npos);
+    CHECK(completion->documentation.find("Parameters") != std::string::npos);
+}
+
+TEST_CASE("SemanticEngine builds selection parent chains from AST and syntax ranges",
+          "[analysis][semantic-engine][selection]") {
+    SemanticEngine engine;
+    engine.updateDocument("file:///workspace/select.sv",
+                          "module top;\n"
+                          "  logic ready;\n"
+                          "  assign ready = ready;\n"
+                          "endmodule\n",
+                          SemanticEngineDocumentState{.version = 1, .is_open = true});
+
+    const auto selection = engine.selectionRangesAt("file:///workspace/select.sv", 2, 10);
+    REQUIRE_FALSE(selection.unresolved);
+    REQUIRE(selection.ranges.size() >= 3);
+    CHECK(selection.ranges.front().range.start_line == 2);
+    CHECK(selection.ranges.front().range.start_character == 9);
+    REQUIRE(selection.ranges.front().parent.has_value());
+    CHECK(*selection.ranges.front().parent == 1);
+}
+
 TEST_CASE("SemanticEngine reports UTF-16 ranges for AST references",
           "[analysis][semantic-engine][utf16]") {
     SemanticEngine engine;

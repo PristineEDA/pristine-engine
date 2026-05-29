@@ -50,14 +50,14 @@ Current implemented LSP surface:
 
 Current behavior follows an AST-backed semantic model with syntax/text fallback kept for compatibility:
 
-- `SemanticEngine` is the owning layer for slang AST/Compilation snapshots, AST lookup, symbol identity, dependency invalidation, semantic diagnostics, and reference indexes
+- `SemanticEngine` is the owning layer for slang AST/Compilation snapshots, AST lookup, symbol identity, dependency invalidation, semantic diagnostics, reference indexes, second-batch completion/signature/inlay/semantic-token/selection queries, and HDL design indexes
 - semantic queries prefer slang AST/Compilation facts when available; fallback must never override an AST-backed answer
 - hover, definition, type definition, references, document highlights, prepare rename, and rename are the first AST-backed query slice owned by `SemanticEngine`
-- completion, completion resolve, signature help, inlay hints, semantic tokens, and selection ranges are the second semantic query slice and should use `SemanticEngine` value-type APIs before syntax/text fallback
+- completion, completion resolve, signature help, inlay hints, semantic tokens, and selection ranges are the second semantic query slice and now use `SemanticEngine` value-type APIs before syntax/text fallback; keep moving remaining context gaps into analysis instead of `ServerSession`
 - `CompilationService` remains the syntax fast path for parse diagnostics, document symbols, syntax extraction, hierarchy/schematic extraction, and text utilities
 - `SymbolIndex` and the legacy syntax/text `SemanticWorkspace` resolution are fallback and cold-workspace indexing aids, not the preferred semantic authority
 - `ServerSession` should route LSP requests and serialize responses; it should not grow new SystemVerilog semantic rules
-- some feature handlers still use syntax/text fallback while AST-backed behavior is phased in; when replacing them, keep LSP response compatibility and add focused tests
+- HDL hierarchy, schematic, backward cone, call hierarchy, and code actions still have syntax/text fallback paths while design-snapshot indexes mature; when replacing them, keep LSP response compatibility and add focused unit/golden/e2e/perf coverage
 
 The server resolves the workspace root from `initialize` and loads a minimal `.slang/server.json` when present.
 
@@ -78,9 +78,9 @@ Use the nearest owning layer instead of patching around it from a wrapper.
 
 - lifecycle, notification handling, diagnostics publishing, LSP request routing, and response serialization: `src/server/ServerSession.cpp`
 - LSP protocol structures and JSON payload parsing: `src/lsp/Protocol.cpp`
-- deep semantic ownership, slang AST/Compilation snapshots, AST lookup, symbol identity, dependency invalidation, semantic diagnostics, reference index, instance graph, and cone index: `src/analysis/SemanticEngine.cpp`
+- deep semantic ownership, slang AST/Compilation snapshots, AST lookup, symbol identity, dependency invalidation, semantic diagnostics, reference index, completion/signature/inlay providers, semantic token and selection range providers, instance graph, and cone index: `src/analysis/SemanticEngine.cpp`
 - compatibility facade for semantic document state and legacy syntax/text fallback queries; it should delegate to `SemanticEngine` first: `src/analysis/SemanticWorkspace.cpp`
-- shared URI/path/source-range conversion helpers for analysis code: `src/analysis/SourceUtil.cpp`
+- shared URI/path/source-range/UTF-16 offset conversion helpers for analysis code: `src/analysis/SourceUtil.cpp`
 - parse pipeline, syntax symbol extraction, identifier scanning, syntax hover content, and syntax diagnostics: `src/analysis/CompilationService.cpp`
 - lightweight workspace symbol/reference/completion index used for cold workspace indexing and fallback: `src/analysis/SymbolIndex.cpp`
 - open-document state and UTF-16 incremental edits: `src/document/DocumentStore.cpp`
@@ -164,9 +164,9 @@ cmake --build --preset dev
 ctest --test-dir build/dev --output-on-failure
 ```
 
-Add or update focused semantic unit tests for AST-backed diagnostics, lookup, hover, definition, references, rename, completion, completion resolve, signature help, inlay hints, semantic tokens, selection ranges, hierarchy, or schematic behavior as appropriate. Golden semantic cases and subprocess LSP smoke tests should change with externally observable semantic behavior. For workspace-wide indexing or invalidation changes, include a performance baseline plan covering initialize, didOpen, didChange, hover, completion, references, rename, workspace/symbol, and moduleHierarchy on small and large synthetic workspaces.
+Add or update focused semantic unit tests for AST-backed diagnostics, lookup, hover, definition, references, rename, completion, completion resolve, signature help, inlay hints, semantic tokens, selection ranges, hierarchy, schematic, or backward cone behavior as appropriate. Golden semantic cases and subprocess LSP smoke tests should change with externally observable semantic behavior, including unresolved, partial, truncated, and fallback response shapes when relevant. For workspace-wide indexing or invalidation changes, include a performance baseline plan covering initialize, didOpen, didChange, didSave, hover, completion, signatureHelp, inlayHint, semanticTokens, references, rename, workspace/symbol, moduleHierarchy, schematic, and backwardCone on small and large synthetic workspaces.
 
-For opt-in performance baselines, configure with `PRISTINE_BUILD_PERF_TESTS=ON` and run `pristine_perf_tests`; the perf target prints JSON and is not part of the default `ctest` suite.
+For opt-in performance baselines, configure with `PRISTINE_BUILD_PERF_TESTS=ON` and run `pristine_perf_tests`; the perf target prints JSON for 100/1000/5000-file synthetic workspaces and is not part of the default `ctest` suite.
 
 If `ctest` is not on `PATH` in the current Windows shell, use:
 

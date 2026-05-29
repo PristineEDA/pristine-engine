@@ -3,6 +3,7 @@
 #include "pristine/analysis/CompilationService.h"
 
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <string_view>
 
@@ -23,6 +24,18 @@ namespace pristine::analysis {
 [[nodiscard]] std::string joinFileUri(std::string_view base_uri, std::string_view target);
 [[nodiscard]] std::string fileUriToPath(std::string_view uri);
 [[nodiscard]] std::string pathToFileUri(const std::filesystem::path& path);
+[[nodiscard]] bool parseRangeContainsPosition(const ParseRange& range,
+                                              int line,
+                                              int character);
+[[nodiscard]] ParseRange pointRangeAtPosition(int line, int character);
+[[nodiscard]] std::optional<size_t> utf8OffsetAtUtf16Position(std::string_view text,
+                                                              int line,
+                                                              int character);
+[[nodiscard]] std::optional<ParseRange> lineRangeAtPosition(std::string_view text,
+                                                            int line,
+                                                            int character);
+[[nodiscard]] std::optional<std::string> textForParseRange(std::string_view text,
+                                                           const ParseRange& range);
 [[nodiscard]] ParseRange sourceRangeForDiagnostic(const slang::SourceManager& source_manager,
                                                   const slang::Diagnostic& diagnostic);
 [[nodiscard]] ParseRange sourceRangeForSourceRange(const slang::SourceManager& source_manager,

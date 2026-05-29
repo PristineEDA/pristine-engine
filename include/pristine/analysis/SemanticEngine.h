@@ -96,6 +96,7 @@ struct SemanticRenameResult {
 };
 
 struct SemanticCompletionItem {
+    std::string stable_id;
     std::string label;
     std::string detail;
     std::string documentation;
@@ -116,6 +117,7 @@ struct SemanticInlayHint {
     SemanticLocation location;
     std::string label;
     std::string kind;
+    std::string tooltip;
 };
 
 struct SemanticInlayHintResult {

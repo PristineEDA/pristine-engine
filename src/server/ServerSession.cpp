@@ -35,6 +35,10 @@ jsonrpc::Json toLocationJson(const analysis::Location& location) {
     return jsonrpc::Json{{"uri", location.uri}, {"range", toRangeJson(location.range)}};
 }
 
+jsonrpc::Json toLocationJson(const analysis::SemanticLocation& location) {
+    return jsonrpc::Json{{"uri", location.uri}, {"range", toRangeJson(location.range)}};
+}
+
 jsonrpc::Json toTextEditJson(const analysis::ParseRange& range, std::string_view new_text) {
     return jsonrpc::Json{{"range", toRangeJson(range)}, {"newText", new_text}};
 }
@@ -44,6 +48,10 @@ jsonrpc::Json toPositionJson(int line, int character) {
 }
 
 jsonrpc::Json toDocumentHighlightJson(const analysis::Location& location) {
+    return jsonrpc::Json{{"range", toRangeJson(location.range)}, {"kind", 1}};
+}
+
+jsonrpc::Json toDocumentHighlightJson(const analysis::SemanticLocation& location) {
     return jsonrpc::Json{{"range", toRangeJson(location.range)}, {"kind", 1}};
 }
 
@@ -228,6 +236,17 @@ jsonrpc::Json toInlayHintJson(const analysis::ModuleInstantiation& instance,
     return result;
 }
 
+jsonrpc::Json toInlayHintJson(const analysis::SemanticInlayHint& hint) {
+    const auto& range = hint.location.range;
+    jsonrpc::Json result{{"position", toPositionJson(range.start_line, range.start_character)},
+                         {"label", hint.label},
+                         {"kind", hint.kind == "parameter" ? 2 : 1}};
+    if (!hint.tooltip.empty()) {
+        result["tooltip"] = hint.tooltip;
+    }
+    return result;
+}
+
 std::optional<int> semanticTokenTypeForSymbolKind(int symbol_kind) {
     switch (symbol_kind) {
         case 2:
@@ -254,6 +273,37 @@ std::optional<int> semanticTokenTypeForSymbolKind(int symbol_kind) {
         default:
             return std::nullopt;
     }
+}
+
+std::optional<int> semanticTokenTypeForName(std::string_view token_type) {
+    if (token_type == "namespace") {
+        return 0;
+    }
+    if (token_type == "type") {
+        return 1;
+    }
+    if (token_type == "class") {
+        return 2;
+    }
+    if (token_type == "enum") {
+        return 3;
+    }
+    if (token_type == "interface") {
+        return 4;
+    }
+    if (token_type == "function") {
+        return 5;
+    }
+    if (token_type == "variable") {
+        return 6;
+    }
+    if (token_type == "parameter") {
+        return 7;
+    }
+    if (token_type == "enumMember") {
+        return 8;
+    }
+    return std::nullopt;
 }
 
 struct SemanticToken {
@@ -708,6 +758,26 @@ jsonrpc::Json toSemanticCompletionItem(const analysis::SemanticSymbol& symbol) {
                          {"kind", toCompletionItemKind(symbol.kind)},
                          {"detail", completionDetailForSymbolKind(symbol.kind)},
                          {"data", semanticCompletionData(symbol)}};
+}
+
+jsonrpc::Json semanticEngineCompletionData(const analysis::SemanticCompletionItem& item) {
+    return jsonrpc::Json{{"source", "semanticEngine"},
+                         {"stableId", item.stable_id},
+                         {"label", item.label}};
+}
+
+jsonrpc::Json toSemanticEngineCompletionItem(const analysis::SemanticCompletionItem& item) {
+    jsonrpc::Json result{{"label", item.label},
+                         {"kind", item.kind == 0 ? 18 : item.kind},
+                         {"detail", item.detail},
+                         {"data", semanticEngineCompletionData(item)}};
+    if (!item.insert_text.empty() && item.insert_text != item.label) {
+        result["insertText"] = item.insert_text;
+        if (item.insert_text.find("${") != std::string::npos) {
+            result["insertTextFormat"] = 2;
+        }
+    }
+    return result;
 }
 
 jsonrpc::Json toIndexCompletionItem(const analysis::CompletionEntry& entry) {
@@ -1255,6 +1325,22 @@ jsonrpc::Json toSignatureHelpJson(const analysis::ModuleDefinition& module, int 
                          {"activeParameter", bounded_parameter}};
 }
 
+jsonrpc::Json toSignatureHelpJson(const analysis::SemanticSignatureHelpResult& help) {
+    jsonrpc::Json parameters = jsonrpc::Json::array();
+    for (const auto& parameter : help.parameters) {
+        parameters.push_back(jsonrpc::Json{{"label", parameter}});
+    }
+    const auto parameter_count = help.parameters.size();
+    const auto bounded_parameter = parameter_count == 0
+        ? 0
+        : std::min(help.active_parameter, static_cast<int>(parameter_count) - 1);
+    return jsonrpc::Json{{"signatures",
+                          jsonrpc::Json::array({jsonrpc::Json{{"label", help.label},
+                                                               {"parameters", std::move(parameters)}}})},
+                         {"activeSignature", 0},
+                         {"activeParameter", bounded_parameter}};
+}
+
 void collectSelectionSymbolRanges(std::vector<analysis::ParseRange>& ranges,
                                   const std::vector<analysis::DocumentSymbol>& symbols,
                                   const lsp::Position& position) {
@@ -1284,6 +1370,25 @@ jsonrpc::Json toSelectionRangeJson(const std::vector<analysis::ParseRange>& rang
         current = std::move(next);
     }
     return current;
+}
+
+jsonrpc::Json toSelectionRangeJson(const std::vector<analysis::SemanticSelectionRange>& ranges,
+                                   size_t index) {
+    const auto& range = ranges[index];
+    jsonrpc::Json result{{"range", toRangeJson(range.range)}};
+    if (range.parent.has_value() && *range.parent < ranges.size() && *range.parent != index) {
+        result["parent"] = toSelectionRangeJson(ranges, *range.parent);
+    }
+    return result;
+}
+
+bool hasStructuredSelectionParent(const std::vector<analysis::SemanticSelectionRange>& ranges) {
+    if (ranges.empty() || !ranges.front().parent.has_value() || *ranges.front().parent >= ranges.size()) {
+        return false;
+    }
+    const auto& child = ranges.front().range;
+    const auto& parent = ranges[*ranges.front().parent].range;
+    return parent.start_line != child.start_line || parent.start_character != 0;
 }
 
 jsonrpc::Json selectionRangeForPosition(const analysis::CompilationService& compilation_service,
@@ -2371,6 +2476,21 @@ jsonrpc::Json ServerSession::handleInlayHint(const jsonrpc::Json& params) {
     }
 
     jsonrpc::Json result = jsonrpc::Json::array();
+    const auto engine_hints = semantic_workspace_.engineInlayHints(
+        document->uri,
+        analysis::ParseRange{.start_line = hints.range.start.line,
+                             .start_character = hints.range.start.character,
+                             .end_line = hints.range.end.line,
+                             .end_character = hints.range.end.character});
+    if (!engine_hints.unresolved && !engine_hints.hints.empty()) {
+        for (const auto& hint : engine_hints.hints) {
+            if (hint.label.starts_with(": ")) {
+                continue;
+            }
+            result.push_back(toInlayHintJson(hint));
+        }
+    }
+
     const auto module_lookup = buildModuleLookup(sortedModuleDefinitions(hierarchy_documents_));
     for (const auto& module : compilation_service_.moduleDefinitions(document->text, document->uri)) {
         for (const auto& instance : module.instances) {
@@ -2556,6 +2676,27 @@ jsonrpc::Json ServerSession::handleSemanticTokensFull(const jsonrpc::Json& param
         return jsonrpc::Json{{"data", jsonrpc::Json::array()}};
     }
 
+    const auto engine_tokens = semantic_workspace_.engineSemanticTokens(document->uri);
+    if (!engine_tokens.unresolved && !engine_tokens.tokens.empty()) {
+        std::vector<SemanticToken> tokens;
+        for (const auto& token : engine_tokens.tokens) {
+            const auto token_type = semanticTokenTypeForName(token.token_type);
+            if (!token_type.has_value() ||
+                token.location.range.start_line != token.location.range.end_line ||
+                token.location.range.end_character <= token.location.range.start_character) {
+                continue;
+            }
+            tokens.push_back(SemanticToken{.line = token.location.range.start_line,
+                                           .character = token.location.range.start_character,
+                                           .length = token.location.range.end_character -
+                                                     token.location.range.start_character,
+                                           .type = *token_type});
+        }
+        if (!tokens.empty()) {
+            return toSemanticTokensJson(std::move(tokens));
+        }
+    }
+
     std::vector<SemanticToken> tokens;
     collectSemanticTokens(tokens, compilation_service_.documentSymbols(document->text, document->uri));
     return toSemanticTokensJson(std::move(tokens));
@@ -2574,6 +2715,13 @@ jsonrpc::Json ServerSession::handleSelectionRange(const jsonrpc::Json& params) {
 
     jsonrpc::Json result = jsonrpc::Json::array();
     for (const auto& position : selection_range.positions) {
+        const auto engine_selection = semantic_workspace_.engineSelectionRangesAt(document->uri,
+                                                                                  position.line,
+                                                                                  position.character);
+        if (!engine_selection.unresolved && hasStructuredSelectionParent(engine_selection.ranges)) {
+            result.push_back(toSelectionRangeJson(engine_selection.ranges, 0));
+            continue;
+        }
         result.push_back(selectionRangeForPosition(compilation_service_, *document, position));
     }
     return result;
@@ -2588,6 +2736,13 @@ jsonrpc::Json ServerSession::handleSignatureHelp(const jsonrpc::Json& params) {
     const auto* document = document_store_.find(signature_help.text_document.uri);
     if (!document) {
         return nullptr;
+    }
+
+    const auto engine_help = semantic_workspace_.engineSignatureHelpAt(document->uri,
+                                                                       signature_help.position.line,
+                                                                       signature_help.position.character);
+    if (!engine_help.unresolved && !engine_help.label.empty()) {
+        return toSignatureHelpJson(engine_help);
     }
 
     const auto invocation = findSignatureInvocation(compilation_service_, *document, signature_help.position);
@@ -2708,6 +2863,15 @@ jsonrpc::Json ServerSession::handleCompletion(const jsonrpc::Json& params) {
         for (const auto& macro : symbol_index_.macroCompletions(prefix, document->uri)) {
             appendCompletionItem(result, emitted_labels, toMacroCompletionItem(macro));
         }
+        if (result.empty()) {
+            const auto engine_completions = semantic_workspace_.engineCompletionsAt(document->uri,
+                                                                                    completion.position.line,
+                                                                                    completion.position.character,
+                                                                                    prefix);
+            for (const auto& item : engine_completions.items) {
+                appendCompletionItem(result, emitted_labels, toSemanticEngineCompletionItem(item));
+            }
+        }
         return result;
     }
 
@@ -2765,6 +2929,15 @@ jsonrpc::Json ServerSession::handleCompletion(const jsonrpc::Json& params) {
                 }
             }
         }
+        if (result.empty()) {
+            const auto engine_completions = semantic_workspace_.engineCompletionsAt(document->uri,
+                                                                                    completion.position.line,
+                                                                                    completion.position.character,
+                                                                                    prefix);
+            for (const auto& item : engine_completions.items) {
+                appendCompletionItem(result, emitted_labels, toSemanticEngineCompletionItem(item));
+            }
+        }
         return result;
     }
 
@@ -2776,6 +2949,15 @@ jsonrpc::Json ServerSession::handleCompletion(const jsonrpc::Json& params) {
                                                                        prefix)) {
             appendCompletionItem(result, emitted_labels, toSemanticCompletionItem(symbol));
         }
+        if (result.empty()) {
+            const auto engine_completions = semantic_workspace_.engineCompletionsAt(document->uri,
+                                                                                    completion.position.line,
+                                                                                    completion.position.character,
+                                                                                    prefix);
+            for (const auto& item : engine_completions.items) {
+                appendCompletionItem(result, emitted_labels, toSemanticEngineCompletionItem(item));
+            }
+        }
         return result;
     }
 
@@ -2786,6 +2968,16 @@ jsonrpc::Json ServerSession::handleCompletion(const jsonrpc::Json& params) {
 
     for (const auto& item : symbol_index_.completions(prefix, document->uri)) {
         appendCompletionItem(result, emitted_labels, toIndexCompletionItem(item));
+    }
+
+    if (result.empty()) {
+        const auto engine_completions = semantic_workspace_.engineCompletionsAt(document->uri,
+                                                                                completion.position.line,
+                                                                                completion.position.character,
+                                                                                prefix);
+        for (const auto& item : engine_completions.items) {
+            appendCompletionItem(result, emitted_labels, toSemanticEngineCompletionItem(item));
+        }
     }
 
     return result;
@@ -2829,6 +3021,31 @@ jsonrpc::Json ServerSession::handleCompletionItemResolve(const jsonrpc::Json& pa
         if (module) {
             item["insertText"] = moduleInstantiationSnippet(*module);
             item["insertTextFormat"] = 2;
+        }
+        return item;
+    }
+
+    if (*source == "semanticEngine") {
+        const auto stable_id = jsonStringField(*data_it, "stableId");
+        const auto label = jsonStringField(*data_it, "label").value_or(item.value("label", ""));
+        if (!stable_id.has_value()) {
+            return item;
+        }
+        const auto resolved = semantic_workspace_.engineResolveCompletion(*stable_id, label);
+        if (resolved.unresolved) {
+            return item;
+        }
+        if (!resolved.detail.empty()) {
+            item["detail"] = resolved.detail;
+        }
+        if (!resolved.documentation.empty()) {
+            item["documentation"] = markdownDocumentation(resolved.documentation);
+        }
+        if (!resolved.insert_text.empty() && resolved.insert_text != label) {
+            item["insertText"] = resolved.insert_text;
+            if (resolved.insert_text.find("${") != std::string::npos) {
+                item["insertTextFormat"] = 2;
+            }
         }
         return item;
     }
@@ -3214,22 +3431,29 @@ void ServerSession::publishDiagnostics(std::string_view uri) {
         return;
     }
 
-    const auto parse_result = compilation_service_.parse(document->text, document->uri);
-
     jsonrpc::Json diagnostics = jsonrpc::Json::array();
-    for (const auto& diagnostic : parse_result.diagnostics) {
-        diagnostics.push_back(makeDiagnosticJson(diagnostic.range,
-                                                 diagnostic.severity,
-                                                 diagnostic.code,
-                                                 server_name_,
-                                                 diagnostic.message));
+    try {
+        const auto parse_result = compilation_service_.parse(document->text, document->uri);
+        for (const auto& diagnostic : parse_result.diagnostics) {
+            diagnostics.push_back(makeDiagnosticJson(diagnostic.range,
+                                                     diagnostic.severity,
+                                                     diagnostic.code,
+                                                     server_name_,
+                                                     diagnostic.message));
+        }
+    }
+    catch (...) {
     }
 
-    for (const auto& include : compilation_service_.includeDirectives(document->text)) {
-        if (resolveIncludeTarget(workspace_manager_, document->uri, include.target).has_value()) {
-            continue;
+    try {
+        for (const auto& include : compilation_service_.includeDirectives(document->text)) {
+            if (resolveIncludeTarget(workspace_manager_, document->uri, include.target).has_value()) {
+                continue;
+            }
+            diagnostics.push_back(makeUnknownIncludeDiagnostic(include, server_name_));
         }
-        diagnostics.push_back(makeUnknownIncludeDiagnostic(include, server_name_));
+    }
+    catch (...) {
     }
 
     try {

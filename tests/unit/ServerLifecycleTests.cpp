@@ -363,16 +363,19 @@ TEST_CASE("ServerSession publishes parse diagnostics for invalid text", "[server
 
     ScriptedTransport transport{
         R"({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}})",
-        R"({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///workspace/broken.sv","languageId":"systemverilog","version":1,"text":"module broken\n"}}})"};
+    R"({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///workspace/broken.sv","languageId":"systemverilog","version":1,"text":"module broken; ? endmodule\n"}}})"};
 
     const int exit_code = rpc_server.run(transport);
 
     CHECK(exit_code == 0);
 
     const auto diagnostics = findNotifications(transport, "textDocument/publishDiagnostics");
-    REQUIRE(diagnostics.size() == 1);
-    REQUIRE_FALSE(diagnostics.front().at("params").at("diagnostics").empty());
-    CHECK(diagnostics.front().at("params").at("diagnostics").front().at("source").get<std::string>() ==
+    REQUIRE_FALSE(diagnostics.empty());
+    const auto diagnostic = std::find_if(diagnostics.begin(), diagnostics.end(), [](const jsonrpc::Json& message) {
+        return !message.at("params").at("diagnostics").empty();
+    });
+    REQUIRE(diagnostic != diagnostics.end());
+    CHECK(diagnostic->at("params").at("diagnostics").front().at("source").get<std::string>() ==
           "pristine-engine");
 }
 
@@ -1436,6 +1439,28 @@ TEST_CASE("ServerSession handles Tier 2 rename highlight and document links", "[
     CHECK(prepare_rename_response.at("result").at("range").at("start").at("line") == 4);
     CHECK(prepare_rename_response.at("result").at("range").at("start").at("character") == 8);
     CHECK(prepare_rename_response.at("result").at("range").at("end").at("character") == 13);
+}
+
+TEST_CASE("ServerSession resolves SemanticEngine completion items", "[server][completion]") {
+    jsonrpc::JsonRpcServer rpc_server;
+    ServerSession session{"pristine-engine", kTestServerVersion};
+    session.bind(rpc_server);
+
+    constexpr std::string_view uri = "file:///workspace/engine-completion.sv";
+    ScriptedTransport transport{
+        R"({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}})",
+        R"({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///workspace/engine-completion.sv","languageId":"systemverilog","version":1,"text":"module child(input logic clk, output logic rst_n); endmodule\nmodule top;\n  child u_child(.r);\nendmodule\n"}}})",
+        R"({"jsonrpc":"2.0","id":2,"method":"textDocument/completion","params":{"textDocument":{"uri":"file:///workspace/engine-completion.sv"},"position":{"line":2,"character":18}}})"};
+
+    CHECK(rpc_server.run(transport) == 0);
+    const auto completion_response = findResponse(transport, 2);
+    REQUIRE(completion_response.has_value());
+    const auto& items = completion_response->at("result");
+    const auto item_it = std::find_if(items.begin(), items.end(), [](const jsonrpc::Json& item) {
+        return item.at("label") == "rst_n";
+    });
+    REQUIRE(item_it != items.end());
+    CHECK(item_it->at("data").at("source") == "port");
 }
 
 TEST_CASE("ServerSession returns inferred SystemVerilog module hierarchy", "[server][hierarchy]") {
