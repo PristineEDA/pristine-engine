@@ -2,10 +2,31 @@
 
 #include "pristine/analysis/SourceUtil.h"
 
+#include <algorithm>
 #include <cctype>
 
 namespace pristine::analysis::semantic {
 namespace {
+
+constexpr size_t kMaxCompletionItems = 2000;
+
+bool startsWithInsensitive(std::string_view prefix, std::string_view candidate) {
+    if (prefix.size() > candidate.size()) {
+        return false;
+    }
+    for (size_t index = 0; index < prefix.size(); ++index) {
+        const auto lhs = static_cast<unsigned char>(prefix[index]);
+        const auto rhs = static_cast<unsigned char>(candidate[index]);
+        if (std::tolower(lhs) != std::tolower(rhs)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool prefixMatches(std::string_view value, std::string_view prefix) {
+    return startsWithInsensitive(prefix, value);
+}
 
 bool isIdentifierStart(char value) {
     const auto ch = static_cast<unsigned char>(value);
@@ -44,6 +65,252 @@ std::optional<std::string> qualifierBefore(std::string_view text, size_t qualifi
 
 } // namespace
 
+int completionKindForSemanticKind(std::string_view kind) {
+    if (kind == "Definition") {
+        return 9;
+    }
+    if (kind == "ClassType") {
+        return 7;
+    }
+    if (kind == "EnumType") {
+        return 13;
+    }
+    if (kind == "Interface" || kind == "Modport") {
+        return 8;
+    }
+    if (kind == "Subroutine" || kind == "SubroutinePort") {
+        return 3;
+    }
+    if (kind == "Net" || kind == "Variable" || kind == "Field" || kind == "Member") {
+        return 6;
+    }
+    if (kind == "Parameter") {
+        return 21;
+    }
+    if (kind == "EnumValue") {
+        return 20;
+    }
+    if (kind == "TypeAlias" || kind == "Type") {
+        return 25;
+    }
+    return 18;
+}
+
+std::string completionDetailForSemanticKind(std::string_view kind) {
+    if (kind == "Definition") {
+        return "Module";
+    }
+    if (kind == "Package") {
+        return "Package";
+    }
+    if (kind == "ClassType") {
+        return "Class";
+    }
+    if (kind == "EnumType") {
+        return "Enum";
+    }
+    if (kind == "Interface" || kind == "Modport") {
+        return "Interface / Modport";
+    }
+    if (kind == "Subroutine" || kind == "SubroutinePort") {
+        return "Callable";
+    }
+    if (kind == "Net" || kind == "Variable" || kind == "Field" || kind == "Member") {
+        return "Variable";
+    }
+    if (kind == "Parameter") {
+        return "Parameter";
+    }
+    if (kind == "EnumValue") {
+        return "Enum Member";
+    }
+    if (kind == "TypeAlias" || kind == "Type") {
+        return "Typedef";
+    }
+    return std::string(kind);
+}
+
+int completionPriorityForDetail(std::string_view detail) {
+    if (detail == "Variable" || detail == "Parameter" || detail == "Enum Member" ||
+        detail == "Callable") {
+        return 0;
+    }
+    if (detail == "Typedef" || detail == "Class" || detail == "Enum") {
+        return 1;
+    }
+    if (detail == "Module" || detail == "Instance" || detail == "Interface / Modport") {
+        return 2;
+    }
+    return 3;
+}
+
+std::string portSignatureLabel(const SchematicPort& port) {
+    std::string label;
+    const auto append_part = [&](std::string_view part) {
+        if (part.empty()) {
+            return;
+        }
+        if (!label.empty()) {
+            label.push_back(' ');
+        }
+        label += part;
+    };
+    append_part(port.direction);
+    append_part(port.width_text);
+    append_part(port.name);
+    return label.empty() ? port.name : label;
+}
+
+std::string moduleSignatureLabel(const ModuleDefinition& module) {
+    std::string label = module.name + "(";
+    const auto port_count = module.port_details.empty() ? module.ports.size() : module.port_details.size();
+    for (size_t index = 0; index < port_count; ++index) {
+        if (index != 0) {
+            label += ", ";
+        }
+        label += module.port_details.empty() ? module.ports[index] : portSignatureLabel(module.port_details[index]);
+    }
+    label += ")";
+    return label;
+}
+
+std::string snippetEscape(std::string_view value) {
+    std::string result;
+    result.reserve(value.size());
+    for (const char character : value) {
+        if (character == '\\' || character == '$' || character == '}') {
+            result.push_back('\\');
+        }
+        result.push_back(character);
+    }
+    return result;
+}
+
+std::string moduleInstantiationSnippet(const ModuleDefinition& module) {
+    std::string snippet = module.name + " ${1:" + snippetEscape(module.name) + "_i}(";
+    const auto port_count = module.port_details.empty() ? module.ports.size() : module.port_details.size();
+    for (size_t index = 0; index < port_count; ++index) {
+        if (index != 0) {
+            snippet += ", ";
+        }
+        const auto& port_name = module.port_details.empty() ? module.ports[index]
+                                                            : module.port_details[index].name;
+        snippet += ".";
+        snippet += port_name;
+        snippet += "(${";
+        snippet += std::to_string(index + 2);
+        snippet += ":";
+        snippet += snippetEscape(port_name);
+        snippet += "})";
+    }
+    snippet += ");";
+    return snippet;
+}
+
+std::string portConnectionSnippet(std::string_view port_name) {
+    return std::string(port_name) + "(${1:" + snippetEscape(port_name) + "})";
+}
+
+std::string macroSignatureLabel(const MacroDefinition& macro) {
+    std::string label = macro.name;
+    if (!macro.function_like) {
+        return label;
+    }
+
+    label += "(";
+    for (size_t index = 0; index < macro.parameters.size(); ++index) {
+        if (index != 0) {
+            label += ", ";
+        }
+        label += macro.parameters[index];
+    }
+    label += ")";
+    return label;
+}
+
+std::string macroInsertText(const MacroDefinition& macro) {
+    if (!macro.function_like) {
+        return macro.name;
+    }
+
+    std::string text = macro.name + "(";
+    for (size_t index = 0; index < macro.parameters.size(); ++index) {
+        if (index != 0) {
+            text += ", ";
+        }
+        text += "${";
+        text += std::to_string(index + 1);
+        text += ":";
+        text += snippetEscape(macro.parameters[index]);
+        text += "}";
+    }
+    text += ")";
+    return text;
+}
+
+std::string macroDocumentation(const MacroDefinition& macro) {
+    std::string documentation = "**Macro** `";
+    documentation += macroSignatureLabel(macro);
+    documentation += "`";
+    if (!macro.parameters.empty()) {
+        documentation += "\n\nParameters: `";
+        for (size_t index = 0; index < macro.parameters.size(); ++index) {
+            if (index != 0) {
+                documentation += ", ";
+            }
+            documentation += macro.parameters[index];
+        }
+        documentation += "`";
+    }
+    if (!macro.body.empty()) {
+        documentation += "\n\nBody:\n```systemverilog\n";
+        documentation += macro.body;
+        documentation += "\n```";
+    }
+    return documentation;
+}
+
+std::string moduleDocumentation(const ModuleDefinition& module, std::string_view declaration_uri) {
+    std::string documentation = "**";
+    documentation += module.kind.empty() ? "Module" : module.kind;
+    documentation += "** `";
+    documentation += moduleSignatureLabel(module);
+    documentation += "`";
+    const auto port_count = module.port_details.empty() ? module.ports.size() : module.port_details.size();
+    if (port_count > 0) {
+        documentation += "\n\nPorts: `";
+        for (size_t index = 0; index < port_count; ++index) {
+            if (index != 0) {
+                documentation += ", ";
+            }
+            documentation += module.port_details.empty() ? module.ports[index]
+                                                          : portSignatureLabel(module.port_details[index]);
+        }
+        documentation += "`";
+    }
+    if (!declaration_uri.empty()) {
+        documentation += "\n\nDeclared: `" + std::string(declaration_uri) + ":" +
+                         std::to_string(module.selection_range.start_line + 1) + ":" +
+                         std::to_string(module.selection_range.start_character + 1) + "`";
+    }
+    return documentation;
+}
+
+std::string portDocumentation(const ModuleDefinition& module,
+                              const SchematicPort& port,
+                              std::string_view declaration_uri) {
+    std::string documentation = "**Port** `";
+    documentation += portSignatureLabel(port);
+    documentation += "`";
+    documentation += "\n\nModule: `" + module.name + "`";
+    if (!declaration_uri.empty()) {
+        documentation += "\n\nDeclared: `" + std::string(declaration_uri) + ":" +
+                         std::to_string(port.selection_range.start_line + 1) + ":" +
+                         std::to_string(port.selection_range.start_character + 1) + "`";
+    }
+    return documentation;
+}
+
 std::optional<size_t> completionPrefixStartOffset(std::string_view text,
                                                   int line,
                                                   int character,
@@ -77,6 +344,100 @@ CompletionContext detectCompletionContext(std::string_view text,
         context.member_qualifier = qualifierBefore(text, prefix_start - 1);
     }
     return context;
+}
+
+void appendCompletionItem(std::vector<SemanticCompletionItem>& items,
+                          std::set<std::string>& emitted,
+                          SemanticCompletionItem item,
+                          std::string_view prefix,
+                          bool& truncated) {
+    if (item.label == prefix || !prefixMatches(item.label, prefix) || !emitted.insert(item.label).second) {
+        return;
+    }
+    items.push_back(std::move(item));
+    if (items.size() >= kMaxCompletionItems) {
+        truncated = true;
+    }
+}
+
+void appendSymbolCompletion(std::vector<SemanticCompletionItem>& items,
+                            std::set<std::string>& emitted,
+                            const SemanticSymbolIdentity& symbol,
+                            std::string_view prefix,
+                            bool& truncated) {
+    if (truncated) {
+        return;
+    }
+    appendCompletionItem(items,
+                         emitted,
+                         SemanticCompletionItem{.stable_id = symbol.stable_id,
+                                                 .label = symbol.name,
+                                                 .detail = completionDetailForSemanticKind(symbol.kind),
+                                                 .documentation = {},
+                                                 .insert_text = symbol.name,
+                                                 .kind = completionKindForSemanticKind(symbol.kind),
+                                                 .unresolved = false},
+                         prefix,
+                         truncated);
+}
+
+void appendModulePortCompletions(std::vector<SemanticCompletionItem>& items,
+                                 std::set<std::string>& emitted,
+                                 const std::string& module_stable_id,
+                                 const ModuleDefinition& module,
+                                 std::string_view module_uri,
+                                 std::string_view prefix,
+                                 const std::set<std::string>& excluded_ports,
+                                 bool& truncated) {
+    if (module.port_details.empty()) {
+        for (const auto& port_name : module.ports) {
+            if (truncated) {
+                return;
+            }
+            if (excluded_ports.contains(port_name)) {
+                continue;
+            }
+            const SchematicPort port{.name = port_name,
+                                     .direction = {},
+                                     .width_text = {},
+                                     .range = module.selection_range,
+                                     .selection_range = module.selection_range};
+            appendCompletionItem(
+                items,
+                emitted,
+                SemanticCompletionItem{.stable_id = module_stable_id + "|port|" + port_name,
+                                        .label = port_name,
+                                        .detail = "Port",
+                                        .documentation = portDocumentation(module, port, module_uri),
+                                        .insert_text = portConnectionSnippet(port_name),
+                                        .kind = 5,
+                                        .unresolved = false},
+                prefix,
+                truncated);
+        }
+        return;
+    }
+
+    for (const auto& port : module.port_details) {
+        if (truncated) {
+            return;
+        }
+        if (excluded_ports.contains(port.name)) {
+            continue;
+        }
+        appendCompletionItem(
+            items,
+            emitted,
+            SemanticCompletionItem{.stable_id = module_stable_id + "|port|" + port.name,
+                                    .label = port.name,
+                                    .detail = portSignatureLabel(port),
+                                    .documentation = portDocumentation(module, port, module_uri),
+                                    .insert_text = portConnectionSnippet(port.name),
+                                    .kind = 5,
+                                    .unresolved = false},
+            prefix,
+            truncated);
+    }
 }
 
 } // namespace pristine::analysis::semantic

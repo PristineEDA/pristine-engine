@@ -401,85 +401,6 @@ bool fuzzyMatch(std::string_view query, std::string_view candidate) {
     return query_it == query.end();
 }
 
-int completionKindForSemanticKind(std::string_view kind) {
-    if (kind == "Definition") {
-        return 9;
-    }
-    if (kind == "ClassType") {
-        return 7;
-    }
-    if (kind == "EnumType") {
-        return 13;
-    }
-    if (kind == "Interface" || kind == "Modport") {
-        return 8;
-    }
-    if (kind == "Subroutine" || kind == "SubroutinePort") {
-        return 3;
-    }
-    if (kind == "Net" || kind == "Variable" || kind == "Field" || kind == "Member") {
-        return 6;
-    }
-    if (kind == "Parameter") {
-        return 21;
-    }
-    if (kind == "EnumValue") {
-        return 20;
-    }
-    if (kind == "TypeAlias" || kind == "Type") {
-        return 25;
-    }
-    return 18;
-}
-
-std::string completionDetailForSemanticKind(std::string_view kind) {
-    if (kind == "Definition") {
-        return "Module";
-    }
-    if (kind == "Package") {
-        return "Package";
-    }
-    if (kind == "ClassType") {
-        return "Class";
-    }
-    if (kind == "EnumType") {
-        return "Enum";
-    }
-    if (kind == "Interface" || kind == "Modport") {
-        return "Interface / Modport";
-    }
-    if (kind == "Subroutine" || kind == "SubroutinePort") {
-        return "Callable";
-    }
-    if (kind == "Net" || kind == "Variable" || kind == "Field" || kind == "Member") {
-        return "Variable";
-    }
-    if (kind == "Parameter") {
-        return "Parameter";
-    }
-    if (kind == "EnumValue") {
-        return "Enum Member";
-    }
-    if (kind == "TypeAlias" || kind == "Type") {
-        return "Typedef";
-    }
-    return std::string(kind);
-}
-
-int completionPriorityForDetail(std::string_view detail) {
-    if (detail == "Variable" || detail == "Parameter" || detail == "Enum Member" ||
-        detail == "Callable") {
-        return 0;
-    }
-    if (detail == "Typedef" || detail == "Class" || detail == "Enum") {
-        return 1;
-    }
-    if (detail == "Module" || detail == "Instance" || detail == "Interface / Modport") {
-        return 2;
-    }
-    return 3;
-}
-
 int lspSymbolKindForSemanticKind(std::string_view kind) {
     if (kind == "Package" || kind == "Namespace") {
         return 4;
@@ -514,176 +435,9 @@ int lspSymbolKindForSemanticKind(std::string_view kind) {
     return 0;
 }
 
-std::string portSignatureLabel(const SchematicPort& port) {
-    std::string label;
-    const auto append_part = [&](std::string_view part) {
-        if (part.empty()) {
-            return;
-        }
-        if (!label.empty()) {
-            label.push_back(' ');
-        }
-        label += part;
-    };
-    append_part(port.direction);
-    append_part(port.width_text);
-    append_part(port.name);
-    return label.empty() ? port.name : label;
-}
-
-std::string moduleSignatureLabel(const ModuleDefinition& module) {
-    std::string label = module.name + "(";
-    const auto port_count = module.port_details.empty() ? module.ports.size() : module.port_details.size();
-    for (size_t index = 0; index < port_count; ++index) {
-        if (index != 0) {
-            label += ", ";
-        }
-        label += module.port_details.empty() ? module.ports[index] : portSignatureLabel(module.port_details[index]);
-    }
-    label += ")";
-    return label;
-}
-
 std::string declarationLocationLabel(const SemanticLocation& location) {
     return location.uri + ":" + std::to_string(location.range.start_line + 1) + ":" +
            std::to_string(location.range.start_character + 1);
-}
-
-std::string snippetEscape(std::string_view value) {
-    std::string result;
-    result.reserve(value.size());
-    for (const char character : value) {
-        if (character == '\\' || character == '$' || character == '}') {
-            result.push_back('\\');
-        }
-        result.push_back(character);
-    }
-    return result;
-}
-
-std::string moduleInstantiationSnippet(const ModuleDefinition& module) {
-    std::string snippet = module.name + " ${1:" + snippetEscape(module.name) + "_i}(";
-    const auto port_count = module.port_details.empty() ? module.ports.size() : module.port_details.size();
-    for (size_t index = 0; index < port_count; ++index) {
-        if (index != 0) {
-            snippet += ", ";
-        }
-        const auto& port_name = module.port_details.empty() ? module.ports[index]
-                                                            : module.port_details[index].name;
-        snippet += ".";
-        snippet += port_name;
-        snippet += "(${";
-        snippet += std::to_string(index + 2);
-        snippet += ":";
-        snippet += snippetEscape(port_name);
-        snippet += "})";
-    }
-    snippet += ");";
-    return snippet;
-}
-
-std::string portConnectionSnippet(std::string_view port_name) {
-    return std::string(port_name) + "(${1:" + snippetEscape(port_name) + "})";
-}
-
-std::string macroSignatureLabel(const MacroDefinition& macro) {
-    std::string label = macro.name;
-    if (!macro.function_like) {
-        return label;
-    }
-
-    label += "(";
-    for (size_t index = 0; index < macro.parameters.size(); ++index) {
-        if (index != 0) {
-            label += ", ";
-        }
-        label += macro.parameters[index];
-    }
-    label += ")";
-    return label;
-}
-
-std::string macroInsertText(const MacroDefinition& macro) {
-    if (!macro.function_like) {
-        return macro.name;
-    }
-
-    std::string text = macro.name + "(";
-    for (size_t index = 0; index < macro.parameters.size(); ++index) {
-        if (index != 0) {
-            text += ", ";
-        }
-        text += "${";
-        text += std::to_string(index + 1);
-        text += ":";
-        text += snippetEscape(macro.parameters[index]);
-        text += "}";
-    }
-    text += ")";
-    return text;
-}
-
-std::string macroDocumentation(const MacroDefinition& macro) {
-    std::string documentation = "**Macro** `";
-    documentation += macroSignatureLabel(macro);
-    documentation += "`";
-    if (!macro.parameters.empty()) {
-        documentation += "\n\nParameters: `";
-        for (size_t index = 0; index < macro.parameters.size(); ++index) {
-            if (index != 0) {
-                documentation += ", ";
-            }
-            documentation += macro.parameters[index];
-        }
-        documentation += "`";
-    }
-    if (!macro.body.empty()) {
-        documentation += "\n\nBody:\n```systemverilog\n";
-        documentation += macro.body;
-        documentation += "\n```";
-    }
-    return documentation;
-}
-
-std::string moduleDocumentation(const ModuleDefinition& module, std::string_view declaration_uri) {
-    std::string documentation = "**";
-    documentation += module.kind.empty() ? "Module" : module.kind;
-    documentation += "** `";
-    documentation += moduleSignatureLabel(module);
-    documentation += "`";
-    const auto port_count = module.port_details.empty() ? module.ports.size() : module.port_details.size();
-    if (port_count > 0) {
-        documentation += "\n\nPorts: `";
-        for (size_t index = 0; index < port_count; ++index) {
-            if (index != 0) {
-                documentation += ", ";
-            }
-            documentation += module.port_details.empty() ? module.ports[index]
-                                                          : portSignatureLabel(module.port_details[index]);
-        }
-        documentation += "`";
-    }
-    if (!declaration_uri.empty()) {
-        documentation += "\n\nDeclared: `" + std::string(declaration_uri) + ":" +
-                         std::to_string(module.selection_range.start_line + 1) + ":" +
-                         std::to_string(module.selection_range.start_character + 1) + "`";
-    }
-    return documentation;
-}
-
-std::string portDocumentation(const ModuleDefinition& module,
-                              const SchematicPort& port,
-                              std::string_view declaration_uri) {
-    std::string documentation = "**Port** `";
-    documentation += portSignatureLabel(port);
-    documentation += "`";
-    documentation += "\n\nModule: `" + module.name + "`";
-    if (!declaration_uri.empty()) {
-        documentation += "\n\nDeclared: `" + std::string(declaration_uri) + ":" +
-                         std::to_string(port.selection_range.start_line + 1) + ":" +
-                         std::to_string(port.selection_range.start_character + 1) + "`";
-    }
-    return documentation;
 }
 
 int activeParameterAt(std::string_view text, size_t open_paren_offset, size_t position_offset) {
@@ -960,11 +714,11 @@ void insertSymbol(SnapshotData& data,
         const auto kind_name = symbolKindName(symbol.kind);
         completions.push_back(SemanticCompletionItem{.stable_id = stable_id,
                                                       .label = std::string(symbol.name),
-                                                      .detail = completionDetailForSemanticKind(kind_name),
-                                                      .documentation = {},
-                                                      .insert_text = std::string(symbol.name),
-                                                      .kind = completionKindForSemanticKind(kind_name),
-                                                      .unresolved = false});
+                .detail = semantic::completionDetailForSemanticKind(kind_name),
+                .documentation = {},
+                .insert_text = std::string(symbol.name),
+                .kind = semantic::completionKindForSemanticKind(kind_name),
+                .unresolved = false});
     }
 }
 
@@ -1584,8 +1338,8 @@ void sortSnapshotIndexes(SnapshotData& data) {
     }
     for (auto& [_, completions] : data.completions_by_uri) {
         std::sort(completions.begin(), completions.end(), [](const auto& lhs, const auto& rhs) {
-            const auto lhs_priority = completionPriorityForDetail(lhs.detail);
-            const auto rhs_priority = completionPriorityForDetail(rhs.detail);
+            const auto lhs_priority = semantic::completionPriorityForDetail(lhs.detail);
+            const auto rhs_priority = semantic::completionPriorityForDetail(rhs.detail);
             if (lhs_priority != rhs_priority) {
                 return lhs_priority < rhs_priority;
             }
@@ -1653,48 +1407,6 @@ std::vector<SemanticLocation> locationsForSymbol(const SnapshotData& data,
     return locations;
 }
 
-bool prefixMatches(std::string_view value, std::string_view prefix) {
-    return startsWithInsensitive(prefix, value);
-}
-
-void appendCompletionItem(std::vector<SemanticCompletionItem>& items,
-                          std::set<std::string>& emitted,
-                                                SemanticCompletionItem item,
-                                                std::string_view prefix,
-                                                bool& truncated) {
-    if (item.label == prefix || !prefixMatches(item.label, prefix) || !emitted.insert(item.label).second) {
-        return;
-    }
-    items.push_back(std::move(item));
-    if (items.size() >= kMaxSemanticLocations) {
-        truncated = true;
-    }
-}
-
-template<typename SnapshotData>
-void appendSymbolCompletion(std::vector<SemanticCompletionItem>& items,
-                            std::set<std::string>& emitted,
-                            const SnapshotData& data,
-                            const typename SnapshotData::IndexedSymbol& symbol,
-                            std::string_view prefix,
-                            bool& truncated) {
-    if (truncated) {
-        return;
-    }
-    appendCompletionItem(items,
-                         emitted,
-                         SemanticCompletionItem{.stable_id = symbol.identity.stable_id,
-                                                 .label = symbol.identity.name,
-                                                 .detail = completionDetailForSemanticKind(symbol.identity.kind),
-                                                 .documentation = {},
-                                                 .insert_text = symbol.identity.name,
-                                                 .kind = completionKindForSemanticKind(symbol.identity.kind),
-                                                 .unresolved = false},
-                         prefix,
-                         truncated);
-    (void)data;
-}
-
 template<typename SnapshotData>
 void appendModulePortCompletions(std::vector<SemanticCompletionItem>& items,
                                  std::set<std::string>& emitted,
@@ -1706,55 +1418,14 @@ void appendModulePortCompletions(std::vector<SemanticCompletionItem>& items,
                                  bool& truncated) {
     const auto module_id = findSymbolIdByNameAndKind(data, module.name, "Definition")
                                .value_or(std::string("module|") + module.name);
-    if (module.port_details.empty()) {
-        for (const auto& port_name : module.ports) {
-            if (truncated) {
-                return;
-            }
-            if (excluded_ports.contains(port_name)) {
-                continue;
-            }
-            const SchematicPort port{.name = port_name,
-                                     .direction = {},
-                                     .width_text = {},
-                                     .range = module.selection_range,
-                                     .selection_range = module.selection_range};
-            appendCompletionItem(
-                items,
-                emitted,
-                SemanticCompletionItem{.stable_id = module_id + "|port|" + port_name,
-                                        .label = port_name,
-                                        .detail = "Port",
-                                        .documentation = portDocumentation(module, port, module_uri),
-                                        .insert_text = portConnectionSnippet(port_name),
-                                        .kind = 5,
-                                        .unresolved = false},
-                prefix,
-                truncated);
-        }
-        return;
-    }
-
-    for (const auto& port : module.port_details) {
-        if (truncated) {
-            return;
-        }
-        if (excluded_ports.contains(port.name)) {
-            continue;
-        }
-        appendCompletionItem(
-            items,
-            emitted,
-            SemanticCompletionItem{.stable_id = module_id + "|port|" + port.name,
-                                    .label = port.name,
-                                    .detail = portSignatureLabel(port),
-                                    .documentation = portDocumentation(module, port, module_uri),
-                                    .insert_text = portConnectionSnippet(port.name),
-                                    .kind = 5,
-                                    .unresolved = false},
-            prefix,
-            truncated);
-    }
+    semantic::appendModulePortCompletions(items,
+                                          emitted,
+                                          module_id,
+                                          module,
+                                          module_uri,
+                                          prefix,
+                                          excluded_ports,
+                                          truncated);
 }
 
 template<typename Map>
@@ -2553,7 +2224,7 @@ SemanticCompletionResult SemanticEngine::completionsAt(std::string_view uri,
 
     const auto append_items = [&](const std::vector<SemanticCompletionItem>& items) {
         for (const auto& item : items) {
-            appendCompletionItem(result.items, emitted, item, prefix, result.truncated);
+            semantic::appendCompletionItem(result.items, emitted, item, prefix, result.truncated);
             if (result.truncated) {
                 return;
             }
@@ -2563,18 +2234,18 @@ SemanticCompletionResult SemanticEngine::completionsAt(std::string_view uri,
     if (document != nullptr && completion_context.macro_invocation) {
         const auto append_macros = [&](const std::vector<MacroDefinition>& macros) {
             for (const auto& macro : macros) {
-                appendCompletionItem(result.items,
-                                     emitted,
-                                     SemanticCompletionItem{.stable_id = document_uri + "|macro|" + macro.name,
-                                                            .label = macro.name,
-                                                            .detail = macro.function_like ? "Macro function"
-                                                                                          : "Macro",
-                                                            .documentation = macroDocumentation(macro),
-                                                            .insert_text = macroInsertText(macro),
-                                                            .kind = macro.function_like ? 3 : 21,
-                                                            .unresolved = false},
-                                     prefix,
-                                     result.truncated);
+                semantic::appendCompletionItem(
+                    result.items,
+                    emitted,
+                    SemanticCompletionItem{.stable_id = document_uri + "|macro|" + macro.name,
+                                            .label = macro.name,
+                                            .detail = macro.function_like ? "Macro function" : "Macro",
+                                            .documentation = semantic::macroDocumentation(macro),
+                                            .insert_text = semantic::macroInsertText(macro),
+                                            .kind = macro.function_like ? 3 : 21,
+                                            .unresolved = false},
+                    prefix,
+                    result.truncated);
                 if (result.truncated) {
                     return;
                 }
@@ -2606,12 +2277,11 @@ SemanticCompletionResult SemanticEngine::completionsAt(std::string_view uri,
                     symbol.stable_id.find(*package_name) == std::string::npos) {
                     continue;
                 }
-                appendSymbolCompletion(result.items,
-                                       emitted,
-                                       *data,
-                                       indexed_symbol,
-                                       prefix,
-                                       result.truncated);
+                semantic::appendSymbolCompletion(result.items,
+                                                 emitted,
+                                                 indexed_symbol.identity,
+                                                 prefix,
+                                                 result.truncated);
                 if (result.truncated) {
                     return finish(std::move(result));
                 }
@@ -2677,12 +2347,11 @@ SemanticCompletionResult SemanticEngine::completionsAt(std::string_view uri,
                 if (indexed_symbol.identity.kind == "Field" || indexed_symbol.identity.kind == "Member" ||
                     indexed_symbol.identity.kind == "Net" || indexed_symbol.identity.kind == "Variable" ||
                     indexed_symbol.identity.kind == "Parameter" || indexed_symbol.identity.kind == "Subroutine") {
-                    appendSymbolCompletion(result.items,
-                                           emitted,
-                                           *data,
-                                           indexed_symbol,
-                                           prefix,
-                                           result.truncated);
+                    semantic::appendSymbolCompletion(result.items,
+                                                     emitted,
+                                                     indexed_symbol.identity,
+                                                     prefix,
+                                                     result.truncated);
                 }
                 if (result.truncated) {
                     return finish(std::move(result));
@@ -2704,21 +2373,22 @@ SemanticCompletionResult SemanticEngine::completionsAt(std::string_view uri,
                 const auto module_id = findSymbolIdByNameAndKind(*data, module.name, "Definition")
                                            .value_or(std::string("module|") + module.name);
                 const auto module_uri_it = data->module_uris_by_name.find(module.name);
-                appendCompletionItem(result.items,
-                                     emitted,
-                                     SemanticCompletionItem{.stable_id = module_id,
-                                                            .label = module.name,
-                                                            .detail = moduleSignatureLabel(module),
-                                                            .documentation = moduleDocumentation(
-                                                                module,
-                                                                module_uri_it == data->module_uris_by_name.end()
-                                                                    ? std::string_view{}
-                                                                    : std::string_view(module_uri_it->second)),
-                                                            .insert_text = module.name,
-                                                            .kind = 9,
-                                                            .unresolved = false},
-                                     prefix,
-                                     result.truncated);
+                semantic::appendCompletionItem(
+                    result.items,
+                    emitted,
+                    SemanticCompletionItem{.stable_id = module_id,
+                                            .label = module.name,
+                                            .detail = semantic::moduleSignatureLabel(module),
+                                            .documentation = semantic::moduleDocumentation(
+                                                module,
+                                                module_uri_it == data->module_uris_by_name.end()
+                                                    ? std::string_view{}
+                                                    : std::string_view(module_uri_it->second)),
+                                            .insert_text = module.name,
+                                            .kind = 9,
+                                            .unresolved = false},
+                    prefix,
+                    result.truncated);
                 if (result.truncated) {
                     return finish(std::move(result));
                 }
@@ -2770,8 +2440,8 @@ SemanticCompletionItem SemanticEngine::resolveCompletion(std::string_view stable
                                              .range = module.selection_range,
                                              .selection_range = module.selection_range};
                     item.detail = "Port";
-                    item.documentation = portDocumentation(module, port, module_uri);
-                    item.insert_text = portConnectionSnippet(port_name);
+                    item.documentation = semantic::portDocumentation(module, port, module_uri);
+                    item.insert_text = semantic::portConnectionSnippet(port_name);
                     return item;
                 }
             }
@@ -2779,9 +2449,9 @@ SemanticCompletionItem SemanticEngine::resolveCompletion(std::string_view stable
                 if (port.name != port_name) {
                     continue;
                 }
-                item.detail = portSignatureLabel(port);
-                item.documentation = portDocumentation(module, port, module_uri);
-                item.insert_text = portConnectionSnippet(port.name);
+                item.detail = semantic::portSignatureLabel(port);
+                item.documentation = semantic::portDocumentation(module, port, module_uri);
+                item.insert_text = semantic::portConnectionSnippet(port.name);
                 return item;
             }
         }
@@ -2797,10 +2467,10 @@ SemanticCompletionItem SemanticEngine::resolveCompletion(std::string_view stable
             if (macro_it == macros.end()) {
                 continue;
             }
-            item.detail = macro_it->function_like ? "Macro function " + macroSignatureLabel(*macro_it)
+            item.detail = macro_it->function_like ? "Macro function " + semantic::macroSignatureLabel(*macro_it)
                                                   : "Macro";
-            item.documentation = macroDocumentation(*macro_it);
-            item.insert_text = macroInsertText(*macro_it);
+            item.documentation = semantic::macroDocumentation(*macro_it);
+            item.insert_text = semantic::macroInsertText(*macro_it);
             return item;
         }
         item.unresolved = true;
@@ -2820,12 +2490,12 @@ SemanticCompletionItem SemanticEngine::resolveCompletion(std::string_view stable
         const auto module_it = data->modules_by_name.find(symbol_it->second.identity.name);
         if (module_it != data->modules_by_name.end()) {
             const auto module_uri_it = data->module_uris_by_name.find(module_it->first);
-            item.detail = moduleSignatureLabel(module_it->second);
-            item.documentation = moduleDocumentation(module_it->second,
-                                                     module_uri_it == data->module_uris_by_name.end()
-                                                         ? std::string_view{}
-                                                         : std::string_view(module_uri_it->second));
-            item.insert_text = moduleInstantiationSnippet(module_it->second);
+            item.detail = semantic::moduleSignatureLabel(module_it->second);
+            item.documentation = semantic::moduleDocumentation(module_it->second,
+                                                              module_uri_it == data->module_uris_by_name.end()
+                                                                  ? std::string_view{}
+                                                                  : std::string_view(module_uri_it->second));
+            item.insert_text = semantic::moduleInstantiationSnippet(module_it->second);
             return item;
         }
     }
@@ -2888,13 +2558,13 @@ SemanticSignatureHelpResult SemanticEngine::signatureHelpAt(std::string_view uri
                 return result;
             }
 
-            result.label = moduleSignatureLabel(module_it->second);
+            result.label = semantic::moduleSignatureLabel(module_it->second);
             if (module_it->second.port_details.empty()) {
                 result.parameters = module_it->second.ports;
             }
             else {
                 for (const auto& port : module_it->second.port_details) {
-                    result.parameters.push_back(portSignatureLabel(port));
+                    result.parameters.push_back(semantic::portSignatureLabel(port));
                 }
             }
             const auto parameter_count = result.parameters.size();
@@ -2953,7 +2623,7 @@ SemanticInlayHintResult SemanticEngine::inlayHints(std::string_view uri, ParseRa
                 .kind = "type",
                 .tooltip = module_it == data->modules_by_name.end()
                                ? std::string{}
-                               : moduleSignatureLabel(module_it->second)});
+                               : semantic::moduleSignatureLabel(module_it->second)});
         }
     }
     std::sort(result.hints.begin(), result.hints.end(), [](const auto& lhs, const auto& rhs) {

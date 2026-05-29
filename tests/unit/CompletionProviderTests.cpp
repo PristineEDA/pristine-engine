@@ -2,6 +2,9 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
+#include <set>
+
 namespace pristine::analysis::semantic {
 namespace {
 
@@ -55,6 +58,86 @@ TEST_CASE("CompletionProvider maps prefix start with UTF-16 positions",
 
     REQUIRE(start.has_value());
     CHECK(text.substr(*start, 6) == "smile_");
+}
+
+TEST_CASE("CompletionProvider builds module, port, macro, and symbol completion items",
+          "[analysis][semantic][completion-provider]") {
+    const ModuleDefinition module{.name = "child",
+                                  .kind = "module",
+                                  .range = ParseRange{.start_line = 0,
+                                                      .start_character = 0,
+                                                      .end_line = 0,
+                                                      .end_character = 64},
+                                  .selection_range = ParseRange{.start_line = 0,
+                                                                .start_character = 7,
+                                                                .end_line = 0,
+                                                                .end_character = 12},
+                                  .ports = {},
+                                  .port_details = {SchematicPort{.name = "clk",
+                                                                 .direction = "input",
+                                                                 .width_text = "logic",
+                                                                 .range = ParseRange{},
+                                                                 .selection_range = ParseRange{}},
+                                                   SchematicPort{.name = "rst_n",
+                                                                 .direction = "output",
+                                                                 .width_text = "logic",
+                                                                 .range = ParseRange{},
+                                                                 .selection_range = ParseRange{}}},
+                                  .instances = {}};
+
+    CHECK(moduleSignatureLabel(module) == "child(input logic clk, output logic rst_n)");
+    CHECK(moduleInstantiationSnippet(module).find(".rst_n(${3:rst_n})") != std::string::npos);
+
+    const MacroDefinition macro{.name = "ADD",
+                                .parameters = {"lhs", "rhs"},
+                                .body = "((lhs) + (rhs))",
+                                .range = ParseRange{},
+                                .selection_range = ParseRange{},
+                                .function_like = true};
+    CHECK(macroSignatureLabel(macro) == "ADD(lhs, rhs)");
+    CHECK(macroInsertText(macro).find("${2:rhs}") != std::string::npos);
+    CHECK(macroDocumentation(macro).find("Body:") != std::string::npos);
+
+    std::vector<SemanticCompletionItem> items;
+    std::set<std::string> emitted;
+    bool truncated = false;
+    appendModulePortCompletions(items,
+                                emitted,
+                                "module|child",
+                                module,
+                                "file:///workspace/child.sv",
+                                "r",
+                                {"clk"},
+                                truncated);
+    REQUIRE_FALSE(truncated);
+    REQUIRE(items.size() == 1);
+    CHECK(items.front().label == "rst_n");
+    CHECK(items.front().stable_id == "module|child|port|rst_n");
+    CHECK(items.front().documentation.find("Module: `child`") != std::string::npos);
+
+    appendSymbolCompletion(items,
+                           emitted,
+                           SemanticSymbolIdentity{.stable_id = "symbol|ready",
+                                                  .name = "ready",
+                                                  .kind = "Variable",
+                                                  .location = SemanticLocation{}},
+                           "rea",
+                           truncated);
+    CHECK(std::any_of(items.begin(), items.end(), [](const SemanticCompletionItem& item) {
+        return item.label == "ready" && item.detail == "Variable";
+    }));
+
+    appendCompletionItem(items,
+                         emitted,
+                         SemanticCompletionItem{.stable_id = "symbol|ready-copy",
+                                                 .label = "ready",
+                                                 .detail = "Variable",
+                                                 .insert_text = "ready"},
+                         "rea",
+                         truncated);
+    CHECK(std::count_if(items.begin(), items.end(), [](const SemanticCompletionItem& item) {
+        return item.label == "ready";
+    }) == 1);
 }
 
 } // namespace
