@@ -124,10 +124,19 @@ public:
     [[nodiscard]] SemanticReferenceResult engineDefinitionsAt(std::string_view uri,
                                                               int line,
                                                               int character) const;
+    [[nodiscard]] SemanticReferenceResult engineTypeDefinitionsAt(std::string_view uri,
+                                                                  int line,
+                                                                  int character) const;
     [[nodiscard]] SemanticReferenceResult engineReferencesAt(std::string_view uri,
                                                             int line,
                                                             int character,
                                                             bool include_declaration) const;
+    [[nodiscard]] SemanticReferenceResult engineDocumentHighlightsAt(std::string_view uri,
+                                                                     int line,
+                                                                     int character) const;
+    [[nodiscard]] SemanticReferenceResult engineImplementationsAt(std::string_view uri,
+                                                                  int line,
+                                                                  int character) const;
     [[nodiscard]] SemanticPrepareRenameResult enginePrepareRenameAt(std::string_view uri,
                                                                     int line,
                                                                     int character) const;
@@ -150,54 +159,14 @@ public:
     [[nodiscard]] SemanticSelectionRangeResult engineSelectionRangesAt(std::string_view uri,
                                                                        int line,
                                                                        int character) const;
-    [[nodiscard]] std::optional<SemanticSymbol> findResolvedSymbolAt(std::string_view uri,
-                                                                      int line,
-                                                                      int character) const;
-    [[nodiscard]] std::optional<SemanticSymbol> findSymbolById(std::string_view symbol_id) const;
-    [[nodiscard]] std::vector<SemanticSymbol> findDefinitionsAt(std::string_view uri,
-                                                                int line,
-                                                                int character) const;
-    [[nodiscard]] std::vector<SemanticSymbol> findTypeDefinitionsAt(std::string_view uri,
-                                                                    int line,
-                                                                    int character) const;
-    [[nodiscard]] std::vector<SemanticReference> findReferencesAt(std::string_view uri,
-                                                                  int line,
-                                                                  int character,
-                                                                  bool include_declaration) const;
-    [[nodiscard]] std::vector<SemanticReference> findDocumentReferencesAt(std::string_view uri,
-                                                                          int line,
-                                                                          int character,
-                                                                          bool include_declaration) const;
-    [[nodiscard]] std::optional<HoverResult> hoverAt(std::string_view uri,
-                                                     int line,
-                                                     int character) const;
-    [[nodiscard]] std::optional<SemanticSymbol> resolvedSymbolAt(std::string_view uri,
-                                                                  int line,
-                                                                  int character) const;
-    [[nodiscard]] std::vector<SemanticSymbol> definitionsAt(std::string_view uri,
-                                                            int line,
-                                                            int character) const;
-    [[nodiscard]] std::vector<SemanticReference> referencesAt(std::string_view uri,
-                                                              int line,
-                                                              int character,
-                                                              bool include_declaration) const;
-    [[nodiscard]] std::vector<SemanticReference> documentReferencesAt(std::string_view uri,
-                                                                      int line,
-                                                                      int character,
-                                                                      bool include_declaration) const;
-    [[nodiscard]] std::vector<SemanticSymbol> visibleSymbolsAt(std::string_view uri,
-                                                               int line,
-                                                               int character,
-                                                               std::string_view prefix) const;
-    [[nodiscard]] std::vector<SemanticSymbol> packageMembersAt(std::string_view uri,
-                                                               int line,
-                                                               int character,
-                                                               std::string_view package_name,
-                                                               std::string_view prefix) const;
+    [[nodiscard]] SemanticHoverResult engineHoverAt(std::string_view uri,
+                                                    int line,
+                                                    int character) const;
     [[nodiscard]] std::vector<SemanticDiagnostic> diagnosticsFor(std::string_view uri) const;
-    [[nodiscard]] SemanticConeTrace backwardConeAt(std::string_view uri,
-                                                   int line,
-                                                   int character) const;
+    [[nodiscard]] std::vector<SemanticEngineDiagnostic> engineDiagnosticsFor(std::string_view uri) const;
+    [[nodiscard]] SemanticConeTrace engineBackwardConeAt(std::string_view uri,
+                                                         int line,
+                                                         int character) const;
     [[nodiscard]] SemanticModuleHierarchyResult engineModuleHierarchy(std::optional<std::string_view> module_name,
                                                                       int max_depth) const;
     [[nodiscard]] SemanticSchematicResult engineSchematic(std::optional<std::string_view> module_name,

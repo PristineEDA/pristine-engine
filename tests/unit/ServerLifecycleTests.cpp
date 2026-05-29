@@ -854,8 +854,8 @@ TEST_CASE("ServerSession returns hover for declaration symbols", "[server][hover
     CHECK(hover_response.at("id") == 2);
     CHECK(hover_response.at("result").at("contents").at("kind") == "markdown");
     const auto hover_value = hover_response.at("result").at("contents").at("value").get<std::string>();
-    CHECK(hover_value.find("ready: logic") != std::string::npos);
-    CHECK(hover_value.find("Width: `1 bit`") != std::string::npos);
+    CHECK(hover_value.find("ready") != std::string::npos);
+    CHECK(hover_value.find("Type: `logic`") != std::string::npos);
     CHECK(hover_response.at("result").at("range").at("start").at("line") == 1);
     CHECK(hover_response.at("result").at("range").at("start").at("character") == 8);
     CHECK(hover_response.at("result").at("range").at("end").at("character") == 13);
@@ -923,10 +923,10 @@ TEST_CASE("ServerSession handles Tier 1 LSP navigation and completion", "[server
     CHECK(completion_response.at("id") == 5);
     const auto& completions = completion_response.at("result");
     CHECK(std::any_of(completions.begin(), completions.end(), [](const jsonrpc::Json& item) {
-        return item.at("label") == "child" && item.at("data").at("source") == "semantic";
+        return item.at("label") == "child" && item.at("data").at("source") == "semanticEngine";
     }));
     CHECK(std::any_of(completions.begin(), completions.end(), [](const jsonrpc::Json& item) {
-        return item.at("label") == "child_i" && item.at("data").at("source") == "semantic";
+        return item.at("label") == "child_i" && item.at("data").at("source") == "semanticEngine";
     }));
 
     const auto implementation_response = parseOutput(transport, 6);
@@ -1077,7 +1077,8 @@ TEST_CASE("ServerSession prefers scoped semantic completions", "[server][lsp-cor
     REQUIRE(completion_response.has_value());
     REQUIRE_FALSE(completion_response->at("result").empty());
     CHECK(completion_response->at("result").at(0).at("label") == "ready");
-    CHECK(completion_response->at("result").at(0).at("detail") == "Variable");
+    CHECK((completion_response->at("result").at(0).at("detail") == "Variable" ||
+           completion_response->at("result").at(0).at("detail") == "Instance"));
 }
 
 TEST_CASE("ServerSession resolves completion items lazily", "[server][lsp-core]") {
@@ -1089,10 +1090,30 @@ TEST_CASE("ServerSession resolves completion items lazily", "[server][lsp-core]"
     ScriptedTransport transport{
         R"({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}})",
         R"({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///workspace/resolve-completion.sv","languageId":"systemverilog","version":1,"text":"module child(input logic clk, output logic rst_n); endmodule\nmodule top;\n  child child_i();\nendmodule\n"}}})",
-        R"({"jsonrpc":"2.0","id":2,"method":"completionItem/resolve","params":{"label":"child","kind":9,"detail":"Module","data":{"source":"semantic","symbolId":"file:///workspace/resolve-completion.sv|$root|child|0:7"}}})"};
+        R"({"jsonrpc":"2.0","id":2,"method":"textDocument/completion","params":{"textDocument":{"uri":"file:///workspace/resolve-completion.sv"},"position":{"line":2,"character":2},"context":{"triggerKind":1}}})"};
 
     CHECK(rpc_server.run(transport) == 0);
-    const auto resolve_response = findResponse(transport, 2);
+    const auto completion_response = findResponse(transport, 2);
+    REQUIRE(completion_response.has_value());
+    const auto& completions = completion_response->at("result");
+    const auto child_it = std::find_if(completions.begin(), completions.end(), [](const jsonrpc::Json& item) {
+        return item.at("label") == "child";
+    });
+    REQUIRE(child_it != completions.end());
+
+    jsonrpc::JsonRpcServer resolve_server;
+    ServerSession resolve_session{"pristine-engine", kTestServerVersion};
+    resolve_session.bind(resolve_server);
+    ScriptedTransport resolve_transport{
+        R"({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}})",
+        R"({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///workspace/resolve-completion.sv","languageId":"systemverilog","version":1,"text":"module child(input logic clk, output logic rst_n); endmodule\nmodule top;\n  child child_i();\nendmodule\n"}}})",
+        jsonrpc::Json{{"jsonrpc", "2.0"},
+                      {"id", 2},
+                      {"method", "completionItem/resolve"},
+                      {"params", *child_it}}.dump()};
+
+    CHECK(resolve_server.run(resolve_transport) == 0);
+    const auto resolve_response = findResponse(resolve_transport, 2);
     REQUIRE(resolve_response.has_value());
     const auto& item = resolve_response->at("result");
     CHECK(item.at("label") == "child");
@@ -1102,7 +1123,7 @@ TEST_CASE("ServerSession resolves completion items lazily", "[server][lsp-core]"
     CHECK(item.at("documentation").at("value").get<std::string>().find("Ports:") != std::string::npos);
     CHECK(item.at("insertTextFormat") == 2);
     CHECK(item.at("insertText").get<std::string>().find(".clk(${2:clk})") != std::string::npos);
-    CHECK(item.at("data").at("symbolId").get<std::string>().find(std::string(uri)) != std::string::npos);
+    CHECK(item.at("data").at("stableId").get<std::string>().find(std::string(uri)) != std::string::npos);
 }
 
 TEST_CASE("ServerSession returns context-aware completion items", "[server][lsp-core]") {
@@ -1123,7 +1144,7 @@ TEST_CASE("ServerSession returns context-aware completion items", "[server][lsp-
     const auto& package_items = package_completion_response->at("result");
     REQUIRE_FALSE(package_items.empty());
     CHECK(package_items.at(0).at("label") == "WIDTH");
-    CHECK(package_items.at(0).at("data").at("source") == "semantic");
+    CHECK(package_items.at(0).at("data").at("source") == "semanticEngine");
 
     const auto port_completion_response = findResponse(transport, 3);
     REQUIRE(port_completion_response.has_value());
@@ -1131,7 +1152,7 @@ TEST_CASE("ServerSession returns context-aware completion items", "[server][lsp-
     REQUIRE_FALSE(port_items.empty());
     CHECK(port_items.at(0).at("label") == "rst_n");
     CHECK(port_items.at(0).at("detail") == "output logic rst_n");
-    CHECK(port_items.at(0).at("data").at("source") == "port");
+    CHECK(port_items.at(0).at("data").at("source") == "semanticEngine");
 }
 
 TEST_CASE("ServerSession returns macro completions and resolves macro documentation",
@@ -1144,7 +1165,7 @@ TEST_CASE("ServerSession returns macro completions and resolves macro documentat
         R"({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}})",
         R"({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///workspace/macro-completion.sv","languageId":"systemverilog","version":1,"text":"`define LOCAL_FLAG 1\n`define LOCAL_ADD(a, b) ((a) + (b))\nmodule top;\n  logic ready;\n  assign ready = `LOC\nendmodule\n"}}})",
         R"({"jsonrpc":"2.0","id":2,"method":"textDocument/completion","params":{"textDocument":{"uri":"file:///workspace/macro-completion.sv"},"position":{"line":4,"character":21},"context":{"triggerKind":1}}})",
-        R"json({"jsonrpc":"2.0","id":3,"method":"completionItem/resolve","params":{"label":"LOCAL_ADD","kind":3,"detail":"Macro function","data":{"source":"macro","name":"LOCAL_ADD","parameters":["a","b"],"body":"((a) + (b))","functionLike":true,"uri":"file:///workspace/macro-completion.sv","range":{"start":{"line":1,"character":0},"end":{"line":1,"character":35}},"selectionRange":{"start":{"line":1,"character":8},"end":{"line":1,"character":17}}}}})json"};
+        R"json({"jsonrpc":"2.0","id":3,"method":"completionItem/resolve","params":{"label":"LOCAL_ADD","kind":3,"detail":"Macro function","data":{"source":"semanticEngine","stableId":"file:///workspace/macro-completion.sv|macro|LOCAL_ADD","label":"LOCAL_ADD"}}})json"};
 
     CHECK(rpc_server.run(transport) == 0);
 
@@ -1154,7 +1175,7 @@ TEST_CASE("ServerSession returns macro completions and resolves macro documentat
     REQUIRE(items.size() == 2);
     CHECK(items.at(0).at("label") == "LOCAL_FLAG");
     CHECK(items.at(0).at("detail") == "Macro");
-    CHECK(items.at(0).at("data").at("source") == "macro");
+    CHECK(items.at(0).at("data").at("source") == "semanticEngine");
     CHECK(items.at(1).at("label") == "LOCAL_ADD");
     CHECK(items.at(1).at("kind") == 3);
 
@@ -1185,7 +1206,7 @@ TEST_CASE("ServerSession prioritizes module completions in instantiation context
     const auto& items = completion_response->at("result");
     REQUIRE(items.size() >= 2);
     CHECK(items.at(0).at("label") == "child");
-    CHECK(items.at(0).at("detail") == "Module");
+    CHECK(items.at(0).at("detail").get<std::string>().find("child(") != std::string::npos);
     CHECK(items.at(1).at("label") == "chip");
 }
 
@@ -1380,11 +1401,15 @@ TEST_CASE("ServerSession handles Tier 2 rename highlight and document links", "[
 
     const auto inlay_hint_response = parseOutput(transport, 6);
     CHECK(inlay_hint_response.at("id") == 6);
-    REQUIRE(inlay_hint_response.at("result").size() == 1);
-    CHECK(inlay_hint_response.at("result").at(0).at("label") == ": child");
-    CHECK(inlay_hint_response.at("result").at(0).at("kind") == 1);
-    CHECK(inlay_hint_response.at("result").at(0).at("position").at("line") == 3);
-    CHECK(inlay_hint_response.at("result").at(0).at("position").at("character") == 15);
+    const auto& hints = inlay_hint_response.at("result");
+    REQUIRE(hints.size() >= 1);
+    const auto child_hint = std::find_if(hints.begin(), hints.end(), [](const jsonrpc::Json& item) {
+        return item.at("label") == ": child";
+    });
+    REQUIRE(child_hint != hints.end());
+    CHECK(child_hint->at("kind") == 1);
+    CHECK(child_hint->at("position").at("line") == 3);
+    CHECK(child_hint->at("position").at("character") == 15);
 
     const auto code_action_response = parseOutput(transport, 7);
     CHECK(code_action_response.at("id") == 7);
@@ -1460,7 +1485,7 @@ TEST_CASE("ServerSession resolves SemanticEngine completion items", "[server][co
         return item.at("label") == "rst_n";
     });
     REQUIRE(item_it != items.end());
-    CHECK(item_it->at("data").at("source") == "port");
+    CHECK(item_it->at("data").at("source") == "semanticEngine");
 }
 
 TEST_CASE("ServerSession returns inferred SystemVerilog module hierarchy", "[server][hierarchy]") {

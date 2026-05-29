@@ -884,11 +884,29 @@ SemanticReferenceResult SemanticWorkspace::engineDefinitionsAt(std::string_view 
     return semantic_engine_.definitionsAt(uri, line, character);
 }
 
+SemanticReferenceResult SemanticWorkspace::engineTypeDefinitionsAt(std::string_view uri,
+                                                                   int line,
+                                                                   int character) const {
+    return semantic_engine_.typeDefinitionsAt(uri, line, character);
+}
+
 SemanticReferenceResult SemanticWorkspace::engineReferencesAt(std::string_view uri,
                                                               int line,
                                                               int character,
                                                               bool include_declaration) const {
     return semantic_engine_.referencesAt(uri, line, character, include_declaration);
+}
+
+SemanticReferenceResult SemanticWorkspace::engineDocumentHighlightsAt(std::string_view uri,
+                                                                      int line,
+                                                                      int character) const {
+    return semantic_engine_.documentHighlightsAt(uri, line, character);
+}
+
+SemanticReferenceResult SemanticWorkspace::engineImplementationsAt(std::string_view uri,
+                                                                   int line,
+                                                                   int character) const {
+    return semantic_engine_.implementationsAt(uri, line, character);
 }
 
 SemanticPrepareRenameResult SemanticWorkspace::enginePrepareRenameAt(std::string_view uri,
@@ -937,6 +955,12 @@ SemanticSelectionRangeResult SemanticWorkspace::engineSelectionRangesAt(std::str
     return semantic_engine_.selectionRangesAt(uri, line, character);
 }
 
+SemanticHoverResult SemanticWorkspace::engineHoverAt(std::string_view uri,
+                                                     int line,
+                                                     int character) const {
+    return semantic_engine_.hoverAt(uri, line, character);
+}
+
 SemanticModuleHierarchyResult SemanticWorkspace::engineModuleHierarchy(std::optional<std::string_view> module_name,
                                                                        int max_depth) const {
     return semantic_engine_.moduleHierarchy(module_name, max_depth);
@@ -968,6 +992,16 @@ SemanticCodeActionResult SemanticWorkspace::engineCodeActionsAt(std::string_view
 SemanticWorkspaceSymbolResult SemanticWorkspace::engineWorkspaceSymbols(std::string_view query,
                                                                         size_t limit) const {
     return semantic_engine_.workspaceSymbols(query, limit);
+}
+
+std::vector<SemanticEngineDiagnostic> SemanticWorkspace::engineDiagnosticsFor(std::string_view uri) const {
+    return semantic_engine_.diagnosticsFor(uri);
+}
+
+SemanticConeTrace SemanticWorkspace::engineBackwardConeAt(std::string_view uri,
+                                                          int line,
+                                                          int character) const {
+    return semantic_engine_.backwardConeAt(uri, line, character);
 }
 
 std::optional<SemanticSymbol> SemanticWorkspace::symbolById(std::string_view symbol_id) const {
@@ -1084,199 +1118,6 @@ std::optional<SemanticSymbol> SemanticWorkspace::resolveReference(const Semantic
         return std::nullopt;
     }
     return definitions.front();
-}
-
-std::optional<SemanticSymbol> SemanticWorkspace::findResolvedSymbolAt(std::string_view uri,
-                                                                      int line,
-                                                                      int character) const {
-    if (const auto symbol = symbolAt(uri, line, character)) {
-        return symbol;
-    }
-    const auto reference = referenceAt(uri, line, character);
-    if (!reference.has_value()) {
-        return std::nullopt;
-    }
-    return resolveReference(*reference);
-}
-
-std::optional<SemanticSymbol> SemanticWorkspace::findSymbolById(std::string_view symbol_id) const {
-    return symbolById(symbol_id);
-}
-
-std::vector<SemanticSymbol> SemanticWorkspace::findDefinitionsAt(std::string_view uri,
-                                                                 int line,
-                                                                 int character) const {
-    if (const auto symbol = symbolAt(uri, line, character)) {
-        return {*symbol};
-    }
-
-    const auto reference = referenceAt(uri, line, character);
-    if (!reference.has_value()) {
-        return {};
-    }
-    if (const auto resolved = resolveReference(*reference)) {
-        return {*resolved};
-    }
-    return resolveName(reference->name, reference->scope_path, reference->location.uri);
-}
-
-std::vector<SemanticSymbol> SemanticWorkspace::findTypeDefinitionsAt(std::string_view uri,
-                                                                     int line,
-                                                                     int character) const {
-    std::vector<SemanticSymbol> result;
-    for (const auto& symbol : findDefinitionsAt(uri, line, character)) {
-        if (isTypeDefinitionSymbol(symbol.kind)) {
-            result.push_back(symbol);
-        }
-    }
-    return result;
-}
-
-std::vector<SemanticReference> SemanticWorkspace::findReferencesAt(std::string_view uri,
-                                                                   int line,
-                                                                   int character,
-                                                                   bool include_declaration) const {
-    const auto target = findResolvedSymbolAt(uri, line, character);
-    if (!target.has_value()) {
-        return {};
-    }
-
-    std::vector<SemanticReference> result;
-    if (include_declaration) {
-        result.push_back(SemanticReference{.name = target->name,
-                                           .scope_path = target->scope_path,
-                                           .location = target->location,
-                                           .target_symbol_id = target->id,
-                                           .is_declaration = true});
-    }
-
-    for (const auto& document_entry : documents_) {
-        for (const auto& reference : document_entry.second.references) {
-            if (!reference.target_symbol_id.has_value() || *reference.target_symbol_id != target->id ||
-                reference.is_declaration) {
-                continue;
-            }
-            result.push_back(reference);
-        }
-    }
-
-    std::sort(result.begin(), result.end(), referenceLess);
-    return result;
-}
-
-std::vector<SemanticReference> SemanticWorkspace::findDocumentReferencesAt(std::string_view uri,
-                                                                           int line,
-                                                                           int character,
-                                                                           bool include_declaration) const {
-    std::vector<SemanticReference> result;
-    for (const auto& reference : findReferencesAt(uri, line, character, include_declaration)) {
-        if (reference.location.uri == uri) {
-            result.push_back(reference);
-        }
-    }
-    return result;
-}
-
-std::optional<SemanticSymbol> SemanticWorkspace::resolvedSymbolAt(std::string_view uri,
-                                                                  int line,
-                                                                  int character) const {
-    return findResolvedSymbolAt(uri, line, character);
-}
-
-std::vector<SemanticSymbol> SemanticWorkspace::definitionsAt(std::string_view uri,
-                                                             int line,
-                                                             int character) const {
-    return findDefinitionsAt(uri, line, character);
-}
-
-std::vector<SemanticReference> SemanticWorkspace::referencesAt(std::string_view uri,
-                                                               int line,
-                                                               int character,
-                                                               bool include_declaration) const {
-    return findReferencesAt(uri, line, character, include_declaration);
-}
-
-std::vector<SemanticReference> SemanticWorkspace::documentReferencesAt(std::string_view uri,
-                                                                       int line,
-                                                                       int character,
-                                                                       bool include_declaration) const {
-    return findDocumentReferencesAt(uri, line, character, include_declaration);
-}
-
-std::vector<SemanticSymbol> SemanticWorkspace::visibleSymbolsAt(std::string_view uri,
-                                                                int line,
-                                                                int character,
-                                                                std::string_view prefix) const {
-    const auto* source = document(uri);
-    if (!source) {
-        return {};
-    }
-
-    std::set<std::string> emitted_names;
-    std::vector<SemanticSymbol> result;
-    std::string current_scope = scopePathAt(*source, line, character);
-    while (!current_scope.empty()) {
-        std::vector<SemanticSymbol> scope_symbols;
-        for (const auto& document_entry : documents_) {
-            for (const auto& symbol : document_entry.second.symbols) {
-                if (symbol.scope_path != current_scope || !startsWithInsensitive(prefix, symbol.name) ||
-                    emitted_names.contains(symbol.name)) {
-                    continue;
-                }
-                emitted_names.insert(symbol.name);
-                scope_symbols.push_back(symbol);
-            }
-        }
-        std::sort(scope_symbols.begin(), scope_symbols.end(), symbolLess);
-        result.insert(result.end(), scope_symbols.begin(), scope_symbols.end());
-        current_scope = parentScopePath(current_scope);
-    }
-    return result;
-}
-
-std::vector<SemanticSymbol> SemanticWorkspace::packageMembersAt(std::string_view uri,
-                                                                int line,
-                                                                int character,
-                                                                std::string_view package_name,
-                                                                std::string_view prefix) const {
-    const auto* source = document(uri);
-    if (!source) {
-        return {};
-    }
-
-    const auto current_scope = scopePathAt(*source, line, character);
-    std::vector<std::string> package_scopes;
-    for (const auto& package : resolveName(package_name, current_scope, uri)) {
-        if (package.kind == 4) {
-            package_scopes.push_back(childScopePath(package.scope_path, package.name));
-        }
-    }
-
-    if (package_scopes.empty()) {
-        package_scopes.push_back(childScopePath(kRootScope, package_name));
-    }
-
-    std::sort(package_scopes.begin(), package_scopes.end());
-    package_scopes.erase(std::unique(package_scopes.begin(), package_scopes.end()), package_scopes.end());
-
-    std::set<std::string> emitted_names;
-    std::vector<SemanticSymbol> result;
-    for (const auto& package_scope : package_scopes) {
-        std::vector<SemanticSymbol> scope_symbols;
-        for (const auto& document_entry : documents_) {
-            for (const auto& symbol : document_entry.second.symbols) {
-                if (symbol.scope_path != package_scope || !startsWithInsensitive(prefix, symbol.name) ||
-                    emitted_names.contains(symbol.name)) {
-                    continue;
-                }
-                emitted_names.insert(symbol.name);
-                scope_symbols.push_back(symbol);
-            }
-        }
-        std::sort(scope_symbols.begin(), scope_symbols.end(), symbolLess);
-        result.insert(result.end(), scope_symbols.begin(), scope_symbols.end());
-    }
-    return result;
 }
 
 std::vector<SemanticDiagnostic> SemanticWorkspace::diagnosticsFor(std::string_view uri) const {
@@ -1481,110 +1322,6 @@ std::vector<SemanticDiagnostic> SemanticWorkspace::diagnosticsFor(std::string_vi
     return result;
 }
 
-SemanticConeTrace SemanticWorkspace::backwardConeAt(std::string_view uri,
-                                                    int line,
-                                                    int character) const {
-    const auto engine_trace = semantic_engine_.backwardConeAt(uri, line, character);
-    if (!engine_trace.unresolved || !engine_trace.nodes.empty()) {
-        return engine_trace;
-    }
-
-    SemanticConeTrace trace{};
-    const auto* source = document(uri);
-    if (!source) {
-        trace.messages.push_back("Document is not indexed in the semantic workspace.");
-        return trace;
-    }
-
-    const auto root = findResolvedSymbolAt(uri, line, character);
-    if (!root.has_value() || !isAssignableSignalSymbol(*root)) {
-        trace.messages.push_back("No signal symbol was found at the requested position.");
-        return trace;
-    }
-    if (root->location.uri != source->uri) {
-        trace.messages.push_back("Selected signal resolves outside the current document.");
-        return trace;
-    }
-
-    std::map<std::string, SemanticConeNode> emitted_nodes;
-    const auto append_node = [&](const SemanticSymbol& symbol) {
-        auto [it, inserted] = emitted_nodes.try_emplace(symbol.id, makeConeNode(symbol));
-        if (inserted) {
-            trace.nodes.push_back(it->second);
-        }
-    };
-
-    const auto resolve_local_signal = [&](std::string_view name,
-                                          std::string_view scope_path) -> std::optional<SemanticSymbol> {
-        if (!isSimpleIdentifierExpression(name)) {
-            return std::nullopt;
-        }
-
-        auto definitions = resolveName(name, scope_path, source->uri);
-        definitions.erase(std::remove_if(definitions.begin(), definitions.end(), [&](const SemanticSymbol& symbol) {
-                              return !isAssignableSignalSymbol(symbol) || symbol.location.uri != source->uri;
-                          }),
-                          definitions.end());
-        std::sort(definitions.begin(), definitions.end(), symbolLess);
-        definitions.erase(std::unique(definitions.begin(), definitions.end(), [](const SemanticSymbol& lhs,
-                                                                                 const SemanticSymbol& rhs) {
-                              return lhs.id == rhs.id;
-                          }),
-                          definitions.end());
-        if (definitions.size() != 1) {
-            return std::nullopt;
-        }
-        return definitions.front();
-    };
-
-    trace.root_symbol_id = root->id;
-    append_node(*root);
-
-    std::vector<std::string> pending{root->id};
-    std::set<std::string> visited;
-    std::set<std::string> emitted_edges;
-    for (size_t index = 0; index < pending.size(); ++index) {
-        const auto current_id = pending[index];
-        if (!visited.insert(current_id).second) {
-            continue;
-        }
-
-        for (const auto& assignment : source->assignments) {
-            const auto left_symbol = resolve_local_signal(assignment.left_expression,
-                                                          assignment.scope_path);
-            if (!left_symbol.has_value() || left_symbol->id != current_id) {
-                continue;
-            }
-
-            for (const auto& input_name : identifierNamesInExpression(assignment.right_expression)) {
-                const auto input_symbol = resolve_local_signal(input_name, assignment.scope_path);
-                if (!input_symbol.has_value()) {
-                    continue;
-                }
-
-                append_node(*input_symbol);
-                const auto edge_key = current_id + "\n" + input_symbol->id + "\n" +
-                                      std::to_string(assignment.location.range.start_line) + ":" +
-                                      std::to_string(assignment.location.range.start_character);
-                if (emitted_edges.insert(edge_key).second) {
-                    trace.edges.push_back(SemanticConeEdge{.from_symbol_id = current_id,
-                                                           .to_symbol_id = input_symbol->id,
-                                                           .location = SemanticLocation{
-                                                               .uri = assignment.location.uri,
-                                                               .range = assignment.location.range},
-                                                           .expression = assignment.right_expression});
-                }
-
-                if (!visited.contains(input_symbol->id)) {
-                    pending.push_back(input_symbol->id);
-                }
-            }
-        }
-    }
-
-    return trace;
-}
-
 std::vector<std::string> SemanticWorkspace::resolveIncludeUris(std::string_view including_uri,
                                                                std::string_view target) const {
     std::set<std::string> result;
@@ -1731,76 +1468,6 @@ void SemanticWorkspace::rebuildSemanticMetadata() {
             break;
         }
     }
-}
-
-std::optional<HoverResult> SemanticWorkspace::hoverAt(std::string_view uri,
-                                                      int line,
-                                                      int character) const {
-    std::optional<SemanticSymbol> symbol = symbolAt(uri, line, character);
-    std::optional<ParseRange> range;
-    if (symbol.has_value()) {
-        range = symbol->selection_range;
-    }
-    else {
-        const auto reference = referenceAt(uri, line, character);
-        if (!reference.has_value()) {
-            return std::nullopt;
-        }
-        symbol = resolveReference(*reference);
-        if (!symbol.has_value()) {
-            return std::nullopt;
-        }
-        range = reference->location.range;
-    }
-
-    std::string label = symbol->name;
-    if (symbol->type.has_value()) {
-        const auto& type = *symbol->type;
-        if ((symbol->kind == 13 || symbol->kind == 14 || symbol->kind == 19 || symbol->kind == 22) &&
-            !type.display_name.empty()) {
-            label += ": ";
-            label += type.display_name;
-        }
-        else if ((symbol->kind == 10 || symbol->kind == 26) && !type.alias_target.empty()) {
-            label += " = ";
-            label += type.alias_target;
-        }
-    }
-    if (symbol->kind == 14 && symbol->constant_value.has_value()) {
-        label += " = ";
-        label += std::to_string(*symbol->constant_value);
-    }
-
-    std::string contents = "**" + symbolKindLabel(symbol->kind) + "** `" + label + "`";
-    if (!symbol->direction.empty()) {
-        contents += "\n\nDirection: `" + symbol->direction + "`";
-    }
-    if (symbol->type.has_value() && symbol->type->bit_width.has_value()) {
-        contents += "\n\nWidth: `" + std::to_string(*symbol->type->bit_width) + " bit";
-        if (*symbol->type->bit_width != 1) {
-            contents += "s";
-        }
-        contents += "`";
-    }
-    if (symbol->type.has_value() && !symbol->type->alias_target.empty() && symbol->kind != 10 &&
-        symbol->kind != 26) {
-        contents += "\n\nAlias: `" + symbol->type->alias_target + "`";
-    }
-    if (symbol->kind != 14 && symbol->constant_value.has_value()) {
-        contents += "\n\nValue: `" + std::to_string(*symbol->constant_value) + "`";
-    }
-    if (symbol->type.has_value() && !symbol->type->enum_members.empty()) {
-        contents += "\n\nEnum members: `";
-        for (size_t index = 0; index < symbol->type->enum_members.size(); ++index) {
-            if (index != 0) {
-                contents += ", ";
-            }
-            contents += symbol->type->enum_members[index];
-        }
-        contents += "`";
-    }
-
-    return HoverResult{.contents = std::move(contents), .range = *range};
 }
 
 void SemanticWorkspace::rebuildReverseIncludes() {

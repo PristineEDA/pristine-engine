@@ -2,14 +2,12 @@
 
 #include "pristine/analysis/CompilationService.h"
 #include "pristine/analysis/SemanticWorkspace.h"
-#include "pristine/analysis/SymbolIndex.h"
 #include "pristine/document/DocumentStore.h"
 #include "pristine/workspace/WorkspaceManager.h"
 
 #include <nlohmann/json.hpp>
 
 #include <string>
-#include <unordered_map>
 
 namespace pristine::jsonrpc {
 class JsonRpcServer;
@@ -63,12 +61,11 @@ private:
     void handleDidChangeWatchedFiles(const jsonrpc::Json& params);
     void handleExit(const jsonrpc::Json& params);
     void indexWorkspaceSources();
-    void updateSymbolIndex(std::string_view uri,
-                           std::string_view text,
-                           analysis::SemanticDocumentState semantic_state = {});
-    void updateHierarchyIndex(std::string_view uri, std::string_view text);
-    void restoreClosedDocumentIndex(std::string_view uri);
-    void removeDocumentIndexes(std::string_view uri);
+    void updateSemanticDocument(std::string_view uri,
+                                std::string_view text,
+                                analysis::SemanticDocumentState semantic_state = {});
+    void restoreClosedDocument(std::string_view uri);
+    void removeSemanticDocument(std::string_view uri);
     void publishDiagnostics(std::string_view uri);
     void clearDiagnostics(std::string_view uri);
 
@@ -79,8 +76,6 @@ private:
     jsonrpc::JsonRpcServer* server_ = nullptr;
     analysis::CompilationService compilation_service_;
     analysis::SemanticWorkspace semantic_workspace_;
-    analysis::SymbolIndex symbol_index_;
-    std::unordered_map<std::string, std::vector<analysis::ModuleDefinition>> hierarchy_documents_;
     document::DocumentStore document_store_;
     workspace::WorkspaceManager workspace_manager_;
 };

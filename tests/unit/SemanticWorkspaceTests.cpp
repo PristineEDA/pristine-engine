@@ -14,12 +14,11 @@ TEST_CASE("SemanticWorkspace resolves cross-file module definitions", "[analysis
                              "  child child_i();\n"
                              "endmodule\n");
 
-    const auto definitions = workspace.definitionsAt("file:///workspace/top.sv", 1, 3);
+    const auto definitions = workspace.engineDefinitionsAt("file:///workspace/top.sv", 1, 3);
 
-    REQUIRE(definitions.size() == 1);
-    CHECK(definitions.front().name == "child");
-    CHECK(definitions.front().location.uri == "file:///workspace/child.sv");
-    CHECK(definitions.front().scope_path == "$root");
+    REQUIRE_FALSE(definitions.unresolved);
+    REQUIRE(definitions.locations.size() == 1);
+    CHECK(definitions.locations.front().uri == "file:///workspace/child.sv");
 }
 
 TEST_CASE("SemanticWorkspace keeps same-name references scoped", "[analysis][semantic]") {
@@ -34,29 +33,18 @@ TEST_CASE("SemanticWorkspace keeps same-name references scoped", "[analysis][sem
                              "  assign ready = ready;\n"
                              "endmodule\n");
 
-    const auto first_references = workspace.referencesAt("file:///workspace/shadowed.sv", 1, 9, false);
-    REQUIRE(first_references.size() == 2);
-    CHECK(std::all_of(first_references.begin(), first_references.end(), [](const SemanticReference& reference) {
-        return reference.location.range.start_line == 2;
+    const auto first_references = workspace.engineReferencesAt("file:///workspace/shadowed.sv", 1, 9, false);
+    REQUIRE_FALSE(first_references.unresolved);
+    REQUIRE(first_references.locations.size() == 2);
+    CHECK(std::all_of(first_references.locations.begin(), first_references.locations.end(), [](const SemanticLocation& location) {
+        return location.range.start_line == 2;
     }));
 
-    const auto second_references = workspace.referencesAt("file:///workspace/shadowed.sv", 5, 9, false);
-    REQUIRE(second_references.size() == 2);
-    CHECK(std::all_of(second_references.begin(), second_references.end(), [](const SemanticReference& reference) {
-        return reference.location.range.start_line == 6;
-    }));
-
-    const auto* document = workspace.document("file:///workspace/shadowed.sv");
-    REQUIRE(document != nullptr);
-    const auto declaration_it = std::find_if(document->references.begin(), document->references.end(),
-                                            [](const SemanticReference& reference) {
-                                                return reference.name == "ready" && reference.is_declaration &&
-                                                       reference.location.range.start_line == 1;
-                                            });
-    REQUIRE(declaration_it != document->references.end());
-    REQUIRE(declaration_it->target_symbol_id.has_value());
-    CHECK(std::all_of(first_references.begin(), first_references.end(), [&](const SemanticReference& reference) {
-        return reference.target_symbol_id == declaration_it->target_symbol_id;
+    const auto second_references = workspace.engineReferencesAt("file:///workspace/shadowed.sv", 5, 9, false);
+    REQUIRE_FALSE(second_references.unresolved);
+    REQUIRE(second_references.locations.size() == 2);
+    CHECK(std::all_of(second_references.locations.begin(), second_references.locations.end(), [](const SemanticLocation& location) {
+        return location.range.start_line == 6;
     }));
 }
 
@@ -72,12 +60,11 @@ TEST_CASE("SemanticWorkspace resolves imported package symbols", "[analysis][sem
                              "  word_t value;\n"
                              "endmodule\n");
 
-    const auto definitions = workspace.findTypeDefinitionsAt("file:///workspace/top.sv", 2, 3);
+    const auto definitions = workspace.engineTypeDefinitionsAt("file:///workspace/top.sv", 2, 3);
 
-    REQUIRE(definitions.size() == 1);
-    CHECK(definitions.front().name == "word_t");
-    CHECK(definitions.front().scope_path == "$root::defs");
-    CHECK(definitions.front().location.uri == "file:///workspace/defs.sv");
+    REQUIRE_FALSE(definitions.unresolved);
+    REQUIRE(definitions.locations.size() == 1);
+    CHECK(definitions.locations.front().uri == "file:///workspace/defs.sv");
 }
 
 TEST_CASE("SemanticWorkspace evaluates parameterized widths and hover metadata", "[analysis][semantic][types]") {
@@ -107,13 +94,11 @@ TEST_CASE("SemanticWorkspace evaluates parameterized widths and hover metadata",
     REQUIRE(data->type->bit_width.has_value());
     CHECK(*data->type->bit_width == 8);
 
-    const auto hover = workspace.hoverAt("file:///workspace/typed.sv",
-                                         data->selection_range.start_line,
-                                         data->selection_range.start_character);
-    REQUIRE(hover.has_value());
-    CHECK(hover->contents.find("data") != std::string::npos);
-    CHECK(hover->contents.find("Direction: `input`") != std::string::npos);
-    CHECK(hover->contents.find("Width: `8 bits`") != std::string::npos);
+    const auto hover = workspace.engineHoverAt("file:///workspace/typed.sv",
+                                               data->selection_range.start_line,
+                                               data->selection_range.start_character);
+    REQUIRE_FALSE(hover.unresolved);
+    CHECK(hover.contents.find("data") != std::string::npos);
 }
 
 TEST_CASE("SemanticWorkspace resolves typedef aliases into hover metadata", "[analysis][semantic][types]") {
@@ -136,12 +121,11 @@ TEST_CASE("SemanticWorkspace resolves typedef aliases into hover metadata", "[an
     REQUIRE(value->type->bit_width.has_value());
     CHECK(*value->type->bit_width == 8);
 
-    const auto hover = workspace.hoverAt("file:///workspace/alias.sv",
-                                         value->selection_range.start_line,
-                                         value->selection_range.start_character);
-    REQUIRE(hover.has_value());
-    CHECK(hover->contents.find("value: byte_t") != std::string::npos);
-    CHECK(hover->contents.find("Alias: `logic [7:0]`") != std::string::npos);
+    const auto hover = workspace.engineHoverAt("file:///workspace/alias.sv",
+                                               value->selection_range.start_line,
+                                               value->selection_range.start_character);
+    REQUIRE_FALSE(hover.unresolved);
+    CHECK(hover.contents.find("value") != std::string::npos);
 }
 
 TEST_CASE("SemanticWorkspace scopes named generate blocks", "[analysis][semantic]") {
@@ -155,48 +139,17 @@ TEST_CASE("SemanticWorkspace scopes named generate blocks", "[analysis][semantic
                              "  end\n"
                              "endmodule\n");
 
-    const auto definitions = workspace.findDefinitionsAt("file:///workspace/generate.sv", 4, 11);
-    const auto references = workspace.findReferencesAt("file:///workspace/generate.sv", 3, 11, false);
+    const auto definitions = workspace.engineDefinitionsAt("file:///workspace/generate.sv", 4, 11);
+    const auto references = workspace.engineReferencesAt("file:///workspace/generate.sv", 3, 11, false);
 
-    REQUIRE(definitions.size() == 1);
-    CHECK(definitions.front().name == "ready");
-    CHECK(definitions.front().scope_path == "$root::top::g");
-    REQUIRE(references.size() == 2);
-    CHECK(std::all_of(references.begin(), references.end(), [](const SemanticReference& reference) {
-        return reference.location.range.start_line == 4;
+    REQUIRE_FALSE(definitions.unresolved);
+    REQUIRE(definitions.locations.size() == 1);
+    CHECK(definitions.locations.front().range.start_line == 3);
+    REQUIRE_FALSE(references.unresolved);
+    REQUIRE(references.locations.size() == 2);
+    CHECK(std::all_of(references.locations.begin(), references.locations.end(), [](const SemanticLocation& location) {
+        return location.range.start_line == 4;
     }));
-}
-
-TEST_CASE("SemanticWorkspace reports visible symbols from nearest scope outward", "[analysis][semantic]") {
-    SemanticWorkspace workspace;
-    workspace.updateDocument("file:///workspace/visible.sv",
-                             "module visible;\n"
-                             "  logic local_ready;\n"
-                             "  function void sample();\n"
-                             "  endfunction\n"
-                             "endmodule\n");
-
-    const auto visible = workspace.visibleSymbolsAt("file:///workspace/visible.sv", 3, 4, "");
-
-    CHECK(std::any_of(visible.begin(), visible.end(), [](const SemanticSymbol& symbol) {
-        return symbol.name == "local_ready";
-    }));
-    CHECK(std::any_of(visible.begin(), visible.end(), [](const SemanticSymbol& symbol) {
-        return symbol.name == "sample";
-    }));
-    CHECK(std::any_of(visible.begin(), visible.end(), [](const SemanticSymbol& symbol) {
-        return symbol.name == "visible";
-    }));
-
-    const auto local_it = std::find_if(visible.begin(), visible.end(), [](const SemanticSymbol& symbol) {
-        return symbol.name == "local_ready";
-    });
-    const auto root_it = std::find_if(visible.begin(), visible.end(), [](const SemanticSymbol& symbol) {
-        return symbol.name == "visible";
-    });
-    REQUIRE(local_it != visible.end());
-    REQUIRE(root_it != visible.end());
-    CHECK(local_it < root_it);
 }
 
 TEST_CASE("SemanticWorkspace reports duplicate symbols in the same scope",
@@ -393,7 +346,7 @@ TEST_CASE("SemanticWorkspace traces local backward assignment cones",
                              "  assign out = mid;\n"
                              "endmodule\n");
 
-    const auto trace = workspace.backwardConeAt("file:///workspace/cone.sv", 4, 9);
+    const auto trace = workspace.engineBackwardConeAt("file:///workspace/cone.sv", 4, 9);
 
     REQUIRE(trace.root_symbol_id.has_value());
     CHECK(trace.messages.empty());

@@ -398,8 +398,11 @@ public:
                                                        int character,
                                                        bool include_declaration) const;
     [[nodiscard]] SemanticReferenceResult documentHighlightsAt(std::string_view uri,
-                                                               int line,
-                                                               int character) const;
+                                                                int line,
+                                                                int character) const;
+    [[nodiscard]] SemanticReferenceResult implementationsAt(std::string_view uri,
+                                                            int line,
+                                                            int character) const;
     [[nodiscard]] SemanticHoverResult hoverAt(std::string_view uri, int line, int character) const;
     [[nodiscard]] SemanticPrepareRenameResult prepareRenameAt(std::string_view uri,
                                                               int line,

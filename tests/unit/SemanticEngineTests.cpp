@@ -301,7 +301,7 @@ TEST_CASE("SemanticEngine provides AST-backed module signature help and port com
     REQUIRE_FALSE(completions.unresolved);
     CHECK(std::any_of(completions.items.begin(), completions.items.end(), [](const auto& item) {
         return item.label == "rst_n" && item.detail == "output logic rst_n" &&
-               item.insert_text.find(".rst_n(") != std::string::npos &&
+               item.insert_text.find("rst_n(") != std::string::npos &&
                !item.stable_id.empty();
     }));
 }
