@@ -79,6 +79,14 @@ DesignGraphContext simpleDesignContext() {
                                                                         .definition = top}}};
 }
 
+SemanticSymbolIdentity symbol(std::string stable_id, std::string name, int line, int start, int end) {
+    return SemanticSymbolIdentity{.stable_id = std::move(stable_id),
+                                  .name = std::move(name),
+                                  .kind = "Variable",
+                                  .location = SemanticLocation{.uri = "file:///workspace/cone.sv",
+                                                               .range = rangeAt(line, start, end)}};
+}
+
 TEST_CASE("DesignGraphProvider builds module hierarchy and schematic from design context",
           "[analysis][semantic][design-graph-provider]") {
     const auto context = simpleDesignContext();
@@ -109,6 +117,87 @@ TEST_CASE("DesignGraphProvider builds module hierarchy and schematic from design
     REQUIRE(ready_net != top_view->nets.end());
     REQUIRE(ready_net->drivers.size() == 1);
     CHECK(ready_net->drivers.front().node_id == "u_child");
+}
+
+TEST_CASE("DesignGraphProvider traces backward cone through continuous assignments",
+          "[analysis][semantic][design-graph-provider][cone]") {
+    auto context = simpleDesignContext();
+    const auto a = symbol("symbol|a", "a", 1, 8, 9);
+    const auto b = symbol("symbol|b", "b", 2, 8, 9);
+    const auto mid = symbol("symbol|mid", "mid", 3, 8, 11);
+    const auto out = symbol("symbol|out", "out", 4, 8, 11);
+    context.symbols_by_id = {{"symbol|a", DesignGraphSymbol{.identity = a}},
+                             {"symbol|b", DesignGraphSymbol{.identity = b}},
+                             {"symbol|mid", DesignGraphSymbol{.identity = mid}},
+                             {"symbol|out", DesignGraphSymbol{.identity = out}}};
+    context.symbol_ranges_by_uri["file:///workspace/cone.sv"] = {
+        DesignGraphRangeSymbol{.range = a.location.range, .stable_id = "symbol|a"},
+        DesignGraphRangeSymbol{.range = b.location.range, .stable_id = "symbol|b"},
+        DesignGraphRangeSymbol{.range = mid.location.range, .stable_id = "symbol|mid"},
+        DesignGraphRangeSymbol{.range = out.location.range, .stable_id = "symbol|out"},
+        DesignGraphRangeSymbol{.range = rangeAt(5, 9, 12), .stable_id = "symbol|mid"},
+        DesignGraphRangeSymbol{.range = rangeAt(5, 15, 16), .stable_id = "symbol|a"},
+        DesignGraphRangeSymbol{.range = rangeAt(5, 19, 20), .stable_id = "symbol|b"},
+        DesignGraphRangeSymbol{.range = rangeAt(6, 9, 12), .stable_id = "symbol|out"},
+        DesignGraphRangeSymbol{.range = rangeAt(6, 15, 18), .stable_id = "symbol|mid"}};
+    context.identifiers_by_uri["file:///workspace/cone.sv"] = {Identifier{.name = "mid",
+                                                                          .range = rangeAt(5, 9, 12)},
+                                                               Identifier{.name = "a",
+                                                                          .range = rangeAt(5, 15, 16)},
+                                                               Identifier{.name = "b",
+                                                                          .range = rangeAt(5, 19, 20)},
+                                                               Identifier{.name = "out",
+                                                                          .range = rangeAt(6, 9, 12)},
+                                                               Identifier{.name = "mid",
+                                                                          .range = rangeAt(6, 15, 18)}};
+    context.assignments_by_uri["file:///workspace/cone.sv"] = {
+        ContinuousAssignment{.left_expression = "mid",
+                             .right_expression = "a & b",
+                             .range = rangeAt(5, 2, 20),
+                             .left_range = rangeAt(5, 9, 12),
+                             .right_range = rangeAt(5, 15, 20)},
+        ContinuousAssignment{.left_expression = "out",
+                             .right_expression = "mid",
+                             .range = rangeAt(6, 2, 18),
+                             .left_range = rangeAt(6, 9, 12),
+                             .right_range = rangeAt(6, 15, 18)}};
+    const SemanticLookupResult lookup{.generation = 9,
+                                      .symbol = out,
+                                      .unresolved = false};
+
+    const auto trace = backwardCone(context, "file:///workspace/cone.sv", lookup, 2000);
+
+    REQUIRE_FALSE(trace.unresolved);
+    REQUIRE(trace.root_symbol_id.has_value());
+    CHECK(*trace.root_symbol_id == "symbol|out");
+    CHECK(trace.nodes.size() == 4);
+    CHECK(trace.edges.size() == 3);
+    CHECK(std::any_of(trace.edges.begin(), trace.edges.end(), [](const SemanticConeEdge& edge) {
+        return edge.from_symbol_id == "symbol|out" && edge.to_symbol_id == "symbol|mid";
+    }));
+    CHECK(std::any_of(trace.edges.begin(), trace.edges.end(), [](const SemanticConeEdge& edge) {
+        return edge.from_symbol_id == "symbol|mid" && edge.to_symbol_id == "symbol|a";
+    }));
+    CHECK(std::any_of(trace.edges.begin(), trace.edges.end(), [](const SemanticConeEdge& edge) {
+        return edge.from_symbol_id == "symbol|mid" && edge.to_symbol_id == "symbol|b";
+    }));
+}
+
+TEST_CASE("DesignGraphProvider reports missing cone assignments",
+          "[analysis][semantic][design-graph-provider][cone]") {
+    auto context = simpleDesignContext();
+    const auto out = symbol("symbol|out", "out", 4, 8, 11);
+    context.symbols_by_id = {{"symbol|out", DesignGraphSymbol{.identity = out}}};
+    const SemanticLookupResult lookup{.generation = 9,
+                                      .symbol = out,
+                                      .unresolved = false};
+
+    const auto trace = backwardCone(context, "file:///workspace/cone.sv", lookup, 2000);
+
+    CHECK_FALSE(trace.unresolved);
+    CHECK(trace.nodes.empty());
+    REQUIRE_FALSE(trace.messages.empty());
+    CHECK(trace.messages.front().find("No continuous assignments") != std::string::npos);
 }
 
 TEST_CASE("DesignGraphProvider prepares incoming and outgoing call hierarchy",

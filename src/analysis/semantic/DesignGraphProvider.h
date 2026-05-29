@@ -15,6 +15,15 @@ struct DesignGraphModuleEntry {
     ModuleDefinition definition;
 };
 
+struct DesignGraphSymbol {
+    SemanticSymbolIdentity identity;
+};
+
+struct DesignGraphRangeSymbol {
+    ParseRange range;
+    std::string stable_id;
+};
+
 struct DesignGraphContext {
     std::uint64_t generation = 0;
     bool snapshot_available = false;
@@ -24,6 +33,10 @@ struct DesignGraphContext {
     std::unordered_map<std::string, ModuleSchematic> schematics_by_name;
     std::unordered_map<std::string, std::string> schematic_uris_by_name;
     std::vector<DesignGraphModuleEntry> module_entries;
+    std::unordered_map<std::string, DesignGraphSymbol> symbols_by_id;
+    std::unordered_map<std::string, std::vector<ContinuousAssignment>> assignments_by_uri;
+    std::unordered_map<std::string, std::vector<Identifier>> identifiers_by_uri;
+    std::unordered_map<std::string, std::vector<DesignGraphRangeSymbol>> symbol_ranges_by_uri;
 };
 
 [[nodiscard]] constexpr std::string_view designGraphProviderName() {
@@ -48,5 +61,10 @@ struct DesignGraphContext {
 
 [[nodiscard]] SemanticCallHierarchyCallsResult outgoingCalls(const DesignGraphContext& context,
                                                             const SemanticCallHierarchyItem& item);
+
+[[nodiscard]] SemanticConeTrace backwardCone(const DesignGraphContext& context,
+                                             std::string_view document_uri,
+                                             const SemanticLookupResult& lookup,
+                                             size_t max_results);
 
 } // namespace pristine::analysis::semantic

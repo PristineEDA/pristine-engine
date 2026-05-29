@@ -688,6 +688,16 @@ semantic::DesignGraphContext designGraphContextFor(const SnapshotData* data,
         context.module_entries.push_back(semantic::DesignGraphModuleEntry{.uri = entry.uri,
                                                                           .definition = entry.definition});
     }
+    context.assignments_by_uri = data->assignments_by_uri;
+    for (const auto& [stable_id, indexed_symbol] : data->symbols_by_id) {
+        context.symbols_by_id.emplace(stable_id,
+                                      semantic::DesignGraphSymbol{.identity = indexed_symbol.identity});
+    }
+    for (const auto& reference : data->references) {
+        context.symbol_ranges_by_uri[reference.location.uri].push_back(
+            semantic::DesignGraphRangeSymbol{.range = reference.location.range,
+                                             .stable_id = reference.stable_id});
+    }
     return context;
 }
 
@@ -2747,113 +2757,12 @@ SemanticConeTrace SemanticEngine::backwardConeAt(std::string_view uri,
     }
 
     const auto* data = snapshotData();
-    if (data == nullptr) {
-        trace.unresolved = true;
-        trace.messages.push_back("AST-backed SemanticEngine snapshot is unavailable");
-        return finish(std::move(trace));
-    }
-
-    const auto assignments_it = data->assignments_by_uri.find(document_uri);
-    if (assignments_it == data->assignments_by_uri.end()) {
-        trace.messages.push_back("No continuous assignments are indexed for the current document.");
-        return finish(std::move(trace));
-    }
-
-    const auto symbol_id_at_range = [&](const ParseRange& range) -> std::optional<std::string> {
-        return symbolIdAtLocation(*data, document_uri, range.start_line, range.start_character);
-    };
-
-    std::vector<Identifier> document_identifiers;
+    auto context = designGraphContextFor(data, current_snapshot, config_);
     if (const auto document_it = documents_.find(document_uri); document_it != documents_.end()) {
         CompilationService compilation_service;
-        document_identifiers = compilation_service.identifiers(document_it->second.text);
+        context.identifiers_by_uri[document_uri] = compilation_service.identifiers(document_it->second.text);
     }
-
-    const auto append_node = [&](const std::string& stable_id) {
-        if (std::find_if(trace.nodes.begin(), trace.nodes.end(), [&](const SemanticConeNode& node) {
-                return node.id == stable_id;
-            }) != trace.nodes.end()) {
-            return;
-        }
-        const auto symbol_it = data->symbols_by_id.find(stable_id);
-        if (symbol_it == data->symbols_by_id.end()) {
-            return;
-        }
-        trace.nodes.push_back(SemanticConeNode{.id = stable_id,
-                                               .name = symbol_it->second.identity.name,
-                                               .location = symbol_it->second.identity.location,
-                                               .bit_width = std::nullopt});
-    };
-
-    trace.root_symbol_id = lookup.symbol->stable_id;
-    append_node(lookup.symbol->stable_id);
-
-    std::vector<std::string> pending{lookup.symbol->stable_id};
-    std::set<std::string> visited;
-    std::set<std::string> emitted_edges;
-    for (size_t index = 0; index < pending.size(); ++index) {
-        const auto current_id = pending[index];
-        if (!visited.insert(current_id).second) {
-            continue;
-        }
-        const auto current_symbol_it = data->symbols_by_id.find(current_id);
-        if (current_symbol_it == data->symbols_by_id.end()) {
-            continue;
-        }
-
-        for (const auto& assignment : assignments_it->second) {
-            const auto left_id = symbol_id_at_range(assignment.left_range);
-            if (!left_id.has_value() || *left_id != current_id) {
-                continue;
-            }
-
-            for (const auto& identifier : document_identifiers) {
-                if (!rangeContainsRange(assignment.right_range, identifier.range)) {
-                    continue;
-                }
-                const auto input_id = symbol_id_at_range(identifier.range);
-                if (!input_id.has_value()) {
-                    continue;
-                }
-
-                append_node(*input_id);
-                const auto edge_key = current_id + "\n" + *input_id + "\n" +
-                                      std::to_string(assignment.range.start_line) + ":" +
-                                      std::to_string(assignment.range.start_character);
-                if (emitted_edges.insert(edge_key).second) {
-                    trace.edges.push_back(SemanticConeEdge{.from_symbol_id = current_id,
-                                                           .to_symbol_id = *input_id,
-                                                           .location = SemanticLocation{.uri = document_uri,
-                                                                                        .range = assignment.range},
-                                                           .expression = assignment.right_expression});
-                }
-                if (!visited.contains(*input_id)) {
-                    pending.push_back(*input_id);
-                }
-            }
-        }
-
-        if (trace.nodes.size() >= kMaxSemanticLocations || trace.edges.size() >= kMaxSemanticLocations) {
-            trace.truncated = true;
-            trace.partial = true;
-            trace.messages.push_back("Backward cone reached the result cap.");
-            break;
-        }
-    }
-
-    trace.unresolved = false;
-    std::sort(trace.nodes.begin(), trace.nodes.end(), [](const auto& lhs, const auto& rhs) {
-        return locationLess(lhs.location, rhs.location);
-    });
-    std::sort(trace.edges.begin(), trace.edges.end(), [](const auto& lhs, const auto& rhs) {
-        if (lhs.from_symbol_id != rhs.from_symbol_id) {
-            return lhs.from_symbol_id < rhs.from_symbol_id;
-        }
-        if (lhs.to_symbol_id != rhs.to_symbol_id) {
-            return lhs.to_symbol_id < rhs.to_symbol_id;
-        }
-        return locationLess(lhs.location, rhs.location);
-    });
+    trace = semantic::backwardCone(context, document_uri, lookup, kMaxSemanticLocations);
     return finish(std::move(trace));
 }
 

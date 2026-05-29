@@ -60,6 +60,71 @@ bool sameParseRange(const ParseRange& lhs, const ParseRange& rhs) {
            lhs.end_line == rhs.end_line && lhs.end_character == rhs.end_character;
 }
 
+bool locationLess(const SemanticLocation& lhs, const SemanticLocation& rhs) {
+    if (lhs.uri != rhs.uri) {
+        return lhs.uri < rhs.uri;
+    }
+    if (lhs.range.start_line != rhs.range.start_line) {
+        return lhs.range.start_line < rhs.range.start_line;
+    }
+    if (lhs.range.start_character != rhs.range.start_character) {
+        return lhs.range.start_character < rhs.range.start_character;
+    }
+    if (lhs.range.end_line != rhs.range.end_line) {
+        return lhs.range.end_line < rhs.range.end_line;
+    }
+    return lhs.range.end_character < rhs.range.end_character;
+}
+
+bool containsPosition(const ParseRange& range, int line, int character) {
+    if (line < range.start_line || line > range.end_line) {
+        return false;
+    }
+    if (line == range.start_line && character < range.start_character) {
+        return false;
+    }
+    if (line == range.end_line && character >= range.end_character) {
+        return false;
+    }
+    return true;
+}
+
+bool rangeContainsRange(const ParseRange& outer, const ParseRange& inner) {
+    if (inner.start_line < outer.start_line || inner.end_line > outer.end_line) {
+        return false;
+    }
+    if (inner.start_line == outer.start_line && inner.start_character < outer.start_character) {
+        return false;
+    }
+    if (inner.end_line == outer.end_line && inner.end_character > outer.end_character) {
+        return false;
+    }
+    return true;
+}
+
+std::optional<std::string> symbolIdAtRangeStart(const DesignGraphContext& context,
+                                                std::string_view uri,
+                                                const ParseRange& range) {
+    const auto symbols_it = context.symbol_ranges_by_uri.find(std::string(uri));
+    if (symbols_it == context.symbol_ranges_by_uri.end()) {
+        return std::nullopt;
+    }
+    std::optional<std::string> best_id;
+    std::optional<ParseRange> best_range;
+    for (const auto& symbol_range : symbols_it->second) {
+        if (!containsPosition(symbol_range.range, range.start_line, range.start_character)) {
+            continue;
+        }
+        if (!best_range.has_value() ||
+            (symbol_range.range.start_line >= best_range->start_line &&
+             symbol_range.range.start_character >= best_range->start_character)) {
+            best_id = symbol_range.stable_id;
+            best_range = symbol_range.range;
+        }
+    }
+    return best_id;
+}
+
 void appendEndpointByDirection(SemanticSchematicNet& net,
                                std::string direction,
                                SemanticSchematicEndpoint endpoint,
@@ -478,6 +543,123 @@ SemanticCallHierarchyCallsResult outgoingCalls(const DesignGraphContext& context
             .from_ranges = {instance.module_selection_range}});
     }
     return result;
+}
+
+SemanticConeTrace backwardCone(const DesignGraphContext& context,
+                               std::string_view document_uri,
+                               const SemanticLookupResult& lookup,
+                               size_t max_results) {
+    SemanticConeTrace trace{.generation = lookup.generation,
+                            .messages = lookup.messages,
+                            .unresolved = lookup.unresolved};
+    if (!lookup.symbol.has_value()) {
+        if (trace.messages.empty()) {
+            trace.messages.push_back("No signal symbol was found at the requested position.");
+        }
+        return trace;
+    }
+    if (!context.snapshot_available) {
+        trace.unresolved = true;
+        trace.messages.push_back("AST-backed SemanticEngine snapshot is unavailable");
+        return trace;
+    }
+
+    const auto assignments_it = context.assignments_by_uri.find(std::string(document_uri));
+    if (assignments_it == context.assignments_by_uri.end()) {
+        trace.messages.push_back("No continuous assignments are indexed for the current document.");
+        return trace;
+    }
+    const auto identifiers_it = context.identifiers_by_uri.find(std::string(document_uri));
+    const auto empty_identifiers = std::vector<Identifier>{};
+    const auto& document_identifiers = identifiers_it == context.identifiers_by_uri.end()
+                                           ? empty_identifiers
+                                           : identifiers_it->second;
+
+    const auto append_node = [&](const std::string& stable_id) {
+        if (std::find_if(trace.nodes.begin(), trace.nodes.end(), [&](const SemanticConeNode& node) {
+                return node.id == stable_id;
+            }) != trace.nodes.end()) {
+            return;
+        }
+        const auto symbol_it = context.symbols_by_id.find(stable_id);
+        if (symbol_it == context.symbols_by_id.end()) {
+            return;
+        }
+        trace.nodes.push_back(SemanticConeNode{.id = stable_id,
+                                               .name = symbol_it->second.identity.name,
+                                               .location = symbol_it->second.identity.location,
+                                               .bit_width = std::nullopt});
+    };
+
+    trace.root_symbol_id = lookup.symbol->stable_id;
+    append_node(lookup.symbol->stable_id);
+
+    std::vector<std::string> pending{lookup.symbol->stable_id};
+    std::set<std::string> visited;
+    std::set<std::string> emitted_edges;
+    for (size_t index = 0; index < pending.size(); ++index) {
+        const auto current_id = pending[index];
+        if (!visited.insert(current_id).second) {
+            continue;
+        }
+        if (!context.symbols_by_id.contains(current_id)) {
+            continue;
+        }
+
+        for (const auto& assignment : assignments_it->second) {
+            const auto left_id = symbolIdAtRangeStart(context, document_uri, assignment.left_range);
+            if (!left_id.has_value() || *left_id != current_id) {
+                continue;
+            }
+
+            for (const auto& identifier : document_identifiers) {
+                if (!rangeContainsRange(assignment.right_range, identifier.range)) {
+                    continue;
+                }
+                const auto input_id = symbolIdAtRangeStart(context, document_uri, identifier.range);
+                if (!input_id.has_value()) {
+                    continue;
+                }
+
+                append_node(*input_id);
+                const auto edge_key = current_id + "\n" + *input_id + "\n" +
+                                      std::to_string(assignment.range.start_line) + ":" +
+                                      std::to_string(assignment.range.start_character);
+                if (emitted_edges.insert(edge_key).second) {
+                    trace.edges.push_back(SemanticConeEdge{.from_symbol_id = current_id,
+                                                           .to_symbol_id = *input_id,
+                                                           .location = SemanticLocation{.uri = std::string(document_uri),
+                                                                                        .range = assignment.range},
+                                                           .expression = assignment.right_expression});
+                }
+                if (!visited.contains(*input_id)) {
+                    pending.push_back(*input_id);
+                }
+            }
+        }
+
+        if (trace.nodes.size() >= max_results || trace.edges.size() >= max_results) {
+            trace.truncated = true;
+            trace.partial = true;
+            trace.messages.push_back("Backward cone reached the result cap.");
+            break;
+        }
+    }
+
+    trace.unresolved = false;
+    std::sort(trace.nodes.begin(), trace.nodes.end(), [](const auto& lhs, const auto& rhs) {
+        return locationLess(lhs.location, rhs.location);
+    });
+    std::sort(trace.edges.begin(), trace.edges.end(), [](const auto& lhs, const auto& rhs) {
+        if (lhs.from_symbol_id != rhs.from_symbol_id) {
+            return lhs.from_symbol_id < rhs.from_symbol_id;
+        }
+        if (lhs.to_symbol_id != rhs.to_symbol_id) {
+            return lhs.to_symbol_id < rhs.to_symbol_id;
+        }
+        return locationLess(lhs.location, rhs.location);
+    });
+    return trace;
 }
 
 } // namespace pristine::analysis::semantic
