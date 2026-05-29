@@ -72,8 +72,15 @@ add_library(
   src/analysis/SemanticEngine.cpp
   src/analysis/SemanticWorkspace.cpp
   src/analysis/SourceUtil.cpp
+  src/analysis/semantic/AstIndex.cpp
+  src/analysis/semantic/CodeActionProvider.cpp
+  src/analysis/semantic/CompletionProvider.cpp
+  src/analysis/semantic/DesignGraphProvider.cpp
   src/analysis/semantic/DiagnosticProvider.cpp
+  src/analysis/semantic/NavigationProvider.cpp
   src/analysis/semantic/QueryCache.cpp
+  src/analysis/semantic/SignatureInlayProvider.cpp
+  src/analysis/semantic/SnapshotBuilder.cpp
   src/document/DocumentStore.cpp
   src/jsonrpc/JsonRpcServer.cpp
   src/jsonrpc/MessageStream.cpp

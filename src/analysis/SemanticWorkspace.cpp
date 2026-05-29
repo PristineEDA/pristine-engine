@@ -745,9 +745,7 @@ void SemanticWorkspace::updateDocument(std::string_view uri,
             document.references.push_back(SemanticReference{
                 .name = identifier.name,
                 .scope_path = scopePathAt(document, identifier.range.start_line, identifier.range.start_character),
-                .location = Location{.uri = document_uri, .range = identifier.range},
-                .target_symbol_id = std::nullopt,
-                .is_declaration = false});
+                .location = Location{.uri = document_uri, .range = identifier.range}});
         }
     }
     catch (...) {
@@ -759,7 +757,6 @@ void SemanticWorkspace::updateDocument(std::string_view uri,
 
     documents_.insert_or_assign(document_uri, std::move(document));
     rebuildReverseIncludes();
-    rebuildReferenceBindings();
     rebuildSemanticMetadata();
 }
 
@@ -769,7 +766,6 @@ void SemanticWorkspace::removeDocument(std::string_view uri) {
     markDependentsStale(document_uri);
     documents_.erase(document_uri);
     rebuildReverseIncludes();
-    rebuildReferenceBindings();
     rebuildSemanticMetadata();
 }
 
@@ -1153,25 +1149,6 @@ void SemanticWorkspace::rebuildReverseIncludes() {
         auto& including_uris = graph_entry.second;
         std::sort(including_uris.begin(), including_uris.end());
         including_uris.erase(std::unique(including_uris.begin(), including_uris.end()), including_uris.end());
-    }
-}
-
-void SemanticWorkspace::rebuildReferenceBindings() {
-    for (auto& document_entry : documents_) {
-        for (auto& reference : document_entry.second.references) {
-            reference.target_symbol_id.reset();
-            reference.is_declaration = false;
-
-            const auto definitions = resolveName(reference.name, reference.scope_path, reference.location.uri);
-            if (definitions.empty()) {
-                continue;
-            }
-
-            const auto& definition = definitions.front();
-            reference.target_symbol_id = definition.id;
-            reference.is_declaration = definition.location.uri == reference.location.uri &&
-                                       rangesEqual(definition.selection_range, reference.location.range);
-        }
     }
 }
 

@@ -204,6 +204,63 @@ void runReferencesFixture(SemanticEngine& engine, const nlohmann::json& fixture)
     }
 }
 
+void runRenameFixture(SemanticEngine& engine, const nlohmann::json& fixture) {
+    const auto& request = fixture.at("request");
+    const auto& expected = fixture.at("expected");
+    const auto result = engine.renameAt(request.at("uri").get<std::string>(),
+                                        request.at("line").get<int>(),
+                                        request.at("character").get<int>(),
+                                        request.at("newName").get<std::string>());
+    CHECK(result.unresolved == expected.value("unresolved", false));
+    if (expected.contains("count")) {
+        CHECK(result.edits.size() == expected.at("count").get<size_t>());
+    }
+    if (expected.contains("allBeforeLine")) {
+        const auto line = expected.at("allBeforeLine").get<int>();
+        CHECK(std::all_of(result.edits.begin(), result.edits.end(), [line](const SemanticTextEdit& edit) {
+            return edit.location.range.start_line < line;
+        }));
+    }
+    if (expected.contains("allNewText")) {
+        const auto new_text = expected.at("allNewText").get<std::string>();
+        CHECK(std::all_of(result.edits.begin(), result.edits.end(), [&](const SemanticTextEdit& edit) {
+            return edit.new_text == new_text;
+        }));
+    }
+}
+
+void runCompletionFixture(SemanticEngine& engine, const nlohmann::json& fixture) {
+    const auto& request = fixture.at("request");
+    const auto& expected = fixture.at("expected");
+    const auto result = engine.completionsAt(request.at("uri").get<std::string>(),
+                                             request.at("line").get<int>(),
+                                             request.at("character").get<int>(),
+                                             request.value("prefix", ""));
+    CHECK(result.unresolved == expected.value("unresolved", false));
+    if (expected.contains("labels")) {
+        for (const auto& expected_label : expected.at("labels")) {
+            const auto label = expected_label.get<std::string>();
+            CAPTURE(label);
+            CHECK(std::any_of(result.items.begin(),
+                              result.items.end(),
+                              [&](const SemanticCompletionItem& item) {
+                                  return item.label == label;
+                              }));
+        }
+    }
+    if (expected.contains("absentLabels")) {
+        for (const auto& absent_label : expected.at("absentLabels")) {
+            const auto label = absent_label.get<std::string>();
+            CAPTURE(label);
+            CHECK(std::none_of(result.items.begin(),
+                               result.items.end(),
+                               [&](const SemanticCompletionItem& item) {
+                                   return item.label == label;
+                               }));
+        }
+    }
+}
+
 void runDiagnosticsFixture(SemanticEngine& engine, const nlohmann::json& fixture) {
     const auto& expected = fixture.at("expected");
     const auto diagnostics = engine.diagnosticsFor(expected.at("uri").get<std::string>());
@@ -311,6 +368,12 @@ TEST_CASE("JSON semantic golden fixtures exercise stable request shapes",
         }
         else if (kind == "references") {
             runReferencesFixture(engine, fixture);
+        }
+        else if (kind == "rename") {
+            runRenameFixture(engine, fixture);
+        }
+        else if (kind == "completion") {
+            runCompletionFixture(engine, fixture);
         }
         else if (kind == "diagnostics") {
             runDiagnosticsFixture(engine, fixture);

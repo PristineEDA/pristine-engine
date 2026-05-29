@@ -2389,22 +2389,40 @@ SemanticReferenceResult SemanticEngine::referencesAt(std::string_view uri,
                                                      int line,
                                                      int character,
                                                      bool include_declaration) const {
+    const auto& current_snapshot = snapshot();
+    const auto document_uri = withoutTrailingSlash(normalizeFileUri(uri));
+    if (const auto cached = query_cache_->references(current_snapshot.generation,
+                                                     document_uri,
+                                                     line,
+                                                     character,
+                                                     include_declaration)) {
+        return *cached;
+    }
+
     const auto lookup = lookupAt(uri, line, character);
     SemanticReferenceResult result{.generation = lookup.generation,
                                    .messages = lookup.messages,
                                    .unresolved = lookup.unresolved};
+    const auto finish = [&](SemanticReferenceResult value) {
+        query_cache_->storeReferences(current_snapshot.generation,
+                                      document_uri,
+                                      line,
+                                      character,
+                                      include_declaration,
+                                      value);
+        return value;
+    };
     if (!lookup.symbol.has_value()) {
-        return result;
+        return finish(std::move(result));
     }
 
     const auto* data = snapshotData();
     if (data == nullptr) {
         result.unresolved = true;
         result.messages.push_back("AST-backed SemanticEngine snapshot is unavailable");
-        return result;
+        return finish(std::move(result));
     }
 
-    const auto document_uri = withoutTrailingSlash(normalizeFileUri(uri));
     if (const auto instance = moduleInstanceAt(*data, document_uri, line, character)) {
         result.locations = moduleImplementationLocations(*data,
                                                          instance->module_name,
@@ -2424,7 +2442,7 @@ SemanticReferenceResult SemanticEngine::referencesAt(std::string_view uri,
         result.locations.erase(std::unique(result.locations.begin(), result.locations.end(), sameLocation),
                                result.locations.end());
         result.unresolved = false;
-        return result;
+        return finish(std::move(result));
     }
 
     result.locations = locationsForSymbol(*data,
@@ -2451,7 +2469,7 @@ SemanticReferenceResult SemanticEngine::referencesAt(std::string_view uri,
         result.locations.erase(std::unique(result.locations.begin(), result.locations.end(), sameLocation),
                                result.locations.end());
     }
-    return result;
+    return finish(std::move(result));
 }
 
 SemanticReferenceResult SemanticEngine::documentHighlightsAt(std::string_view uri,
@@ -2529,6 +2547,16 @@ SemanticRenameResult SemanticEngine::renameAt(std::string_view uri,
                                               int line,
                                               int character,
                                               std::string_view new_name) const {
+    const auto& current_snapshot = snapshot();
+    const auto document_uri = withoutTrailingSlash(normalizeFileUri(uri));
+    if (const auto cached = query_cache_->rename(current_snapshot.generation,
+                                                document_uri,
+                                                line,
+                                                character,
+                                                new_name)) {
+        return *cached;
+    }
+
     const auto references = referencesAt(uri, line, character, true);
     SemanticRenameResult result{.generation = references.generation,
                                 .messages = references.messages,
@@ -2538,6 +2566,12 @@ SemanticRenameResult SemanticEngine::renameAt(std::string_view uri,
         result.edits.push_back(SemanticTextEdit{.location = location,
                                                 .new_text = std::string(new_name)});
     }
+    query_cache_->storeRename(current_snapshot.generation,
+                              document_uri,
+                              line,
+                              character,
+                              new_name,
+                              result);
     return result;
 }
 
@@ -2547,12 +2581,29 @@ SemanticCompletionResult SemanticEngine::completionsAt(std::string_view uri,
                                                        std::string_view prefix) const {
     const auto& current_snapshot = snapshot();
     const auto document_uri = withoutTrailingSlash(normalizeFileUri(uri));
+    if (const auto cached = query_cache_->completions(current_snapshot.generation,
+                                                     document_uri,
+                                                     line,
+                                                     character,
+                                                     prefix)) {
+        return *cached;
+    }
+
     SemanticCompletionResult result{.generation = current_snapshot.generation};
+    const auto finish = [&](SemanticCompletionResult value) {
+        query_cache_->storeCompletions(current_snapshot.generation,
+                                       document_uri,
+                                       line,
+                                       character,
+                                       prefix,
+                                       value);
+        return value;
+    };
     const auto* data = snapshotData();
     if (data == nullptr) {
         result.unresolved = true;
         result.messages.push_back("AST-backed SemanticEngine snapshot is unavailable");
-        return result;
+        return finish(std::move(result));
     }
 
     std::set<std::string> emitted;
@@ -2603,7 +2654,7 @@ SemanticCompletionResult SemanticEngine::completionsAt(std::string_view uri,
                 break;
             }
         }
-        return result;
+        return finish(std::move(result));
     }
 
     if (document != nullptr) {
@@ -2625,13 +2676,13 @@ SemanticCompletionResult SemanticEngine::completionsAt(std::string_view uri,
                                        prefix,
                                        result.truncated);
                 if (result.truncated) {
-                    return result;
+                    return finish(std::move(result));
                 }
             }
             if (result.items.empty()) {
                 result.messages.push_back("package completion had no indexed AST members");
             }
-            return result;
+            return finish(std::move(result));
         }
 
         if (prefix_start.has_value() && *prefix_start > 0 && document->text[*prefix_start - 1] == '.') {
@@ -2639,7 +2690,7 @@ SemanticCompletionResult SemanticEngine::completionsAt(std::string_view uri,
             if (instances_it == data->module_instances_by_uri.end()) {
                 result.unresolved = true;
                 result.messages.push_back("named member completion has no indexed module instances");
-                return result;
+                return finish(std::move(result));
             }
             for (const auto& instance : instances_it->second) {
                 if (!parseRangeContainsPosition(instance.range, line, character)) {
@@ -2676,7 +2727,7 @@ SemanticCompletionResult SemanticEngine::completionsAt(std::string_view uri,
                                                 prefix,
                                                 connected_ports,
                                                 result.truncated);
-                    return result;
+                    return finish(std::move(result));
                 }
             }
         }
@@ -2697,11 +2748,11 @@ SemanticCompletionResult SemanticEngine::completionsAt(std::string_view uri,
                                            result.truncated);
                 }
                 if (result.truncated) {
-                    return result;
+                    return finish(std::move(result));
                 }
             }
             result.messages.push_back("member completion used AST-backed member context provider");
-            return result;
+            return finish(std::move(result));
         }
 
         if (prefix_start.has_value() && hasOnlyWhitespaceSinceLineStart(document->text, *prefix_start)) {
@@ -2732,7 +2783,7 @@ SemanticCompletionResult SemanticEngine::completionsAt(std::string_view uri,
                                      prefix,
                                      result.truncated);
                 if (result.truncated) {
-                    return result;
+                    return finish(std::move(result));
                 }
             }
         }
@@ -2751,7 +2802,7 @@ SemanticCompletionResult SemanticEngine::completionsAt(std::string_view uri,
             break;
         }
     }
-    return result;
+    return finish(std::move(result));
 }
 
 SemanticCompletionItem SemanticEngine::resolveCompletion(std::string_view stable_id,
@@ -3105,12 +3156,25 @@ SemanticSelectionRangeResult SemanticEngine::selectionRangesAt(std::string_view 
 SemanticModuleHierarchyResult SemanticEngine::moduleHierarchy(std::optional<std::string_view> module_name,
                                                               int max_depth) const {
     const auto& current_snapshot = snapshot();
+    if (const auto cached = query_cache_->moduleHierarchy(current_snapshot.generation,
+                                                          module_name,
+                                                          max_depth)) {
+        return *cached;
+    }
+
     SemanticModuleHierarchyResult result{.generation = current_snapshot.generation};
+    const auto finish = [&](SemanticModuleHierarchyResult value) {
+        query_cache_->storeModuleHierarchy(current_snapshot.generation,
+                                           module_name,
+                                           max_depth,
+                                           value);
+        return value;
+    };
     const auto* data = snapshotData();
     if (data == nullptr) {
         result.unresolved = true;
         result.messages.push_back("AST-backed SemanticEngine snapshot is unavailable");
-        return result;
+        return finish(std::move(result));
     }
 
     std::vector<std::string> root_names;
@@ -3127,7 +3191,7 @@ SemanticModuleHierarchyResult SemanticEngine::moduleHierarchy(std::optional<std:
     if (root_names.empty()) {
         result.unresolved = true;
         result.messages.push_back("No module definitions are indexed in the design snapshot.");
-        return result;
+        return finish(std::move(result));
     }
 
     const auto build_node = [&](const auto& self,
@@ -3205,18 +3269,26 @@ SemanticModuleHierarchyResult SemanticEngine::moduleHierarchy(std::optional<std:
         std::vector<std::string> stack;
         result.roots.push_back(build_node(build_node, root_name, nullptr, stack, 0));
     }
-    return result;
+    return finish(std::move(result));
 }
 
 SemanticSchematicResult SemanticEngine::schematic(std::optional<std::string_view> module_name,
                                                   int max_depth) const {
     const auto& current_snapshot = snapshot();
+    if (const auto cached = query_cache_->schematic(current_snapshot.generation, module_name, max_depth)) {
+        return *cached;
+    }
+
     SemanticSchematicResult result{.generation = current_snapshot.generation};
+    const auto finish = [&](SemanticSchematicResult value) {
+        query_cache_->storeSchematic(current_snapshot.generation, module_name, max_depth, value);
+        return value;
+    };
     const auto* data = snapshotData();
     if (data == nullptr) {
         result.unresolved = true;
         result.messages.push_back("AST-backed SemanticEngine snapshot is unavailable");
-        return result;
+        return finish(std::move(result));
     }
 
     std::optional<std::string> root_name;
@@ -3237,7 +3309,7 @@ SemanticSchematicResult SemanticEngine::schematic(std::optional<std::string_view
     if (!root_name.has_value()) {
         result.unresolved = true;
         result.messages.push_back("No module definitions are indexed in the design snapshot.");
-        return result;
+        return finish(std::move(result));
     }
     result.root_module_id = *root_name;
 
@@ -3296,7 +3368,7 @@ SemanticSchematicResult SemanticEngine::schematic(std::optional<std::string_view
     };
 
     collect(collect, *root_name, 0);
-    return result;
+    return finish(std::move(result));
 }
 
 SemanticCallHierarchyPrepareResult SemanticEngine::prepareCallHierarchy(std::string_view uri,
@@ -3449,29 +3521,45 @@ SemanticCallHierarchyCallsResult SemanticEngine::outgoingCalls(const SemanticCal
 SemanticConeTrace SemanticEngine::backwardConeAt(std::string_view uri,
                                                  int line,
                                                  int character) const {
+    const auto& current_snapshot = snapshot();
+    const auto document_uri = withoutTrailingSlash(normalizeFileUri(uri));
+    if (const auto cached = query_cache_->backwardCone(current_snapshot.generation,
+                                                       document_uri,
+                                                       line,
+                                                       character)) {
+        return *cached;
+    }
+
     const auto lookup = lookupAt(uri, line, character);
     SemanticConeTrace trace{.generation = lookup.generation,
                             .messages = lookup.messages,
                             .unresolved = lookup.unresolved};
+    const auto finish = [&](SemanticConeTrace value) {
+        query_cache_->storeBackwardCone(current_snapshot.generation,
+                                        document_uri,
+                                        line,
+                                        character,
+                                        value);
+        return value;
+    };
     if (!lookup.symbol.has_value()) {
         if (trace.messages.empty()) {
             trace.messages.push_back("No signal symbol was found at the requested position.");
         }
-        return trace;
+        return finish(std::move(trace));
     }
 
     const auto* data = snapshotData();
     if (data == nullptr) {
         trace.unresolved = true;
         trace.messages.push_back("AST-backed SemanticEngine snapshot is unavailable");
-        return trace;
+        return finish(std::move(trace));
     }
 
-    const auto document_uri = withoutTrailingSlash(normalizeFileUri(uri));
     const auto assignments_it = data->assignments_by_uri.find(document_uri);
     if (assignments_it == data->assignments_by_uri.end()) {
         trace.messages.push_back("No continuous assignments are indexed for the current document.");
-        return trace;
+        return finish(std::move(trace));
     }
 
     const auto symbol_id_at_range = [&](const ParseRange& range) -> std::optional<std::string> {
@@ -3569,25 +3657,36 @@ SemanticConeTrace SemanticEngine::backwardConeAt(std::string_view uri,
         }
         return locationLess(lhs.location, rhs.location);
     });
-    return trace;
+    return finish(std::move(trace));
 }
 
 SemanticCodeActionResult SemanticEngine::codeActionsAt(std::string_view uri, ParseRange range) const {
     const auto& current_snapshot = snapshot();
     const auto document_uri = withoutTrailingSlash(normalizeFileUri(uri));
+    if (const auto cached = query_cache_->codeActions(current_snapshot.generation, document_uri, range)) {
+        return *cached;
+    }
+
     SemanticCodeActionResult result{.generation = current_snapshot.generation};
+    const auto finish = [&](SemanticCodeActionResult value) {
+        query_cache_->storeCodeActions(current_snapshot.generation,
+                                       document_uri,
+                                       range,
+                                       value);
+        return value;
+    };
     const auto* data = snapshotData();
     if (data == nullptr) {
         result.unresolved = true;
         result.messages.push_back("AST-backed SemanticEngine snapshot is unavailable");
-        return result;
+        return finish(std::move(result));
     }
 
     const auto document_it = documents_.find(document_uri);
     if (document_it == documents_.end()) {
         result.unresolved = true;
         result.messages.push_back("document is not indexed in the AST snapshot");
-        return result;
+        return finish(std::move(result));
     }
     const auto& document = document_it->second;
     const auto insert_range = endOfTextRange(document.text);
@@ -3687,7 +3786,7 @@ SemanticCodeActionResult SemanticEngine::codeActionsAt(std::string_view uri, Par
                                                                                      *type_name)}}});
     }
 
-    return result;
+    return finish(std::move(result));
 }
 
 SemanticWorkspaceSymbolResult SemanticEngine::workspaceSymbols(std::string_view query,

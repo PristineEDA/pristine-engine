@@ -1,0 +1,20 @@
+{
+  "name": "module named port completion uses design snapshot port bindings",
+  "sources": [
+    {
+      "uri": "file:///golden/json/ports.sv",
+      "text": "module child(input logic clk, output logic rst_n, input logic data);\nendmodule\nmodule top;\n  child u_child(.clk(clk), .r);\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "completion",
+    "uri": "file:///golden/json/ports.sv",
+    "line": 3,
+    "character": 28,
+    "prefix": ""
+  },
+  "expected": {
+    "labels": ["rst_n", "data"],
+    "absentLabels": ["clk"]
+  }
+}

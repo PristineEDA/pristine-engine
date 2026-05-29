@@ -48,16 +48,16 @@ Current implemented LSP surface:
 - `systemverilog/schematic`
 - `systemverilog/backwardCone`
 
-Current behavior follows a SemanticEngine single-fact-source model:
+Current behavior follows a split-provider SemanticEngine single-fact-source model:
 
-- `SemanticEngine` is the owning layer for slang AST/Compilation snapshots, AST lookup, symbol identity, dependency invalidation, semantic diagnostics, reference indexes, workspace symbols, completion/resolve, signature/inlay/semantic-token/selection queries, code actions, and HDL design indexes
+- `SemanticEngine` is the owning layer for slang AST/Compilation snapshots, AST lookup, symbol identity, dependency invalidation, semantic diagnostics, reference indexes, workspace symbols, completion/resolve, signature/inlay/semantic-token/selection queries, code actions, HDL design indexes, and generation-keyed query cache
 - slang AST/Compilation is the semantic fact source. Legacy syntax/text logic is migration debt only; it must not become a parallel semantic authority
 - hover, definition, type definition, implementation, references, document highlights, prepare rename, and rename are the first AST-backed query slice owned by `SemanticEngine`
 - completion, completion resolve, signature help, diagnostics, inlay hints, semantic tokens, selection ranges, and workspace symbols use `SemanticEngine` value-type APIs; keep moving remaining context gaps into analysis instead of `ServerSession`
 - HDL module hierarchy, schematic, backward cone, and call hierarchy are routed through `SemanticEngine` design snapshot APIs
 - code actions for unresolved include/module/type and missing port connections are produced by `SemanticEngine` value-type APIs; `ServerSession` only serializes them to LSP JSON
 - `CompilationService` remains the syntax fast path for parse diagnostics, document symbols, syntax extraction, document links/folding, and text utilities; it must not become a visible semantic answer source
-- workspace indexing and repeated workspace-wide query results are owned by the `SemanticEngine` snapshot/index/query cache; do not add a second analysis fallback index
+- workspace indexing and repeated visible query results are owned by the `SemanticEngine` snapshot/index/query cache; do not add a second analysis fallback index
 - `SemanticWorkspace` is a facade and document-state adapter around `SemanticEngine`; do not add diagnostics, symbol-resolution, or LSP-visible semantic query rules there
 - `ServerSession` should route LSP requests and serialize responses; it should not grow new SystemVerilog semantic rules
 
@@ -80,8 +80,8 @@ Use the nearest owning layer instead of patching around it from a wrapper.
 
 - lifecycle, notification handling, diagnostics publishing, LSP request routing, and response serialization: `src/server/ServerSession.cpp`. This file must not own navigation, completion, completion resolve, signature, diagnostics, workspace symbol, hierarchy, schematic, cone, or code action semantic rules
 - LSP protocol structures and JSON payload parsing: `src/lsp/Protocol.cpp`
-- deep semantic ownership, slang AST/Compilation snapshots, AST lookup, symbol identity, dependency invalidation, semantic diagnostics, reference/implementation/workspace-symbol indexes, completion/signature/inlay providers, semantic token and selection range providers, module/interface/package/instance graph, schematic net index, call hierarchy, cone index, and code action provider: `src/analysis/SemanticEngine.cpp`
-- split-out internal analysis providers for the large engine implementation, including diagnostics helpers, query cache utilities, future lookup/reference/rename providers, completion/signature/inlay providers, HDL graph/cone providers, and code-action helpers: `src/analysis/semantic/*`
+- deep semantic ownership and public value-type query facade: `src/analysis/SemanticEngine.cpp`
+- split-out internal analysis providers for the large engine implementation: `src/analysis/semantic/SnapshotBuilder.*`, `src/analysis/semantic/AstIndex.*`, `src/analysis/semantic/NavigationProvider.*`, `src/analysis/semantic/CompletionProvider.*`, `src/analysis/semantic/SignatureInlayProvider.*`, `src/analysis/semantic/DesignGraphProvider.*`, `src/analysis/semantic/CodeActionProvider.*`, `src/analysis/semantic/DiagnosticProvider.*`, and `src/analysis/semantic/QueryCache.*`
 - compatibility facade and document-state adapter; it should delegate migrated capabilities directly to `SemanticEngine` and should not provide diagnostics, symbol resolution, or LSP-visible fallback find paths: `src/analysis/SemanticWorkspace.cpp`
 - shared URI/path/source-range/UTF-16 offset conversion helpers for analysis code: `src/analysis/SourceUtil.cpp`
 - parse pipeline, syntax symbol extraction, identifier scanning, syntax hover content, and syntax diagnostics: `src/analysis/CompilationService.cpp`
@@ -108,7 +108,8 @@ Use the nearest owning layer instead of patching around it from a wrapper.
 - Do not add public APIs that expose slang AST pointers; keep snapshot-owned slang objects behind value-type analysis results.
 - Do not duplicate URI/path/source-range conversion logic; use `SourceUtil` from analysis code.
 - Keep `SemanticEngine` public APIs value-type based, with generation/messages/unresolved/partial/truncated metadata where a query can be incomplete, including while splitting implementation into `src/analysis/semantic/*` helpers.
-- Cache keys for visible semantic queries must include snapshot generation and all user-visible inputs; mutation/configuration paths must invalidate affected cached results.
+- Provider splits must not change `SemanticEngine` public request/response contracts unless the user explicitly asks for an API break.
+- Cache keys for visible semantic queries must include snapshot generation and all user-visible inputs; mutation/configuration paths must invalidate affected cached results. This applies to diagnostics, references, rename, completion, workspace/symbol, hierarchy, schematic, backward cone, and codeAction cache entries.
 - All semantic behavior changes must update the nearest unit, golden-style, or e2e coverage.
 - Changes that scan, cache, or rebuild workspace-wide state must include or update a performance-oriented test/benchmark plan or JSON baseline before being considered complete.
 - Avoid broad refactors unless the user asks for them or the local change cannot be made safely otherwise.

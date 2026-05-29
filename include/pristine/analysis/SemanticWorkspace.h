@@ -67,8 +67,6 @@ struct SemanticReference {
     std::string name;
     std::string scope_path;
     Location location;
-    std::optional<std::string> target_symbol_id;
-    bool is_declaration = false;
 };
 
 struct SemanticImport {
@@ -184,7 +182,6 @@ private:
     [[nodiscard]] std::vector<std::string> resolveIncludeUris(std::string_view including_uri,
                                                               std::string_view target) const;
     void rebuildSemanticMetadata();
-    void rebuildReferenceBindings();
     void rebuildReverseIncludes();
     void markDependentsStale(std::string_view uri);
 

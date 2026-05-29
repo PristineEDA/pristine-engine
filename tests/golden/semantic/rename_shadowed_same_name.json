@@ -1,0 +1,21 @@
+{
+  "name": "shadowed same-name rename stays scoped",
+  "sources": [
+    {
+      "uri": "file:///golden/json/rename-shadow.sv",
+      "text": "module first;\n  logic value;\n  assign value = value;\nendmodule\nmodule second;\n  logic value;\n  assign value = value;\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "rename",
+    "uri": "file:///golden/json/rename-shadow.sv",
+    "line": 1,
+    "character": 9,
+    "newName": "renamed_value"
+  },
+  "expected": {
+    "count": 3,
+    "allBeforeLine": 4,
+    "allNewText": "renamed_value"
+  }
+}

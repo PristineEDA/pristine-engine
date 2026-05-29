@@ -309,6 +309,80 @@ TEST_CASE("SemanticEngine invalidates generation caches after document updates",
                       }));
 }
 
+TEST_CASE("SemanticEngine invalidates query caches for semantic providers after document updates",
+          "[analysis][semantic-engine][cache]") {
+    SemanticEngine engine;
+    engine.updateDocument("file:///workspace/cache-providers.sv",
+                          "module child(input logic clk, output logic rst_n);\n"
+                          "endmodule\n"
+                          "module top;\n"
+                          "  logic ready;\n"
+                          "  assign ready = ready;\n"
+                          "  child u_child(.clk(clk), .r);\n"
+                          "endmodule\n",
+                          SemanticEngineDocumentState{.version = 1, .is_open = true});
+
+    const auto first_references = engine.referencesAt("file:///workspace/cache-providers.sv", 3, 9, true);
+    const auto first_rename = engine.renameAt("file:///workspace/cache-providers.sv", 3, 9, "valid");
+    const auto first_completion = engine.completionsAt("file:///workspace/cache-providers.sv", 5, 28, "");
+    const auto first_hierarchy = engine.moduleHierarchy("top", 4);
+    const auto first_schematic = engine.schematic("top", 4);
+    const auto first_cone = engine.backwardConeAt("file:///workspace/cache-providers.sv", 3, 9);
+    const auto first_actions = engine.codeActionsAt(
+        "file:///workspace/cache-providers.sv",
+        ParseRange{.start_line = 5, .start_character = 2, .end_line = 5, .end_character = 20});
+
+    REQUIRE_FALSE(first_references.unresolved);
+    REQUIRE_FALSE(first_rename.unresolved);
+    REQUIRE_FALSE(first_completion.unresolved);
+    REQUIRE_FALSE(first_hierarchy.unresolved);
+    REQUIRE_FALSE(first_schematic.unresolved);
+    REQUIRE_FALSE(first_cone.unresolved);
+    REQUIRE_FALSE(first_actions.unresolved);
+    REQUIRE(first_references.locations.size() == 3);
+    REQUIRE(first_rename.edits.size() == 3);
+    CHECK(std::any_of(first_completion.items.begin(),
+                      first_completion.items.end(),
+                      [](const SemanticCompletionItem& item) {
+                          return item.label == "rst_n";
+                      }));
+    const auto first_generation = first_references.generation;
+
+    engine.updateDocument("file:///workspace/cache-providers.sv",
+                          "module child(input logic clk, output logic rst_n, input logic data);\n"
+                          "endmodule\n"
+                          "module top;\n"
+                          "  logic ready;\n"
+                          "  logic extra;\n"
+                          "  assign ready = extra;\n"
+                          "  child u_child(.clk(clk), .r);\n"
+                          "endmodule\n",
+                          SemanticEngineDocumentState{.version = 2, .is_open = true});
+
+    const auto updated_references = engine.referencesAt("file:///workspace/cache-providers.sv", 3, 9, true);
+    const auto updated_rename = engine.renameAt("file:///workspace/cache-providers.sv", 3, 9, "valid");
+    const auto updated_completion = engine.completionsAt("file:///workspace/cache-providers.sv", 6, 28, "");
+    const auto updated_hierarchy = engine.moduleHierarchy("top", 4);
+    const auto updated_schematic = engine.schematic("top", 4);
+    const auto updated_cone = engine.backwardConeAt("file:///workspace/cache-providers.sv", 3, 9);
+    const auto updated_actions = engine.codeActionsAt(
+        "file:///workspace/cache-providers.sv",
+        ParseRange{.start_line = 6, .start_character = 2, .end_line = 6, .end_character = 20});
+
+    CHECK(updated_references.generation > first_generation);
+    CHECK(updated_references.locations.size() == 2);
+    CHECK(updated_rename.edits.size() == 2);
+    CHECK(std::any_of(updated_completion.items.begin(),
+                      updated_completion.items.end(),
+                      [](const SemanticCompletionItem& item) {
+                          return item.label == "data";
+                      }));
+    CHECK(updated_hierarchy.generation == updated_references.generation);
+    CHECK(updated_schematic.generation == updated_references.generation);
+    CHECK(updated_cone.generation == updated_references.generation);
+    CHECK(updated_actions.generation == updated_references.generation);
+}
+
 TEST_CASE("SemanticEngine uses AST symbol identity to avoid same-name false references",
           "[analysis][semantic-engine][ast-identity]") {
     SemanticEngine engine;
