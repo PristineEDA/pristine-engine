@@ -1,0 +1,22 @@
+{
+  "name": "completion resolve macro function",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/completion-resolve-macro.sv",
+      "text": "`define ADD(lhs, rhs) ((lhs) + (rhs))\nmodule top;\n  logic value = `AD\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "completionResolve",
+    "uri": "file:///golden/semantic/completion-resolve-macro.sv",
+    "line": 2,
+    "character": 19,
+    "prefix": "AD",
+    "label": "ADD"
+  },
+  "expected": {
+    "detailContains": "Macro function",
+    "documentationContains": "Parameters: `lhs, rhs`",
+    "insertTextContains": "${2:rhs}"
+  }
+}

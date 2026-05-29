@@ -63,6 +63,18 @@ std::optional<std::string> qualifierBefore(std::string_view text, size_t qualifi
     return std::string(qualifier);
 }
 
+std::string_view moduleUriFor(const CompletionResolveContext& context,
+                              std::string_view module_name) {
+    if (context.module_uris_by_name == nullptr) {
+        return {};
+    }
+    const auto module_uri_it = context.module_uris_by_name->find(std::string(module_name));
+    if (module_uri_it == context.module_uris_by_name->end()) {
+        return {};
+    }
+    return module_uri_it->second;
+}
+
 } // namespace
 
 int completionKindForSemanticKind(std::string_view kind) {
@@ -309,6 +321,91 @@ std::string portDocumentation(const ModuleDefinition& module,
                          std::to_string(port.selection_range.start_character + 1) + "`";
     }
     return documentation;
+}
+
+SemanticCompletionItem resolveCompletionItem(std::string_view stable_id,
+                                             std::string_view label,
+                                             const CompletionResolveContext& context) {
+    SemanticCompletionItem item{.stable_id = std::string(stable_id),
+                                .label = std::string(label),
+                                .insert_text = std::string(label)};
+    const auto stable_id_text = std::string(stable_id);
+    const auto port_marker = stable_id_text.find("|port|");
+    if (port_marker != std::string::npos && context.modules_by_name != nullptr) {
+        const auto port_name = stable_id_text.substr(port_marker + 6);
+        for (const auto& [_, module] : *context.modules_by_name) {
+            const auto module_uri = moduleUriFor(context, module.name);
+            if (module.port_details.empty()) {
+                if (std::find(module.ports.begin(), module.ports.end(), port_name) != module.ports.end()) {
+                    const SchematicPort port{.name = port_name,
+                                             .direction = {},
+                                             .width_text = {},
+                                             .range = module.selection_range,
+                                             .selection_range = module.selection_range};
+                    item.detail = "Port";
+                    item.documentation = portDocumentation(module, port, module_uri);
+                    item.insert_text = portConnectionSnippet(port_name);
+                    return item;
+                }
+            }
+            for (const auto& port : module.port_details) {
+                if (port.name != port_name) {
+                    continue;
+                }
+                item.detail = portSignatureLabel(port);
+                item.documentation = portDocumentation(module, port, module_uri);
+                item.insert_text = portConnectionSnippet(port.name);
+                return item;
+            }
+        }
+    }
+
+    const auto macro_marker = stable_id_text.find("|macro|");
+    if (macro_marker != std::string::npos) {
+        const auto macro_name = stable_id_text.substr(macro_marker + 7);
+        if (context.macros_by_uri != nullptr) {
+            for (const auto& [_, macros] : *context.macros_by_uri) {
+                const auto macro_it = std::find_if(macros.begin(),
+                                                   macros.end(),
+                                                   [&](const MacroDefinition& macro) {
+                                                       return macro.name == macro_name;
+                                                   });
+                if (macro_it == macros.end()) {
+                    continue;
+                }
+                item.detail = macro_it->function_like ? "Macro function " + macroSignatureLabel(*macro_it)
+                                                      : "Macro";
+                item.documentation = macroDocumentation(*macro_it);
+                item.insert_text = macroInsertText(*macro_it);
+                return item;
+            }
+        }
+        item.unresolved = true;
+        return item;
+    }
+
+    if (!context.symbol.has_value()) {
+        item.unresolved = true;
+        return item;
+    }
+
+    const auto& symbol = *context.symbol;
+    item.detail = symbol.identity.kind;
+    item.documentation = "**" + symbol.identity.kind + "** `" + symbol.identity.name + "`";
+    if (symbol.identity.kind == "Definition" && context.modules_by_name != nullptr) {
+        const auto module_it = context.modules_by_name->find(symbol.identity.name);
+        if (module_it != context.modules_by_name->end()) {
+            item.detail = moduleSignatureLabel(module_it->second);
+            item.documentation = moduleDocumentation(module_it->second,
+                                                    moduleUriFor(context, module_it->second.name));
+            item.insert_text = moduleInstantiationSnippet(module_it->second);
+            return item;
+        }
+    }
+    if (!symbol.type_display.empty()) {
+        item.documentation += "\n\nType: `" + symbol.type_display + "`";
+    }
+    return item;
 }
 
 std::optional<size_t> completionPrefixStartOffset(std::string_view text,

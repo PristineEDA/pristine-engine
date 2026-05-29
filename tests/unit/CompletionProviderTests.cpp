@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <set>
+#include <unordered_map>
 
 namespace pristine::analysis::semantic {
 namespace {
@@ -138,6 +139,85 @@ TEST_CASE("CompletionProvider builds module, port, macro, and symbol completion 
     CHECK(std::count_if(items.begin(), items.end(), [](const SemanticCompletionItem& item) {
         return item.label == "ready";
     }) == 1);
+}
+
+TEST_CASE("CompletionProvider resolves completion documentation and snippets",
+          "[analysis][semantic][completion-provider][resolve]") {
+    const ModuleDefinition module{.name = "child",
+                                  .kind = "module",
+                                  .range = ParseRange{.start_line = 0,
+                                                      .start_character = 0,
+                                                      .end_line = 0,
+                                                      .end_character = 64},
+                                  .selection_range = ParseRange{.start_line = 0,
+                                                                .start_character = 7,
+                                                                .end_line = 0,
+                                                                .end_character = 12},
+                                  .ports = {},
+                                  .port_details = {SchematicPort{.name = "clk",
+                                                                 .direction = "input",
+                                                                 .width_text = "logic",
+                                                                 .range = ParseRange{},
+                                                                 .selection_range = ParseRange{}},
+                                                   SchematicPort{.name = "rst_n",
+                                                                 .direction = "output",
+                                                                 .width_text = "logic",
+                                                                 .range = ParseRange{},
+                                                                 .selection_range = ParseRange{}}},
+                                  .instances = {}};
+    const MacroDefinition macro{.name = "ADD",
+                                .parameters = {"lhs", "rhs"},
+                                .body = "((lhs) + (rhs))",
+                                .range = ParseRange{},
+                                .selection_range = ParseRange{},
+                                .function_like = true};
+    const std::unordered_map<std::string, ModuleDefinition> modules_by_name{{"child", module}};
+    const std::unordered_map<std::string, std::string> module_uris_by_name{
+        {"child", "file:///workspace/child.sv"}};
+    const std::unordered_map<std::string, std::vector<MacroDefinition>> macros_by_uri{
+        {"file:///workspace/macros.sv", {macro}}};
+
+    CompletionResolveContext context{.modules_by_name = &modules_by_name,
+                                     .module_uris_by_name = &module_uris_by_name,
+                                     .macros_by_uri = &macros_by_uri};
+
+    const auto port = resolveCompletionItem("module|child|port|rst_n", "rst_n", context);
+    CHECK(port.detail == "output logic rst_n");
+    CHECK(port.documentation.find("Module: `child`") != std::string::npos);
+    CHECK(port.insert_text.find("rst_n(") != std::string::npos);
+
+    const auto resolved_macro = resolveCompletionItem("file:///workspace/macros.sv|macro|ADD",
+                                                      "ADD",
+                                                      context);
+    CHECK(resolved_macro.detail.find("Macro function") != std::string::npos);
+    CHECK(resolved_macro.documentation.find("Parameters: `lhs, rhs`") != std::string::npos);
+    CHECK(resolved_macro.insert_text.find("${2:rhs}") != std::string::npos);
+
+    context.symbol = CompletionResolveSymbol{
+        .identity = SemanticSymbolIdentity{.stable_id = "symbol|child",
+                                           .name = "child",
+                                           .kind = "Definition",
+                                           .location = SemanticLocation{}},
+        .type_display = {}};
+    const auto resolved_module = resolveCompletionItem("symbol|child", "child", context);
+    CHECK(resolved_module.detail == "child(input logic clk, output logic rst_n)");
+    CHECK(resolved_module.documentation.find("Declared: `file:///workspace/child.sv:1:8`") !=
+          std::string::npos);
+    CHECK(resolved_module.insert_text.find(".rst_n(${3:rst_n})") != std::string::npos);
+
+    context.symbol = CompletionResolveSymbol{
+        .identity = SemanticSymbolIdentity{.stable_id = "symbol|value",
+                                           .name = "value",
+                                           .kind = "Variable",
+                                           .location = SemanticLocation{}},
+        .type_display = "logic [7:0]"};
+    const auto resolved_symbol = resolveCompletionItem("symbol|value", "value", context);
+    CHECK(resolved_symbol.detail == "Variable");
+    CHECK(resolved_symbol.documentation.find("Type: `logic [7:0]`") != std::string::npos);
+
+    context.symbol.reset();
+    const auto missing = resolveCompletionItem("symbol|missing", "missing", context);
+    CHECK(missing.unresolved);
 }
 
 } // namespace

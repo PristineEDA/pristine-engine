@@ -2414,95 +2414,22 @@ SemanticCompletionResult SemanticEngine::completionsAt(std::string_view uri,
 
 SemanticCompletionItem SemanticEngine::resolveCompletion(std::string_view stable_id,
                                                          std::string_view label) const {
-    SemanticCompletionItem item{.stable_id = std::string(stable_id),
-                                .label = std::string(label),
-                                .insert_text = std::string(label)};
     const auto* data = snapshotData();
     if (data == nullptr) {
-        item.unresolved = true;
-        return item;
+        return semantic::resolveCompletionItem(stable_id, label, semantic::CompletionResolveContext{});
     }
 
-    const auto stable_id_text = std::string(stable_id);
-    const auto port_marker = stable_id_text.find("|port|");
-    if (port_marker != std::string::npos) {
-        const auto port_name = stable_id_text.substr(port_marker + 6);
-        for (const auto& [_, module] : data->modules_by_name) {
-            const auto module_uri_it = data->module_uris_by_name.find(module.name);
-            const auto module_uri = module_uri_it == data->module_uris_by_name.end()
-                                        ? std::string_view{}
-                                        : std::string_view(module_uri_it->second);
-            if (module.port_details.empty()) {
-                if (std::find(module.ports.begin(), module.ports.end(), port_name) != module.ports.end()) {
-                    const SchematicPort port{.name = port_name,
-                                             .direction = {},
-                                             .width_text = {},
-                                             .range = module.selection_range,
-                                             .selection_range = module.selection_range};
-                    item.detail = "Port";
-                    item.documentation = semantic::portDocumentation(module, port, module_uri);
-                    item.insert_text = semantic::portConnectionSnippet(port_name);
-                    return item;
-                }
-            }
-            for (const auto& port : module.port_details) {
-                if (port.name != port_name) {
-                    continue;
-                }
-                item.detail = semantic::portSignatureLabel(port);
-                item.documentation = semantic::portDocumentation(module, port, module_uri);
-                item.insert_text = semantic::portConnectionSnippet(port.name);
-                return item;
-            }
-        }
-    }
-
-    const auto macro_marker = stable_id_text.find("|macro|");
-    if (macro_marker != std::string::npos) {
-        const auto macro_name = stable_id_text.substr(macro_marker + 7);
-        for (const auto& [_, macros] : data->macros_by_uri) {
-            const auto macro_it = std::find_if(macros.begin(), macros.end(), [&](const MacroDefinition& macro) {
-                return macro.name == macro_name;
-            });
-            if (macro_it == macros.end()) {
-                continue;
-            }
-            item.detail = macro_it->function_like ? "Macro function " + semantic::macroSignatureLabel(*macro_it)
-                                                  : "Macro";
-            item.documentation = semantic::macroDocumentation(*macro_it);
-            item.insert_text = semantic::macroInsertText(*macro_it);
-            return item;
-        }
-        item.unresolved = true;
-        return item;
-    }
+    semantic::CompletionResolveContext context;
+    context.modules_by_name = &data->modules_by_name;
+    context.module_uris_by_name = &data->module_uris_by_name;
+    context.macros_by_uri = &data->macros_by_uri;
 
     const auto symbol_it = data->symbols_by_id.find(std::string(stable_id));
-    if (symbol_it == data->symbols_by_id.end()) {
-        item.unresolved = true;
-        return item;
+    if (symbol_it != data->symbols_by_id.end()) {
+        context.symbol = semantic::CompletionResolveSymbol{.identity = symbol_it->second.identity,
+                                                           .type_display = symbol_it->second.type_display};
     }
-
-    item.detail = symbol_it->second.identity.kind;
-    item.documentation = "**" + symbol_it->second.identity.kind + "** `" +
-                         symbol_it->second.identity.name + "`";
-    if (symbol_it->second.identity.kind == "Definition") {
-        const auto module_it = data->modules_by_name.find(symbol_it->second.identity.name);
-        if (module_it != data->modules_by_name.end()) {
-            const auto module_uri_it = data->module_uris_by_name.find(module_it->first);
-            item.detail = semantic::moduleSignatureLabel(module_it->second);
-            item.documentation = semantic::moduleDocumentation(module_it->second,
-                                                              module_uri_it == data->module_uris_by_name.end()
-                                                                  ? std::string_view{}
-                                                                  : std::string_view(module_uri_it->second));
-            item.insert_text = semantic::moduleInstantiationSnippet(module_it->second);
-            return item;
-        }
-    }
-    if (!symbol_it->second.type_display.empty()) {
-        item.documentation += "\n\nType: `" + symbol_it->second.type_display + "`";
-    }
-    return item;
+    return semantic::resolveCompletionItem(stable_id, label, context);
 }
 
 SemanticSignatureHelpResult SemanticEngine::signatureHelpAt(std::string_view uri,

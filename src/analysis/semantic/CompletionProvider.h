@@ -7,6 +7,7 @@
 #include <set>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 namespace pristine::analysis::semantic {
@@ -18,6 +19,18 @@ struct CompletionContext {
     bool macro_invocation = false;
     bool member_access = false;
     bool module_instantiation_position = false;
+};
+
+struct CompletionResolveSymbol {
+    SemanticSymbolIdentity identity;
+    std::string type_display;
+};
+
+struct CompletionResolveContext {
+    const std::unordered_map<std::string, ModuleDefinition>* modules_by_name = nullptr;
+    const std::unordered_map<std::string, std::string>* module_uris_by_name = nullptr;
+    const std::unordered_map<std::string, std::vector<MacroDefinition>>* macros_by_uri = nullptr;
+    std::optional<CompletionResolveSymbol> symbol;
 };
 
 [[nodiscard]] constexpr std::string_view completionProviderName() {
@@ -50,6 +63,9 @@ struct CompletionContext {
 [[nodiscard]] std::string portDocumentation(const ModuleDefinition& module,
                                            const SchematicPort& port,
                                            std::string_view declaration_uri);
+[[nodiscard]] SemanticCompletionItem resolveCompletionItem(std::string_view stable_id,
+                                                           std::string_view label,
+                                                           const CompletionResolveContext& context);
 
 void appendCompletionItem(std::vector<SemanticCompletionItem>& items,
                           std::set<std::string>& emitted,

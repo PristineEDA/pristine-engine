@@ -261,6 +261,37 @@ void runCompletionFixture(SemanticEngine& engine, const nlohmann::json& fixture)
     }
 }
 
+void runCompletionResolveFixture(SemanticEngine& engine, const nlohmann::json& fixture) {
+    const auto& request = fixture.at("request");
+    const auto& expected = fixture.at("expected");
+    const auto completions = engine.completionsAt(request.at("uri").get<std::string>(),
+                                                  request.at("line").get<int>(),
+                                                  request.at("character").get<int>(),
+                                                  request.value("prefix", ""));
+    const auto label = request.at("label").get<std::string>();
+    const auto item = std::find_if(completions.items.begin(),
+                                   completions.items.end(),
+                                   [&](const SemanticCompletionItem& candidate) {
+                                       return candidate.label == label;
+                                   });
+    REQUIRE(item != completions.items.end());
+
+    const auto resolved = engine.resolveCompletion(item->stable_id, item->label);
+    CHECK(resolved.unresolved == expected.value("unresolved", false));
+    if (expected.contains("detailContains")) {
+        CHECK(resolved.detail.find(expected.at("detailContains").get<std::string>()) !=
+              std::string::npos);
+    }
+    if (expected.contains("documentationContains")) {
+        CHECK(resolved.documentation.find(expected.at("documentationContains").get<std::string>()) !=
+              std::string::npos);
+    }
+    if (expected.contains("insertTextContains")) {
+        CHECK(resolved.insert_text.find(expected.at("insertTextContains").get<std::string>()) !=
+              std::string::npos);
+    }
+}
+
 void runDiagnosticsFixture(SemanticEngine& engine, const nlohmann::json& fixture) {
     const auto& expected = fixture.at("expected");
     const auto diagnostics = engine.diagnosticsFor(expected.at("uri").get<std::string>());
@@ -374,6 +405,9 @@ TEST_CASE("JSON semantic golden fixtures exercise stable request shapes",
         }
         else if (kind == "completion") {
             runCompletionFixture(engine, fixture);
+        }
+        else if (kind == "completionResolve") {
+            runCompletionResolveFixture(engine, fixture);
         }
         else if (kind == "diagnostics") {
             runDiagnosticsFixture(engine, fixture);
