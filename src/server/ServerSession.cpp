@@ -1482,16 +1482,6 @@ struct IndexedModuleDefinition {
     analysis::ModuleDefinition definition;
 };
 
-struct IndexedModuleSchematic {
-    std::string uri;
-    analysis::ModuleSchematic schematic;
-};
-
-bool sameRange(const analysis::ParseRange& lhs, const lsp::Range& rhs) {
-    return lhs.start_line == rhs.start.line && lhs.start_character == rhs.start.character &&
-           lhs.end_line == rhs.end.line && lhs.end_character == rhs.end.character;
-}
-
 std::vector<IndexedModuleDefinition> sortedModuleDefinitions(
     const std::unordered_map<std::string, std::vector<analysis::ModuleDefinition>>& documents) {
     std::vector<IndexedModuleDefinition> result;
@@ -1519,37 +1509,6 @@ std::map<std::string, IndexedModuleDefinition> buildModuleLookup(
     std::map<std::string, IndexedModuleDefinition> modules;
     for (const auto& definition : definitions) {
         modules.try_emplace(definition.definition.name, definition);
-    }
-    return modules;
-}
-
-std::vector<IndexedModuleSchematic> sortedModuleSchematics(
-    const std::unordered_map<std::string, std::vector<analysis::ModuleSchematic>>& documents) {
-    std::vector<IndexedModuleSchematic> result;
-    for (const auto& [uri, schematics] : documents) {
-        for (const auto& schematic : schematics) {
-            result.push_back(IndexedModuleSchematic{.uri = uri, .schematic = schematic});
-        }
-    }
-
-    std::sort(result.begin(), result.end(), [](const auto& lhs, const auto& rhs) {
-        if (lhs.schematic.name != rhs.schematic.name) {
-            return lhs.schematic.name < rhs.schematic.name;
-        }
-        if (lhs.uri != rhs.uri) {
-            return lhs.uri < rhs.uri;
-        }
-        return lhs.schematic.range.start_line < rhs.schematic.range.start_line;
-    });
-
-    return result;
-}
-
-std::map<std::string, IndexedModuleSchematic> buildSchematicLookup(
-    const std::vector<IndexedModuleSchematic>& schematics) {
-    std::map<std::string, IndexedModuleSchematic> modules;
-    for (const auto& schematic : schematics) {
-        modules.try_emplace(schematic.schematic.name, schematic);
     }
     return modules;
 }
@@ -1584,145 +1543,84 @@ jsonrpc::Json toSchematicCellJson(const analysis::SchematicCell& cell) {
                          {"connections", std::move(connections)}};
 }
 
-const analysis::SchematicPort* findSchematicPort(const analysis::ModuleSchematic& schematic,
-                                                 std::string_view name) {
-    const auto found = std::find_if(schematic.ports.begin(), schematic.ports.end(), [&](const auto& port) {
-        return port.name == name;
-    });
-    return found == schematic.ports.end() ? nullptr : &*found;
-}
-
-const analysis::SchematicPort* findSchematicPortByIndex(const analysis::ModuleSchematic& schematic,
-                                                        int index) {
-    if (index < 0 || static_cast<size_t>(index) >= schematic.ports.size()) {
-        return nullptr;
-    }
-    return &schematic.ports[static_cast<size_t>(index)];
-}
-
-jsonrpc::Json makeSchematicEndpoint(std::string node_id, std::string port_name) {
-    return jsonrpc::Json{{"nodeId", std::move(node_id)}, {"portName", std::move(port_name)}};
-}
-
-std::string lowerAscii(std::string value) {
-    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch) {
-        return static_cast<char>(std::tolower(ch));
-    });
-    return value;
-}
-
-void appendEndpointByDirection(jsonrpc::Json& net,
-                               std::string direction,
-                               jsonrpc::Json endpoint,
-                               bool invert_direction = false) {
-    if (invert_direction) {
-        if (direction == "input") {
-            direction = "output";
-        }
-        else if (direction == "output") {
-            direction = "input";
-        }
+jsonrpc::Json toHierarchyNodeJson(const analysis::SemanticHierarchyNode& node) {
+    jsonrpc::Json children = jsonrpc::Json::array();
+    for (const auto& child : node.children) {
+        children.push_back(toHierarchyNodeJson(child));
     }
 
-    if (direction == "output") {
-        net["drivers"].push_back(std::move(endpoint));
-        return;
+    jsonrpc::Json result{{"moduleName", node.module_name},
+                         {"kind", node.kind.empty() ? "module" : node.kind},
+                         {"uri", node.location.uri.empty() ? jsonrpc::Json(nullptr) : jsonrpc::Json(node.location.uri)},
+                         {"range", node.location.uri.empty() ? jsonrpc::Json(nullptr)
+                                                              : toRangeJson(node.location.range)},
+                         {"selectionRange", node.location.uri.empty() ? jsonrpc::Json(nullptr)
+                                                                      : toRangeJson(node.selection_range)},
+                         {"unresolved", node.unresolved},
+                         {"cycle", node.cycle},
+                         {"children", std::move(children)}};
+    if (!node.instance_name.empty()) {
+        result["instanceName"] = node.instance_name;
     }
-    if (direction == "input") {
-        net["loads"].push_back(std::move(endpoint));
-        return;
+    if (node.instance_range.has_value()) {
+        result["instanceRange"] = toRangeJson(*node.instance_range);
     }
-
-    net["drivers"].push_back(endpoint);
-    net["loads"].push_back(std::move(endpoint));
-}
-
-bool isLogicOutputPort(std::string_view port_name) {
-    const auto normalized = lowerAscii(std::string(port_name));
-    return normalized == "y" || normalized == "out" || normalized == "o" || normalized == "q";
-}
-
-jsonrpc::Json buildSchematicNetsJson(
-    const analysis::ModuleSchematic& schematic,
-    const std::map<std::string, IndexedModuleSchematic>& modules) {
-    std::map<std::string, jsonrpc::Json> nets;
-    const auto ensure_net = [&](std::string_view signal) -> jsonrpc::Json& {
-        auto [it, inserted] = nets.try_emplace(std::string(signal),
-                                               jsonrpc::Json{{"name", std::string(signal)},
-                                                             {"drivers", jsonrpc::Json::array()},
-                                                             {"loads", jsonrpc::Json::array()}});
-        (void)inserted;
-        return it->second;
-    };
-
-    for (const auto& port : schematic.ports) {
-        if (port.name.empty()) {
-            continue;
-        }
-        auto& net = ensure_net(port.name);
-        appendEndpointByDirection(net, port.direction,
-                                  makeSchematicEndpoint(std::string("$port:") + port.name, port.name), true);
+    if (node.instance_selection_range.has_value()) {
+        result["instanceSelectionRange"] = toRangeJson(*node.instance_selection_range);
     }
-
-    for (const auto& cell : schematic.cells) {
-        const auto target_it = cell.kind == "module" ? modules.find(cell.type) : modules.end();
-        for (const auto& connection : cell.connections) {
-            if (connection.signal.empty()) {
-                continue;
-            }
-
-            std::string port_name = connection.port_name;
-            std::string direction;
-            if (target_it != modules.end()) {
-                const auto* port = !port_name.empty()
-                                       ? findSchematicPort(target_it->second.schematic, port_name)
-                                       : findSchematicPortByIndex(target_it->second.schematic,
-                                                                  connection.port_index);
-                if (port) {
-                    port_name = port->name;
-                    direction = port->direction;
-                }
-            }
-
-            if (port_name.empty() && connection.port_index >= 0) {
-                port_name = std::to_string(connection.port_index);
-            }
-            if (direction.empty()) {
-                direction = isLogicOutputPort(port_name) ? "output" : "input";
-            }
-
-            auto& net = ensure_net(connection.signal);
-            appendEndpointByDirection(net, direction, makeSchematicEndpoint(cell.id, port_name));
-        }
+    if (node.module_selection_range.has_value()) {
+        result["moduleSelectionRange"] = toRangeJson(*node.module_selection_range);
     }
-
-    jsonrpc::Json result = jsonrpc::Json::array();
-    for (auto& [_, net] : nets) {
-        result.push_back(std::move(net));
+    if (node.truncated) {
+        result["truncated"] = true;
     }
     return result;
 }
 
-jsonrpc::Json toSchematicModuleJson(const IndexedModuleSchematic& indexed,
-                                    const std::map<std::string, IndexedModuleSchematic>& modules) {
+jsonrpc::Json toSchematicEndpointJson(const analysis::SemanticSchematicEndpoint& endpoint) {
+    return jsonrpc::Json{{"nodeId", endpoint.node_id}, {"portName", endpoint.port_name}};
+}
+
+jsonrpc::Json toSchematicNetJson(const analysis::SemanticSchematicNet& net) {
+    jsonrpc::Json drivers = jsonrpc::Json::array();
+    for (const auto& driver : net.drivers) {
+        drivers.push_back(toSchematicEndpointJson(driver));
+    }
+
+    jsonrpc::Json loads = jsonrpc::Json::array();
+    for (const auto& load : net.loads) {
+        loads.push_back(toSchematicEndpointJson(load));
+    }
+
+    return jsonrpc::Json{{"name", net.name},
+                         {"drivers", std::move(drivers)},
+                         {"loads", std::move(loads)}};
+}
+
+jsonrpc::Json toSchematicModuleJson(const analysis::SemanticSchematicModuleView& view) {
     jsonrpc::Json ports = jsonrpc::Json::array();
-    for (const auto& port : indexed.schematic.ports) {
+    for (const auto& port : view.module.ports) {
         ports.push_back(toSchematicPortJson(port));
     }
 
     jsonrpc::Json cells = jsonrpc::Json::array();
-    for (const auto& cell : indexed.schematic.cells) {
+    for (const auto& cell : view.module.cells) {
         cells.push_back(toSchematicCellJson(cell));
     }
 
-    return jsonrpc::Json{{"id", indexed.schematic.name},
-                         {"name", indexed.schematic.name},
-                         {"uri", indexed.uri},
-                         {"range", toRangeJson(indexed.schematic.range)},
-                         {"selectionRange", toRangeJson(indexed.schematic.selection_range)},
+    jsonrpc::Json nets = jsonrpc::Json::array();
+    for (const auto& net : view.nets) {
+        nets.push_back(toSchematicNetJson(net));
+    }
+
+    return jsonrpc::Json{{"id", view.module.id},
+                         {"name", view.module.name},
+                         {"uri", view.module.uri},
+                         {"range", toRangeJson(view.module.range)},
+                         {"selectionRange", toRangeJson(view.module.selection_range)},
                          {"ports", std::move(ports)},
                          {"cells", std::move(cells)},
-                         {"nets", buildSchematicNetsJson(indexed.schematic, modules)}};
+                         {"nets", std::move(nets)}};
 }
 
 jsonrpc::Json toConeNodeJson(const analysis::SemanticConeNode& node) {
@@ -1765,125 +1663,27 @@ jsonrpc::Json toConeTraceJson(const analysis::SemanticConeTrace& trace) {
                          {"messages", std::move(messages)}};
 }
 
-jsonrpc::Json toCallHierarchyItemJson(const IndexedModuleDefinition& module) {
-    return jsonrpc::Json{{"name", module.definition.name},
-                         {"kind", module.definition.kind == "interface" ? 11 : 2},
-                         {"detail", module.definition.kind},
-                         {"uri", module.uri},
-                         {"range", toRangeJson(module.definition.range)},
-                         {"selectionRange", toRangeJson(module.definition.selection_range)}};
+jsonrpc::Json toCallHierarchyItemJson(const analysis::SemanticCallHierarchyItem& item) {
+    return jsonrpc::Json{{"name", item.name},
+                         {"kind", item.kind},
+                         {"detail", item.detail},
+                         {"uri", item.uri},
+                         {"range", toRangeJson(item.range)},
+                         {"selectionRange", toRangeJson(item.selection_range)}};
 }
 
-std::optional<IndexedModuleDefinition> findCallHierarchyModule(
-    const std::vector<IndexedModuleDefinition>& definitions,
-    const lsp::CallHierarchyItem& item) {
-    for (const auto& definition : definitions) {
-        if (definition.definition.name == item.name && definition.uri == item.uri &&
-            sameRange(definition.definition.selection_range, item.selection_range)) {
-            return definition;
-        }
-    }
-    return std::nullopt;
+analysis::ParseRange parseRangeFromLspRange(const lsp::Range& range) {
+    return analysis::ParseRange{.start_line = range.start.line,
+                                .start_character = range.start.character,
+                                .end_line = range.end.line,
+                                .end_character = range.end.character};
 }
 
-std::optional<IndexedModuleDefinition> findCallHierarchyModuleAt(
-    const std::vector<IndexedModuleDefinition>& definitions,
-    std::string_view uri,
-    const lsp::Position& position) {
-    const auto modules = buildModuleLookup(definitions);
-    for (const auto& definition : definitions) {
-        if (definition.uri != uri) {
-            continue;
-        }
-        if (parseRangeContainsPosition(definition.definition.selection_range, position)) {
-            return definition;
-        }
-        for (const auto& instance : definition.definition.instances) {
-            if (!parseRangeContainsPosition(instance.module_selection_range, position) &&
-                !parseRangeContainsPosition(instance.selection_range, position)) {
-                continue;
-            }
-            const auto target_it = modules.find(instance.module_name);
-            if (target_it != modules.end()) {
-                return target_it->second;
-            }
-        }
-    }
-    return std::nullopt;
-}
-
-jsonrpc::Json makeUnresolvedHierarchyNode(const analysis::ModuleInstantiation& instance) {
-    return jsonrpc::Json{{"moduleName", instance.module_name},
-                         {"kind", "module"},
-                         {"instanceName", instance.instance_name},
-                         {"uri", nullptr},
-                         {"range", nullptr},
-                         {"selectionRange", nullptr},
-                         {"instanceRange", toRangeJson(instance.range)},
-                         {"instanceSelectionRange", toRangeJson(instance.selection_range)},
-                         {"moduleSelectionRange", toRangeJson(instance.module_selection_range)},
-                         {"unresolved", true},
-                         {"cycle", false},
-                         {"children", jsonrpc::Json::array()}};
-}
-
-jsonrpc::Json buildHierarchyNode(const std::map<std::string, IndexedModuleDefinition>& modules,
-                                 std::string_view module_name,
-                                 const analysis::ModuleInstantiation* instance,
-                                 std::vector<std::string>& stack,
-                                 int depth,
-                                 int max_depth) {
-    const auto definition_it = modules.find(std::string(module_name));
-    if (definition_it == modules.end()) {
-        if (instance) {
-            return makeUnresolvedHierarchyNode(*instance);
-        }
-
-        return jsonrpc::Json{{"moduleName", std::string(module_name)},
-                             {"kind", "module"},
-                             {"uri", nullptr},
-                             {"range", nullptr},
-                             {"selectionRange", nullptr},
-                             {"unresolved", true},
-                             {"cycle", false},
-                             {"children", jsonrpc::Json::array()}};
-    }
-
-    const auto& indexed_definition = definition_it->second;
-    const auto& definition = indexed_definition.definition;
-    const auto is_cycle = std::find(stack.begin(), stack.end(), definition.name) != stack.end();
-
-    jsonrpc::Json node{{"moduleName", definition.name},
-                       {"kind", definition.kind},
-                       {"uri", indexed_definition.uri},
-                       {"range", toRangeJson(definition.range)},
-                       {"selectionRange", toRangeJson(definition.selection_range)},
-                       {"unresolved", false},
-                       {"cycle", is_cycle},
-                       {"children", jsonrpc::Json::array()}};
-
-    if (instance) {
-        node["instanceName"] = instance->instance_name;
-        node["instanceRange"] = toRangeJson(instance->range);
-        node["instanceSelectionRange"] = toRangeJson(instance->selection_range);
-        node["moduleSelectionRange"] = toRangeJson(instance->module_selection_range);
-    }
-
-    if (is_cycle || depth >= max_depth) {
-        if (depth >= max_depth) {
-            node["truncated"] = true;
-        }
-        return node;
-    }
-
-    stack.push_back(definition.name);
-    for (const auto& child_instance : definition.instances) {
-        node["children"].push_back(buildHierarchyNode(modules, child_instance.module_name,
-                                                       &child_instance, stack, depth + 1, max_depth));
-    }
-    stack.pop_back();
-
-    return node;
+analysis::SemanticCallHierarchyItem toSemanticCallHierarchyItem(const lsp::CallHierarchyItem& item) {
+    return analysis::SemanticCallHierarchyItem{.name = item.name,
+                                               .uri = item.uri,
+                                               .range = parseRangeFromLspRange(item.range),
+                                               .selection_range = parseRangeFromLspRange(item.selection_range)};
 }
 
 std::optional<std::string> parseOptionalModuleName(const jsonrpc::Json& params) {
@@ -1906,71 +1706,6 @@ int parseMaxDepth(const jsonrpc::Json& params) {
         throw std::runtime_error("Expected 'maxDepth' to be an integer");
     }
     return std::max(1, max_depth_it->get<int>());
-}
-
-std::optional<std::string> inferRootModuleName(
-    const std::map<std::string, IndexedModuleDefinition>& modules,
-    const std::vector<IndexedModuleDefinition>& definitions,
-    jsonrpc::Json& messages) {
-    std::set<std::string> instantiated_modules;
-    for (const auto& definition : definitions) {
-        for (const auto& instance : definition.definition.instances) {
-            instantiated_modules.insert(instance.module_name);
-        }
-    }
-
-    for (const auto& [name, _] : modules) {
-        if (!instantiated_modules.contains(name)) {
-            return name;
-        }
-    }
-
-    if (!modules.empty()) {
-        messages.push_back("No uninstantiated top module could be inferred for this workspace.");
-        return modules.begin()->first;
-    }
-
-    return std::nullopt;
-}
-
-void collectReachableSchematicModules(
-    jsonrpc::Json& result,
-    jsonrpc::Json& messages,
-    const std::map<std::string, IndexedModuleDefinition>& definitions,
-    const std::map<std::string, IndexedModuleSchematic>& schematics,
-    std::set<std::string>& emitted,
-    std::vector<std::string>& stack,
-    std::string_view module_name,
-    int depth,
-    int max_depth) {
-    if (emitted.contains(std::string(module_name))) {
-        return;
-    }
-
-    const auto schematic_it = schematics.find(std::string(module_name));
-    if (schematic_it == schematics.end()) {
-        messages.push_back(std::string("No schematic data found for module '") + std::string(module_name) + "'.");
-        return;
-    }
-
-    emitted.insert(std::string(module_name));
-    result.push_back(toSchematicModuleJson(schematic_it->second, schematics));
-
-    if (depth >= max_depth || std::find(stack.begin(), stack.end(), module_name) != stack.end()) {
-        return;
-    }
-
-    const auto definition_it = definitions.find(std::string(module_name));
-    if (definition_it == definitions.end()) {
-        return;
-    }
-
-    stack.push_back(std::string(module_name));
-    for (const auto& instance : definition_it->second.definition.instances) {
-        collectReachableSchematicModules(result, messages, definitions, schematics, emitted, stack,
-                                         instance.module_name, depth + 1, max_depth);
-    }
-    stack.pop_back();
 }
 
 } // namespace
@@ -2104,7 +1839,6 @@ jsonrpc::Json ServerSession::handleInitialize(const jsonrpc::Json& params) {
     }
     symbol_index_.clear();
     hierarchy_documents_.clear();
-    schematic_documents_.clear();
     indexWorkspaceSources();
     initialized_ = true;
     shutdown_requested_ = false;
@@ -2135,42 +1869,34 @@ jsonrpc::Json ServerSession::handleModuleHierarchy(const jsonrpc::Json& params) 
         throw std::runtime_error("systemverilog/moduleHierarchy received before initialize");
     }
 
-    const auto sorted_definitions = sortedModuleDefinitions(hierarchy_documents_);
-    auto modules = buildModuleLookup(sorted_definitions);
-    std::set<std::string> instantiated_modules;
-    for (const auto& definition : sorted_definitions) {
-        for (const auto& instance : definition.definition.instances) {
-            instantiated_modules.insert(instance.module_name);
-        }
-    }
-
     const auto requested_module_name = parseOptionalModuleName(params);
     const auto max_depth = parseMaxDepth(params);
+    const auto hierarchy = semantic_workspace_.engineModuleHierarchy(
+        requested_module_name.has_value()
+            ? std::optional<std::string_view>{std::string_view(*requested_module_name)}
+            : std::optional<std::string_view>{},
+        max_depth);
+
     jsonrpc::Json roots = jsonrpc::Json::array();
     jsonrpc::Json messages = jsonrpc::Json::array();
-
-    std::vector<std::string> root_names;
-    if (requested_module_name.has_value()) {
-        root_names.push_back(*requested_module_name);
+    for (const auto& root : hierarchy.roots) {
+        roots.push_back(toHierarchyNodeJson(root));
     }
-    else {
-        for (const auto& module : modules) {
-            if (!instantiated_modules.contains(module.first)) {
-                root_names.push_back(module.first);
-            }
-        }
+    for (const auto& message : hierarchy.messages) {
+        messages.push_back(message);
     }
 
-    if (root_names.empty() && !modules.empty()) {
-        messages.push_back("No uninstantiated top module could be inferred for this workspace.");
+    jsonrpc::Json result{{"roots", std::move(roots)}, {"messages", std::move(messages)}};
+    if (hierarchy.unresolved) {
+        result["unresolved"] = true;
     }
-
-    for (const auto& root_name : root_names) {
-        std::vector<std::string> stack;
-        roots.push_back(buildHierarchyNode(modules, root_name, nullptr, stack, 0, max_depth));
+    if (hierarchy.partial) {
+        result["partial"] = true;
     }
-
-    return jsonrpc::Json{{"roots", std::move(roots)}, {"messages", std::move(messages)}};
+    if (hierarchy.truncated) {
+        result["truncated"] = true;
+    }
+    return result;
 }
 
 jsonrpc::Json ServerSession::handleSchematic(const jsonrpc::Json& params) {
@@ -2178,31 +1904,38 @@ jsonrpc::Json ServerSession::handleSchematic(const jsonrpc::Json& params) {
         throw std::runtime_error("systemverilog/schematic received before initialize");
     }
 
-    const auto sorted_definitions = sortedModuleDefinitions(hierarchy_documents_);
-    const auto definition_lookup = buildModuleLookup(sorted_definitions);
-    const auto schematic_lookup = buildSchematicLookup(sortedModuleSchematics(schematic_documents_));
     const auto requested_module_name = parseOptionalModuleName(params);
     const auto max_depth = parseMaxDepth(params);
+    const auto schematic = semantic_workspace_.engineSchematic(
+        requested_module_name.has_value()
+            ? std::optional<std::string_view>{std::string_view(*requested_module_name)}
+            : std::optional<std::string_view>{},
+        max_depth);
 
     jsonrpc::Json messages = jsonrpc::Json::array();
-    const auto root_module_name = requested_module_name.has_value()
-                                      ? requested_module_name
-                                      : inferRootModuleName(definition_lookup, sorted_definitions, messages);
     jsonrpc::Json modules = jsonrpc::Json::array();
-    if (!root_module_name.has_value()) {
-        return jsonrpc::Json{{"rootModuleId", nullptr},
-                             {"modules", std::move(modules)},
-                             {"messages", std::move(messages)}};
+    for (const auto& module : schematic.modules) {
+        modules.push_back(toSchematicModuleJson(module));
+    }
+    for (const auto& message : schematic.messages) {
+        messages.push_back(message);
     }
 
-    std::set<std::string> emitted;
-    std::vector<std::string> stack;
-    collectReachableSchematicModules(modules, messages, definition_lookup, schematic_lookup, emitted, stack,
-                                     *root_module_name, 0, max_depth);
-
-    return jsonrpc::Json{{"rootModuleId", *root_module_name},
+    jsonrpc::Json result{{"rootModuleId",
+                          schematic.root_module_id.has_value() ? jsonrpc::Json(*schematic.root_module_id)
+                                                                : jsonrpc::Json(nullptr)},
                          {"modules", std::move(modules)},
                          {"messages", std::move(messages)}};
+    if (schematic.unresolved) {
+        result["unresolved"] = true;
+    }
+    if (schematic.partial) {
+        result["partial"] = true;
+    }
+    if (schematic.truncated) {
+        result["truncated"] = true;
+    }
+    return result;
 }
 
 jsonrpc::Json ServerSession::handleBackwardCone(const jsonrpc::Json& params) {
@@ -2765,13 +2498,18 @@ jsonrpc::Json ServerSession::handlePrepareCallHierarchy(const jsonrpc::Json& par
     }
 
     const auto prepare = lsp::parseCallHierarchyPrepareParams(params);
-    const auto definitions = sortedModuleDefinitions(hierarchy_documents_);
-    const auto module = findCallHierarchyModuleAt(definitions, prepare.text_document.uri, prepare.position);
-    if (!module.has_value()) {
+    const auto prepared = semantic_workspace_.enginePrepareCallHierarchy(prepare.text_document.uri,
+                                                                         prepare.position.line,
+                                                                         prepare.position.character);
+    if (prepared.items.empty()) {
         return nullptr;
     }
 
-    return jsonrpc::Json::array({toCallHierarchyItemJson(*module)});
+    jsonrpc::Json result = jsonrpc::Json::array();
+    for (const auto& item : prepared.items) {
+        result.push_back(toCallHierarchyItemJson(item));
+    }
+    return result;
 }
 
 jsonrpc::Json ServerSession::handleIncomingCalls(const jsonrpc::Json& params) {
@@ -2780,21 +2518,16 @@ jsonrpc::Json ServerSession::handleIncomingCalls(const jsonrpc::Json& params) {
     }
 
     const auto calls = lsp::parseCallHierarchyCallsParams(params);
-    const auto definitions = sortedModuleDefinitions(hierarchy_documents_);
-    const auto target = findCallHierarchyModule(definitions, calls.item);
-    if (!target.has_value()) {
-        return jsonrpc::Json::array();
-    }
+    const auto incoming = semantic_workspace_.engineIncomingCalls(toSemanticCallHierarchyItem(calls.item));
 
     jsonrpc::Json result = jsonrpc::Json::array();
-    for (const auto& caller : definitions) {
-        for (const auto& instance : caller.definition.instances) {
-            if (instance.module_name == target->definition.name) {
-                result.push_back(jsonrpc::Json{{"from", toCallHierarchyItemJson(caller)},
-                                               {"fromRanges", jsonrpc::Json::array(
-                                                                  {toRangeJson(instance.module_selection_range)})}});
-            }
+    for (const auto& call : incoming.calls) {
+        jsonrpc::Json from_ranges = jsonrpc::Json::array();
+        for (const auto& range : call.from_ranges) {
+            from_ranges.push_back(toRangeJson(range));
         }
+        result.push_back(jsonrpc::Json{{"from", toCallHierarchyItemJson(call.item)},
+                                       {"fromRanges", std::move(from_ranges)}});
     }
 
     return result;
@@ -2806,22 +2539,15 @@ jsonrpc::Json ServerSession::handleOutgoingCalls(const jsonrpc::Json& params) {
     }
 
     const auto calls = lsp::parseCallHierarchyCallsParams(params);
-    const auto definitions = sortedModuleDefinitions(hierarchy_documents_);
-    const auto source = findCallHierarchyModule(definitions, calls.item);
-    if (!source.has_value()) {
-        return jsonrpc::Json::array();
-    }
-
-    const auto modules = buildModuleLookup(definitions);
+    const auto outgoing = semantic_workspace_.engineOutgoingCalls(toSemanticCallHierarchyItem(calls.item));
     jsonrpc::Json result = jsonrpc::Json::array();
-    for (const auto& instance : source->definition.instances) {
-        const auto target_it = modules.find(instance.module_name);
-        if (target_it == modules.end()) {
-            continue;
+    for (const auto& call : outgoing.calls) {
+        jsonrpc::Json from_ranges = jsonrpc::Json::array();
+        for (const auto& range : call.from_ranges) {
+            from_ranges.push_back(toRangeJson(range));
         }
-        result.push_back(jsonrpc::Json{{"to", toCallHierarchyItemJson(target_it->second)},
-                                       {"fromRanges", jsonrpc::Json::array(
-                                                          {toRangeJson(instance.module_selection_range)})}});
+        result.push_back(jsonrpc::Json{{"to", toCallHierarchyItemJson(call.item)},
+                                       {"fromRanges", std::move(from_ranges)}});
     }
 
     return result;
@@ -3374,18 +3100,14 @@ void ServerSession::updateSymbolIndex(std::string_view uri,
 
 void ServerSession::updateHierarchyIndex(std::string_view uri, std::string_view text) {
     std::vector<analysis::ModuleDefinition> definitions;
-    std::vector<analysis::ModuleSchematic> schematics;
     try {
         definitions = compilation_service_.moduleDefinitions(text, uri);
-        schematics = compilation_service_.moduleSchematics(text, uri);
     }
     catch (...) {
         definitions.clear();
-        schematics.clear();
     }
 
     hierarchy_documents_.insert_or_assign(std::string(uri), std::move(definitions));
-    schematic_documents_.insert_or_assign(std::string(uri), std::move(schematics));
 }
 
 void ServerSession::restoreClosedDocumentIndex(std::string_view uri) {
@@ -3418,7 +3140,6 @@ void ServerSession::removeDocumentIndexes(std::string_view uri) {
     semantic_workspace_.removeDocument(uri);
     symbol_index_.removeDocument(uri);
     hierarchy_documents_.erase(std::string(uri));
-    schematic_documents_.erase(std::string(uri));
 }
 
 void ServerSession::publishDiagnostics(std::string_view uri) {

@@ -91,27 +91,6 @@ struct SemanticDiagnostic {
     int severity = 1;
 };
 
-struct SemanticConeNode {
-    std::string id;
-    std::string name;
-    Location location;
-    std::optional<std::int64_t> bit_width;
-};
-
-struct SemanticConeEdge {
-    std::string from_symbol_id;
-    std::string to_symbol_id;
-    Location location;
-    std::string expression;
-};
-
-struct SemanticConeTrace {
-    std::optional<std::string> root_symbol_id;
-    std::vector<SemanticConeNode> nodes;
-    std::vector<SemanticConeEdge> edges;
-    std::vector<std::string> messages;
-};
-
 struct SemanticDocument {
     std::string uri;
     int version = -1;
@@ -219,6 +198,15 @@ public:
     [[nodiscard]] SemanticConeTrace backwardConeAt(std::string_view uri,
                                                    int line,
                                                    int character) const;
+    [[nodiscard]] SemanticModuleHierarchyResult engineModuleHierarchy(std::optional<std::string_view> module_name,
+                                                                      int max_depth) const;
+    [[nodiscard]] SemanticSchematicResult engineSchematic(std::optional<std::string_view> module_name,
+                                                          int max_depth) const;
+    [[nodiscard]] SemanticCallHierarchyPrepareResult enginePrepareCallHierarchy(std::string_view uri,
+                                                                                int line,
+                                                                                int character) const;
+    [[nodiscard]] SemanticCallHierarchyCallsResult engineIncomingCalls(const SemanticCallHierarchyItem& item) const;
+    [[nodiscard]] SemanticCallHierarchyCallsResult engineOutgoingCalls(const SemanticCallHierarchyItem& item) const;
     [[nodiscard]] size_t documentCount() const { return documents_.size(); }
 
 private:

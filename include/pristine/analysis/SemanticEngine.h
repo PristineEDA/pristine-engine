@@ -164,18 +164,116 @@ struct SemanticSelectionRangeResult {
 };
 
 struct SemanticHierarchyNode {
-    std::string id;
-    std::string name;
+    std::string module_name;
     std::string kind;
+    std::string instance_name;
     SemanticLocation location;
-    std::vector<std::string> children;
+    ParseRange selection_range;
+    std::optional<ParseRange> instance_range;
+    std::optional<ParseRange> instance_selection_range;
+    std::optional<ParseRange> module_selection_range;
+    bool unresolved = false;
+    bool cycle = false;
+    bool truncated = false;
+    std::vector<SemanticHierarchyNode> children;
 };
 
-struct SemanticEngineConeEdge {
-    std::string from_id;
-    std::string to_id;
+struct SemanticModuleHierarchyResult {
+    std::uint64_t generation = 0;
+    std::vector<SemanticHierarchyNode> roots;
+    std::vector<std::string> messages;
+    bool unresolved = false;
+    bool partial = false;
+    bool truncated = false;
+};
+
+struct SemanticSchematicModule {
+    std::string id;
+    std::string name;
+    std::string uri;
+    ParseRange range;
+    ParseRange selection_range;
+    std::vector<SchematicPort> ports;
+    std::vector<SchematicCell> cells;
+};
+
+struct SemanticSchematicEndpoint {
+    std::string node_id;
+    std::string port_name;
+};
+
+struct SemanticSchematicNet {
+    std::string name;
+    std::vector<SemanticSchematicEndpoint> drivers;
+    std::vector<SemanticSchematicEndpoint> loads;
+};
+
+struct SemanticSchematicModuleView {
+    SemanticSchematicModule module;
+    std::vector<SemanticSchematicNet> nets;
+};
+
+struct SemanticSchematicResult {
+    std::uint64_t generation = 0;
+    std::optional<std::string> root_module_id;
+    std::vector<SemanticSchematicModuleView> modules;
+    std::vector<std::string> messages;
+    bool unresolved = false;
+    bool partial = false;
+    bool truncated = false;
+};
+
+struct SemanticCallHierarchyItem {
+    std::string name;
+    int kind = 2;
+    std::string detail;
+    std::string uri;
+    ParseRange range;
+    ParseRange selection_range;
+};
+
+struct SemanticCallHierarchyPrepareResult {
+    std::uint64_t generation = 0;
+    std::vector<SemanticCallHierarchyItem> items;
+    std::vector<std::string> messages;
+    bool unresolved = false;
+};
+
+struct SemanticCallHierarchyCall {
+    SemanticCallHierarchyItem item;
+    std::vector<ParseRange> from_ranges;
+};
+
+struct SemanticCallHierarchyCallsResult {
+    std::uint64_t generation = 0;
+    std::vector<SemanticCallHierarchyCall> calls;
+    std::vector<std::string> messages;
+    bool unresolved = false;
+};
+
+struct SemanticConeNode {
+    std::string id;
+    std::string name;
+    SemanticLocation location;
+    std::optional<std::int64_t> bit_width;
+};
+
+struct SemanticConeEdge {
+    std::string from_symbol_id;
+    std::string to_symbol_id;
     SemanticLocation location;
     std::string expression;
+};
+
+struct SemanticConeTrace {
+    std::uint64_t generation = 0;
+    std::optional<std::string> root_symbol_id;
+    std::vector<SemanticConeNode> nodes;
+    std::vector<SemanticConeEdge> edges;
+    std::vector<std::string> messages;
+    bool unresolved = false;
+    bool partial = false;
+    bool truncated = false;
 };
 
 struct SemanticEngineDocumentState {
@@ -271,6 +369,18 @@ public:
     [[nodiscard]] SemanticSelectionRangeResult selectionRangesAt(std::string_view uri,
                                                                  int line,
                                                                  int character) const;
+    [[nodiscard]] SemanticModuleHierarchyResult moduleHierarchy(std::optional<std::string_view> module_name = std::nullopt,
+                                                                int max_depth = 64) const;
+    [[nodiscard]] SemanticSchematicResult schematic(std::optional<std::string_view> module_name = std::nullopt,
+                                                    int max_depth = 64) const;
+    [[nodiscard]] SemanticCallHierarchyPrepareResult prepareCallHierarchy(std::string_view uri,
+                                                                          int line,
+                                                                          int character) const;
+    [[nodiscard]] SemanticCallHierarchyCallsResult incomingCalls(const SemanticCallHierarchyItem& item) const;
+    [[nodiscard]] SemanticCallHierarchyCallsResult outgoingCalls(const SemanticCallHierarchyItem& item) const;
+    [[nodiscard]] SemanticConeTrace backwardConeAt(std::string_view uri,
+                                                   int line,
+                                                   int character) const;
 
 private:
     struct SnapshotData;

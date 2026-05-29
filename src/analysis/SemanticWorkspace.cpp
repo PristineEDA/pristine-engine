@@ -275,7 +275,8 @@ SemanticConeNode makeConeNode(const SemanticSymbol& symbol) {
 
     return SemanticConeNode{.id = symbol.id,
                             .name = symbol.name,
-                            .location = symbol.location,
+                            .location = SemanticLocation{.uri = symbol.location.uri,
+                                                         .range = symbol.location.range},
                             .bit_width = bit_width};
 }
 
@@ -936,6 +937,30 @@ SemanticSelectionRangeResult SemanticWorkspace::engineSelectionRangesAt(std::str
     return semantic_engine_.selectionRangesAt(uri, line, character);
 }
 
+SemanticModuleHierarchyResult SemanticWorkspace::engineModuleHierarchy(std::optional<std::string_view> module_name,
+                                                                       int max_depth) const {
+    return semantic_engine_.moduleHierarchy(module_name, max_depth);
+}
+
+SemanticSchematicResult SemanticWorkspace::engineSchematic(std::optional<std::string_view> module_name,
+                                                           int max_depth) const {
+    return semantic_engine_.schematic(module_name, max_depth);
+}
+
+SemanticCallHierarchyPrepareResult SemanticWorkspace::enginePrepareCallHierarchy(std::string_view uri,
+                                                                                 int line,
+                                                                                 int character) const {
+    return semantic_engine_.prepareCallHierarchy(uri, line, character);
+}
+
+SemanticCallHierarchyCallsResult SemanticWorkspace::engineIncomingCalls(const SemanticCallHierarchyItem& item) const {
+    return semantic_engine_.incomingCalls(item);
+}
+
+SemanticCallHierarchyCallsResult SemanticWorkspace::engineOutgoingCalls(const SemanticCallHierarchyItem& item) const {
+    return semantic_engine_.outgoingCalls(item);
+}
+
 std::optional<SemanticSymbol> SemanticWorkspace::symbolById(std::string_view symbol_id) const {
     for (const auto& document_entry : documents_) {
         for (const auto& symbol : document_entry.second.symbols) {
@@ -1450,6 +1475,11 @@ std::vector<SemanticDiagnostic> SemanticWorkspace::diagnosticsFor(std::string_vi
 SemanticConeTrace SemanticWorkspace::backwardConeAt(std::string_view uri,
                                                     int line,
                                                     int character) const {
+    const auto engine_trace = semantic_engine_.backwardConeAt(uri, line, character);
+    if (!engine_trace.unresolved || !engine_trace.nodes.empty()) {
+        return engine_trace;
+    }
+
     SemanticConeTrace trace{};
     const auto* source = document(uri);
     if (!source) {
@@ -1530,7 +1560,9 @@ SemanticConeTrace SemanticWorkspace::backwardConeAt(std::string_view uri,
                 if (emitted_edges.insert(edge_key).second) {
                     trace.edges.push_back(SemanticConeEdge{.from_symbol_id = current_id,
                                                            .to_symbol_id = input_symbol->id,
-                                                           .location = assignment.location,
+                                                           .location = SemanticLocation{
+                                                               .uri = assignment.location.uri,
+                                                               .range = assignment.location.range},
                                                            .expression = assignment.right_expression});
                 }
 

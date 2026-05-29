@@ -73,6 +73,20 @@ int main() {
         const auto semantic_tokens = engine.semanticTokens(target_uri);
         const auto end_semantic_tokens = Clock::now();
 
+        const auto target_module_name = std::string("unit_") + std::to_string(target_index);
+
+        const auto start_hierarchy = Clock::now();
+        const auto hierarchy = engine.moduleHierarchy(target_module_name, 4);
+        const auto end_hierarchy = Clock::now();
+
+        const auto start_schematic = Clock::now();
+        const auto schematic = engine.schematic(target_module_name, 4);
+        const auto end_schematic = Clock::now();
+
+        const auto start_cone = Clock::now();
+        const auto cone = engine.backwardConeAt(target_uri, 1, 10);
+        const auto end_cone = Clock::now();
+
         if (!first_baseline) {
             std::cout << ",";
         }
@@ -90,21 +104,26 @@ int main() {
                   << "\"inlayHintMicros\":" << elapsedMicros(start_inlay, end_inlay) << ","
                   << "\"semanticTokensMicros\":" << elapsedMicros(start_semantic_tokens, end_semantic_tokens) << ","
                   << "\"workspaceSymbolMicros\":0,"
-                  << "\"moduleHierarchyMicros\":0,"
-                  << "\"schematicMicros\":0,"
-                  << "\"backwardConeMicros\":0,"
+                  << "\"moduleHierarchyMicros\":" << elapsedMicros(start_hierarchy, end_hierarchy) << ","
+                  << "\"schematicMicros\":" << elapsedMicros(start_schematic, end_schematic) << ","
+                  << "\"backwardConeMicros\":" << elapsedMicros(start_cone, end_cone) << ","
                   << "\"referenceCount\":" << references.locations.size() << ","
                   << "\"completionCount\":" << completion.items.size() << ","
                   << "\"inlayHintCount\":" << inlay.hints.size() << ","
                   << "\"semanticTokenCount\":" << semantic_tokens.tokens.size() << ","
+                  << "\"moduleHierarchyRootCount\":" << hierarchy.roots.size() << ","
+                  << "\"schematicModuleCount\":" << schematic.modules.size() << ","
+                  << "\"backwardConeNodeCount\":" << cone.nodes.size() << ","
                   << "\"signatureUnresolved\":" << (signature.unresolved ? "true" : "false") << ","
                   << "\"unresolved\":" << (references.unresolved || hover.unresolved || rename.unresolved ||
-                                           inlay.unresolved || semantic_tokens.unresolved
+                                           inlay.unresolved || semantic_tokens.unresolved ||
+                                           hierarchy.unresolved || schematic.unresolved || cone.unresolved
                                                 ? "true"
                                                 : "false")
                   << "}";
         unresolved = unresolved || references.unresolved || hover.unresolved || rename.unresolved ||
-                     inlay.unresolved || semantic_tokens.unresolved;
+                     inlay.unresolved || semantic_tokens.unresolved || hierarchy.unresolved ||
+                     schematic.unresolved || cone.unresolved;
     }
 
     std::cout << "]}\n";

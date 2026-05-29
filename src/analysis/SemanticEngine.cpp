@@ -414,6 +414,11 @@ struct SemanticEngine::SnapshotData {
         ParseRange module_selection_range;
     };
 
+    struct ModuleEntry {
+        std::string uri;
+        ModuleDefinition definition;
+    };
+
     std::unique_ptr<slang::SourceManager> source_manager;
     std::vector<std::shared_ptr<slang::syntax::SyntaxTree>> syntax_trees;
     std::unique_ptr<slang::ast::Compilation> compilation;
@@ -422,7 +427,12 @@ struct SemanticEngine::SnapshotData {
     std::vector<IndexedReference> references;
     std::unordered_map<std::string, std::vector<size_t>> references_by_symbol;
     std::unordered_map<std::string, std::vector<SemanticCompletionItem>> completions_by_uri;
+    std::vector<ModuleEntry> module_entries;
     std::unordered_map<std::string, ModuleDefinition> modules_by_name;
+    std::unordered_map<std::string, std::string> module_uris_by_name;
+    std::unordered_map<std::string, ModuleSchematic> schematics_by_name;
+    std::unordered_map<std::string, std::string> schematic_uris_by_name;
+    std::unordered_map<std::string, std::vector<ContinuousAssignment>> assignments_by_uri;
     std::unordered_map<std::string, std::vector<ModuleInstance>> module_instances_by_uri;
     std::unordered_map<std::string, std::vector<ParseRange>> selection_ranges_by_uri;
     std::unordered_map<std::string, std::vector<MacroDefinition>> macros_by_uri;
@@ -798,6 +808,150 @@ void appendModulePortCompletions(std::vector<SemanticCompletionItem>& items,
             prefix,
             truncated);
     }
+}
+
+template<typename Map>
+std::optional<std::string> firstUninstantiatedModuleName(const Map& modules_by_name) {
+    std::set<std::string> instantiated;
+    for (const auto& [_, module] : modules_by_name) {
+        for (const auto& instance : module.instances) {
+            instantiated.insert(instance.module_name);
+        }
+    }
+    for (const auto& [name, _] : modules_by_name) {
+        if (!instantiated.contains(name)) {
+            return name;
+        }
+    }
+    if (!modules_by_name.empty()) {
+        return modules_by_name.begin()->first;
+    }
+    return std::nullopt;
+}
+
+std::string lowerAsciiCopy(std::string value) {
+    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch) {
+        return static_cast<char>(std::tolower(ch));
+    });
+    return value;
+}
+
+bool isLogicOutputPortName(std::string_view port_name) {
+    const auto normalized = lowerAsciiCopy(std::string(port_name));
+    return normalized == "y" || normalized == "out" || normalized == "o" || normalized == "q";
+}
+
+const SchematicPort* findSchematicPortByName(const ModuleSchematic& schematic, std::string_view name) {
+    const auto found = std::find_if(schematic.ports.begin(), schematic.ports.end(), [&](const auto& port) {
+        return port.name == name;
+    });
+    return found == schematic.ports.end() ? nullptr : &*found;
+}
+
+const SchematicPort* findSchematicPortByIndex(const ModuleSchematic& schematic, int index) {
+    if (index < 0 || static_cast<size_t>(index) >= schematic.ports.size()) {
+        return nullptr;
+    }
+    return &schematic.ports[static_cast<size_t>(index)];
+}
+
+bool sameParseRange(const ParseRange& lhs, const ParseRange& rhs) {
+    return lhs.start_line == rhs.start_line && lhs.start_character == rhs.start_character &&
+           lhs.end_line == rhs.end_line && lhs.end_character == rhs.end_character;
+}
+
+void appendEndpointByDirection(SemanticSchematicNet& net,
+                               std::string direction,
+                               SemanticSchematicEndpoint endpoint,
+                               bool invert_direction = false) {
+    if (invert_direction) {
+        if (direction == "input") {
+            direction = "output";
+        }
+        else if (direction == "output") {
+            direction = "input";
+        }
+    }
+
+    if (direction == "output") {
+        net.drivers.push_back(std::move(endpoint));
+        return;
+    }
+    if (direction == "input") {
+        net.loads.push_back(std::move(endpoint));
+        return;
+    }
+
+    net.drivers.push_back(endpoint);
+    net.loads.push_back(std::move(endpoint));
+}
+
+template<typename SnapshotData>
+std::vector<SemanticSchematicNet> buildSchematicNets(const ModuleSchematic& schematic,
+                                                     const SnapshotData& data) {
+    std::map<std::string, SemanticSchematicNet> nets;
+    const auto ensure_net = [&](std::string_view signal) -> SemanticSchematicNet& {
+        auto [it, inserted] = nets.try_emplace(std::string(signal),
+                                               SemanticSchematicNet{.name = std::string(signal)});
+        (void)inserted;
+        return it->second;
+    };
+
+    for (const auto& port : schematic.ports) {
+        if (port.name.empty()) {
+            continue;
+        }
+        auto& net = ensure_net(port.name);
+        appendEndpointByDirection(net,
+                                  port.direction,
+                                  SemanticSchematicEndpoint{.node_id = std::string("$port:") + port.name,
+                                                            .port_name = port.name},
+                                  true);
+    }
+
+    for (const auto& cell : schematic.cells) {
+        const auto target_it = cell.kind == "module"
+                                   ? data.schematics_by_name.find(cell.type)
+                                   : data.schematics_by_name.end();
+        for (const auto& connection : cell.connections) {
+            if (connection.signal.empty()) {
+                continue;
+            }
+
+            std::string port_name = connection.port_name;
+            std::string direction;
+            if (target_it != data.schematics_by_name.end()) {
+                const auto* port = !port_name.empty()
+                                       ? findSchematicPortByName(target_it->second, port_name)
+                                       : findSchematicPortByIndex(target_it->second,
+                                                                  connection.port_index);
+                if (port != nullptr) {
+                    port_name = port->name;
+                    direction = port->direction;
+                }
+            }
+
+            if (port_name.empty() && connection.port_index >= 0) {
+                port_name = std::to_string(connection.port_index);
+            }
+            if (direction.empty()) {
+                direction = isLogicOutputPortName(port_name) ? "output" : "input";
+            }
+
+            auto& net = ensure_net(connection.signal);
+            appendEndpointByDirection(net,
+                                      direction,
+                                      SemanticSchematicEndpoint{.node_id = cell.id,
+                                                                .port_name = port_name});
+        }
+    }
+
+    std::vector<SemanticSchematicNet> result;
+    result.reserve(nets.size());
+    for (auto& [_, net] : nets) {
+        result.push_back(std::move(net));
+    }
+    return result;
 }
 
 } // namespace
@@ -1643,6 +1797,476 @@ SemanticSelectionRangeResult SemanticEngine::selectionRangesAt(std::string_view 
     return result;
 }
 
+SemanticModuleHierarchyResult SemanticEngine::moduleHierarchy(std::optional<std::string_view> module_name,
+                                                              int max_depth) const {
+    const auto& current_snapshot = snapshot();
+    SemanticModuleHierarchyResult result{.generation = current_snapshot.generation};
+    const auto* data = snapshotData();
+    if (data == nullptr) {
+        result.unresolved = true;
+        result.messages.push_back("AST-backed SemanticEngine snapshot is unavailable");
+        return result;
+    }
+
+    std::vector<std::string> root_names;
+    if (module_name.has_value()) {
+        root_names.push_back(std::string(*module_name));
+    }
+    else if (!config_.top_modules.empty()) {
+        root_names = config_.top_modules;
+    }
+    else if (const auto inferred = firstUninstantiatedModuleName(data->modules_by_name)) {
+        root_names.push_back(*inferred);
+    }
+
+    if (root_names.empty()) {
+        result.unresolved = true;
+        result.messages.push_back("No module definitions are indexed in the design snapshot.");
+        return result;
+    }
+
+    const auto build_node = [&](const auto& self,
+                                std::string_view current_name,
+                                const SnapshotData::ModuleInstance* instance,
+                                std::vector<std::string>& stack,
+                                int depth) -> SemanticHierarchyNode {
+        const auto definition_it = data->modules_by_name.find(std::string(current_name));
+        if (definition_it == data->modules_by_name.end()) {
+            result.partial = true;
+            auto node = SemanticHierarchyNode{.module_name = std::string(current_name),
+                                              .kind = "module",
+                                              .unresolved = true};
+            if (instance != nullptr) {
+                node.instance_name = instance->instance_name;
+                node.instance_range = instance->range;
+                node.instance_selection_range = instance->selection_range;
+                node.module_selection_range = instance->module_selection_range;
+            }
+            result.messages.push_back("Unresolved module '" + std::string(current_name) +
+                                      "' in design hierarchy.");
+            return node;
+        }
+
+        const auto& definition = definition_it->second;
+        const auto uri_it = data->module_uris_by_name.find(definition.name);
+        const auto definition_uri = uri_it == data->module_uris_by_name.end()
+                                        ? std::string{}
+                                        : uri_it->second;
+        const auto is_cycle = std::find(stack.begin(), stack.end(), definition.name) != stack.end();
+        auto node = SemanticHierarchyNode{
+            .module_name = definition.name,
+            .kind = definition.kind,
+            .location = SemanticLocation{.uri = definition_uri, .range = definition.range},
+            .selection_range = definition.selection_range,
+            .unresolved = false,
+            .cycle = is_cycle};
+
+        if (instance != nullptr) {
+            node.instance_name = instance->instance_name;
+            node.instance_range = instance->range;
+            node.instance_selection_range = instance->selection_range;
+            node.module_selection_range = instance->module_selection_range;
+        }
+
+        if (is_cycle) {
+            result.partial = true;
+            result.messages.push_back("Cycle detected while expanding module '" + definition.name + "'.");
+            return node;
+        }
+        if (depth >= max_depth) {
+            node.truncated = true;
+            result.truncated = true;
+            result.partial = true;
+            result.messages.push_back("Module hierarchy expansion reached maxDepth.");
+            return node;
+        }
+
+        stack.push_back(definition.name);
+        for (const auto& child_instance : definition.instances) {
+            const auto child = SnapshotData::ModuleInstance{.module_name = child_instance.module_name,
+                                                            .instance_name = child_instance.instance_name,
+                                                            .uri = definition_uri,
+                                                            .range = child_instance.range,
+                                                            .selection_range = child_instance.selection_range,
+                                                            .module_selection_range =
+                                                                child_instance.module_selection_range};
+            node.children.push_back(self(self, child.module_name, &child, stack, depth + 1));
+        }
+        stack.pop_back();
+        return node;
+    };
+
+    for (const auto& root_name : root_names) {
+        std::vector<std::string> stack;
+        result.roots.push_back(build_node(build_node, root_name, nullptr, stack, 0));
+    }
+    return result;
+}
+
+SemanticSchematicResult SemanticEngine::schematic(std::optional<std::string_view> module_name,
+                                                  int max_depth) const {
+    const auto& current_snapshot = snapshot();
+    SemanticSchematicResult result{.generation = current_snapshot.generation};
+    const auto* data = snapshotData();
+    if (data == nullptr) {
+        result.unresolved = true;
+        result.messages.push_back("AST-backed SemanticEngine snapshot is unavailable");
+        return result;
+    }
+
+    std::optional<std::string> root_name;
+    if (module_name.has_value()) {
+        root_name = std::string(*module_name);
+    }
+    else if (!config_.top_modules.empty()) {
+        root_name = config_.top_modules.front();
+    }
+    else {
+        root_name = firstUninstantiatedModuleName(data->modules_by_name);
+        if (!root_name.has_value() && !data->modules_by_name.empty()) {
+            root_name = data->modules_by_name.begin()->first;
+            result.messages.push_back("No uninstantiated top module could be inferred for this workspace.");
+        }
+    }
+
+    if (!root_name.has_value()) {
+        result.unresolved = true;
+        result.messages.push_back("No module definitions are indexed in the design snapshot.");
+        return result;
+    }
+    result.root_module_id = *root_name;
+
+    std::set<std::string> emitted;
+    std::vector<std::string> stack;
+    const auto collect = [&](const auto& self,
+                             std::string_view current_name,
+                             int depth) -> void {
+        const auto current = std::string(current_name);
+        if (emitted.contains(current)) {
+            return;
+        }
+        const auto schematic_it = data->schematics_by_name.find(current);
+        if (schematic_it == data->schematics_by_name.end()) {
+            result.partial = true;
+            result.messages.push_back("No schematic data found for module '" + current + "'.");
+            return;
+        }
+
+        const auto uri_it = data->schematic_uris_by_name.find(current);
+        const auto schematic_uri = uri_it == data->schematic_uris_by_name.end()
+                                       ? std::string{}
+                                       : uri_it->second;
+        emitted.insert(current);
+        result.modules.push_back(SemanticSchematicModuleView{
+            .module = SemanticSchematicModule{.id = schematic_it->second.name,
+                                              .name = schematic_it->second.name,
+                                              .uri = schematic_uri,
+                                              .range = schematic_it->second.range,
+                                              .selection_range = schematic_it->second.selection_range,
+                                              .ports = schematic_it->second.ports,
+                                              .cells = schematic_it->second.cells},
+            .nets = buildSchematicNets(schematic_it->second, *data)});
+
+        if (depth >= max_depth) {
+            result.truncated = true;
+            result.partial = true;
+            result.messages.push_back("Schematic expansion reached maxDepth.");
+            return;
+        }
+        if (std::find(stack.begin(), stack.end(), current) != stack.end()) {
+            result.partial = true;
+            result.messages.push_back("Cycle detected while expanding schematic module '" + current + "'.");
+            return;
+        }
+
+        const auto definition_it = data->modules_by_name.find(current);
+        if (definition_it == data->modules_by_name.end()) {
+            return;
+        }
+        stack.push_back(current);
+        for (const auto& instance : definition_it->second.instances) {
+            self(self, instance.module_name, depth + 1);
+        }
+        stack.pop_back();
+    };
+
+    collect(collect, *root_name, 0);
+    return result;
+}
+
+SemanticCallHierarchyPrepareResult SemanticEngine::prepareCallHierarchy(std::string_view uri,
+                                                                        int line,
+                                                                        int character) const {
+    const auto& current_snapshot = snapshot();
+    const auto document_uri = withoutTrailingSlash(normalizeFileUri(uri));
+    SemanticCallHierarchyPrepareResult result{.generation = current_snapshot.generation};
+    const auto* data = snapshotData();
+    if (data == nullptr) {
+        result.unresolved = true;
+        result.messages.push_back("AST-backed SemanticEngine snapshot is unavailable");
+        return result;
+    }
+
+    const auto append_module = [&](const ModuleDefinition& definition, const std::string& module_uri) {
+        result.items.push_back(SemanticCallHierarchyItem{.name = definition.name,
+                                                         .kind = definition.kind == "interface" ? 11 : 2,
+                                                         .detail = definition.kind,
+                                                         .uri = module_uri,
+                                                         .range = definition.range,
+                                                         .selection_range = definition.selection_range});
+    };
+
+    for (const auto& entry : data->module_entries) {
+        const auto& definition = entry.definition;
+        if (entry.uri != document_uri) {
+            continue;
+        }
+        if (parseRangeContainsPosition(definition.selection_range, line, character)) {
+            append_module(definition, entry.uri);
+            return result;
+        }
+        for (const auto& instance : definition.instances) {
+            if (!parseRangeContainsPosition(instance.module_selection_range, line, character) &&
+                !parseRangeContainsPosition(instance.selection_range, line, character)) {
+                continue;
+            }
+            const auto target_it = data->modules_by_name.find(instance.module_name);
+            if (target_it == data->modules_by_name.end()) {
+                result.unresolved = true;
+                result.messages.push_back("Call hierarchy target module is unresolved.");
+                return result;
+            }
+            const auto target_uri_it = data->module_uris_by_name.find(target_it->first);
+            append_module(target_it->second,
+                          target_uri_it == data->module_uris_by_name.end()
+                              ? std::string{}
+                              : target_uri_it->second);
+            return result;
+        }
+        if (parseRangeContainsPosition(definition.range, line, character)) {
+            append_module(definition, entry.uri);
+            return result;
+        }
+    }
+
+    result.unresolved = true;
+    result.messages.push_back("No design hierarchy item at position.");
+    return result;
+}
+
+SemanticCallHierarchyCallsResult SemanticEngine::incomingCalls(const SemanticCallHierarchyItem& item) const {
+    const auto& current_snapshot = snapshot();
+    SemanticCallHierarchyCallsResult result{.generation = current_snapshot.generation};
+    const auto* data = snapshotData();
+    if (data == nullptr) {
+        result.unresolved = true;
+        result.messages.push_back("AST-backed SemanticEngine snapshot is unavailable");
+        return result;
+    }
+
+    const auto target_entry_it = std::find_if(data->module_entries.begin(),
+                                              data->module_entries.end(),
+                                              [&](const SnapshotData::ModuleEntry& entry) {
+                                                  return entry.definition.name == item.name &&
+                                                         entry.uri == item.uri &&
+                                                         sameParseRange(entry.definition.selection_range,
+                                                                        item.selection_range);
+                                              });
+    if (target_entry_it == data->module_entries.end()) {
+        result.unresolved = true;
+        result.messages.push_back("Call hierarchy target module is not indexed.");
+        return result;
+    }
+
+    for (const auto& caller_entry : data->module_entries) {
+        const auto& caller = caller_entry.definition;
+        for (const auto& instance : caller.instances) {
+            if (instance.module_name != target_entry_it->definition.name) {
+                continue;
+            }
+            result.calls.push_back(SemanticCallHierarchyCall{
+                .item = SemanticCallHierarchyItem{.name = caller.name,
+                                                  .kind = caller.kind == "interface" ? 11 : 2,
+                                                  .detail = caller.kind,
+                                                  .uri = caller_entry.uri,
+                                                  .range = caller.range,
+                                                  .selection_range = caller.selection_range},
+                .from_ranges = {instance.module_selection_range}});
+        }
+    }
+    return result;
+}
+
+SemanticCallHierarchyCallsResult SemanticEngine::outgoingCalls(const SemanticCallHierarchyItem& item) const {
+    const auto& current_snapshot = snapshot();
+    SemanticCallHierarchyCallsResult result{.generation = current_snapshot.generation};
+    const auto* data = snapshotData();
+    if (data == nullptr) {
+        result.unresolved = true;
+        result.messages.push_back("AST-backed SemanticEngine snapshot is unavailable");
+        return result;
+    }
+
+    const auto source_entry_it = std::find_if(data->module_entries.begin(),
+                                              data->module_entries.end(),
+                                              [&](const SnapshotData::ModuleEntry& entry) {
+                                                  return entry.definition.name == item.name &&
+                                                         entry.uri == item.uri &&
+                                                         sameParseRange(entry.definition.selection_range,
+                                                                        item.selection_range);
+                                              });
+    if (source_entry_it == data->module_entries.end()) {
+        result.unresolved = true;
+        result.messages.push_back("Call hierarchy source module is not indexed.");
+        return result;
+    }
+
+    for (const auto& instance : source_entry_it->definition.instances) {
+        const auto target_it = data->modules_by_name.find(instance.module_name);
+        if (target_it == data->modules_by_name.end()) {
+            continue;
+        }
+        const auto target_uri_it = data->module_uris_by_name.find(target_it->first);
+        result.calls.push_back(SemanticCallHierarchyCall{
+            .item = SemanticCallHierarchyItem{.name = target_it->second.name,
+                                              .kind = target_it->second.kind == "interface" ? 11 : 2,
+                                              .detail = target_it->second.kind,
+                                              .uri = target_uri_it == data->module_uris_by_name.end()
+                                                         ? std::string{}
+                                                         : target_uri_it->second,
+                                              .range = target_it->second.range,
+                                              .selection_range = target_it->second.selection_range},
+            .from_ranges = {instance.module_selection_range}});
+    }
+    return result;
+}
+
+SemanticConeTrace SemanticEngine::backwardConeAt(std::string_view uri,
+                                                 int line,
+                                                 int character) const {
+    const auto lookup = lookupAt(uri, line, character);
+    SemanticConeTrace trace{.generation = lookup.generation,
+                            .messages = lookup.messages,
+                            .unresolved = lookup.unresolved};
+    if (!lookup.symbol.has_value()) {
+        if (trace.messages.empty()) {
+            trace.messages.push_back("No signal symbol was found at the requested position.");
+        }
+        return trace;
+    }
+
+    const auto* data = snapshotData();
+    if (data == nullptr) {
+        trace.unresolved = true;
+        trace.messages.push_back("AST-backed SemanticEngine snapshot is unavailable");
+        return trace;
+    }
+
+    const auto document_uri = withoutTrailingSlash(normalizeFileUri(uri));
+    const auto assignments_it = data->assignments_by_uri.find(document_uri);
+    if (assignments_it == data->assignments_by_uri.end()) {
+        trace.messages.push_back("No continuous assignments are indexed for the current document.");
+        return trace;
+    }
+
+    const auto symbol_id_at_range = [&](const ParseRange& range) -> std::optional<std::string> {
+        return symbolIdAtLocation(*data, document_uri, range.start_line, range.start_character);
+    };
+
+    std::vector<Identifier> document_identifiers;
+    if (const auto document_it = documents_.find(document_uri); document_it != documents_.end()) {
+        CompilationService compilation_service;
+        document_identifiers = compilation_service.identifiers(document_it->second.text);
+    }
+
+    const auto append_node = [&](const std::string& stable_id) {
+        if (std::find_if(trace.nodes.begin(), trace.nodes.end(), [&](const SemanticConeNode& node) {
+                return node.id == stable_id;
+            }) != trace.nodes.end()) {
+            return;
+        }
+        const auto symbol_it = data->symbols_by_id.find(stable_id);
+        if (symbol_it == data->symbols_by_id.end()) {
+            return;
+        }
+        trace.nodes.push_back(SemanticConeNode{.id = stable_id,
+                                               .name = symbol_it->second.identity.name,
+                                               .location = symbol_it->second.identity.location,
+                                               .bit_width = std::nullopt});
+    };
+
+    trace.root_symbol_id = lookup.symbol->stable_id;
+    append_node(lookup.symbol->stable_id);
+
+    std::vector<std::string> pending{lookup.symbol->stable_id};
+    std::set<std::string> visited;
+    std::set<std::string> emitted_edges;
+    for (size_t index = 0; index < pending.size(); ++index) {
+        const auto current_id = pending[index];
+        if (!visited.insert(current_id).second) {
+            continue;
+        }
+        const auto current_symbol_it = data->symbols_by_id.find(current_id);
+        if (current_symbol_it == data->symbols_by_id.end()) {
+            continue;
+        }
+
+        for (const auto& assignment : assignments_it->second) {
+            const auto left_id = symbol_id_at_range(assignment.left_range);
+            if (!left_id.has_value() || *left_id != current_id) {
+                continue;
+            }
+
+            for (const auto& identifier : document_identifiers) {
+                if (!rangeContainsRange(assignment.right_range, identifier.range)) {
+                    continue;
+                }
+                const auto input_id = symbol_id_at_range(identifier.range);
+                if (!input_id.has_value()) {
+                    continue;
+                }
+
+                append_node(*input_id);
+                const auto edge_key = current_id + "\n" + *input_id + "\n" +
+                                      std::to_string(assignment.range.start_line) + ":" +
+                                      std::to_string(assignment.range.start_character);
+                if (emitted_edges.insert(edge_key).second) {
+                    trace.edges.push_back(SemanticConeEdge{.from_symbol_id = current_id,
+                                                           .to_symbol_id = *input_id,
+                                                           .location = SemanticLocation{.uri = document_uri,
+                                                                                        .range = assignment.range},
+                                                           .expression = assignment.right_expression});
+                }
+                if (!visited.contains(*input_id)) {
+                    pending.push_back(*input_id);
+                }
+            }
+        }
+
+        if (trace.nodes.size() >= kMaxSemanticLocations || trace.edges.size() >= kMaxSemanticLocations) {
+            trace.truncated = true;
+            trace.partial = true;
+            trace.messages.push_back("Backward cone reached the result cap.");
+            break;
+        }
+    }
+
+    trace.unresolved = false;
+    std::sort(trace.nodes.begin(), trace.nodes.end(), [](const auto& lhs, const auto& rhs) {
+        return locationLess(lhs.location, rhs.location);
+    });
+    std::sort(trace.edges.begin(), trace.edges.end(), [](const auto& lhs, const auto& rhs) {
+        if (lhs.from_symbol_id != rhs.from_symbol_id) {
+            return lhs.from_symbol_id < rhs.from_symbol_id;
+        }
+        if (lhs.to_symbol_id != rhs.to_symbol_id) {
+            return lhs.to_symbol_id < rhs.to_symbol_id;
+        }
+        return locationLess(lhs.location, rhs.location);
+    });
+    return trace;
+}
+
 void SemanticEngine::rebuildDependenciesFor(std::string_view document_uri, std::string_view text) {
     const auto normalized_uri = withoutTrailingSlash(normalizeFileUri(document_uri));
     for (auto& [_, including_uris] : reverse_includes_) {
@@ -1712,7 +2336,9 @@ void SemanticEngine::rebuildSnapshot() const {
 
         const auto modules = compilation_service.moduleDefinitions(document_it->second.text, uri);
         for (const auto& module : modules) {
+            data->module_entries.push_back(SnapshotData::ModuleEntry{.uri = uri, .definition = module});
             data->modules_by_name.try_emplace(module.name, module);
+            data->module_uris_by_name.try_emplace(module.name, uri);
             for (const auto& instance : module.instances) {
                 data->module_instances_by_uri[uri].push_back(SnapshotData::ModuleInstance{
                     .module_name = instance.module_name,
@@ -1730,7 +2356,13 @@ void SemanticEngine::rebuildSnapshot() const {
                 data->selection_ranges_by_uri[uri].push_back(instance.module_selection_range);
             }
         }
-        for (const auto& assignment : compilation_service.continuousAssignments(document_it->second.text, uri)) {
+        for (const auto& schematic : compilation_service.moduleSchematics(document_it->second.text, uri)) {
+            data->schematics_by_name.try_emplace(schematic.name, schematic);
+            data->schematic_uris_by_name.try_emplace(schematic.name, uri);
+        }
+        const auto assignments = compilation_service.continuousAssignments(document_it->second.text, uri);
+        data->assignments_by_uri[uri] = assignments;
+        for (const auto& assignment : assignments) {
             data->selection_ranges_by_uri[uri].push_back(assignment.range);
             data->selection_ranges_by_uri[uri].push_back(assignment.left_range);
             data->selection_ranges_by_uri[uri].push_back(assignment.right_range);

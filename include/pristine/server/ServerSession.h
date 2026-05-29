@@ -81,7 +81,6 @@ private:
     analysis::SemanticWorkspace semantic_workspace_;
     analysis::SymbolIndex symbol_index_;
     std::unordered_map<std::string, std::vector<analysis::ModuleDefinition>> hierarchy_documents_;
-    std::unordered_map<std::string, std::vector<analysis::ModuleSchematic>> schematic_documents_;
     document::DocumentStore document_store_;
     workspace::WorkspaceManager workspace_manager_;
 };

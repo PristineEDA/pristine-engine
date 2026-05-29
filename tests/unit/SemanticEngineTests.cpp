@@ -330,4 +330,103 @@ TEST_CASE("SemanticEngine reports UTF-16 ranges for AST references",
     CHECK(lookup.symbol->location.range.start_character == 8);
 }
 
+TEST_CASE("SemanticEngine builds design snapshot hierarchy, schematic, call hierarchy, and cones",
+          "[analysis][semantic-engine][design][hierarchy][schematic][cone]") {
+    SemanticEngine engine;
+    engine.configure(SemanticEngineConfig{.build = std::string("rtl/files.f"),
+                                          .top_modules = {"top"}});
+    engine.updateDocument("file:///workspace/child.sv",
+                          "module child(input logic clk, output logic q);\n"
+                          "endmodule\n",
+                          SemanticEngineDocumentState{.version = 1});
+    engine.updateDocument("file:///workspace/top.sv",
+                          "module top;\n"
+                          "  logic clk;\n"
+                          "  logic mid;\n"
+                          "  logic out;\n"
+                          "  child u_child(.clk(clk), .q(mid));\n"
+                          "  assign out = mid;\n"
+                          "endmodule\n",
+                          SemanticEngineDocumentState{.version = 1, .is_open = true});
+
+    const auto hierarchy = engine.moduleHierarchy(std::nullopt, 8);
+    REQUIRE_FALSE(hierarchy.unresolved);
+    REQUIRE(hierarchy.roots.size() == 1);
+    CHECK(hierarchy.roots.front().module_name == "top");
+    REQUIRE(hierarchy.roots.front().children.size() == 1);
+    CHECK(hierarchy.roots.front().children.front().module_name == "child");
+    CHECK(hierarchy.roots.front().children.front().instance_name == "u_child");
+
+    const auto schematic = engine.schematic(std::nullopt, 8);
+    REQUIRE_FALSE(schematic.unresolved);
+    REQUIRE(schematic.root_module_id.has_value());
+    CHECK(*schematic.root_module_id == "top");
+    CHECK(std::any_of(schematic.modules.begin(), schematic.modules.end(), [](const SemanticSchematicModuleView& view) {
+        return view.module.name == "top" &&
+               std::any_of(view.nets.begin(), view.nets.end(), [](const SemanticSchematicNet& net) {
+                   return net.name == "mid" && !net.drivers.empty() && !net.loads.empty();
+               });
+    }));
+
+    const auto prepared_from_definition = engine.prepareCallHierarchy("file:///workspace/top.sv", 0, 8);
+    REQUIRE_FALSE(prepared_from_definition.unresolved);
+    REQUIRE(prepared_from_definition.items.size() == 1);
+    CHECK(prepared_from_definition.items.front().name == "top");
+
+    const auto outgoing = engine.outgoingCalls(prepared_from_definition.items.front());
+    REQUIRE_FALSE(outgoing.unresolved);
+    REQUIRE(outgoing.calls.size() == 1);
+    CHECK(outgoing.calls.front().item.name == "child");
+    REQUIRE(outgoing.calls.front().from_ranges.size() == 1);
+
+    const auto prepared_from_instance = engine.prepareCallHierarchy("file:///workspace/top.sv", 4, 4);
+    REQUIRE_FALSE(prepared_from_instance.unresolved);
+    REQUIRE(prepared_from_instance.items.size() == 1);
+    CHECK(prepared_from_instance.items.front().name == "child");
+
+    const auto incoming = engine.incomingCalls(prepared_from_instance.items.front());
+    REQUIRE_FALSE(incoming.unresolved);
+    REQUIRE(incoming.calls.size() == 1);
+    CHECK(incoming.calls.front().item.name == "top");
+
+    const auto cone = engine.backwardConeAt("file:///workspace/top.sv", 3, 9);
+    REQUIRE_FALSE(cone.unresolved);
+    REQUIRE(cone.root_symbol_id.has_value());
+    CHECK(std::any_of(cone.nodes.begin(), cone.nodes.end(), [](const SemanticConeNode& node) {
+        return node.name == "out";
+    }));
+    CHECK(std::any_of(cone.nodes.begin(), cone.nodes.end(), [](const SemanticConeNode& node) {
+        return node.name == "mid";
+    }));
+    CHECK(std::any_of(cone.edges.begin(), cone.edges.end(), [](const SemanticConeEdge& edge) {
+        return edge.expression == "mid";
+    }));
+}
+
+TEST_CASE("SemanticEngine reports partial design results for unresolved modules and hierarchy caps",
+          "[analysis][semantic-engine][design][negative]") {
+    SemanticEngine engine;
+    engine.configure(SemanticEngineConfig{.top_modules = {"top"}});
+    engine.updateDocument("file:///workspace/top.sv",
+                          "module top;\n"
+                          "  missing_child u_missing();\n"
+                          "endmodule\n",
+                          SemanticEngineDocumentState{.version = 1, .is_open = true});
+
+    const auto hierarchy = engine.moduleHierarchy(std::nullopt, 0);
+    REQUIRE_FALSE(hierarchy.roots.empty());
+    CHECK(hierarchy.partial);
+    CHECK(hierarchy.truncated);
+    CHECK(std::any_of(hierarchy.messages.begin(), hierarchy.messages.end(), [](const std::string& message) {
+        return message.find("maxDepth") != std::string::npos;
+    }));
+
+    const auto schematic = engine.schematic(std::string_view("missing_child"), 8);
+    CHECK(schematic.partial);
+    CHECK(schematic.modules.empty());
+    CHECK(std::any_of(schematic.messages.begin(), schematic.messages.end(), [](const std::string& message) {
+        return message.find("No schematic data") != std::string::npos;
+    }));
+}
+
 } // namespace pristine::analysis
