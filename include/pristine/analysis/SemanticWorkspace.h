@@ -178,14 +178,6 @@ public:
     [[nodiscard]] size_t documentCount() const { return documents_.size(); }
 
 private:
-    [[nodiscard]] std::optional<SemanticSymbol> symbolById(std::string_view symbol_id) const;
-    [[nodiscard]] std::optional<SemanticSymbol> symbolAt(std::string_view uri,
-                                                         int line,
-                                                         int character) const;
-    [[nodiscard]] std::optional<SemanticReference> referenceAt(std::string_view uri,
-                                                              int line,
-                                                              int character) const;
-    [[nodiscard]] std::optional<SemanticSymbol> resolveReference(const SemanticReference& reference) const;
     [[nodiscard]] std::vector<SemanticSymbol> resolveName(std::string_view name,
                                                           std::string_view scope_path,
                                                           std::string_view preferred_uri) const;

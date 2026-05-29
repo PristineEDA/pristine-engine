@@ -1,12 +1,19 @@
 #include "pristine/analysis/SemanticEngine.h"
 
 #include <catch2/catch_test_macros.hpp>
+#include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <filesystem>
+#include <fstream>
+#include <sstream>
 #include <string_view>
+#include <vector>
 
 namespace pristine::analysis {
 namespace {
+
+namespace fs = std::filesystem;
 
 struct SemanticGoldenCase {
     std::string_view name;
@@ -121,6 +128,107 @@ constexpr SemanticDiagnosticGoldenCase kDiagnosticGoldenCases[] = {
                                  .expected_present = false},
 };
 
+std::string readTextFile(const fs::path& path) {
+    std::ifstream stream(path, std::ios::binary);
+    REQUIRE(stream.good());
+    std::ostringstream buffer;
+    buffer << stream.rdbuf();
+    return buffer.str();
+}
+
+fs::path repositoryRoot() {
+    auto current = fs::current_path();
+    while (!current.empty()) {
+        if (fs::exists(current / "CMakeLists.txt") && fs::exists(current / "tests")) {
+            return current;
+        }
+        current = current.parent_path();
+    }
+    return fs::current_path();
+}
+
+std::vector<fs::path> semanticFixturePaths() {
+    const auto root = repositoryRoot() / "tests" / "golden" / "semantic";
+    std::vector<fs::path> result;
+    if (!fs::exists(root)) {
+        return result;
+    }
+    for (const auto& entry : fs::directory_iterator(root)) {
+        if (entry.is_regular_file() && entry.path().extension() == ".json") {
+            result.push_back(entry.path());
+        }
+    }
+    std::sort(result.begin(), result.end());
+    return result;
+}
+
+void loadSources(SemanticEngine& engine, const nlohmann::json& fixture) {
+    for (const auto& source : fixture.at("sources")) {
+        engine.updateDocument(source.at("uri").get<std::string>(),
+                              source.at("text").get<std::string>(),
+                              SemanticEngineDocumentState{.version = source.value("version", 1),
+                                                          .is_open = source.value("isOpen", true),
+                                                          .dirty = source.value("dirty", false)});
+    }
+}
+
+void runLookupFixture(SemanticEngine& engine, const nlohmann::json& fixture) {
+    const auto& request = fixture.at("request");
+    const auto& expected = fixture.at("expected");
+    const auto result = engine.lookupAt(request.at("uri").get<std::string>(),
+                                        request.at("line").get<int>(),
+                                        request.at("character").get<int>());
+    CHECK(result.unresolved == expected.value("unresolved", false));
+    if (expected.contains("symbol")) {
+        REQUIRE(result.symbol.has_value());
+        CHECK(result.symbol->name == expected.at("symbol").get<std::string>());
+    }
+}
+
+void runReferencesFixture(SemanticEngine& engine, const nlohmann::json& fixture) {
+    const auto& request = fixture.at("request");
+    const auto& expected = fixture.at("expected");
+    const auto result = engine.referencesAt(request.at("uri").get<std::string>(),
+                                            request.at("line").get<int>(),
+                                            request.at("character").get<int>(),
+                                            request.value("includeDeclaration", true));
+    CHECK(result.unresolved == expected.value("unresolved", false));
+    if (expected.contains("count")) {
+        CHECK(result.locations.size() == expected.at("count").get<size_t>());
+    }
+    if (expected.contains("allBeforeLine")) {
+        const auto line = expected.at("allBeforeLine").get<int>();
+        CHECK(std::all_of(result.locations.begin(), result.locations.end(), [line](const SemanticLocation& location) {
+            return location.range.start_line < line;
+        }));
+    }
+}
+
+void runDiagnosticsFixture(SemanticEngine& engine, const nlohmann::json& fixture) {
+    const auto& expected = fixture.at("expected");
+    const auto diagnostics = engine.diagnosticsFor(expected.at("uri").get<std::string>());
+    for (const auto& item : expected.at("diagnostics")) {
+        const auto code = item.at("code").get<std::string>();
+        const auto present = item.value("present", true);
+        const auto found = std::find_if(diagnostics.begin(),
+                                        diagnostics.end(),
+                                        [&](const SemanticEngineDiagnostic& diagnostic) {
+                                            return diagnostic.code == code;
+                                        });
+        if (!present) {
+            CHECK(found == diagnostics.end());
+            continue;
+        }
+        REQUIRE(found != diagnostics.end());
+        if (item.contains("severity")) {
+            CHECK(found->severity == item.at("severity").get<int>());
+        }
+        if (item.contains("startLine")) {
+            CHECK(found->range.start_line == item.at("startLine").get<int>());
+        }
+    }
+}
+
 } // namespace
 
 TEST_CASE("Semantic golden cases exercise first-batch query contracts",
@@ -183,6 +291,33 @@ TEST_CASE("Semantic diagnostic golden cases exercise engine-owned diagnostics",
         REQUIRE(diagnostic != diagnostics.end());
         CHECK(diagnostic->severity == test_case.expected_severity);
         CHECK(diagnostic->range.start_line == test_case.expected_start_line);
+    }
+}
+
+TEST_CASE("JSON semantic golden fixtures exercise stable request shapes",
+          "[analysis][golden][semantic][json]") {
+    const auto fixtures = semanticFixturePaths();
+    REQUIRE_FALSE(fixtures.empty());
+
+    for (const auto& path : fixtures) {
+        CAPTURE(path.string());
+        const auto fixture = nlohmann::json::parse(readTextFile(path));
+        SemanticEngine engine;
+        loadSources(engine, fixture);
+
+        const auto kind = fixture.at("request").at("kind").get<std::string>();
+        if (kind == "lookup") {
+            runLookupFixture(engine, fixture);
+        }
+        else if (kind == "references") {
+            runReferencesFixture(engine, fixture);
+        }
+        else if (kind == "diagnostics") {
+            runDiagnosticsFixture(engine, fixture);
+        }
+        else {
+            FAIL("Unsupported semantic golden request kind: " << kind);
+        }
     }
 }
 

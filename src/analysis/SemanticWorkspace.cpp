@@ -938,55 +938,6 @@ SemanticConeTrace SemanticWorkspace::engineBackwardConeAt(std::string_view uri,
     return semantic_engine_.backwardConeAt(uri, line, character);
 }
 
-std::optional<SemanticSymbol> SemanticWorkspace::symbolById(std::string_view symbol_id) const {
-    for (const auto& document_entry : documents_) {
-        for (const auto& symbol : document_entry.second.symbols) {
-            if (symbol.id == symbol_id) {
-                return symbol;
-            }
-        }
-    }
-    return std::nullopt;
-}
-
-std::optional<SemanticSymbol> SemanticWorkspace::symbolAt(std::string_view uri,
-                                                          int line,
-                                                          int character) const {
-    const auto* source = document(uri);
-    if (!source) {
-        return std::nullopt;
-    }
-
-    std::optional<SemanticSymbol> result;
-    for (const auto& symbol : source->symbols) {
-        if (!containsPosition(symbol.selection_range, line, character)) {
-            continue;
-        }
-        if (!result.has_value() || symbol.selection_range.start_line > result->selection_range.start_line ||
-            (symbol.selection_range.start_line == result->selection_range.start_line &&
-             symbol.selection_range.start_character > result->selection_range.start_character)) {
-            result = symbol;
-        }
-    }
-    return result;
-}
-
-std::optional<SemanticReference> SemanticWorkspace::referenceAt(std::string_view uri,
-                                                                int line,
-                                                                int character) const {
-    const auto* source = document(uri);
-    if (!source) {
-        return std::nullopt;
-    }
-
-    for (const auto& reference : source->references) {
-        if (containsPosition(reference.location.range, line, character)) {
-            return reference;
-        }
-    }
-    return std::nullopt;
-}
-
 std::vector<SemanticSymbol> SemanticWorkspace::resolveName(std::string_view name,
                                                            std::string_view scope_path,
                                                            std::string_view preferred_uri) const {
@@ -1040,18 +991,6 @@ std::vector<SemanticSymbol> SemanticWorkspace::resolveName(std::string_view name
     }
 
     return {};
-}
-
-std::optional<SemanticSymbol> SemanticWorkspace::resolveReference(const SemanticReference& reference) const {
-    if (reference.target_symbol_id.has_value()) {
-        return symbolById(*reference.target_symbol_id);
-    }
-
-    const auto definitions = resolveName(reference.name, reference.scope_path, reference.location.uri);
-    if (definitions.empty()) {
-        return std::nullopt;
-    }
-    return definitions.front();
 }
 
 std::vector<std::string> SemanticWorkspace::resolveIncludeUris(std::string_view including_uri,

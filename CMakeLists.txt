@@ -73,6 +73,7 @@ add_library(
   src/analysis/SemanticWorkspace.cpp
   src/analysis/SourceUtil.cpp
   src/analysis/semantic/DiagnosticProvider.cpp
+  src/analysis/semantic/QueryCache.cpp
   src/document/DocumentStore.cpp
   src/jsonrpc/JsonRpcServer.cpp
   src/jsonrpc/MessageStream.cpp

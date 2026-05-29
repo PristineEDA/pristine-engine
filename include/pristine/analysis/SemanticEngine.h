@@ -24,6 +24,10 @@ class SyntaxTree;
 
 namespace pristine::analysis {
 
+namespace semantic {
+class QueryCache;
+}
+
 enum class SemanticEngineMode {
     Shallow,
     Design
@@ -455,6 +459,7 @@ private:
     std::unordered_map<std::string, std::vector<std::string>> reverse_includes_;
     mutable std::optional<SemanticEngineSnapshot> snapshot_;
     mutable std::unique_ptr<SnapshotData> snapshot_data_;
+    mutable std::unique_ptr<semantic::QueryCache> query_cache_;
     mutable bool snapshot_dirty_ = true;
     std::uint64_t generation_ = 0;
 };

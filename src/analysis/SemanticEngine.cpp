@@ -1,6 +1,7 @@
 #include "pristine/analysis/SemanticEngine.h"
 
 #include "semantic/DiagnosticProvider.h"
+#include "semantic/QueryCache.h"
 #include "pristine/analysis/SourceUtil.h"
 
 #include "slang/ast/ASTVisitor.h"
@@ -2075,7 +2076,7 @@ std::optional<fs::path> proposedIncludeTarget(std::string_view workspace_root_ur
 
 } // namespace
 
-SemanticEngine::SemanticEngine() = default;
+SemanticEngine::SemanticEngine() : query_cache_(std::make_unique<semantic::QueryCache>()) {}
 
 SemanticEngine::~SemanticEngine() = default;
 
@@ -2087,6 +2088,7 @@ void SemanticEngine::clear() {
     reverse_includes_.clear();
     snapshot_.reset();
     snapshot_data_.reset();
+    query_cache_->clear();
     snapshot_dirty_ = true;
     ++generation_;
 }
@@ -2096,6 +2098,7 @@ void SemanticEngine::setWorkspaceRoot(std::string_view root_uri) {
     config_.workspace_root_uri = workspace_root_uri_.empty()
                                      ? std::optional<std::string>{}
                                      : std::optional<std::string>{workspace_root_uri_};
+    query_cache_->clear();
     snapshot_dirty_ = true;
     ++generation_;
 }
@@ -2109,6 +2112,7 @@ void SemanticEngine::configure(SemanticEngineConfig config) {
     std::sort(config_.top_modules.begin(), config_.top_modules.end());
     config_.top_modules.erase(std::unique(config_.top_modules.begin(), config_.top_modules.end()),
                               config_.top_modules.end());
+    query_cache_->clear();
     snapshot_dirty_ = true;
     ++generation_;
 }
@@ -2133,6 +2137,7 @@ void SemanticEngine::updateDocument(std::string_view uri,
                                  including_uris.end());
         }
     }
+    query_cache_->clear();
     snapshot_dirty_ = true;
     ++generation_;
 }
@@ -2146,6 +2151,7 @@ void SemanticEngine::removeDocument(std::string_view uri) {
                              including_uris.end());
     }
     reverse_includes_.erase(document_uri);
+    query_cache_->clear();
     snapshot_dirty_ = true;
     ++generation_;
 }
@@ -2219,6 +2225,10 @@ const SemanticEngineSnapshot& SemanticEngine::snapshot() const {
 std::vector<SemanticEngineDiagnostic> SemanticEngine::diagnosticsFor(std::string_view uri) const {
     const auto document_uri = withoutTrailingSlash(normalizeFileUri(uri));
     const auto& current_snapshot = snapshot();
+    if (const auto cached = query_cache_->diagnostics(current_snapshot.generation, document_uri)) {
+        return *cached;
+    }
+
     std::vector<SemanticEngineDiagnostic> result;
     for (const auto& diagnostic : current_snapshot.diagnostics) {
         if (diagnostic.uri == document_uri) {
@@ -2237,6 +2247,7 @@ std::vector<SemanticEngineDiagnostic> SemanticEngine::diagnosticsFor(std::string
         }
     }
     semantic::sortAndDedupeDiagnostics(result);
+    query_cache_->storeDiagnostics(current_snapshot.generation, document_uri, result);
     return result;
 }
 
@@ -3682,11 +3693,16 @@ SemanticCodeActionResult SemanticEngine::codeActionsAt(std::string_view uri, Par
 SemanticWorkspaceSymbolResult SemanticEngine::workspaceSymbols(std::string_view query,
                                                                size_t limit) const {
     const auto& current_snapshot = snapshot();
+    if (const auto cached = query_cache_->workspaceSymbols(current_snapshot.generation, query, limit)) {
+        return *cached;
+    }
+
     SemanticWorkspaceSymbolResult result{.generation = current_snapshot.generation};
     const auto* data = snapshotData();
     if (data == nullptr) {
         result.unresolved = true;
         result.messages.push_back("AST-backed SemanticEngine snapshot is unavailable");
+        query_cache_->storeWorkspaceSymbols(current_snapshot.generation, query, limit, result);
         return result;
     }
 
@@ -3717,6 +3733,7 @@ SemanticWorkspaceSymbolResult SemanticEngine::workspaceSymbols(std::string_view 
         result.messages.push_back("workspace/symbol results were truncated at " + std::to_string(limit) +
                                   " entries");
     }
+    query_cache_->storeWorkspaceSymbols(current_snapshot.generation, query, limit, result);
     return result;
 }
 

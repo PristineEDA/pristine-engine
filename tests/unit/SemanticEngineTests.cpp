@@ -268,6 +268,47 @@ TEST_CASE("SemanticEngine owns workspace symbol lookup",
     CHECK(truncated.symbols.size() == 1);
 }
 
+TEST_CASE("SemanticEngine invalidates generation caches after document updates",
+          "[analysis][semantic-engine][cache]") {
+    SemanticEngine engine;
+    engine.updateDocument("file:///workspace/cache.sv",
+                          "module top;\n"
+                          "  logic ready;\n"
+                          "endmodule\n",
+                          SemanticEngineDocumentState{.version = 1, .is_open = true});
+
+    const auto first_diagnostics = engine.diagnosticsFor("file:///workspace/cache.sv");
+    const auto first_symbols = engine.workspaceSymbols("ready");
+    REQUIRE(first_diagnostics.empty());
+    REQUIRE_FALSE(first_symbols.unresolved);
+    REQUIRE(first_symbols.symbols.size() == 1);
+    const auto first_generation = first_symbols.generation;
+
+    engine.updateDocument("file:///workspace/cache.sv",
+                          "module top;\n"
+                          "  logic ready;\n"
+                          "  logic ready;\n"
+                          "  logic valid;\n"
+                          "endmodule\n",
+                          SemanticEngineDocumentState{.version = 2, .is_open = true});
+
+    const auto updated_diagnostics = engine.diagnosticsFor("file:///workspace/cache.sv");
+    const auto updated_symbols = engine.workspaceSymbols("valid");
+
+    CHECK(std::any_of(updated_diagnostics.begin(),
+                      updated_diagnostics.end(),
+                      [](const SemanticEngineDiagnostic& diagnostic) {
+                          return diagnostic.code == "duplicateSymbol";
+                      }));
+    REQUIRE_FALSE(updated_symbols.unresolved);
+    CHECK(updated_symbols.generation > first_generation);
+    CHECK(std::any_of(updated_symbols.symbols.begin(),
+                      updated_symbols.symbols.end(),
+                      [](const SemanticWorkspaceSymbol& symbol) {
+                          return symbol.name == "valid";
+                      }));
+}
+
 TEST_CASE("SemanticEngine uses AST symbol identity to avoid same-name false references",
           "[analysis][semantic-engine][ast-identity]") {
     SemanticEngine engine;

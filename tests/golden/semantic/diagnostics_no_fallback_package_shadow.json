@@ -1,0 +1,21 @@
+{
+  "name": "local symbol does not shadow package resolution",
+  "sources": [
+    {
+      "uri": "file:///golden/json/package-shadow.sv",
+      "text": "package defs; endpackage\nmodule top;\n  logic defs;\n  import defs::*;\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "diagnostics"
+  },
+  "expected": {
+    "uri": "file:///golden/json/package-shadow.sv",
+    "diagnostics": [
+      {
+        "code": "unresolvedPackage",
+        "present": false
+      }
+    ]
+  }
+}

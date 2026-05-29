@@ -1,0 +1,22 @@
+{
+  "name": "cross-file module lookup",
+  "sources": [
+    {
+      "uri": "file:///golden/json/child.sv",
+      "text": "module child;\nendmodule\n"
+    },
+    {
+      "uri": "file:///golden/json/top.sv",
+      "text": "module top;\n  child u_child();\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "lookup",
+    "uri": "file:///golden/json/top.sv",
+    "line": 1,
+    "character": 4
+  },
+  "expected": {
+    "symbol": "child"
+  }
+}
