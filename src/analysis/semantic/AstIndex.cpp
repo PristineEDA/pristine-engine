@@ -77,6 +77,48 @@ int lspSymbolKindForSemanticKind(std::string_view kind) {
 
 } // namespace
 
+AstIndexView buildAstIndexView(const SnapshotData* data, std::uint64_t generation) {
+    AstIndexView view{.generation = generation, .snapshot_available = data != nullptr};
+    if (data == nullptr) {
+        return view;
+    }
+
+    view.symbols.reserve(data->symbols_by_id.size());
+    view.navigation_symbols_by_id.reserve(data->symbols_by_id.size());
+    view.diagnostic_symbols_by_id.reserve(data->symbols_by_id.size());
+    view.design_graph_symbols_by_id.reserve(data->symbols_by_id.size());
+    for (const auto& [stable_id, indexed_symbol] : data->symbols_by_id) {
+        view.symbols.push_back(AstIndexSymbol{.stable_id = stable_id,
+                                              .identity = indexed_symbol.identity});
+        view.navigation_symbols_by_id.emplace(stable_id, indexed_symbol.identity);
+        view.diagnostic_symbols_by_id.emplace(stable_id,
+                                              DiagnosticSymbol{.identity = indexed_symbol.identity,
+                                                               .type_display = indexed_symbol.type_display});
+        view.design_graph_symbols_by_id.emplace(stable_id,
+                                                DesignGraphSymbol{.identity = indexed_symbol.identity});
+    }
+
+    view.navigation_references.reserve(data->references.size());
+    view.diagnostic_references.reserve(data->references.size());
+    for (const auto& reference : data->references) {
+        view.navigation_references.push_back(NavigationReference{.stable_id = reference.stable_id,
+                                                                 .location = reference.location,
+                                                                 .is_declaration = reference.is_declaration});
+        view.diagnostic_references.push_back(DiagnosticReference{.stable_id = reference.stable_id,
+                                                                 .location = reference.location});
+        view.design_graph_symbol_ranges_by_uri[reference.location.uri].push_back(
+            DesignGraphRangeSymbol{.range = reference.location.range,
+                                   .stable_id = reference.stable_id});
+    }
+    return view;
+}
+
+AstIndexContext workspaceSymbolContext(const AstIndexView& view) {
+    return AstIndexContext{.generation = view.generation,
+                           .snapshot_available = view.snapshot_available,
+                           .symbols = view.symbols};
+}
+
 SemanticWorkspaceSymbolResult workspaceSymbols(const AstIndexContext& context,
                                                std::string_view query,
                                                size_t limit) {

@@ -26,6 +26,7 @@ namespace pristine::analysis {
 
 namespace semantic {
 class QueryCache;
+struct SnapshotData;
 }
 
 enum class SemanticEngineMode {
@@ -446,11 +447,9 @@ public:
                                                                  size_t limit = 1000) const;
 
 private:
-    struct SnapshotData;
-
     void rebuildDependenciesFor(std::string_view document_uri, std::string_view text);
     void rebuildSnapshot() const;
-    [[nodiscard]] const SnapshotData* snapshotData() const;
+    [[nodiscard]] const semantic::SnapshotData* snapshotData() const;
 
     std::string workspace_root_uri_;
     SemanticEngineConfig config_;
@@ -458,7 +457,7 @@ private:
     std::unordered_map<std::string, std::vector<std::string>> includes_;
     std::unordered_map<std::string, std::vector<std::string>> reverse_includes_;
     mutable std::optional<SemanticEngineSnapshot> snapshot_;
-    mutable std::unique_ptr<SnapshotData> snapshot_data_;
+    mutable std::unique_ptr<semantic::SnapshotData> snapshot_data_;
     mutable std::unique_ptr<semantic::QueryCache> query_cache_;
     mutable bool snapshot_dirty_ = true;
     std::uint64_t generation_ = 0;

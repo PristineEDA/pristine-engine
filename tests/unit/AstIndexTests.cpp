@@ -67,5 +67,50 @@ TEST_CASE("AstIndex reports unavailable snapshot for workspace symbols",
     CHECK(result.messages.front().find("snapshot is unavailable") != std::string::npos);
 }
 
+TEST_CASE("AstIndex builds provider-facing symbol and reference views",
+          "[analysis][semantic][ast-index][provider-view]") {
+    SnapshotData data;
+    const auto ready_identity = SemanticSymbolIdentity{
+        .stable_id = "symbol|ready",
+        .name = "ready",
+        .kind = "Variable",
+        .location = SemanticLocation{.uri = "file:///workspace/top.sv",
+                                     .range = rangeAt(2, 8, 13)}};
+    data.symbols_by_id.emplace("symbol|ready",
+                               SnapshotIndexedSymbol{.identity = ready_identity,
+                                                     .type_display = "logic"});
+    data.references.push_back(SnapshotIndexedReference{
+        .stable_id = "symbol|ready",
+        .name = "ready",
+        .location = SemanticLocation{.uri = "file:///workspace/top.sv",
+                                     .range = rangeAt(4, 9, 14)},
+        .is_declaration = false});
+    data.references.push_back(SnapshotIndexedReference{
+        .stable_id = "symbol|ready",
+        .name = "ready",
+        .location = ready_identity.location,
+        .is_declaration = true});
+
+    const auto view = buildAstIndexView(&data, 42);
+
+    CHECK(view.generation == 42);
+    CHECK(view.snapshot_available);
+    REQUIRE(view.symbols.size() == 1);
+    CHECK(view.symbols.front().stable_id == "symbol|ready");
+    REQUIRE(view.navigation_symbols_by_id.contains("symbol|ready"));
+    CHECK(view.navigation_symbols_by_id.at("symbol|ready").name == "ready");
+    REQUIRE(view.diagnostic_symbols_by_id.contains("symbol|ready"));
+    CHECK(view.diagnostic_symbols_by_id.at("symbol|ready").type_display == "logic");
+    REQUIRE(view.design_graph_symbols_by_id.contains("symbol|ready"));
+    REQUIRE(view.navigation_references.size() == 2);
+    CHECK(std::any_of(view.navigation_references.begin(),
+                      view.navigation_references.end(),
+                      [](const NavigationReference& reference) {
+                          return reference.is_declaration;
+                      }));
+    REQUIRE(view.design_graph_symbol_ranges_by_uri.contains("file:///workspace/top.sv"));
+    CHECK(view.design_graph_symbol_ranges_by_uri.at("file:///workspace/top.sv").size() == 2);
+}
+
 } // namespace
 } // namespace pristine::analysis::semantic

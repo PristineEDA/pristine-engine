@@ -8,6 +8,7 @@
 #include "semantic/NavigationProvider.h"
 #include "semantic/QueryCache.h"
 #include "semantic/SignatureInlayProvider.h"
+#include "semantic/SnapshotBuilder.h"
 #include "pristine/analysis/SourceUtil.h"
 
 #include "slang/ast/ASTVisitor.h"
@@ -393,62 +394,13 @@ constexpr size_t kMaxSemanticLocations = 2000;
 
 } // namespace
 
-struct SemanticEngine::SnapshotData {
-    struct IndexedSymbol {
-        SemanticSymbolIdentity identity;
-        const slang::ast::Symbol* symbol = nullptr;
-        std::string type_display;
-    };
-
-    struct IndexedReference {
-        std::string stable_id;
-        std::string name;
-        SemanticLocation location;
-        bool is_declaration = false;
-    };
-
-    struct ModuleInstance {
-        std::string module_name;
-        std::string instance_name;
-        std::string target_stable_id;
-        std::string uri;
-        ParseRange range;
-        ParseRange selection_range;
-        ParseRange module_selection_range;
-    };
-
-    struct ModuleEntry {
-        std::string uri;
-        ModuleDefinition definition;
-    };
-
-    std::unique_ptr<slang::SourceManager> source_manager;
-    std::vector<std::shared_ptr<slang::syntax::SyntaxTree>> syntax_trees;
-    std::unique_ptr<slang::ast::Compilation> compilation;
-    std::unordered_map<std::string, IndexedSymbol> symbols_by_id;
-    std::unordered_map<const slang::ast::Symbol*, std::string> ids_by_symbol;
-    std::vector<IndexedReference> references;
-    std::unordered_map<std::string, std::vector<size_t>> references_by_symbol;
-    std::unordered_map<std::string, std::vector<SemanticCompletionItem>> completions_by_uri;
-    std::vector<ModuleEntry> module_entries;
-    std::unordered_map<std::string, ModuleDefinition> modules_by_name;
-    std::unordered_map<std::string, std::string> module_uris_by_name;
-    std::unordered_map<std::string, ModuleSchematic> schematics_by_name;
-    std::unordered_map<std::string, std::string> schematic_uris_by_name;
-    std::unordered_map<std::string, std::vector<ContinuousAssignment>> assignments_by_uri;
-    std::unordered_map<std::string, std::vector<ModuleInstance>> module_instances_by_uri;
-    std::unordered_map<std::string, std::vector<ParseRange>> selection_ranges_by_uri;
-    std::unordered_map<std::string, std::vector<MacroDefinition>> macros_by_uri;
-    std::unordered_map<std::string, std::vector<PackageImport>> package_imports_by_uri;
-    std::unordered_map<std::string, std::vector<SemanticSymbolMetadata>> metadata_by_uri;
-};
-
 namespace {
 
 template<typename SnapshotData>
 semantic::DesignGraphContext designGraphContextFor(const SnapshotData* data,
                                                    const SemanticEngineSnapshot& snapshot,
-                                                   const SemanticEngineConfig& config) {
+                                                   const SemanticEngineConfig& config,
+                                                   const semantic::AstIndexView& ast_index) {
     semantic::DesignGraphContext context{.generation = snapshot.generation,
                                          .snapshot_available = data != nullptr,
                                          .top_modules = config.top_modules};
@@ -465,31 +417,8 @@ semantic::DesignGraphContext designGraphContextFor(const SnapshotData* data,
                                                                           .definition = entry.definition});
     }
     context.assignments_by_uri = data->assignments_by_uri;
-    for (const auto& [stable_id, indexed_symbol] : data->symbols_by_id) {
-        context.symbols_by_id.emplace(stable_id,
-                                      semantic::DesignGraphSymbol{.identity = indexed_symbol.identity});
-    }
-    for (const auto& reference : data->references) {
-        context.symbol_ranges_by_uri[reference.location.uri].push_back(
-            semantic::DesignGraphRangeSymbol{.range = reference.location.range,
-                                             .stable_id = reference.stable_id});
-    }
-    return context;
-}
-
-template<typename SnapshotData>
-semantic::AstIndexContext astIndexContextFor(const SnapshotData* data,
-                                             const SemanticEngineSnapshot& snapshot) {
-    semantic::AstIndexContext context{.generation = snapshot.generation,
-                                     .snapshot_available = data != nullptr};
-    if (data == nullptr) {
-        return context;
-    }
-    context.symbols.reserve(data->symbols_by_id.size());
-    for (const auto& [stable_id, indexed_symbol] : data->symbols_by_id) {
-        context.symbols.push_back(semantic::AstIndexSymbol{.stable_id = stable_id,
-                                                           .identity = indexed_symbol.identity});
-    }
+    context.symbols_by_id = ast_index.design_graph_symbols_by_id;
+    context.symbol_ranges_by_uri = ast_index.design_graph_symbol_ranges_by_uri;
     return context;
 }
 
@@ -497,6 +426,7 @@ template<typename SnapshotData>
 semantic::NavigationContext navigationContextFor(const SnapshotData* data,
                                                  const SemanticEngineSnapshot& snapshot,
                                                  std::string document_uri,
+                                                 const semantic::AstIndexView& ast_index,
                                                  const std::string* document_text = nullptr) {
     semantic::NavigationContext context{.generation = snapshot.generation,
                                        .snapshot_available = data != nullptr,
@@ -505,16 +435,8 @@ semantic::NavigationContext navigationContextFor(const SnapshotData* data,
     if (data == nullptr) {
         return context;
     }
-    context.symbols_by_id.reserve(data->symbols_by_id.size());
-    for (const auto& [stable_id, indexed_symbol] : data->symbols_by_id) {
-        context.symbols_by_id.emplace(stable_id, indexed_symbol.identity);
-    }
-    context.references.reserve(data->references.size());
-    for (const auto& reference : data->references) {
-        context.references.push_back(semantic::NavigationReference{.stable_id = reference.stable_id,
-                                                                  .location = reference.location,
-                                                                  .is_declaration = reference.is_declaration});
-    }
+    context.symbols_by_id = ast_index.navigation_symbols_by_id;
+    context.references = ast_index.navigation_references;
     if (const auto ranges_it = data->selection_ranges_by_uri.find(context.document_uri);
         ranges_it != data->selection_ranges_by_uri.end()) {
         context.selection_ranges = ranges_it->second;
@@ -527,7 +449,8 @@ semantic::DiagnosticContext diagnosticContextFor(const SnapshotData* data,
                                                  const SemanticEngineSnapshot& snapshot,
                                                  std::string document_uri,
                                                  const std::unordered_map<std::string, SemanticEngineDocument>& documents,
-                                                 std::string workspace_root_uri) {
+                                                 std::string workspace_root_uri,
+                                                 const semantic::AstIndexView& ast_index) {
     semantic::DiagnosticContext context{.generation = snapshot.generation,
                                         .snapshot_available = data != nullptr,
                                         .workspace_root_uri = std::move(workspace_root_uri),
@@ -541,17 +464,8 @@ semantic::DiagnosticContext diagnosticContextFor(const SnapshotData* data,
     if (data == nullptr) {
         return context;
     }
-    context.symbols_by_id.reserve(data->symbols_by_id.size());
-    for (const auto& [stable_id, indexed_symbol] : data->symbols_by_id) {
-        context.symbols_by_id.emplace(stable_id,
-                                      semantic::DiagnosticSymbol{.identity = indexed_symbol.identity,
-                                                                 .type_display = indexed_symbol.type_display});
-    }
-    context.references.reserve(data->references.size());
-    for (const auto& reference : data->references) {
-        context.references.push_back(semantic::DiagnosticReference{.stable_id = reference.stable_id,
-                                                                  .location = reference.location});
-    }
+    context.symbols_by_id = ast_index.diagnostic_symbols_by_id;
+    context.references = ast_index.diagnostic_references;
     context.assignments_by_uri = data->assignments_by_uri;
     context.package_imports_by_uri = data->package_imports_by_uri;
     context.metadata_by_uri = data->metadata_by_uri;
@@ -615,7 +529,7 @@ void insertSymbol(SnapshotData& data,
 
         data.symbols_by_id.emplace(
             stable_id,
-            typename SnapshotData::IndexedSymbol{
+            semantic::SnapshotIndexedSymbol{
                 .identity = SemanticSymbolIdentity{.stable_id = stable_id,
                                                    .name = std::string(symbol.name),
                                                    .kind = symbolKindName(symbol.kind),
@@ -660,7 +574,7 @@ void insertReference(SnapshotData& data,
     }
 
     const auto index = data.references.size();
-    data.references.push_back(typename SnapshotData::IndexedReference{
+    data.references.push_back(semantic::SnapshotIndexedReference{
         .stable_id = std::move(stable_id),
         .name = std::move(name),
         .location = std::move(location),
@@ -894,15 +808,15 @@ std::vector<SemanticLocation> moduleImplementationLocations(const SnapshotData& 
 }
 
 template<typename SnapshotData>
-std::optional<typename SnapshotData::ModuleInstance> moduleInstanceAt(const SnapshotData& data,
-                                                                      std::string_view uri,
-                                                                      int line,
-                                                                      int character) {
+std::optional<semantic::SnapshotModuleInstance> moduleInstanceAt(const SnapshotData& data,
+                                                                 std::string_view uri,
+                                                                 int line,
+                                                                 int character) {
     const auto instances_it = data.module_instances_by_uri.find(std::string(uri));
     if (instances_it == data.module_instances_by_uri.end()) {
         return std::nullopt;
     }
-    std::optional<typename SnapshotData::ModuleInstance> best;
+    std::optional<semantic::SnapshotModuleInstance> best;
     for (const auto& instance : instances_it->second) {
         if (!containsPosition(instance.module_selection_range, line, character)) {
             continue;
@@ -1315,17 +1229,19 @@ std::vector<SemanticEngineDiagnostic> SemanticEngine::diagnosticsFor(std::string
     }
 
     const auto* data = snapshotData();
+    const auto ast_index = semantic::buildAstIndexView(data, current_snapshot.generation);
     auto context = diagnosticContextFor(data,
                                         current_snapshot,
                                         document_uri,
                                         documents_,
-                                        workspace_root_uri_);
+                                        workspace_root_uri_,
+                                        ast_index);
     auto result = semantic::diagnosticsFor(context);
     query_cache_->storeDiagnostics(current_snapshot.generation, document_uri, result);
     return result;
 }
 
-const SemanticEngine::SnapshotData* SemanticEngine::snapshotData() const {
+const semantic::SnapshotData* SemanticEngine::snapshotData() const {
     (void)snapshot();
     return snapshot_data_.get();
 }
@@ -1379,7 +1295,7 @@ SemanticLookupResult SemanticEngine::lookupAt(std::string_view uri, int line, in
 
     const auto reference_it = std::find_if(data->references.begin(),
                                            data->references.end(),
-                                           [&](const SnapshotData::IndexedReference& reference) {
+                                           [&](const semantic::SnapshotIndexedReference& reference) {
                                                return reference.stable_id == *id &&
                                                       reference.location.uri == document_uri &&
                                                       containsPosition(reference.location.range, line, character);
@@ -1967,7 +1883,8 @@ SemanticTokenResult SemanticEngine::semanticTokens(std::string_view uri) const {
     const auto& current_snapshot = snapshot();
     const auto document_uri = withoutTrailingSlash(normalizeFileUri(uri));
     const auto* data = snapshotData();
-    auto context = navigationContextFor(data, current_snapshot, document_uri);
+    const auto ast_index = semantic::buildAstIndexView(data, current_snapshot.generation);
+    auto context = navigationContextFor(data, current_snapshot, document_uri, ast_index);
     return semantic::semanticTokens(context);
 }
 
@@ -1977,10 +1894,12 @@ SemanticSelectionRangeResult SemanticEngine::selectionRangesAt(std::string_view 
     const auto lookup = lookupAt(uri, line, character);
     const auto document_uri = withoutTrailingSlash(normalizeFileUri(uri));
     const auto* data = snapshotData();
+    const auto ast_index = semantic::buildAstIndexView(data, lookup.generation);
     const auto document_it = documents_.find(document_uri);
     auto context = navigationContextFor(data,
                                         snapshot(),
                                         document_uri,
+                                        ast_index,
                                         document_it == documents_.end() ? nullptr : &document_it->second.text);
     return semantic::selectionRangesAt(context, lookup, line, character);
 }
@@ -2003,7 +1922,8 @@ SemanticModuleHierarchyResult SemanticEngine::moduleHierarchy(std::optional<std:
         return value;
     };
     const auto* data = snapshotData();
-    auto context = designGraphContextFor(data, current_snapshot, config_);
+    const auto ast_index = semantic::buildAstIndexView(data, current_snapshot.generation);
+    auto context = designGraphContextFor(data, current_snapshot, config_, ast_index);
     result = semantic::moduleHierarchy(context, module_name, max_depth);
     return finish(std::move(result));
 }
@@ -2021,7 +1941,8 @@ SemanticSchematicResult SemanticEngine::schematic(std::optional<std::string_view
         return value;
     };
     const auto* data = snapshotData();
-    auto context = designGraphContextFor(data, current_snapshot, config_);
+    const auto ast_index = semantic::buildAstIndexView(data, current_snapshot.generation);
+    auto context = designGraphContextFor(data, current_snapshot, config_, ast_index);
     result = semantic::schematic(context, module_name, max_depth);
     return finish(std::move(result));
 }
@@ -2032,21 +1953,24 @@ SemanticCallHierarchyPrepareResult SemanticEngine::prepareCallHierarchy(std::str
     const auto& current_snapshot = snapshot();
     const auto document_uri = withoutTrailingSlash(normalizeFileUri(uri));
     const auto* data = snapshotData();
-    auto context = designGraphContextFor(data, current_snapshot, config_);
+    const auto ast_index = semantic::buildAstIndexView(data, current_snapshot.generation);
+    auto context = designGraphContextFor(data, current_snapshot, config_, ast_index);
     return semantic::prepareCallHierarchy(context, document_uri, line, character);
 }
 
 SemanticCallHierarchyCallsResult SemanticEngine::incomingCalls(const SemanticCallHierarchyItem& item) const {
     const auto& current_snapshot = snapshot();
     const auto* data = snapshotData();
-    auto context = designGraphContextFor(data, current_snapshot, config_);
+    const auto ast_index = semantic::buildAstIndexView(data, current_snapshot.generation);
+    auto context = designGraphContextFor(data, current_snapshot, config_, ast_index);
     return semantic::incomingCalls(context, item);
 }
 
 SemanticCallHierarchyCallsResult SemanticEngine::outgoingCalls(const SemanticCallHierarchyItem& item) const {
     const auto& current_snapshot = snapshot();
     const auto* data = snapshotData();
-    auto context = designGraphContextFor(data, current_snapshot, config_);
+    const auto ast_index = semantic::buildAstIndexView(data, current_snapshot.generation);
+    auto context = designGraphContextFor(data, current_snapshot, config_, ast_index);
     return semantic::outgoingCalls(context, item);
 }
 
@@ -2082,7 +2006,8 @@ SemanticConeTrace SemanticEngine::backwardConeAt(std::string_view uri,
     }
 
     const auto* data = snapshotData();
-    auto context = designGraphContextFor(data, current_snapshot, config_);
+    const auto ast_index = semantic::buildAstIndexView(data, current_snapshot.generation);
+    auto context = designGraphContextFor(data, current_snapshot, config_, ast_index);
     if (const auto document_it = documents_.find(document_uri); document_it != documents_.end()) {
         CompilationService compilation_service;
         context.identifiers_by_uri[document_uri] = compilation_service.identifiers(document_it->second.text);
@@ -2127,7 +2052,8 @@ SemanticWorkspaceSymbolResult SemanticEngine::workspaceSymbols(std::string_view 
     }
 
     const auto* data = snapshotData();
-    auto context = astIndexContextFor(data, current_snapshot);
+    auto context = semantic::workspaceSymbolContext(semantic::buildAstIndexView(data,
+                                                                                current_snapshot.generation));
     auto result = semantic::workspaceSymbols(context, query, limit);
     query_cache_->storeWorkspaceSymbols(current_snapshot.generation, query, limit, result);
     return result;
@@ -2158,7 +2084,7 @@ void SemanticEngine::rebuildDependenciesFor(std::string_view document_uri, std::
 }
 
 void SemanticEngine::rebuildSnapshot() const {
-    auto data = std::make_unique<SnapshotData>();
+    auto data = std::make_unique<semantic::SnapshotData>();
     data->source_manager = std::make_unique<slang::SourceManager>();
     data->source_manager->setDisableProximatePaths(true);
     const auto options = makeCompilationOptions();
@@ -2204,11 +2130,11 @@ void SemanticEngine::rebuildSnapshot() const {
 
         const auto modules = compilation_service.moduleDefinitions(document_it->second.text, uri);
         for (const auto& module : modules) {
-            data->module_entries.push_back(SnapshotData::ModuleEntry{.uri = uri, .definition = module});
+            data->module_entries.push_back(semantic::SnapshotModuleEntry{.uri = uri, .definition = module});
             data->modules_by_name.try_emplace(module.name, module);
             data->module_uris_by_name.try_emplace(module.name, uri);
             for (const auto& instance : module.instances) {
-                data->module_instances_by_uri[uri].push_back(SnapshotData::ModuleInstance{
+                data->module_instances_by_uri[uri].push_back(semantic::SnapshotModuleInstance{
                     .module_name = instance.module_name,
                     .instance_name = instance.instance_name,
                     .target_stable_id = {},
@@ -2274,7 +2200,7 @@ void SemanticEngine::rebuildSnapshot() const {
             next.has_design_ast = next.mode == SemanticEngineMode::Design;
 
             const auto& root = data->compilation->getRoot();
-            SemanticIndexVisitor<SnapshotData> visitor(*data, *data->source_manager, documents_);
+            SemanticIndexVisitor<semantic::SnapshotData> visitor(*data, *data->source_manager, documents_);
             root.visit(visitor);
             for (const auto* definition : data->compilation->getDefinitions()) {
                 if (definition != nullptr) {

@@ -11,6 +11,7 @@ add_executable(
 	unit/NavigationProviderTests.cpp
 	unit/SemanticEngineTests.cpp
 	unit/SignatureInlayProviderTests.cpp
+	unit/SnapshotBuilderTests.cpp
 	unit/SemanticWorkspaceTests.cpp
 	unit/SourceUtilTests.cpp
 	unit/ServerLifecycleTests.cpp)
