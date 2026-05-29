@@ -1,5 +1,6 @@
 #include "pristine/analysis/SemanticEngine.h"
 
+#include "semantic/CompletionProvider.h"
 #include "semantic/DiagnosticProvider.h"
 #include "semantic/QueryCache.h"
 #include "pristine/analysis/SourceUtil.h"
@@ -513,30 +514,6 @@ int lspSymbolKindForSemanticKind(std::string_view kind) {
     return 0;
 }
 
-std::optional<size_t> completionPrefixStartOffset(std::string_view text,
-                                                  int line,
-                                                  int character,
-                                                  std::string_view prefix) {
-    const auto offset = utf8OffsetAtUtf16Position(text, line, character);
-    if (!offset.has_value() || *offset < prefix.size()) {
-        return std::nullopt;
-    }
-    return *offset - prefix.size();
-}
-
-bool hasOnlyWhitespaceSinceLineStart(std::string_view text, size_t offset) {
-    size_t line_start = offset;
-    while (line_start > 0 && text[line_start - 1] != '\n' && text[line_start - 1] != '\r') {
-        --line_start;
-    }
-    for (size_t index = line_start; index < offset; ++index) {
-        if (std::isspace(static_cast<unsigned char>(text[index])) == 0) {
-            return false;
-        }
-    }
-    return true;
-}
-
 std::string portSignatureLabel(const SchematicPort& port) {
     std::string label;
     const auto append_part = [&](std::string_view part) {
@@ -730,49 +707,6 @@ int activeParameterAt(std::string_view text, size_t open_paren_offset, size_t po
         }
     }
     return active_parameter;
-}
-
-std::optional<std::string> packageQualifierBeforeCompletion(std::string_view text,
-                                                            int line,
-                                                            int character,
-                                                            std::string_view prefix) {
-    const auto prefix_start = completionPrefixStartOffset(text, line, character, prefix);
-    if (!prefix_start.has_value() || *prefix_start < 2 || text[*prefix_start - 1] != ':' ||
-        text[*prefix_start - 2] != ':') {
-        return std::nullopt;
-    }
-
-    size_t name_end = *prefix_start - 2;
-    size_t name_start = name_end;
-    while (name_start > 0 && isIdentifierContinue(text[name_start - 1])) {
-        --name_start;
-    }
-    const auto qualifier = text.substr(name_start, name_end - name_start);
-    if (qualifier.empty() || !isIdentifierStart(qualifier.front())) {
-        return std::nullopt;
-    }
-    return std::string(qualifier);
-}
-
-std::optional<std::string> memberQualifierBeforeCompletion(std::string_view text,
-                                                           int line,
-                                                           int character,
-                                                           std::string_view prefix) {
-    const auto prefix_start = completionPrefixStartOffset(text, line, character, prefix);
-    if (!prefix_start.has_value() || *prefix_start == 0 || text[*prefix_start - 1] != '.') {
-        return std::nullopt;
-    }
-
-    size_t name_end = *prefix_start - 1;
-    size_t name_start = name_end;
-    while (name_start > 0 && isIdentifierContinue(text[name_start - 1])) {
-        --name_start;
-    }
-    const auto qualifier = text.substr(name_start, name_end - name_start);
-    if (qualifier.empty() || !isIdentifierStart(qualifier.front())) {
-        return std::nullopt;
-    }
-    return std::string(qualifier);
 }
 
 std::optional<size_t> openParenBeforePosition(std::string_view text,
@@ -2609,9 +2543,13 @@ SemanticCompletionResult SemanticEngine::completionsAt(std::string_view uri,
     std::set<std::string> emitted;
     const auto document_it = documents_.find(document_uri);
     const auto* document = document_it == documents_.end() ? nullptr : &document_it->second;
-    const auto prefix_start = document == nullptr
-                                  ? std::optional<size_t>{}
-                                  : completionPrefixStartOffset(document->text, line, character, prefix);
+    const auto completion_context = document == nullptr
+                                        ? semantic::CompletionContext{}
+                                        : semantic::detectCompletionContext(document->text,
+                                                                            line,
+                                                                            character,
+                                                                            prefix);
+    const auto prefix_start = completion_context.prefix_start;
 
     const auto append_items = [&](const std::vector<SemanticCompletionItem>& items) {
         for (const auto& item : items) {
@@ -2622,8 +2560,7 @@ SemanticCompletionResult SemanticEngine::completionsAt(std::string_view uri,
         }
     };
 
-    if (document != nullptr && prefix_start.has_value() && *prefix_start > 0 &&
-        document->text[*prefix_start - 1] == '`') {
+    if (document != nullptr && completion_context.macro_invocation) {
         const auto append_macros = [&](const std::vector<MacroDefinition>& macros) {
             for (const auto& macro : macros) {
                 appendCompletionItem(result.items,
@@ -2658,7 +2595,7 @@ SemanticCompletionResult SemanticEngine::completionsAt(std::string_view uri,
     }
 
     if (document != nullptr) {
-        if (const auto package_name = packageQualifierBeforeCompletion(document->text, line, character, prefix)) {
+        if (const auto package_name = completion_context.package_qualifier) {
             for (const auto& [_, indexed_symbol] : data->symbols_by_id) {
                 const auto& symbol = indexed_symbol.identity;
                 if (symbol.name == *package_name || symbol.location.uri.empty()) {
@@ -2685,7 +2622,7 @@ SemanticCompletionResult SemanticEngine::completionsAt(std::string_view uri,
             return finish(std::move(result));
         }
 
-        if (prefix_start.has_value() && *prefix_start > 0 && document->text[*prefix_start - 1] == '.') {
+        if (completion_context.member_access) {
             const auto instances_it = data->module_instances_by_uri.find(document_uri);
             if (instances_it == data->module_instances_by_uri.end()) {
                 result.unresolved = true;
@@ -2732,7 +2669,7 @@ SemanticCompletionResult SemanticEngine::completionsAt(std::string_view uri,
             }
         }
 
-        if (const auto member_name = memberQualifierBeforeCompletion(document->text, line, character, prefix)) {
+        if (const auto member_name = completion_context.member_qualifier) {
             for (const auto& [_, indexed_symbol] : data->symbols_by_id) {
                 if (indexed_symbol.identity.name == *member_name) {
                     continue;
@@ -2755,7 +2692,7 @@ SemanticCompletionResult SemanticEngine::completionsAt(std::string_view uri,
             return finish(std::move(result));
         }
 
-        if (prefix_start.has_value() && hasOnlyWhitespaceSinceLineStart(document->text, *prefix_start)) {
+        if (completion_context.module_instantiation_position) {
             std::vector<std::string> module_names;
             module_names.reserve(data->modules_by_name.size());
             for (const auto& [module_name, _] : data->modules_by_name) {

@@ -1,0 +1,20 @@
+{
+  "name": "package completion does not use local same-name symbols",
+  "sources": [
+    {
+      "uri": "file:///golden/json/package-completion.sv",
+      "text": "package defs;\n  typedef logic [3:0] nibble_t;\nendpackage\nmodule top;\n  logic nibble_shadow;\n  defs::nib\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "completion",
+    "uri": "file:///golden/json/package-completion.sv",
+    "line": 5,
+    "character": 11,
+    "prefix": "nib"
+  },
+  "expected": {
+    "labels": ["nibble_t"],
+    "absentLabels": ["nibble_shadow"]
+  }
+}
