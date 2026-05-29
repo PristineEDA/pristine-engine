@@ -1,9 +1,11 @@
 #include "pristine/analysis/SemanticEngine.h"
 
 #include "semantic/AstIndex.h"
+#include "semantic/CodeActionProvider.h"
 #include "semantic/CompletionProvider.h"
 #include "semantic/DesignGraphProvider.h"
 #include "semantic/DiagnosticProvider.h"
+#include "semantic/NavigationProvider.h"
 #include "semantic/QueryCache.h"
 #include "semantic/SignatureInlayProvider.h"
 #include "pristine/analysis/SourceUtil.h"
@@ -24,7 +26,6 @@
 
 #include <algorithm>
 #include <cctype>
-#include <filesystem>
 #include <map>
 #include <memory>
 #include <set>
@@ -35,18 +36,7 @@
 namespace pristine::analysis {
 namespace {
 
-namespace fs = std::filesystem;
-
-constexpr std::string_view kUnknownIncludeDiagnosticCode = "unknownInclude";
-constexpr std::string_view kUnresolvedModuleDiagnosticCode = "unresolvedModule";
 constexpr std::string_view kUnresolvedTypeDiagnosticCode = "unresolvedType";
-
-std::optional<fs::path> resolveIncludeTarget(std::string_view workspace_root_uri,
-                                             std::string_view document_uri,
-                                             std::string_view target);
-std::optional<fs::path> proposedIncludeTarget(std::string_view workspace_root_uri,
-                                              std::string_view document_uri,
-                                              std::string_view target);
 
 int toLspSeverity(slang::DiagnosticSeverity severity) {
     switch (severity) {
@@ -105,49 +95,6 @@ bool containsPosition(const ParseRange& range, int line, int character) {
         return false;
     }
     return true;
-}
-
-int comparePosition(int lhs_line, int lhs_character, int rhs_line, int rhs_character) {
-    if (lhs_line != rhs_line) {
-        return lhs_line < rhs_line ? -1 : 1;
-    }
-    if (lhs_character == rhs_character) {
-        return 0;
-    }
-    return lhs_character < rhs_character ? -1 : 1;
-}
-
-bool rangesIntersect(const ParseRange& target, const ParseRange& range) {
-    if (range.start_line == range.end_line && range.start_character == range.end_character) {
-        return containsPosition(target, range.start_line, range.start_character);
-    }
-    return comparePosition(target.end_line,
-                           target.end_character,
-                           range.start_line,
-                           range.start_character) > 0 &&
-           comparePosition(range.end_line,
-                           range.end_character,
-                           target.start_line,
-                           target.start_character) > 0;
-}
-
-ParseRange endOfTextRange(std::string_view text) {
-    int line = 0;
-    int character = 0;
-    for (const char value : text) {
-        if (value == '\n') {
-            ++line;
-            character = 0;
-            continue;
-        }
-        if (value != '\r') {
-            ++character;
-        }
-    }
-    return ParseRange{.start_line = line,
-                      .start_character = character,
-                      .end_line = line,
-                      .end_character = character};
 }
 
 bool locationLess(const SemanticLocation& lhs, const SemanticLocation& rhs) {
@@ -284,47 +231,6 @@ bool isIdentifierContinue(char value) {
     return std::isalnum(ch) != 0 || value == '_' || value == '$';
 }
 
-bool isValidIdentifier(std::string_view value) {
-    if (value.empty() || !isIdentifierStart(value.front())) {
-        return false;
-    }
-    return std::all_of(value.begin() + 1, value.end(), isIdentifierContinue);
-}
-
-std::string unknownIncludeMessage(std::string_view target) {
-    return std::string("Include file '") + std::string(target) + "' could not be resolved.";
-}
-
-std::string unresolvedModuleMessage(std::string_view module_name) {
-    return std::string("Module '") + std::string(module_name) + "' could not be resolved.";
-}
-
-std::string unresolvedTypeMessage(std::string_view name) {
-    return std::string("Type '") + std::string(name) + "' could not be resolved.";
-}
-
-std::string duplicateSymbolMessage(std::string_view name) {
-    return std::string("Duplicate symbol '") + std::string(name) + "' in the same scope.";
-}
-
-std::string ambiguousReferenceMessage(std::string_view name, size_t definition_count) {
-    return std::string("Symbol '") + std::string(name) + "' has " +
-           std::to_string(definition_count) + " possible definitions in scope.";
-}
-
-std::string unresolvedPackageMessage(std::string_view name) {
-    return std::string("Package '") + std::string(name) + "' could not be resolved.";
-}
-
-std::string widthMismatchMessage(std::string_view left_name,
-                                 std::int64_t left_width,
-                                 std::string_view right_name,
-                                 std::int64_t right_width) {
-    return std::string("Width mismatch: assigning ") + std::to_string(right_width) + "-bit '" +
-           std::string(right_name) + "' to " + std::to_string(left_width) + "-bit '" +
-           std::string(left_name) + "'.";
-}
-
 bool isBuiltinTypeName(std::string_view name) {
     return name == "bit" || name == "logic" || name == "reg" || name == "wire" || name == "tri" ||
            name == "byte" || name == "shortint" || name == "int" || name == "integer" ||
@@ -340,38 +246,6 @@ bool isModuleDefinitionKind(std::string_view kind) {
     return kind == "Definition" || kind == "Instance" || kind == "InstanceBody";
 }
 
-std::string moduleStubInsertionText(std::string_view text, std::string_view module_name) {
-    std::string insertion = text.empty() || text.back() == '\n' ? "\n" : "\n\n";
-    insertion += "module ";
-    insertion += module_name;
-    insertion += ";\nendmodule\n";
-    return insertion;
-}
-
-std::string typedefSkeletonInsertionText(std::string_view text, std::string_view type_name) {
-    std::string insertion = text.empty() || text.back() == '\n' ? "\n" : "\n\n";
-    insertion += "typedef logic ";
-    insertion += type_name;
-    insertion += ";\n";
-    return insertion;
-}
-
-std::string missingPortConnectionText(const std::vector<SchematicPort>& ports,
-                                      bool has_existing_connections) {
-    std::string text = has_existing_connections ? ", " : "";
-    for (size_t index = 0; index < ports.size(); ++index) {
-        if (index != 0) {
-            text += ", ";
-        }
-        text += ".";
-        text += ports[index].name;
-        text += "(";
-        text += ports[index].name;
-        text += ")";
-    }
-    return text;
-}
-
 bool startsWithInsensitive(std::string_view prefix, std::string_view candidate) {
     if (prefix.size() > candidate.size()) {
         return false;
@@ -384,58 +258,6 @@ bool startsWithInsensitive(std::string_view prefix, std::string_view candidate) 
         }
     }
     return true;
-}
-
-bool fuzzyMatch(std::string_view query, std::string_view candidate) {
-    if (query.empty()) {
-        return true;
-    }
-
-    auto query_it = query.begin();
-    for (auto candidate_it = candidate.begin();
-         query_it != query.end() && candidate_it != candidate.end(); ++candidate_it) {
-        const auto query_char = static_cast<char>(std::tolower(static_cast<unsigned char>(*query_it)));
-        const auto candidate_char = static_cast<char>(std::tolower(static_cast<unsigned char>(*candidate_it)));
-        if (query_char == candidate_char) {
-            ++query_it;
-        }
-    }
-
-    return query_it == query.end();
-}
-
-int lspSymbolKindForSemanticKind(std::string_view kind) {
-    if (kind == "Package" || kind == "Namespace") {
-        return 4;
-    }
-    if (kind == "ClassType") {
-        return 5;
-    }
-    if (kind == "EnumType") {
-        return 10;
-    }
-    if (kind == "Interface" || kind == "Modport") {
-        return 11;
-    }
-    if (kind == "Subroutine" || kind == "SubroutinePort") {
-        return 12;
-    }
-    if (kind == "Definition") {
-        return 2;
-    }
-    if (kind == "TypeAlias" || kind == "Type") {
-        return 26;
-    }
-    if (kind == "Parameter") {
-        return 14;
-    }
-    if (kind == "EnumValue") {
-        return 22;
-    }
-    if (kind == "Net" || kind == "Variable" || kind == "Field" || kind == "Member") {
-        return 13;
-    }
-    return 0;
 }
 
 std::string declarationLocationLabel(const SemanticLocation& location) {
@@ -567,53 +389,6 @@ std::optional<ParseRange> userTypeReferenceRange(std::string_view text,
     return best;
 }
 
-ParseRange pointRangeAtUtf8Offset(std::string_view text, size_t target_offset) {
-    int line = 0;
-    int character = 0;
-    const auto clamped_offset = std::min(target_offset, text.size());
-    for (size_t offset = 0; offset < clamped_offset; ++offset) {
-        const char value = text[offset];
-        if (value == '\r') {
-            if (offset + 1 < clamped_offset && text[offset + 1] == '\n') {
-                ++offset;
-            }
-            ++line;
-            character = 0;
-            continue;
-        }
-        if (value == '\n') {
-            ++line;
-            character = 0;
-            continue;
-        }
-        ++character;
-    }
-    return ParseRange{.start_line = line,
-                      .start_character = character,
-                      .end_line = line,
-                      .end_character = character};
-}
-
-std::optional<ParseRange> instancePortInsertionRange(std::string_view text,
-                                                     const SchematicCell& cell) {
-    const auto start_offset = utf8OffsetAtUtf16Position(text,
-                                                        cell.range.start_line,
-                                                        cell.range.start_character);
-    const auto end_offset = utf8OffsetAtUtf16Position(text,
-                                                      cell.range.end_line,
-                                                      cell.range.end_character);
-    if (!start_offset.has_value() || !end_offset.has_value() || *start_offset >= *end_offset) {
-        return std::nullopt;
-    }
-
-    for (size_t offset = *end_offset; offset > *start_offset; --offset) {
-        if (text[offset - 1] == ')') {
-            return pointRangeAtUtf8Offset(text, offset - 1);
-        }
-    }
-    return std::nullopt;
-}
-
 constexpr size_t kMaxSemanticLocations = 2000;
 
 } // namespace
@@ -714,6 +489,97 @@ semantic::AstIndexContext astIndexContextFor(const SnapshotData* data,
     for (const auto& [stable_id, indexed_symbol] : data->symbols_by_id) {
         context.symbols.push_back(semantic::AstIndexSymbol{.stable_id = stable_id,
                                                            .identity = indexed_symbol.identity});
+    }
+    return context;
+}
+
+template<typename SnapshotData>
+semantic::NavigationContext navigationContextFor(const SnapshotData* data,
+                                                 const SemanticEngineSnapshot& snapshot,
+                                                 std::string document_uri,
+                                                 const std::string* document_text = nullptr) {
+    semantic::NavigationContext context{.generation = snapshot.generation,
+                                       .snapshot_available = data != nullptr,
+                                       .document_uri = std::move(document_uri),
+                                       .document_text = document_text};
+    if (data == nullptr) {
+        return context;
+    }
+    context.symbols_by_id.reserve(data->symbols_by_id.size());
+    for (const auto& [stable_id, indexed_symbol] : data->symbols_by_id) {
+        context.symbols_by_id.emplace(stable_id, indexed_symbol.identity);
+    }
+    context.references.reserve(data->references.size());
+    for (const auto& reference : data->references) {
+        context.references.push_back(semantic::NavigationReference{.stable_id = reference.stable_id,
+                                                                  .location = reference.location,
+                                                                  .is_declaration = reference.is_declaration});
+    }
+    if (const auto ranges_it = data->selection_ranges_by_uri.find(context.document_uri);
+        ranges_it != data->selection_ranges_by_uri.end()) {
+        context.selection_ranges = ranges_it->second;
+    }
+    return context;
+}
+
+template<typename SnapshotData>
+semantic::DiagnosticContext diagnosticContextFor(const SnapshotData* data,
+                                                 const SemanticEngineSnapshot& snapshot,
+                                                 std::string document_uri,
+                                                 const std::unordered_map<std::string, SemanticEngineDocument>& documents,
+                                                 std::string workspace_root_uri) {
+    semantic::DiagnosticContext context{.generation = snapshot.generation,
+                                        .snapshot_available = data != nullptr,
+                                        .workspace_root_uri = std::move(workspace_root_uri),
+                                        .snapshot_diagnostics = snapshot.diagnostics};
+    if (const auto document_it = documents.find(document_uri); document_it != documents.end()) {
+        context.document = document_it->second;
+    }
+    else {
+        context.document.uri = std::move(document_uri);
+    }
+    if (data == nullptr) {
+        return context;
+    }
+    context.symbols_by_id.reserve(data->symbols_by_id.size());
+    for (const auto& [stable_id, indexed_symbol] : data->symbols_by_id) {
+        context.symbols_by_id.emplace(stable_id,
+                                      semantic::DiagnosticSymbol{.identity = indexed_symbol.identity,
+                                                                 .type_display = indexed_symbol.type_display});
+    }
+    context.references.reserve(data->references.size());
+    for (const auto& reference : data->references) {
+        context.references.push_back(semantic::DiagnosticReference{.stable_id = reference.stable_id,
+                                                                  .location = reference.location});
+    }
+    context.assignments_by_uri = data->assignments_by_uri;
+    context.package_imports_by_uri = data->package_imports_by_uri;
+    context.metadata_by_uri = data->metadata_by_uri;
+    context.modules_by_name = data->modules_by_name;
+    return context;
+}
+
+template<typename SnapshotData>
+semantic::CodeActionContext codeActionContextFor(const SnapshotData* data,
+                                                 const SemanticEngineSnapshot& snapshot,
+                                                 std::string document_uri,
+                                                 ParseRange range,
+                                                 const std::unordered_map<std::string, SemanticEngineDocument>& documents,
+                                                 std::string workspace_root_uri,
+                                                 std::vector<SemanticEngineDiagnostic> diagnostics) {
+    semantic::CodeActionContext context{.generation = snapshot.generation,
+                                       .snapshot_available = data != nullptr,
+                                       .workspace_root_uri = std::move(workspace_root_uri),
+                                       .range = range,
+                                       .diagnostics = std::move(diagnostics)};
+    if (const auto document_it = documents.find(document_uri); document_it != documents.end()) {
+        context.document = document_it->second;
+    }
+    else {
+        context.document.uri = std::move(document_uri);
+    }
+    if (data != nullptr) {
+        context.modules_by_name = data->modules_by_name;
     }
     return context;
 }
@@ -957,23 +823,6 @@ std::optional<std::string> findSymbolIdByNameAndKind(const SnapshotData& data,
     return result;
 }
 
-bool canHaveUserDefinedTypeReference(const SemanticSymbolMetadata& metadata) {
-    return metadata.kind == 13 || metadata.kind == 14;
-}
-
-bool isTypeDefinitionMetadata(const SemanticSymbolMetadata& metadata) {
-    switch (metadata.kind) {
-        case 2:
-        case 5:
-        case 10:
-        case 11:
-        case 26:
-            return true;
-        default:
-            return false;
-    }
-}
-
 template<typename SnapshotData>
 std::vector<SemanticLocation> typeDefinitionLocationsByName(const SnapshotData& data,
                                                             std::string_view name) {
@@ -990,327 +839,10 @@ std::vector<SemanticLocation> typeDefinitionLocationsByName(const SnapshotData& 
 }
 
 template<typename SnapshotData>
-bool hasTypeDefinitionSymbol(const SnapshotData& data, std::string_view name) {
-    return !typeDefinitionLocationsByName(data, name).empty();
-}
-
-template<typename SnapshotData>
 std::optional<std::string> symbolIdAtLocation(const SnapshotData& data,
                                               std::string_view uri,
                                               int line,
                                               int character);
-
-bool isAssignableMetadata(const SemanticSymbolMetadata& metadata) {
-    return metadata.kind == 13 && metadata.type_display_name.find('[') != std::string::npos;
-}
-
-std::optional<std::int64_t> bitWidthFromDisplayName(std::string_view display_name) {
-    const auto open = display_name.find('[');
-    const auto close = display_name.find(']', open == std::string_view::npos ? 0 : open);
-    if (open == std::string_view::npos || close == std::string_view::npos || close <= open + 1) {
-        if (display_name == "logic" || display_name == "bit" || display_name == "wire" ||
-            display_name == "reg") {
-            return 1;
-        }
-        return std::nullopt;
-    }
-
-    const auto colon = display_name.find(':', open + 1);
-    if (colon == std::string_view::npos || colon >= close) {
-        return std::nullopt;
-    }
-
-    try {
-        const auto msb = std::stoll(std::string(display_name.substr(open + 1,
-                                                                    colon - open - 1)));
-        const auto lsb = std::stoll(std::string(display_name.substr(colon + 1,
-                                                                    close - colon - 1)));
-        return std::llabs(msb - lsb) + 1;
-    }
-    catch (...) {
-        return std::nullopt;
-    }
-}
-
-template<typename SnapshotData>
-std::optional<std::string> symbolIdAtRangeStart(const SnapshotData& data,
-                                                std::string_view uri,
-                                                const ParseRange& range) {
-    return symbolIdAtLocation(data, uri, range.start_line, range.start_character);
-}
-
-template<typename SnapshotData>
-std::optional<SemanticSymbolMetadata> metadataForSymbolId(const SnapshotData& data,
-                                                          std::string_view stable_id) {
-    const auto symbol_it = data.symbols_by_id.find(std::string(stable_id));
-    if (symbol_it == data.symbols_by_id.end()) {
-        return std::nullopt;
-    }
-    const auto& identity = symbol_it->second.identity;
-    const auto metadata_it = data.metadata_by_uri.find(identity.location.uri);
-    if (metadata_it == data.metadata_by_uri.end()) {
-        return std::nullopt;
-    }
-    for (const auto& metadata : metadata_it->second) {
-        if (metadata.name == identity.name &&
-            metadata.selection_range.start_line == identity.location.range.start_line &&
-            metadata.selection_range.start_character == identity.location.range.start_character) {
-            return metadata;
-        }
-    }
-    return std::nullopt;
-}
-
-template<typename SnapshotData>
-std::vector<std::string> packageDefinitionIds(const SnapshotData& data,
-                                              std::string_view package_name) {
-    std::vector<std::string> result;
-    for (const auto& [stable_id, indexed_symbol] : data.symbols_by_id) {
-        if (indexed_symbol.identity.name == package_name &&
-            indexed_symbol.identity.kind == "Package") {
-            result.push_back(stable_id);
-        }
-    }
-    std::sort(result.begin(), result.end());
-    return result;
-}
-
-template<typename SnapshotData>
-void appendDuplicateSymbolDiagnostics(std::vector<SemanticEngineDiagnostic>& result,
-                                      const SnapshotData& data,
-                                      const SemanticEngineDocument& document) {
-    const auto metadata_it = data.metadata_by_uri.find(document.uri);
-    if (metadata_it == data.metadata_by_uri.end()) {
-        return;
-    }
-
-    std::map<std::string, std::vector<SemanticSymbolMetadata>> by_name;
-    for (const auto& metadata : metadata_it->second) {
-        if (metadata.name.empty()) {
-            continue;
-        }
-        by_name[metadata.name].push_back(metadata);
-    }
-    for (auto& [_, symbols] : by_name) {
-        if (symbols.size() < 2) {
-            continue;
-        }
-        std::sort(symbols.begin(), symbols.end(), [](const auto& lhs, const auto& rhs) {
-            if (lhs.selection_range.start_line != rhs.selection_range.start_line) {
-                return lhs.selection_range.start_line < rhs.selection_range.start_line;
-            }
-            return lhs.selection_range.start_character < rhs.selection_range.start_character;
-        });
-        for (size_t index = 1; index < symbols.size(); ++index) {
-            if (symbols[index].selection_range.start_line != symbols[index - 1].selection_range.start_line + 1) {
-                continue;
-            }
-            result.push_back(SemanticEngineDiagnostic{.uri = document.uri,
-                                                      .code = "duplicateSymbol",
-                                                      .message = duplicateSymbolMessage(symbols[index].name),
-                                                      .range = symbols[index].selection_range,
-                                                      .severity = 1});
-        }
-    }
-}
-
-template<typename SnapshotData>
-void appendUnresolvedPackageDiagnostics(std::vector<SemanticEngineDiagnostic>& result,
-                                        const SnapshotData& data,
-                                        const SemanticEngineDocument& document) {
-    const auto imports_it = data.package_imports_by_uri.find(document.uri);
-    if (imports_it == data.package_imports_by_uri.end()) {
-        return;
-    }
-    for (const auto& import : imports_it->second) {
-        if (!packageDefinitionIds(data, import.package_name).empty()) {
-            continue;
-        }
-        result.push_back(SemanticEngineDiagnostic{.uri = document.uri,
-                                                  .code = "unresolvedPackage",
-                                                  .message = unresolvedPackageMessage(import.package_name),
-                                                  .range = import.package_range,
-                                                  .severity = 1});
-    }
-}
-
-template<typename SnapshotData>
-void appendWidthMismatchDiagnostics(std::vector<SemanticEngineDiagnostic>& result,
-                                    const SnapshotData& data,
-                                    const SemanticEngineDocument& document) {
-    const auto assignments_it = data.assignments_by_uri.find(document.uri);
-    if (assignments_it == data.assignments_by_uri.end()) {
-        return;
-    }
-    std::set<std::pair<int, int>> reported;
-    for (const auto& assignment : assignments_it->second) {
-        const auto left_id = symbolIdAtRangeStart(data, document.uri, assignment.left_range);
-        const auto right_id = symbolIdAtRangeStart(data, document.uri, assignment.right_range);
-        if (!left_id.has_value() || !right_id.has_value()) {
-            continue;
-        }
-        const auto left_metadata = metadataForSymbolId(data, *left_id);
-        const auto right_metadata = metadataForSymbolId(data, *right_id);
-        if (!left_metadata.has_value() || !right_metadata.has_value() ||
-            !isAssignableMetadata(*left_metadata) || !isAssignableMetadata(*right_metadata)) {
-            continue;
-        }
-        const auto left_width = bitWidthFromDisplayName(left_metadata->type_display_name);
-        const auto right_width = bitWidthFromDisplayName(right_metadata->type_display_name);
-        if (!left_width.has_value() || !right_width.has_value() || *left_width <= 0 ||
-            *right_width <= 0 || *left_width == *right_width) {
-            continue;
-        }
-        const auto key = std::pair(assignment.right_range.start_line,
-                                   assignment.right_range.start_character);
-        if (!reported.insert(key).second) {
-            continue;
-        }
-        result.push_back(SemanticEngineDiagnostic{.uri = document.uri,
-                                                  .code = "widthMismatch",
-                                                  .message = widthMismatchMessage(assignment.left_expression,
-                                                                                  *left_width,
-                                                                                  assignment.right_expression,
-                                                                                  *right_width),
-                                                  .range = assignment.right_range,
-                                                  .severity = 2});
-    }
-}
-
-template<typename SnapshotData>
-void appendAmbiguousReferenceDiagnostics(std::vector<SemanticEngineDiagnostic>& result,
-                                         const SnapshotData& data,
-                                         const SemanticEngineDocument& document) {
-    const auto imports_it = data.package_imports_by_uri.find(document.uri);
-    if (imports_it == data.package_imports_by_uri.end() || imports_it->second.size() < 2) {
-        return;
-    }
-
-    CompilationService compilation_service;
-    for (const auto& identifier : compilation_service.identifiers(document.text)) {
-        size_t definition_count = 0;
-        for (const auto& import : imports_it->second) {
-            for (const auto& package_id : packageDefinitionIds(data, import.package_name)) {
-                const auto package_it = data.symbols_by_id.find(package_id);
-                if (package_it == data.symbols_by_id.end()) {
-                    continue;
-                }
-                const auto package_location = package_it->second.identity.location;
-                const auto candidate_it = data.metadata_by_uri.find(package_location.uri);
-                if (candidate_it == data.metadata_by_uri.end()) {
-                    continue;
-                }
-                definition_count += static_cast<size_t>(
-                    std::count_if(candidate_it->second.begin(),
-                                  candidate_it->second.end(),
-                                  [&](const SemanticSymbolMetadata& candidate) {
-                                      return candidate.name == identifier.name &&
-                                             isTypeDefinitionMetadata(candidate);
-                                  }));
-            }
-        }
-        if (definition_count < 2) {
-            continue;
-        }
-        result.push_back(SemanticEngineDiagnostic{.uri = document.uri,
-                                                  .code = "ambiguousReference",
-                                                  .message = ambiguousReferenceMessage(identifier.name,
-                                                                                      definition_count),
-                                                  .range = identifier.range,
-                                                  .severity = 2});
-    }
-}
-
-template<typename SnapshotData>
-void appendUnresolvedTypeDiagnostics(std::vector<SemanticEngineDiagnostic>& result,
-                                     const SnapshotData& data,
-                                     const SemanticEngineDocument& document) {
-    CompilationService compilation_service;
-    std::set<std::pair<int, int>> reported_type_ranges;
-    for (const auto& metadata : compilation_service.semanticSymbolMetadata(document.text, document.uri)) {
-        if (!canHaveUserDefinedTypeReference(metadata)) {
-            continue;
-        }
-        const auto type_range = userTypeReferenceRange(document.text, metadata);
-        if (!type_range.has_value() || hasTypeDefinitionSymbol(data, metadata.type_name)) {
-            continue;
-        }
-        const auto range_key = std::pair(type_range->start_line, type_range->start_character);
-        if (!reported_type_ranges.insert(range_key).second) {
-            continue;
-        }
-        result.push_back(SemanticEngineDiagnostic{.uri = document.uri,
-                                                  .code = std::string(kUnresolvedTypeDiagnosticCode),
-                                                  .message = unresolvedTypeMessage(metadata.type_name),
-                                                  .range = *type_range,
-                                                  .severity = 1});
-    }
-}
-
-template<typename SnapshotData>
-void appendUnknownIncludeDiagnostics(std::vector<SemanticEngineDiagnostic>& result,
-                                     const SnapshotData& data,
-                                     const SemanticEngineDocument& document,
-                                     std::string_view workspace_root_uri) {
-    CompilationService compilation_service;
-    for (const auto& include : compilation_service.includeDirectives(document.text)) {
-        if (resolveIncludeTarget(workspace_root_uri, document.uri, include.target).has_value()) {
-            continue;
-        }
-        const auto key = std::tuple(std::string(kUnknownIncludeDiagnosticCode),
-                                    include.range.start_line,
-                                    include.range.start_character,
-                                    unknownIncludeMessage(include.target));
-        const auto already_reported = std::any_of(result.begin(), result.end(), [&](const auto& diagnostic) {
-            return std::tuple(diagnostic.code,
-                              diagnostic.range.start_line,
-                              diagnostic.range.start_character,
-                              diagnostic.message) == key;
-        });
-        if (already_reported) {
-            continue;
-        }
-        result.push_back(SemanticEngineDiagnostic{.uri = document.uri,
-                                                  .code = std::string(kUnknownIncludeDiagnosticCode),
-                                                  .message = unknownIncludeMessage(include.target),
-                                                  .range = include.range,
-                                                  .severity = 1});
-    }
-    (void)data;
-}
-
-template<typename SnapshotData>
-void appendUnresolvedModuleDiagnostics(std::vector<SemanticEngineDiagnostic>& result,
-                                       const SnapshotData& data,
-                                       const SemanticEngineDocument& document) {
-    CompilationService compilation_service;
-    for (const auto& module : compilation_service.moduleDefinitions(document.text, document.uri)) {
-        for (const auto& instance : module.instances) {
-            if (data.modules_by_name.contains(instance.module_name) ||
-                !isValidIdentifier(instance.module_name)) {
-                continue;
-            }
-            const auto key = std::tuple(std::string(kUnresolvedModuleDiagnosticCode),
-                                        instance.module_selection_range.start_line,
-                                        instance.module_selection_range.start_character,
-                                        unresolvedModuleMessage(instance.module_name));
-            const auto already_reported = std::any_of(result.begin(), result.end(), [&](const auto& diagnostic) {
-                return std::tuple(diagnostic.code,
-                                  diagnostic.range.start_line,
-                                  diagnostic.range.start_character,
-                                  diagnostic.message) == key;
-            });
-            if (already_reported) {
-                continue;
-            }
-            result.push_back(SemanticEngineDiagnostic{.uri = document.uri,
-                                                      .code = std::string(kUnresolvedModuleDiagnosticCode),
-                                                      .message = unresolvedModuleMessage(instance.module_name),
-                                                      .range = instance.module_selection_range,
-                                                      .severity = 1});
-        }
-    }
-}
 
 template<typename SnapshotData>
 void addModuleInstantiationReferences(SnapshotData& data,
@@ -1528,51 +1060,6 @@ const SchematicPort* findSchematicPortByIndex(const ModuleSchematic& schematic, 
     return &schematic.ports[static_cast<size_t>(index)];
 }
 
-std::vector<SchematicPort> modulePorts(const ModuleDefinition& module) {
-    if (!module.port_details.empty()) {
-        return module.port_details;
-    }
-
-    std::vector<SchematicPort> ports;
-    for (const auto& port_name : module.ports) {
-        ports.push_back(SchematicPort{.name = port_name,
-                                      .direction = {},
-                                      .width_text = {},
-                                      .range = module.selection_range,
-                                      .selection_range = module.selection_range});
-    }
-    return ports;
-}
-
-std::set<std::string> connectedPortNames(const SchematicCell& cell,
-                                         const std::vector<SchematicPort>& ports) {
-    std::set<std::string> connected;
-    for (const auto& connection : cell.connections) {
-        if (!connection.port_name.empty()) {
-            connected.insert(connection.port_name);
-            continue;
-        }
-        if (connection.port_index >= 0 && static_cast<size_t>(connection.port_index) < ports.size()) {
-            connected.insert(ports[static_cast<size_t>(connection.port_index)].name);
-        }
-    }
-    return connected;
-}
-
-std::vector<SchematicPort> missingPorts(const SchematicCell& cell,
-                                        const ModuleDefinition& module) {
-    const auto ports = modulePorts(module);
-    const auto connected = connectedPortNames(cell, ports);
-    std::vector<SchematicPort> result;
-    for (const auto& port : ports) {
-        if (port.name.empty() || connected.contains(port.name)) {
-            continue;
-        }
-        result.push_back(port);
-    }
-    return result;
-}
-
 bool sameParseRange(const ParseRange& lhs, const ParseRange& rhs) {
     return lhs.start_line == rhs.start_line && lhs.start_character == rhs.start_character &&
            lhs.end_line == rhs.end_line && lhs.end_character == rhs.end_character;
@@ -1670,68 +1157,6 @@ std::vector<SemanticSchematicNet> buildSchematicNets(const ModuleSchematic& sche
         result.push_back(std::move(net));
     }
     return result;
-}
-
-std::optional<fs::path> pathFromFileUri(std::string_view uri) {
-    if (!isFileUri(uri)) {
-        return std::nullopt;
-    }
-    auto path = fileUriToPath(uri);
-    if (path.empty()) {
-        return std::nullopt;
-    }
-#if defined(_WIN32)
-    if (path.size() >= 3 && path[0] == '/' && std::isalpha(static_cast<unsigned char>(path[1])) != 0 &&
-        path[2] == ':') {
-        path.erase(path.begin());
-    }
-#endif
-    return fs::path(path);
-}
-
-std::optional<fs::path> resolveIncludeTarget(std::string_view workspace_root_uri,
-                                             std::string_view document_uri,
-                                             std::string_view target) {
-    const auto target_path = fs::path(std::string(target));
-    std::vector<fs::path> candidates;
-
-    if (target_path.is_absolute()) {
-        candidates.push_back(target_path);
-    }
-    else if (const auto document_path = pathFromFileUri(document_uri)) {
-        candidates.push_back(document_path->parent_path() / target_path);
-    }
-
-    if (!target_path.is_absolute()) {
-        if (const auto workspace_path = pathFromFileUri(workspace_root_uri)) {
-            candidates.push_back(*workspace_path / target_path);
-        }
-    }
-
-    for (const auto& candidate : candidates) {
-        std::error_code error;
-        if (fs::exists(candidate, error) && fs::is_regular_file(candidate, error)) {
-            return fs::weakly_canonical(candidate, error);
-        }
-    }
-
-    return std::nullopt;
-}
-
-std::optional<fs::path> proposedIncludeTarget(std::string_view workspace_root_uri,
-                                              std::string_view document_uri,
-                                              std::string_view target) {
-    const auto target_path = fs::path(std::string(target));
-    if (target_path.is_absolute()) {
-        return target_path;
-    }
-    if (const auto document_path = pathFromFileUri(document_uri)) {
-        return document_path->parent_path() / target_path;
-    }
-    if (const auto workspace_path = pathFromFileUri(workspace_root_uri)) {
-        return *workspace_path / target_path;
-    }
-    return std::nullopt;
 }
 
 } // namespace
@@ -1889,24 +1314,13 @@ std::vector<SemanticEngineDiagnostic> SemanticEngine::diagnosticsFor(std::string
         return *cached;
     }
 
-    std::vector<SemanticEngineDiagnostic> result;
-    for (const auto& diagnostic : current_snapshot.diagnostics) {
-        if (diagnostic.uri == document_uri) {
-            result.push_back(diagnostic);
-        }
-    }
-    if (const auto data = snapshotData(); data != nullptr) {
-        if (const auto document_it = documents_.find(document_uri); document_it != documents_.end()) {
-            appendDuplicateSymbolDiagnostics(result, *data, document_it->second);
-            appendUnresolvedPackageDiagnostics(result, *data, document_it->second);
-            appendUnknownIncludeDiagnostics(result, *data, document_it->second, workspace_root_uri_);
-            appendUnresolvedModuleDiagnostics(result, *data, document_it->second);
-            appendUnresolvedTypeDiagnostics(result, *data, document_it->second);
-            appendWidthMismatchDiagnostics(result, *data, document_it->second);
-            appendAmbiguousReferenceDiagnostics(result, *data, document_it->second);
-        }
-    }
-    semantic::sortAndDedupeDiagnostics(result);
+    const auto* data = snapshotData();
+    auto context = diagnosticContextFor(data,
+                                        current_snapshot,
+                                        document_uri,
+                                        documents_,
+                                        workspace_root_uri_);
+    auto result = semantic::diagnosticsFor(context);
     query_cache_->storeDiagnostics(current_snapshot.generation, document_uri, result);
     return result;
 }
@@ -2552,129 +1966,23 @@ SemanticInlayHintResult SemanticEngine::inlayHints(std::string_view uri, ParseRa
 SemanticTokenResult SemanticEngine::semanticTokens(std::string_view uri) const {
     const auto& current_snapshot = snapshot();
     const auto document_uri = withoutTrailingSlash(normalizeFileUri(uri));
-    SemanticTokenResult result{.generation = current_snapshot.generation};
     const auto* data = snapshotData();
-    if (data == nullptr) {
-        result.unresolved = true;
-        result.messages.push_back("AST-backed SemanticEngine snapshot is unavailable");
-        return result;
-    }
-
-    for (const auto& reference : data->references) {
-        if (reference.location.uri != document_uri) {
-            continue;
-        }
-        const auto symbol_it = data->symbols_by_id.find(reference.stable_id);
-        auto token_type = std::string("variable");
-        if (symbol_it != data->symbols_by_id.end()) {
-            const auto& kind = symbol_it->second.identity.kind;
-            if (kind == "Package" || kind == "Namespace") {
-                token_type = "namespace";
-            }
-            else if (kind == "Definition" || kind == "TypeAlias" || kind == "Type") {
-                token_type = "type";
-            }
-            else if (kind == "ClassType") {
-                token_type = "class";
-            }
-            else if (kind == "EnumType") {
-                token_type = "enum";
-            }
-            else if (kind == "Interface" || kind == "Modport") {
-                token_type = "interface";
-            }
-            else if (kind == "Subroutine" || kind == "SubroutinePort") {
-                token_type = "function";
-            }
-            else if (kind == "Parameter") {
-                token_type = "parameter";
-            }
-            else if (kind == "EnumValue") {
-                token_type = "enumMember";
-            }
-        }
-        result.tokens.push_back(SemanticToken{.location = reference.location,
-                                              .token_type = std::move(token_type),
-                                              .token_modifier = reference.is_declaration
-                                                                    ? std::string("declaration")
-                                                                    : std::string{}});
-    }
-    std::sort(result.tokens.begin(), result.tokens.end(), [](const auto& lhs, const auto& rhs) {
-        return locationLess(lhs.location, rhs.location);
-    });
-    return result;
+    auto context = navigationContextFor(data, current_snapshot, document_uri);
+    return semantic::semanticTokens(context);
 }
 
 SemanticSelectionRangeResult SemanticEngine::selectionRangesAt(std::string_view uri,
                                                                int line,
                                                                int character) const {
     const auto lookup = lookupAt(uri, line, character);
-    SemanticSelectionRangeResult result{.generation = lookup.generation,
-                                        .messages = lookup.messages,
-                                        .unresolved = lookup.unresolved};
-    if (lookup.unresolved) {
-        return result;
-    }
-
     const auto document_uri = withoutTrailingSlash(normalizeFileUri(uri));
-    std::vector<ParseRange> ranges;
-    ranges.push_back(lookup.query_location.range);
     const auto* data = snapshotData();
-    if (data != nullptr) {
-        const auto ranges_it = data->selection_ranges_by_uri.find(document_uri);
-        if (ranges_it != data->selection_ranges_by_uri.end()) {
-            for (const auto& candidate : ranges_it->second) {
-                if (parseRangeContainsPosition(candidate, line, character) &&
-                    rangeContainsRange(candidate, lookup.query_location.range)) {
-                    ranges.push_back(candidate);
-                }
-            }
-        }
-    }
     const auto document_it = documents_.find(document_uri);
-    if (document_it != documents_.end()) {
-        if (const auto line_range = lineRangeAtPosition(document_it->second.text, line, character)) {
-            if (rangeContainsRange(*line_range, lookup.query_location.range)) {
-                ranges.push_back(*line_range);
-            }
-        }
-    }
-
-    std::sort(ranges.begin(), ranges.end(), [](const ParseRange& lhs, const ParseRange& rhs) {
-        if (lhs.start_line != rhs.start_line) {
-            return lhs.start_line > rhs.start_line;
-        }
-        if (lhs.start_character != rhs.start_character) {
-            return lhs.start_character > rhs.start_character;
-        }
-        if (lhs.end_line != rhs.end_line) {
-            return lhs.end_line < rhs.end_line;
-        }
-        return lhs.end_character < rhs.end_character;
-    });
-    ranges.erase(std::unique(ranges.begin(), ranges.end(), [](const ParseRange& lhs,
-                                                             const ParseRange& rhs) {
-                     return lhs.start_line == rhs.start_line &&
-                            lhs.start_character == rhs.start_character &&
-                            lhs.end_line == rhs.end_line &&
-                            lhs.end_character == rhs.end_character;
-                 }),
-                 ranges.end());
-
-    std::vector<ParseRange> chain;
-    for (const auto& candidate : ranges) {
-        if (chain.empty() || rangeContainsRange(candidate, chain.back())) {
-            chain.push_back(candidate);
-        }
-    }
-
-    for (size_t index = 0; index < chain.size(); ++index) {
-        const auto parent = index + 1 < chain.size()
-                                ? std::optional<size_t>{index + 1}
-                                : std::optional<size_t>{};
-        result.ranges.push_back(SemanticSelectionRange{.range = chain[index], .parent = parent});
-    }
-    return result;
+    auto context = navigationContextFor(data,
+                                        snapshot(),
+                                        document_uri,
+                                        document_it == documents_.end() ? nullptr : &document_it->second.text);
+    return semantic::selectionRangesAt(context, lookup, line, character);
 }
 
 SemanticModuleHierarchyResult SemanticEngine::moduleHierarchy(std::optional<std::string_view> module_name,
@@ -2799,115 +2107,14 @@ SemanticCodeActionResult SemanticEngine::codeActionsAt(std::string_view uri, Par
         return value;
     };
     const auto* data = snapshotData();
-    if (data == nullptr) {
-        result.unresolved = true;
-        result.messages.push_back("AST-backed SemanticEngine snapshot is unavailable");
-        return finish(std::move(result));
-    }
-
-    const auto document_it = documents_.find(document_uri);
-    if (document_it == documents_.end()) {
-        result.unresolved = true;
-        result.messages.push_back("document is not indexed in the AST snapshot");
-        return finish(std::move(result));
-    }
-    const auto& document = document_it->second;
-    const auto insert_range = endOfTextRange(document.text);
-
-    CompilationService compilation_service;
-    for (const auto& include : compilation_service.includeDirectives(document.text)) {
-        if (!rangesIntersect(include.range, range) ||
-            resolveIncludeTarget(workspace_root_uri_, document_uri, include.target).has_value()) {
-            continue;
-        }
-        const auto target = proposedIncludeTarget(workspace_root_uri_, document_uri, include.target);
-        if (!target.has_value()) {
-            continue;
-        }
-
-        result.actions.push_back(SemanticCodeAction{
-            .title = "Create include file '" + include.target + "'",
-            .kind = "quickfix",
-            .is_preferred = true,
-            .diagnostics = {SemanticDiagnosticData{.code = std::string(kUnknownIncludeDiagnosticCode),
-                                                   .message = unknownIncludeMessage(include.target),
-                                                   .range = include.range,
-                                                   .severity = 1}},
-            .create_files = {SemanticCodeActionCreateFile{.uri = pathToFileUri(*target),
-                                                          .ignore_if_exists = true}}});
-    }
-
-    const auto modules = compilation_service.moduleDefinitions(document.text, document_uri);
-    for (const auto& module : modules) {
-        for (const auto& instance : module.instances) {
-            if (!rangesIntersect(instance.module_selection_range, range) ||
-                data->modules_by_name.contains(instance.module_name) ||
-                !isValidIdentifier(instance.module_name)) {
-                continue;
-            }
-            result.actions.push_back(SemanticCodeAction{
-                .title = "Create stub module '" + instance.module_name + "'",
-                .kind = "quickfix",
-                .diagnostics = {SemanticDiagnosticData{.code = std::string(kUnresolvedModuleDiagnosticCode),
-                                                       .message = unresolvedModuleMessage(instance.module_name),
-                                                       .range = instance.module_selection_range,
-                                                       .severity = 1}},
-                .edits = {SemanticCodeActionEdit{.uri = document_uri,
-                                                 .range = insert_range,
-                                                 .new_text = moduleStubInsertionText(document.text,
-                                                                                     instance.module_name)}}});
-        }
-    }
-
-    for (const auto& schematic : compilation_service.moduleSchematics(document.text, document_uri)) {
-        for (const auto& cell : schematic.cells) {
-            if (cell.kind != "module" || !rangesIntersect(cell.range, range)) {
-                continue;
-            }
-            const auto module_it = data->modules_by_name.find(cell.type);
-            if (module_it == data->modules_by_name.end()) {
-                continue;
-            }
-            const auto missing_ports = missingPorts(cell, module_it->second);
-            if (missing_ports.empty()) {
-                continue;
-            }
-            const auto insertion_range = instancePortInsertionRange(document.text, cell);
-            if (!insertion_range.has_value()) {
-                continue;
-            }
-            result.actions.push_back(SemanticCodeAction{
-                .title = "Add missing port connections to '" + cell.name + "'",
-                .kind = "quickfix",
-                .edits = {SemanticCodeActionEdit{.uri = document_uri,
-                                                 .range = *insertion_range,
-                                                 .new_text = missingPortConnectionText(missing_ports,
-                                                                                       !cell.connections.empty())}}});
-        }
-    }
-
-    std::set<std::string> emitted_type_names;
-    for (const auto& diagnostic : diagnosticsFor(document_uri)) {
-        if (diagnostic.code != kUnresolvedTypeDiagnosticCode || !rangesIntersect(diagnostic.range, range)) {
-            continue;
-        }
-        const auto type_name = textForParseRange(document.text, diagnostic.range);
-        if (!type_name.has_value() || !isValidIdentifier(*type_name) ||
-            !emitted_type_names.insert(*type_name).second) {
-            continue;
-        }
-        result.actions.push_back(SemanticCodeAction{
-            .title = "Create typedef '" + *type_name + "'",
-            .kind = "quickfix",
-            .diagnostics = {SemanticDiagnosticData{.code = diagnostic.code,
-                                                   .message = diagnostic.message,
-                                                   .range = diagnostic.range,
-                                                   .severity = diagnostic.severity}},
-            .edits = {SemanticCodeActionEdit{.uri = document_uri,
-                                             .range = insert_range,
-                                             .new_text = typedefSkeletonInsertionText(document.text,
-                                                                                     *type_name)}}});
-    }
+    auto context = codeActionContextFor(data,
+                                        current_snapshot,
+                                        document_uri,
+                                        range,
+                                        documents_,
+                                        workspace_root_uri_,
+                                        diagnosticsFor(document_uri));
+    result = semantic::codeActionsAt(context);
 
     return finish(std::move(result));
 }

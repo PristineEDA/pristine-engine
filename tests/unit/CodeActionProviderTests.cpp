@@ -1,0 +1,92 @@
+#include "../../src/analysis/semantic/CodeActionProvider.h"
+
+#include <catch2/catch_test_macros.hpp>
+
+#include <algorithm>
+
+namespace pristine::analysis::semantic {
+namespace {
+
+ParseRange rangeAt(int line, int start, int end) {
+    return ParseRange{.start_line = line,
+                      .start_character = start,
+                      .end_line = line,
+                      .end_character = end};
+}
+
+} // namespace
+
+TEST_CASE("CodeActionProvider creates include, module, port, and typedef fixes",
+          "[analysis][semantic][code-action-provider]") {
+    constexpr std::string_view uri = "file:///workspace/rtl/top.sv";
+    const auto document_text = "`include \"missing.svh\"\n"
+                               "module top;\n"
+                               "  child u_child(.clk(clk));\n"
+                               "  missing_child u_missing();\n"
+                               "  missing_t value;\n"
+                               "endmodule\n";
+    CodeActionContext context{
+        .generation = 9,
+        .snapshot_available = true,
+        .workspace_root_uri = "file:///workspace",
+        .document = SemanticEngineDocument{.uri = std::string(uri), .text = document_text},
+        .range = ParseRange{.start_line = 0,
+                            .start_character = 0,
+                            .end_line = 4,
+                            .end_character = 17},
+        .modules_by_name = {{"child",
+                             ModuleDefinition{.name = "child",
+                                              .kind = "module",
+                                              .port_details = {SchematicPort{.name = "clk",
+                                                                             .direction = "input",
+                                                                             .width_text = "logic"},
+                                                               SchematicPort{.name = "rst_n",
+                                                                             .direction = "output",
+                                                                             .width_text = "logic"},
+                                                               SchematicPort{.name = "data",
+                                                                             .direction = "input",
+                                                                             .width_text = "logic"}}}}},
+        .diagnostics = {SemanticEngineDiagnostic{.uri = std::string(uri),
+                                                 .code = "unresolvedType",
+                                                 .message = "Type 'missing_t' could not be resolved.",
+                                                 .range = rangeAt(4, 2, 11),
+                                                 .severity = 1}}};
+
+    const auto result = codeActionsAt(context);
+
+    REQUIRE_FALSE(result.unresolved);
+    CHECK(result.generation == 9);
+    CHECK(std::any_of(result.actions.begin(), result.actions.end(), [](const SemanticCodeAction& action) {
+        return action.title == "Create include file 'missing.svh'" &&
+               action.create_files.size() == 1 &&
+               action.create_files.front().uri == "file:///workspace/rtl/missing.svh";
+    }));
+    CHECK(std::any_of(result.actions.begin(), result.actions.end(), [](const SemanticCodeAction& action) {
+        return action.title == "Create stub module 'missing_child'" &&
+               action.edits.size() == 1 &&
+               action.edits.front().new_text.find("module missing_child;") != std::string::npos;
+    }));
+    CHECK(std::any_of(result.actions.begin(), result.actions.end(), [](const SemanticCodeAction& action) {
+        return action.title == "Add missing port connections to 'u_child'" &&
+               action.edits.size() == 1 &&
+               action.edits.front().new_text == ", .rst_n(rst_n), .data(data)";
+    }));
+    CHECK(std::any_of(result.actions.begin(), result.actions.end(), [](const SemanticCodeAction& action) {
+        return action.title == "Create typedef 'missing_t'" &&
+               action.edits.size() == 1 &&
+               action.edits.front().new_text.find("typedef logic missing_t;") != std::string::npos;
+    }));
+}
+
+TEST_CASE("CodeActionProvider reports unavailable snapshot",
+          "[analysis][semantic][code-action-provider]") {
+    const CodeActionContext context{.generation = 5, .snapshot_available = false};
+
+    const auto result = codeActionsAt(context);
+
+    CHECK(result.generation == 5);
+    CHECK(result.unresolved);
+    REQUIRE_FALSE(result.messages.empty());
+}
+
+} // namespace pristine::analysis::semantic

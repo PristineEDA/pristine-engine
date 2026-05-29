@@ -1,11 +1,14 @@
 add_executable(
 	pristine_unit_tests
 	unit/AstIndexTests.cpp
+	unit/CodeActionProviderTests.cpp
 	unit/CompletionProviderTests.cpp
 	unit/CompilationServiceTests.cpp
+	unit/DiagnosticProviderTests.cpp
 	unit/DesignGraphProviderTests.cpp
 	unit/GoldenSemanticTests.cpp
 	unit/MessageStreamTests.cpp
+	unit/NavigationProviderTests.cpp
 	unit/SemanticEngineTests.cpp
 	unit/SignatureInlayProviderTests.cpp
 	unit/SemanticWorkspaceTests.cpp
