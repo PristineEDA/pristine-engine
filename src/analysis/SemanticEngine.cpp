@@ -1,5 +1,6 @@
 #include "pristine/analysis/SemanticEngine.h"
 
+#include "semantic/DiagnosticProvider.h"
 #include "pristine/analysis/SourceUtil.h"
 
 #include "slang/ast/ASTVisitor.h"
@@ -2235,26 +2236,7 @@ std::vector<SemanticEngineDiagnostic> SemanticEngine::diagnosticsFor(std::string
             appendAmbiguousReferenceDiagnostics(result, *data, document_it->second);
         }
     }
-    std::sort(result.begin(), result.end(), [](const auto& lhs, const auto& rhs) {
-        if (lhs.range.start_line != rhs.range.start_line) {
-            return lhs.range.start_line < rhs.range.start_line;
-        }
-        if (lhs.range.start_character != rhs.range.start_character) {
-            return lhs.range.start_character < rhs.range.start_character;
-        }
-        if (lhs.code != rhs.code) {
-            return lhs.code < rhs.code;
-        }
-        return lhs.message < rhs.message;
-    });
-    result.erase(std::unique(result.begin(), result.end(), [](const auto& lhs, const auto& rhs) {
-                     return lhs.uri == rhs.uri && lhs.code == rhs.code && lhs.message == rhs.message &&
-                            lhs.range.start_line == rhs.range.start_line &&
-                            lhs.range.start_character == rhs.range.start_character &&
-                            lhs.range.end_line == rhs.range.end_line &&
-                            lhs.range.end_character == rhs.range.end_character;
-                 }),
-                 result.end());
+    semantic::sortAndDedupeDiagnostics(result);
     return result;
 }
 
@@ -2707,7 +2689,7 @@ SemanticCompletionResult SemanticEngine::completionsAt(std::string_view uri,
                     return result;
                 }
             }
-            result.messages.push_back("member completion used AST symbol index fallback");
+            result.messages.push_back("member completion used AST-backed member context provider");
             return result;
         }
 

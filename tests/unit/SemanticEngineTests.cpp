@@ -44,6 +44,89 @@ TEST_CASE("SemanticEngine surfaces slang semantic diagnostics",
     }));
 }
 
+TEST_CASE("SemanticEngine owns UX diagnostics formerly produced by workspace metadata",
+          "[analysis][semantic-engine][diagnostics]") {
+    SemanticEngine engine;
+    engine.updateDocument("file:///workspace/pkg_a.sv",
+                          "package pkg_a;\n"
+                          "  typedef logic [7:0] word_t;\n"
+                          "endpackage\n",
+                          SemanticEngineDocumentState{.version = 1});
+    engine.updateDocument("file:///workspace/pkg_b.sv",
+                          "package pkg_b;\n"
+                          "  typedef logic [15:0] word_t;\n"
+                          "endpackage\n",
+                          SemanticEngineDocumentState{.version = 1});
+    engine.updateDocument("file:///workspace/diagnostics.sv",
+                          "module top;\n"
+                          "  logic ready;\n"
+                          "  logic ready;\n"
+                          "  import pkg_a::*;\n"
+                          "  import pkg_b::*;\n"
+                          "  word_t value;\n"
+                          "  missing_t missing;\n"
+                          "  logic [3:0] lhs;\n"
+                          "  logic [7:0] rhs;\n"
+                          "  assign lhs = rhs;\n"
+                          "endmodule\n",
+                          SemanticEngineDocumentState{.version = 1, .is_open = true});
+
+    const auto diagnostics = engine.diagnosticsFor("file:///workspace/diagnostics.sv");
+
+    const auto find_diagnostic = [&](std::string_view code) {
+        return std::find_if(diagnostics.begin(),
+                            diagnostics.end(),
+                            [code](const SemanticEngineDiagnostic& diagnostic) {
+                                return diagnostic.code == code;
+                            });
+    };
+
+    const auto duplicate = find_diagnostic("duplicateSymbol");
+    REQUIRE(duplicate != diagnostics.end());
+    CHECK(duplicate->message == "Duplicate symbol 'ready' in the same scope.");
+    CHECK(duplicate->range.start_line == 2);
+
+    const auto ambiguous = find_diagnostic("ambiguousReference");
+    REQUIRE(ambiguous != diagnostics.end());
+    CHECK(ambiguous->message == "Symbol 'word_t' has 2 possible definitions in scope.");
+    CHECK(ambiguous->severity == 2);
+
+    const auto unresolved_type = find_diagnostic("unresolvedType");
+    REQUIRE(unresolved_type != diagnostics.end());
+    CHECK(unresolved_type->message == "Type 'missing_t' could not be resolved.");
+    CHECK(unresolved_type->range.start_line == 6);
+
+    const auto width_mismatch = find_diagnostic("widthMismatch");
+    REQUIRE(width_mismatch != diagnostics.end());
+    CHECK(width_mismatch->message == "Width mismatch: assigning 8-bit 'rhs' to 4-bit 'lhs'.");
+    CHECK(width_mismatch->severity == 2);
+}
+
+TEST_CASE("SemanticEngine resolves packages and local shadowing without legacy workspace diagnostics",
+          "[analysis][semantic-engine][diagnostics][no-fallback]") {
+    SemanticEngine engine;
+    engine.updateDocument("file:///workspace/defs.sv",
+                          "package defs; endpackage\n",
+                          SemanticEngineDocumentState{.version = 1});
+    engine.updateDocument("file:///workspace/top.sv",
+                          "module top;\n"
+                          "  logic defs;\n"
+                          "  import defs::*;\n"
+                          "  logic flag;\n"
+                          "  if (1) begin : g\n"
+                          "    logic flag;\n"
+                          "    assign flag = flag;\n"
+                          "  end\n"
+                          "endmodule\n",
+                          SemanticEngineDocumentState{.version = 1, .is_open = true});
+
+    const auto diagnostics = engine.diagnosticsFor("file:///workspace/top.sv");
+
+    CHECK(std::none_of(diagnostics.begin(), diagnostics.end(), [](const SemanticEngineDiagnostic& item) {
+        return item.code == "unresolvedPackage" || item.code == "ambiguousReference";
+    }));
+}
+
 TEST_CASE("SemanticEngine refreshes snapshots after document updates",
           "[analysis][semantic-engine]") {
     SemanticEngine engine;

@@ -6,8 +6,7 @@ add_executable(
 	unit/SemanticEngineTests.cpp
 	unit/SemanticWorkspaceTests.cpp
 	unit/SourceUtilTests.cpp
-	unit/ServerLifecycleTests.cpp
-	unit/SymbolIndexTests.cpp)
+	unit/ServerLifecycleTests.cpp)
 target_link_libraries(pristine_unit_tests PRIVATE pristine_core Catch2::Catch2WithMain)
 
 add_test(NAME pristine_unit_tests COMMAND pristine_unit_tests)

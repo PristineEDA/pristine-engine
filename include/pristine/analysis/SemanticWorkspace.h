@@ -1,7 +1,6 @@
 #pragma once
 
 #include "pristine/analysis/SemanticEngine.h"
-#include "pristine/analysis/SymbolIndex.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -12,6 +11,11 @@
 #include <vector>
 
 namespace pristine::analysis {
+
+struct Location {
+    std::string uri;
+    ParseRange range;
+};
 
 enum class SemanticTypeKind {
     Unknown,
@@ -82,13 +86,6 @@ struct SemanticAssignment {
     Location location;
     ParseRange left_range;
     ParseRange right_range;
-};
-
-struct SemanticDiagnostic {
-    std::string code;
-    std::string message;
-    ParseRange range;
-    int severity = 1;
 };
 
 struct SemanticDocument {
@@ -162,7 +159,6 @@ public:
     [[nodiscard]] SemanticHoverResult engineHoverAt(std::string_view uri,
                                                     int line,
                                                     int character) const;
-    [[nodiscard]] std::vector<SemanticDiagnostic> diagnosticsFor(std::string_view uri) const;
     [[nodiscard]] std::vector<SemanticEngineDiagnostic> engineDiagnosticsFor(std::string_view uri) const;
     [[nodiscard]] SemanticConeTrace engineBackwardConeAt(std::string_view uri,
                                                          int line,
