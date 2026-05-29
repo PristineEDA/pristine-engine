@@ -208,6 +208,8 @@ public:
     [[nodiscard]] SemanticCallHierarchyCallsResult engineIncomingCalls(const SemanticCallHierarchyItem& item) const;
     [[nodiscard]] SemanticCallHierarchyCallsResult engineOutgoingCalls(const SemanticCallHierarchyItem& item) const;
     [[nodiscard]] SemanticCodeActionResult engineCodeActionsAt(std::string_view uri, ParseRange range) const;
+    [[nodiscard]] SemanticWorkspaceSymbolResult engineWorkspaceSymbols(std::string_view query,
+                                                                       size_t limit = 1000) const;
     [[nodiscard]] size_t documentCount() const { return documents_.size(); }
 
 private:

@@ -347,6 +347,58 @@ bool startsWithInsensitive(std::string_view prefix, std::string_view candidate) 
     return true;
 }
 
+bool fuzzyMatch(std::string_view query, std::string_view candidate) {
+    if (query.empty()) {
+        return true;
+    }
+
+    auto query_it = query.begin();
+    for (auto candidate_it = candidate.begin();
+         query_it != query.end() && candidate_it != candidate.end(); ++candidate_it) {
+        const auto query_char = static_cast<char>(std::tolower(static_cast<unsigned char>(*query_it)));
+        const auto candidate_char = static_cast<char>(std::tolower(static_cast<unsigned char>(*candidate_it)));
+        if (query_char == candidate_char) {
+            ++query_it;
+        }
+    }
+
+    return query_it == query.end();
+}
+
+int lspSymbolKindForSemanticKind(std::string_view kind) {
+    if (kind == "Package" || kind == "Namespace") {
+        return 4;
+    }
+    if (kind == "ClassType") {
+        return 5;
+    }
+    if (kind == "EnumType") {
+        return 10;
+    }
+    if (kind == "Interface" || kind == "Modport") {
+        return 11;
+    }
+    if (kind == "Subroutine" || kind == "SubroutinePort") {
+        return 12;
+    }
+    if (kind == "Definition") {
+        return 2;
+    }
+    if (kind == "TypeAlias" || kind == "Type") {
+        return 26;
+    }
+    if (kind == "Parameter") {
+        return 14;
+    }
+    if (kind == "EnumValue") {
+        return 22;
+    }
+    if (kind == "Net" || kind == "Variable" || kind == "Field" || kind == "Member") {
+        return 13;
+    }
+    return 0;
+}
+
 std::optional<size_t> completionPrefixStartOffset(std::string_view text,
                                                   int line,
                                                   int character,
@@ -2723,6 +2775,47 @@ SemanticCodeActionResult SemanticEngine::codeActionsAt(std::string_view uri, Par
                                                                                      *type_name)}}});
     }
 
+    return result;
+}
+
+SemanticWorkspaceSymbolResult SemanticEngine::workspaceSymbols(std::string_view query,
+                                                               size_t limit) const {
+    const auto& current_snapshot = snapshot();
+    SemanticWorkspaceSymbolResult result{.generation = current_snapshot.generation};
+    const auto* data = snapshotData();
+    if (data == nullptr) {
+        result.unresolved = true;
+        result.messages.push_back("AST-backed SemanticEngine snapshot is unavailable");
+        return result;
+    }
+
+    std::set<std::string> emitted_ids;
+    for (const auto& [stable_id, indexed_symbol] : data->symbols_by_id) {
+        const auto& identity = indexed_symbol.identity;
+        if (identity.name.empty() || identity.location.uri.empty() ||
+            !fuzzyMatch(query, identity.name) || !emitted_ids.insert(stable_id).second) {
+            continue;
+        }
+        result.symbols.push_back(SemanticWorkspaceSymbol{.name = identity.name,
+                                                         .kind = lspSymbolKindForSemanticKind(identity.kind),
+                                                         .location = identity.location,
+                                                         .selection_range = identity.location.range,
+                                                         .stable_id = stable_id});
+    }
+
+    std::sort(result.symbols.begin(), result.symbols.end(), [](const auto& lhs, const auto& rhs) {
+        if (lhs.name != rhs.name) {
+            return lhs.name < rhs.name;
+        }
+        return locationLess(lhs.location, rhs.location);
+    });
+
+    if (limit > 0 && result.symbols.size() > limit) {
+        result.symbols.resize(limit);
+        result.truncated = true;
+        result.messages.push_back("workspace/symbol results were truncated at " + std::to_string(limit) +
+                                  " entries");
+    }
     return result;
 }
 

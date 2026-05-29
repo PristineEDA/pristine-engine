@@ -150,6 +150,41 @@ TEST_CASE("SemanticEngine exposes first-batch LSP-neutral query contracts",
     }));
 }
 
+TEST_CASE("SemanticEngine owns workspace symbol lookup",
+          "[analysis][semantic-engine][workspace-symbol]") {
+    SemanticEngine engine;
+    engine.updateDocument("file:///workspace/pkg.sv",
+                          "package control_pkg;\n"
+                          "  typedef logic [3:0] nibble_t;\n"
+                          "endpackage\n",
+                          SemanticEngineDocumentState{.version = 1});
+    engine.updateDocument("file:///workspace/top.sv",
+                          "module top;\n"
+                          "  logic ready;\n"
+                          "endmodule\n",
+                          SemanticEngineDocumentState{.version = 1});
+
+    const auto symbols = engine.workspaceSymbols("ct");
+
+    REQUIRE_FALSE(symbols.unresolved);
+    CHECK(std::any_of(symbols.symbols.begin(), symbols.symbols.end(), [](const SemanticWorkspaceSymbol& symbol) {
+        return symbol.name == "control_pkg" && symbol.kind == 4 &&
+               symbol.location.uri == "file:///workspace/pkg.sv";
+    }));
+    CHECK(std::none_of(symbols.symbols.begin(), symbols.symbols.end(), [](const SemanticWorkspaceSymbol& symbol) {
+        return symbol.name == "ready";
+    }));
+
+    const auto type_symbols = engine.workspaceSymbols("nt");
+    CHECK(std::any_of(type_symbols.symbols.begin(), type_symbols.symbols.end(), [](const SemanticWorkspaceSymbol& symbol) {
+        return symbol.name == "nibble_t" && symbol.location.uri == "file:///workspace/pkg.sv";
+    }));
+
+    const auto truncated = engine.workspaceSymbols("", 1);
+    CHECK(truncated.truncated);
+    CHECK(truncated.symbols.size() == 1);
+}
+
 TEST_CASE("SemanticEngine uses AST symbol identity to avoid same-name false references",
           "[analysis][semantic-engine][ast-identity]") {
     SemanticEngine engine;

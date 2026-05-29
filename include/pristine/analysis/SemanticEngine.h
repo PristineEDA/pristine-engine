@@ -313,6 +313,22 @@ struct SemanticCodeActionResult {
     bool truncated = false;
 };
 
+struct SemanticWorkspaceSymbol {
+    std::string name;
+    int kind = 0;
+    SemanticLocation location;
+    ParseRange selection_range;
+    std::string stable_id;
+};
+
+struct SemanticWorkspaceSymbolResult {
+    std::uint64_t generation = 0;
+    std::vector<SemanticWorkspaceSymbol> symbols;
+    std::vector<std::string> messages;
+    bool unresolved = false;
+    bool truncated = false;
+};
+
 struct SemanticEngineDocumentState {
     int version = -1;
     bool is_open = false;
@@ -419,6 +435,8 @@ public:
                                                    int line,
                                                    int character) const;
     [[nodiscard]] SemanticCodeActionResult codeActionsAt(std::string_view uri, ParseRange range) const;
+    [[nodiscard]] SemanticWorkspaceSymbolResult workspaceSymbols(std::string_view query,
+                                                                 size_t limit = 1000) const;
 
 private:
     struct SnapshotData;

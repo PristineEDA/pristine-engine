@@ -965,6 +965,11 @@ SemanticCodeActionResult SemanticWorkspace::engineCodeActionsAt(std::string_view
     return semantic_engine_.codeActionsAt(uri, range);
 }
 
+SemanticWorkspaceSymbolResult SemanticWorkspace::engineWorkspaceSymbols(std::string_view query,
+                                                                        size_t limit) const {
+    return semantic_engine_.workspaceSymbols(query, limit);
+}
+
 std::optional<SemanticSymbol> SemanticWorkspace::symbolById(std::string_view symbol_id) const {
     for (const auto& document_entry : documents_) {
         for (const auto& symbol : document_entry.second.symbols) {

@@ -849,64 +849,11 @@ bool parseRangeContainsPosition(const analysis::ParseRange& range, const lsp::Po
            comparePosition(position.line, position.character, range.end_line, range.end_character) < 0;
 }
 
-bool sameParseRange(const analysis::ParseRange& lhs, const analysis::ParseRange& rhs) {
-    return lhs.start_line == rhs.start_line && lhs.start_character == rhs.start_character &&
-           lhs.end_line == rhs.end_line && lhs.end_character == rhs.end_character;
-}
-
-void appendDistinctRange(std::vector<analysis::ParseRange>& ranges, const analysis::ParseRange& range) {
-    if (std::none_of(ranges.begin(), ranges.end(), [&](const analysis::ParseRange& existing) {
-            return sameParseRange(existing, range);
-        })) {
-        ranges.push_back(range);
-    }
-}
-
 analysis::ParseRange pointRange(const lsp::Position& position) {
     return analysis::ParseRange{.start_line = position.line,
                                 .start_character = position.character,
                                 .end_line = position.line,
                                 .end_character = position.character};
-}
-
-std::optional<analysis::ParseRange> lineRangeAtPosition(std::string_view text, const lsp::Position& position) {
-    if (position.line < 0) {
-        return std::nullopt;
-    }
-
-    int line = 0;
-    size_t line_start = 0;
-    for (size_t offset = 0; offset < text.size() && line < position.line; ++offset) {
-        if (text[offset] == '\n') {
-            ++line;
-            line_start = offset + 1;
-        }
-    }
-    if (line != position.line || line_start > text.size()) {
-        return std::nullopt;
-    }
-
-    size_t line_end = line_start;
-    while (line_end < text.size() && text[line_end] != '\n' && text[line_end] != '\r') {
-        ++line_end;
-    }
-
-    size_t trimmed_start = line_start;
-    while (trimmed_start < line_end && (text[trimmed_start] == ' ' || text[trimmed_start] == '\t')) {
-        ++trimmed_start;
-    }
-    size_t trimmed_end = line_end;
-    while (trimmed_end > trimmed_start && (text[trimmed_end - 1] == ' ' || text[trimmed_end - 1] == '\t')) {
-        --trimmed_end;
-    }
-    if (trimmed_start == trimmed_end) {
-        return std::nullopt;
-    }
-
-    return analysis::ParseRange{.start_line = position.line,
-                                .start_character = static_cast<int>(trimmed_start - line_start),
-                                .end_line = position.line,
-                                .end_character = static_cast<int>(trimmed_end - line_start)};
 }
 
 std::optional<size_t> offsetAtPosition(std::string_view text, const lsp::Position& position) {
@@ -1187,25 +1134,6 @@ jsonrpc::Json toSignatureHelpJson(const analysis::SemanticSignatureHelpResult& h
                          {"activeParameter", bounded_parameter}};
 }
 
-void collectSelectionSymbolRanges(std::vector<analysis::ParseRange>& ranges,
-                                  const std::vector<analysis::DocumentSymbol>& symbols,
-                                  const lsp::Position& position) {
-    for (const auto& symbol : symbols) {
-        if (!parseRangeContainsPosition(symbol.range, position) &&
-            !parseRangeContainsPosition(symbol.selection_range, position)) {
-            continue;
-        }
-
-        collectSelectionSymbolRanges(ranges, symbol.children, position);
-        if (parseRangeContainsPosition(symbol.selection_range, position)) {
-            appendDistinctRange(ranges, symbol.selection_range);
-        }
-        if (parseRangeContainsPosition(symbol.range, position)) {
-            appendDistinctRange(ranges, symbol.range);
-        }
-    }
-}
-
 jsonrpc::Json toSelectionRangeJson(const std::vector<analysis::ParseRange>& ranges) {
     jsonrpc::Json current;
     for (auto range_it = ranges.rbegin(); range_it != ranges.rend(); ++range_it) {
@@ -1264,35 +1192,6 @@ jsonrpc::Json toCodeActionJson(const analysis::SemanticCodeAction& action,
         item["edit"] = jsonrpc::Json{{"changes", std::move(changes)}};
     }
     return item;
-}
-
-bool hasStructuredSelectionParent(const std::vector<analysis::SemanticSelectionRange>& ranges) {
-    if (ranges.empty() || !ranges.front().parent.has_value() || *ranges.front().parent >= ranges.size()) {
-        return false;
-    }
-    const auto& child = ranges.front().range;
-    const auto& parent = ranges[*ranges.front().parent].range;
-    return parent.start_line != child.start_line || parent.start_character != 0;
-}
-
-jsonrpc::Json selectionRangeForPosition(const analysis::CompilationService& compilation_service,
-                                        const document::TextDocument& document,
-                                        const lsp::Position& position) {
-    std::vector<analysis::ParseRange> ranges;
-    if (const auto identifier = compilation_service.identifierAt(document.text, position.line,
-                                                                 position.character)) {
-        appendDistinctRange(ranges, identifier->range);
-    }
-    if (const auto line_range = lineRangeAtPosition(document.text, position)) {
-        appendDistinctRange(ranges, *line_range);
-    }
-    collectSelectionSymbolRanges(ranges,
-                                 compilation_service.documentSymbols(document.text, document.uri),
-                                 position);
-    if (ranges.empty()) {
-        ranges.push_back(pointRange(position));
-    }
-    return toSelectionRangeJson(ranges);
 }
 
 std::optional<fs::path> resolveIncludeTarget(const workspace::WorkspaceManager& workspace_manager,
@@ -2219,11 +2118,11 @@ jsonrpc::Json ServerSession::handleSelectionRange(const jsonrpc::Json& params) {
         const auto engine_selection = semantic_workspace_.engineSelectionRangesAt(document->uri,
                                                                                   position.line,
                                                                                   position.character);
-        if (!engine_selection.unresolved && hasStructuredSelectionParent(engine_selection.ranges)) {
+        if (!engine_selection.unresolved && !engine_selection.ranges.empty()) {
             result.push_back(toSelectionRangeJson(engine_selection.ranges, 0));
             continue;
         }
-        result.push_back(selectionRangeForPosition(compilation_service_, *document, position));
+        result.push_back(toSelectionRangeJson(std::vector<analysis::ParseRange>{pointRange(position)}));
     }
     return result;
 }
@@ -2328,7 +2227,8 @@ jsonrpc::Json ServerSession::handleWorkspaceSymbol(const jsonrpc::Json& params) 
 
     const auto workspace_symbol = lsp::parseWorkspaceSymbolParams(params);
     jsonrpc::Json result = jsonrpc::Json::array();
-    for (const auto& symbol : symbol_index_.workspaceSymbols(workspace_symbol.query)) {
+    const auto symbols = semantic_workspace_.engineWorkspaceSymbols(workspace_symbol.query);
+    for (const auto& symbol : symbols.symbols) {
         result.push_back(jsonrpc::Json{{"name", symbol.name},
                                        {"kind", symbol.kind},
                                        {"location", toLocationJson(symbol.location)}});

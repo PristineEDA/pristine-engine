@@ -271,17 +271,31 @@ std::optional<ParseRange> lineRangeAtPosition(std::string_view text, int line, i
         ++line_end;
     }
 
+    size_t trimmed_start = line_start;
+    while (trimmed_start < line_end &&
+           (text[trimmed_start] == ' ' || text[trimmed_start] == '\t')) {
+        ++trimmed_start;
+    }
+    size_t trimmed_end = line_end;
+    while (trimmed_end > trimmed_start &&
+           (text[trimmed_end - 1] == ' ' || text[trimmed_end - 1] == '\t')) {
+        --trimmed_end;
+    }
+    if (trimmed_start == trimmed_end) {
+        return std::nullopt;
+    }
+
     const auto end_character = [&]() -> int {
         try {
-            return static_cast<int>(text::utf16UnitsForUtf8Prefix(text.substr(line_start, line_end - line_start),
-                                                                  line_end - line_start));
+            return static_cast<int>(text::utf16UnitsForUtf8Prefix(text.substr(line_start, trimmed_end - line_start),
+                                                                  trimmed_end - line_start));
         }
         catch (const std::runtime_error&) {
             return character;
         }
     }();
     return ParseRange{.start_line = line,
-                      .start_character = 0,
+                      .start_character = static_cast<int>(trimmed_start - line_start),
                       .end_line = line,
                       .end_character = end_character};
 }
