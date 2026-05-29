@@ -87,6 +87,15 @@ int main() {
         const auto cone = engine.backwardConeAt(target_uri, 1, 10);
         const auto end_cone = Clock::now();
 
+        const auto start_code_action = Clock::now();
+        const auto code_actions = engine.codeActionsAt(
+            target_uri,
+            pristine::analysis::ParseRange{.start_line = 0,
+                                           .start_character = 0,
+                                           .end_line = 4,
+                                           .end_character = 0});
+        const auto end_code_action = Clock::now();
+
         if (!first_baseline) {
             std::cout << ",";
         }
@@ -107,6 +116,7 @@ int main() {
                   << "\"moduleHierarchyMicros\":" << elapsedMicros(start_hierarchy, end_hierarchy) << ","
                   << "\"schematicMicros\":" << elapsedMicros(start_schematic, end_schematic) << ","
                   << "\"backwardConeMicros\":" << elapsedMicros(start_cone, end_cone) << ","
+                  << "\"codeActionMicros\":" << elapsedMicros(start_code_action, end_code_action) << ","
                   << "\"referenceCount\":" << references.locations.size() << ","
                   << "\"completionCount\":" << completion.items.size() << ","
                   << "\"inlayHintCount\":" << inlay.hints.size() << ","
@@ -114,16 +124,18 @@ int main() {
                   << "\"moduleHierarchyRootCount\":" << hierarchy.roots.size() << ","
                   << "\"schematicModuleCount\":" << schematic.modules.size() << ","
                   << "\"backwardConeNodeCount\":" << cone.nodes.size() << ","
+                  << "\"codeActionCount\":" << code_actions.actions.size() << ","
                   << "\"signatureUnresolved\":" << (signature.unresolved ? "true" : "false") << ","
                   << "\"unresolved\":" << (references.unresolved || hover.unresolved || rename.unresolved ||
                                            inlay.unresolved || semantic_tokens.unresolved ||
-                                           hierarchy.unresolved || schematic.unresolved || cone.unresolved
+                                           hierarchy.unresolved || schematic.unresolved || cone.unresolved ||
+                                           code_actions.unresolved
                                                 ? "true"
                                                 : "false")
                   << "}";
         unresolved = unresolved || references.unresolved || hover.unresolved || rename.unresolved ||
                      inlay.unresolved || semantic_tokens.unresolved || hierarchy.unresolved ||
-                     schematic.unresolved || cone.unresolved;
+                     schematic.unresolved || cone.unresolved || code_actions.unresolved;
     }
 
     std::cout << "]}\n";

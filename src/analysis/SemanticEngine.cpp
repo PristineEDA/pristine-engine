@@ -18,6 +18,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <filesystem>
 #include <map>
 #include <memory>
 #include <set>
@@ -27,6 +28,12 @@
 
 namespace pristine::analysis {
 namespace {
+
+namespace fs = std::filesystem;
+
+constexpr std::string_view kUnknownIncludeDiagnosticCode = "unknownInclude";
+constexpr std::string_view kUnresolvedModuleDiagnosticCode = "unresolvedModule";
+constexpr std::string_view kUnresolvedTypeDiagnosticCode = "unresolvedType";
 
 int toLspSeverity(slang::DiagnosticSeverity severity) {
     switch (severity) {
@@ -85,6 +92,49 @@ bool containsPosition(const ParseRange& range, int line, int character) {
         return false;
     }
     return true;
+}
+
+int comparePosition(int lhs_line, int lhs_character, int rhs_line, int rhs_character) {
+    if (lhs_line != rhs_line) {
+        return lhs_line < rhs_line ? -1 : 1;
+    }
+    if (lhs_character == rhs_character) {
+        return 0;
+    }
+    return lhs_character < rhs_character ? -1 : 1;
+}
+
+bool rangesIntersect(const ParseRange& target, const ParseRange& range) {
+    if (range.start_line == range.end_line && range.start_character == range.end_character) {
+        return containsPosition(target, range.start_line, range.start_character);
+    }
+    return comparePosition(target.end_line,
+                           target.end_character,
+                           range.start_line,
+                           range.start_character) > 0 &&
+           comparePosition(range.end_line,
+                           range.end_character,
+                           target.start_line,
+                           target.start_character) > 0;
+}
+
+ParseRange endOfTextRange(std::string_view text) {
+    int line = 0;
+    int character = 0;
+    for (const char value : text) {
+        if (value == '\n') {
+            ++line;
+            character = 0;
+            continue;
+        }
+        if (value != '\r') {
+            ++character;
+        }
+    }
+    return ParseRange{.start_line = line,
+                      .start_character = character,
+                      .end_line = line,
+                      .end_character = character};
 }
 
 bool locationLess(const SemanticLocation& lhs, const SemanticLocation& rhs) {
@@ -219,6 +269,68 @@ bool isIdentifierStart(char value) {
 bool isIdentifierContinue(char value) {
     const auto ch = static_cast<unsigned char>(value);
     return std::isalnum(ch) != 0 || value == '_' || value == '$';
+}
+
+bool isValidIdentifier(std::string_view value) {
+    if (value.empty() || !isIdentifierStart(value.front())) {
+        return false;
+    }
+    return std::all_of(value.begin() + 1, value.end(), isIdentifierContinue);
+}
+
+std::string unknownIncludeMessage(std::string_view target) {
+    return std::string("Include file '") + std::string(target) + "' could not be resolved.";
+}
+
+std::string unresolvedModuleMessage(std::string_view module_name) {
+    return std::string("Module '") + std::string(module_name) + "' could not be resolved.";
+}
+
+std::string unresolvedTypeMessage(std::string_view name) {
+    return std::string("Type '") + std::string(name) + "' could not be resolved.";
+}
+
+bool isBuiltinTypeName(std::string_view name) {
+    return name == "bit" || name == "logic" || name == "reg" || name == "wire" || name == "tri" ||
+           name == "byte" || name == "shortint" || name == "int" || name == "integer" ||
+           name == "longint" || name == "time" || name == "genvar";
+}
+
+bool isTypeDefinitionKind(std::string_view kind) {
+    return kind == "Definition" || kind == "TypeAlias" || kind == "Type" || kind == "ClassType" ||
+           kind == "EnumType" || kind == "Interface" || kind == "Modport";
+}
+
+std::string moduleStubInsertionText(std::string_view text, std::string_view module_name) {
+    std::string insertion = text.empty() || text.back() == '\n' ? "\n" : "\n\n";
+    insertion += "module ";
+    insertion += module_name;
+    insertion += ";\nendmodule\n";
+    return insertion;
+}
+
+std::string typedefSkeletonInsertionText(std::string_view text, std::string_view type_name) {
+    std::string insertion = text.empty() || text.back() == '\n' ? "\n" : "\n\n";
+    insertion += "typedef logic ";
+    insertion += type_name;
+    insertion += ";\n";
+    return insertion;
+}
+
+std::string missingPortConnectionText(const std::vector<SchematicPort>& ports,
+                                      bool has_existing_connections) {
+    std::string text = has_existing_connections ? ", " : "";
+    for (size_t index = 0; index < ports.size(); ++index) {
+        if (index != 0) {
+            text += ", ";
+        }
+        text += ".";
+        text += ports[index].name;
+        text += "(";
+        text += ports[index].name;
+        text += ")";
+    }
+    return text;
 }
 
 bool startsWithInsensitive(std::string_view prefix, std::string_view candidate) {
@@ -385,6 +497,77 @@ std::optional<SemanticLocation> identifierRangeWithin(const SemanticEngineDocume
         }
     }
     return best;
+}
+
+std::optional<ParseRange> userTypeReferenceRange(std::string_view text,
+                                                 const SemanticSymbolMetadata& metadata) {
+    if (metadata.type_name.empty() || metadata.type_name == "enum" ||
+        metadata.type_display_name.find("::") != std::string::npos ||
+        isBuiltinTypeName(metadata.type_name)) {
+        return std::nullopt;
+    }
+
+    CompilationService compilation_service;
+    std::optional<ParseRange> best;
+    for (const auto& identifier : compilation_service.identifiers(text)) {
+        if (identifier.name != metadata.type_name ||
+            identifier.range.start_line != metadata.selection_range.start_line ||
+            identifier.range.end_line != metadata.selection_range.start_line ||
+            identifier.range.end_character > metadata.selection_range.start_character) {
+            continue;
+        }
+        if (!best.has_value() || identifier.range.start_character > best->start_character) {
+            best = identifier.range;
+        }
+    }
+    return best;
+}
+
+ParseRange pointRangeAtUtf8Offset(std::string_view text, size_t target_offset) {
+    int line = 0;
+    int character = 0;
+    const auto clamped_offset = std::min(target_offset, text.size());
+    for (size_t offset = 0; offset < clamped_offset; ++offset) {
+        const char value = text[offset];
+        if (value == '\r') {
+            if (offset + 1 < clamped_offset && text[offset + 1] == '\n') {
+                ++offset;
+            }
+            ++line;
+            character = 0;
+            continue;
+        }
+        if (value == '\n') {
+            ++line;
+            character = 0;
+            continue;
+        }
+        ++character;
+    }
+    return ParseRange{.start_line = line,
+                      .start_character = character,
+                      .end_line = line,
+                      .end_character = character};
+}
+
+std::optional<ParseRange> instancePortInsertionRange(std::string_view text,
+                                                     const SchematicCell& cell) {
+    const auto start_offset = utf8OffsetAtUtf16Position(text,
+                                                        cell.range.start_line,
+                                                        cell.range.start_character);
+    const auto end_offset = utf8OffsetAtUtf16Position(text,
+                                                      cell.range.end_line,
+                                                      cell.range.end_character);
+    if (!start_offset.has_value() || !end_offset.has_value() || *start_offset >= *end_offset) {
+        return std::nullopt;
+    }
+
+    for (size_t offset = *end_offset; offset > *start_offset; --offset) {
+        if (text[offset - 1] == ')') {
+            return pointRangeAtUtf8Offset(text, offset - 1);
+        }
+    }
+    return std::nullopt;
 }
 
 constexpr size_t kMaxSemanticLocations = 2000;
@@ -624,6 +807,44 @@ std::optional<std::string> findSymbolIdByNameAndKind(const SnapshotData& data,
     return result;
 }
 
+bool canHaveUserDefinedTypeReference(const SemanticSymbolMetadata& metadata) {
+    return metadata.kind == 13 || metadata.kind == 14;
+}
+
+template<typename SnapshotData>
+bool hasTypeDefinitionSymbol(const SnapshotData& data, std::string_view name) {
+    return std::any_of(data.symbols_by_id.begin(), data.symbols_by_id.end(), [&](const auto& entry) {
+        const auto& symbol = entry.second.identity;
+        return symbol.name == name && isTypeDefinitionKind(symbol.kind);
+    });
+}
+
+template<typename SnapshotData>
+void appendUnresolvedTypeDiagnostics(std::vector<SemanticEngineDiagnostic>& result,
+                                     const SnapshotData& data,
+                                     const SemanticEngineDocument& document) {
+    CompilationService compilation_service;
+    std::set<std::pair<int, int>> reported_type_ranges;
+    for (const auto& metadata : compilation_service.semanticSymbolMetadata(document.text, document.uri)) {
+        if (!canHaveUserDefinedTypeReference(metadata)) {
+            continue;
+        }
+        const auto type_range = userTypeReferenceRange(document.text, metadata);
+        if (!type_range.has_value() || hasTypeDefinitionSymbol(data, metadata.type_name)) {
+            continue;
+        }
+        const auto range_key = std::pair(type_range->start_line, type_range->start_character);
+        if (!reported_type_ranges.insert(range_key).second) {
+            continue;
+        }
+        result.push_back(SemanticEngineDiagnostic{.uri = document.uri,
+                                                  .code = std::string(kUnresolvedTypeDiagnosticCode),
+                                                  .message = unresolvedTypeMessage(metadata.type_name),
+                                                  .range = *type_range,
+                                                  .severity = 1});
+    }
+}
+
 template<typename SnapshotData>
 void addModuleInstantiationReferences(SnapshotData& data,
                                       const std::unordered_map<std::string, SemanticEngineDocument>& documents) {
@@ -855,6 +1076,51 @@ const SchematicPort* findSchematicPortByIndex(const ModuleSchematic& schematic, 
     return &schematic.ports[static_cast<size_t>(index)];
 }
 
+std::vector<SchematicPort> modulePorts(const ModuleDefinition& module) {
+    if (!module.port_details.empty()) {
+        return module.port_details;
+    }
+
+    std::vector<SchematicPort> ports;
+    for (const auto& port_name : module.ports) {
+        ports.push_back(SchematicPort{.name = port_name,
+                                      .direction = {},
+                                      .width_text = {},
+                                      .range = module.selection_range,
+                                      .selection_range = module.selection_range});
+    }
+    return ports;
+}
+
+std::set<std::string> connectedPortNames(const SchematicCell& cell,
+                                         const std::vector<SchematicPort>& ports) {
+    std::set<std::string> connected;
+    for (const auto& connection : cell.connections) {
+        if (!connection.port_name.empty()) {
+            connected.insert(connection.port_name);
+            continue;
+        }
+        if (connection.port_index >= 0 && static_cast<size_t>(connection.port_index) < ports.size()) {
+            connected.insert(ports[static_cast<size_t>(connection.port_index)].name);
+        }
+    }
+    return connected;
+}
+
+std::vector<SchematicPort> missingPorts(const SchematicCell& cell,
+                                        const ModuleDefinition& module) {
+    const auto ports = modulePorts(module);
+    const auto connected = connectedPortNames(cell, ports);
+    std::vector<SchematicPort> result;
+    for (const auto& port : ports) {
+        if (port.name.empty() || connected.contains(port.name)) {
+            continue;
+        }
+        result.push_back(port);
+    }
+    return result;
+}
+
 bool sameParseRange(const ParseRange& lhs, const ParseRange& rhs) {
     return lhs.start_line == rhs.start_line && lhs.start_character == rhs.start_character &&
            lhs.end_line == rhs.end_line && lhs.end_character == rhs.end_character;
@@ -954,6 +1220,68 @@ std::vector<SemanticSchematicNet> buildSchematicNets(const ModuleSchematic& sche
     return result;
 }
 
+std::optional<fs::path> pathFromFileUri(std::string_view uri) {
+    if (!isFileUri(uri)) {
+        return std::nullopt;
+    }
+    auto path = fileUriToPath(uri);
+    if (path.empty()) {
+        return std::nullopt;
+    }
+#if defined(_WIN32)
+    if (path.size() >= 3 && path[0] == '/' && std::isalpha(static_cast<unsigned char>(path[1])) != 0 &&
+        path[2] == ':') {
+        path.erase(path.begin());
+    }
+#endif
+    return fs::path(path);
+}
+
+std::optional<fs::path> resolveIncludeTarget(std::string_view workspace_root_uri,
+                                             std::string_view document_uri,
+                                             std::string_view target) {
+    const auto target_path = fs::path(std::string(target));
+    std::vector<fs::path> candidates;
+
+    if (target_path.is_absolute()) {
+        candidates.push_back(target_path);
+    }
+    else if (const auto document_path = pathFromFileUri(document_uri)) {
+        candidates.push_back(document_path->parent_path() / target_path);
+    }
+
+    if (!target_path.is_absolute()) {
+        if (const auto workspace_path = pathFromFileUri(workspace_root_uri)) {
+            candidates.push_back(*workspace_path / target_path);
+        }
+    }
+
+    for (const auto& candidate : candidates) {
+        std::error_code error;
+        if (fs::exists(candidate, error) && fs::is_regular_file(candidate, error)) {
+            return fs::weakly_canonical(candidate, error);
+        }
+    }
+
+    return std::nullopt;
+}
+
+std::optional<fs::path> proposedIncludeTarget(std::string_view workspace_root_uri,
+                                              std::string_view document_uri,
+                                              std::string_view target) {
+    const auto target_path = fs::path(std::string(target));
+    if (target_path.is_absolute()) {
+        return target_path;
+    }
+    if (const auto document_path = pathFromFileUri(document_uri)) {
+        return document_path->parent_path() / target_path;
+    }
+    if (const auto workspace_path = pathFromFileUri(workspace_root_uri)) {
+        return *workspace_path / target_path;
+    }
+    return std::nullopt;
+}
+
 } // namespace
 
 SemanticEngine::SemanticEngine() = default;
@@ -974,12 +1302,19 @@ void SemanticEngine::clear() {
 
 void SemanticEngine::setWorkspaceRoot(std::string_view root_uri) {
     workspace_root_uri_ = root_uri.empty() ? std::string{} : withoutTrailingSlash(normalizeFileUri(root_uri));
+    config_.workspace_root_uri = workspace_root_uri_.empty()
+                                     ? std::optional<std::string>{}
+                                     : std::optional<std::string>{workspace_root_uri_};
     snapshot_dirty_ = true;
     ++generation_;
 }
 
 void SemanticEngine::configure(SemanticEngineConfig config) {
     config_ = std::move(config);
+    if (config_.workspace_root_uri.has_value()) {
+        workspace_root_uri_ = withoutTrailingSlash(normalizeFileUri(*config_.workspace_root_uri));
+        config_.workspace_root_uri = workspace_root_uri_;
+    }
     std::sort(config_.top_modules.begin(), config_.top_modules.end());
     config_.top_modules.erase(std::unique(config_.top_modules.begin(), config_.top_modules.end()),
                               config_.top_modules.end());
@@ -1092,10 +1427,16 @@ const SemanticEngineSnapshot& SemanticEngine::snapshot() const {
 
 std::vector<SemanticEngineDiagnostic> SemanticEngine::diagnosticsFor(std::string_view uri) const {
     const auto document_uri = withoutTrailingSlash(normalizeFileUri(uri));
+    const auto& current_snapshot = snapshot();
     std::vector<SemanticEngineDiagnostic> result;
-    for (const auto& diagnostic : snapshot().diagnostics) {
+    for (const auto& diagnostic : current_snapshot.diagnostics) {
         if (diagnostic.uri == document_uri) {
             result.push_back(diagnostic);
+        }
+    }
+    if (const auto data = snapshotData(); data != nullptr) {
+        if (const auto document_it = documents_.find(document_uri); document_it != documents_.end()) {
+            appendUnresolvedTypeDiagnostics(result, *data, document_it->second);
         }
     }
     return result;
@@ -2265,6 +2606,124 @@ SemanticConeTrace SemanticEngine::backwardConeAt(std::string_view uri,
         return locationLess(lhs.location, rhs.location);
     });
     return trace;
+}
+
+SemanticCodeActionResult SemanticEngine::codeActionsAt(std::string_view uri, ParseRange range) const {
+    const auto& current_snapshot = snapshot();
+    const auto document_uri = withoutTrailingSlash(normalizeFileUri(uri));
+    SemanticCodeActionResult result{.generation = current_snapshot.generation};
+    const auto* data = snapshotData();
+    if (data == nullptr) {
+        result.unresolved = true;
+        result.messages.push_back("AST-backed SemanticEngine snapshot is unavailable");
+        return result;
+    }
+
+    const auto document_it = documents_.find(document_uri);
+    if (document_it == documents_.end()) {
+        result.unresolved = true;
+        result.messages.push_back("document is not indexed in the AST snapshot");
+        return result;
+    }
+    const auto& document = document_it->second;
+    const auto insert_range = endOfTextRange(document.text);
+
+    CompilationService compilation_service;
+    for (const auto& include : compilation_service.includeDirectives(document.text)) {
+        if (!rangesIntersect(include.range, range) ||
+            resolveIncludeTarget(workspace_root_uri_, document_uri, include.target).has_value()) {
+            continue;
+        }
+        const auto target = proposedIncludeTarget(workspace_root_uri_, document_uri, include.target);
+        if (!target.has_value()) {
+            continue;
+        }
+
+        result.actions.push_back(SemanticCodeAction{
+            .title = "Create include file '" + include.target + "'",
+            .kind = "quickfix",
+            .is_preferred = true,
+            .diagnostics = {SemanticDiagnosticData{.code = std::string(kUnknownIncludeDiagnosticCode),
+                                                   .message = unknownIncludeMessage(include.target),
+                                                   .range = include.range,
+                                                   .severity = 1}},
+            .create_files = {SemanticCodeActionCreateFile{.uri = pathToFileUri(*target),
+                                                          .ignore_if_exists = true}}});
+    }
+
+    const auto modules = compilation_service.moduleDefinitions(document.text, document_uri);
+    for (const auto& module : modules) {
+        for (const auto& instance : module.instances) {
+            if (!rangesIntersect(instance.module_selection_range, range) ||
+                data->modules_by_name.contains(instance.module_name) ||
+                !isValidIdentifier(instance.module_name)) {
+                continue;
+            }
+            result.actions.push_back(SemanticCodeAction{
+                .title = "Create stub module '" + instance.module_name + "'",
+                .kind = "quickfix",
+                .diagnostics = {SemanticDiagnosticData{.code = std::string(kUnresolvedModuleDiagnosticCode),
+                                                       .message = unresolvedModuleMessage(instance.module_name),
+                                                       .range = instance.module_selection_range,
+                                                       .severity = 1}},
+                .edits = {SemanticCodeActionEdit{.uri = document_uri,
+                                                 .range = insert_range,
+                                                 .new_text = moduleStubInsertionText(document.text,
+                                                                                     instance.module_name)}}});
+        }
+    }
+
+    for (const auto& schematic : compilation_service.moduleSchematics(document.text, document_uri)) {
+        for (const auto& cell : schematic.cells) {
+            if (cell.kind != "module" || !rangesIntersect(cell.range, range)) {
+                continue;
+            }
+            const auto module_it = data->modules_by_name.find(cell.type);
+            if (module_it == data->modules_by_name.end()) {
+                continue;
+            }
+            const auto missing_ports = missingPorts(cell, module_it->second);
+            if (missing_ports.empty()) {
+                continue;
+            }
+            const auto insertion_range = instancePortInsertionRange(document.text, cell);
+            if (!insertion_range.has_value()) {
+                continue;
+            }
+            result.actions.push_back(SemanticCodeAction{
+                .title = "Add missing port connections to '" + cell.name + "'",
+                .kind = "quickfix",
+                .edits = {SemanticCodeActionEdit{.uri = document_uri,
+                                                 .range = *insertion_range,
+                                                 .new_text = missingPortConnectionText(missing_ports,
+                                                                                       !cell.connections.empty())}}});
+        }
+    }
+
+    std::set<std::string> emitted_type_names;
+    for (const auto& diagnostic : diagnosticsFor(document_uri)) {
+        if (diagnostic.code != kUnresolvedTypeDiagnosticCode || !rangesIntersect(diagnostic.range, range)) {
+            continue;
+        }
+        const auto type_name = textForParseRange(document.text, diagnostic.range);
+        if (!type_name.has_value() || !isValidIdentifier(*type_name) ||
+            !emitted_type_names.insert(*type_name).second) {
+            continue;
+        }
+        result.actions.push_back(SemanticCodeAction{
+            .title = "Create typedef '" + *type_name + "'",
+            .kind = "quickfix",
+            .diagnostics = {SemanticDiagnosticData{.code = diagnostic.code,
+                                                   .message = diagnostic.message,
+                                                   .range = diagnostic.range,
+                                                   .severity = diagnostic.severity}},
+            .edits = {SemanticCodeActionEdit{.uri = document_uri,
+                                             .range = insert_range,
+                                             .new_text = typedefSkeletonInsertionText(document.text,
+                                                                                     *type_name)}}});
+    }
+
+    return result;
 }
 
 void SemanticEngine::rebuildDependenciesFor(std::string_view document_uri, std::string_view text) {

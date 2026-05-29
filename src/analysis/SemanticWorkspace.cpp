@@ -961,6 +961,10 @@ SemanticCallHierarchyCallsResult SemanticWorkspace::engineOutgoingCalls(const Se
     return semantic_engine_.outgoingCalls(item);
 }
 
+SemanticCodeActionResult SemanticWorkspace::engineCodeActionsAt(std::string_view uri, ParseRange range) const {
+    return semantic_engine_.codeActionsAt(uri, range);
+}
+
 std::optional<SemanticSymbol> SemanticWorkspace::symbolById(std::string_view symbol_id) const {
     for (const auto& document_entry : documents_) {
         for (const auto& symbol : document_entry.second.symbols) {

@@ -34,6 +34,7 @@ struct SemanticEngineConfig {
     std::optional<std::string> build_pattern;
     bool build_relative_paths = false;
     std::optional<std::string> flags;
+    std::optional<std::string> workspace_root_uri;
     std::vector<std::string> top_modules;
 };
 
@@ -276,6 +277,42 @@ struct SemanticConeTrace {
     bool truncated = false;
 };
 
+struct SemanticDiagnosticData {
+    std::string code;
+    std::string message;
+    ParseRange range;
+    int severity = 1;
+};
+
+struct SemanticCodeActionEdit {
+    std::string uri;
+    ParseRange range;
+    std::string new_text;
+};
+
+struct SemanticCodeActionCreateFile {
+    std::string uri;
+    bool ignore_if_exists = true;
+};
+
+struct SemanticCodeAction {
+    std::string title;
+    std::string kind = "quickfix";
+    bool is_preferred = false;
+    std::vector<SemanticDiagnosticData> diagnostics;
+    std::vector<SemanticCodeActionEdit> edits;
+    std::vector<SemanticCodeActionCreateFile> create_files;
+};
+
+struct SemanticCodeActionResult {
+    std::uint64_t generation = 0;
+    std::vector<SemanticCodeAction> actions;
+    std::vector<std::string> messages;
+    bool unresolved = false;
+    bool partial = false;
+    bool truncated = false;
+};
+
 struct SemanticEngineDocumentState {
     int version = -1;
     bool is_open = false;
@@ -381,6 +418,7 @@ public:
     [[nodiscard]] SemanticConeTrace backwardConeAt(std::string_view uri,
                                                    int line,
                                                    int character) const;
+    [[nodiscard]] SemanticCodeActionResult codeActionsAt(std::string_view uri, ParseRange range) const;
 
 private:
     struct SnapshotData;

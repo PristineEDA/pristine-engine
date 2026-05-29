@@ -43,6 +43,15 @@ jsonrpc::Json toTextEditJson(const analysis::ParseRange& range, std::string_view
     return jsonrpc::Json{{"range", toRangeJson(range)}, {"newText", new_text}};
 }
 
+jsonrpc::Json toDiagnosticJson(const analysis::SemanticDiagnosticData& diagnostic,
+                               std::string_view source) {
+    return jsonrpc::Json{{"range", toRangeJson(diagnostic.range)},
+                         {"severity", diagnostic.severity},
+                         {"code", diagnostic.code},
+                         {"source", std::string(source)},
+                         {"message", diagnostic.message}};
+}
+
 jsonrpc::Json toPositionJson(int line, int character) {
     return jsonrpc::Json{{"line", line}, {"character", character}};
 }
@@ -95,102 +104,6 @@ jsonrpc::Json makeUnresolvedModuleDiagnostic(const analysis::ModuleInstantiation
                               kUnresolvedModuleDiagnosticCode,
                               source,
                               unresolvedModuleMessage(instance.module_name));
-}
-
-analysis::ParseRange endOfTextRange(std::string_view text) {
-    int line = 0;
-    int character = 0;
-    for (const char value : text) {
-        if (value == '\n') {
-            ++line;
-            character = 0;
-            continue;
-        }
-        if (value != '\r') {
-            ++character;
-        }
-    }
-    return analysis::ParseRange{.start_line = line,
-                                .start_character = character,
-                                .end_line = line,
-                                .end_character = character};
-}
-
-std::string moduleStubInsertionText(std::string_view text, std::string_view module_name) {
-    std::string insertion = text.empty() || text.back() == '\n' ? "\n" : "\n\n";
-    insertion += "module ";
-    insertion += module_name;
-    insertion += ";\nendmodule\n";
-    return insertion;
-}
-
-std::string typedefSkeletonInsertionText(std::string_view text, std::string_view type_name) {
-    std::string insertion = text.empty() || text.back() == '\n' ? "\n" : "\n\n";
-    insertion += "typedef logic ";
-    insertion += type_name;
-    insertion += ";\n";
-    return insertion;
-}
-
-std::string missingPortConnectionText(const std::vector<analysis::SchematicPort>& ports,
-                                      bool has_existing_connections) {
-    std::string text = has_existing_connections ? ", " : "";
-    for (size_t index = 0; index < ports.size(); ++index) {
-        if (index != 0) {
-            text += ", ";
-        }
-        text += ".";
-        text += ports[index].name;
-        text += "(";
-        text += ports[index].name;
-        text += ")";
-    }
-    return text;
-}
-
-std::vector<analysis::SchematicPort> modulePorts(const analysis::ModuleDefinition& module) {
-    if (!module.port_details.empty()) {
-        return module.port_details;
-    }
-
-    std::vector<analysis::SchematicPort> ports;
-    for (const auto& port_name : module.ports) {
-        ports.push_back(analysis::SchematicPort{.name = port_name,
-                                                .direction = {},
-                                                .width_text = {},
-                                                .range = module.selection_range,
-                                                .selection_range = module.selection_range});
-    }
-    return ports;
-}
-
-std::set<std::string> connectedPortNames(const analysis::SchematicCell& cell,
-                                         const std::vector<analysis::SchematicPort>& ports) {
-    std::set<std::string> connected;
-    for (const auto& connection : cell.connections) {
-        if (!connection.port_name.empty()) {
-            connected.insert(connection.port_name);
-            continue;
-        }
-        if (connection.port_index >= 0 && static_cast<size_t>(connection.port_index) < ports.size()) {
-            connected.insert(ports[static_cast<size_t>(connection.port_index)].name);
-        }
-    }
-    return connected;
-}
-
-std::vector<analysis::SchematicPort> missingPorts(const analysis::SchematicCell& cell,
-                                                  const analysis::ModuleDefinition& module) {
-    const auto ports = modulePorts(module);
-    const auto connected = connectedPortNames(cell, ports);
-    std::vector<analysis::SchematicPort> result;
-    for (const auto& port : ports) {
-        if (port.name.empty() || connected.contains(port.name)) {
-            continue;
-        }
-        result.push_back(port);
-    }
-    return result;
 }
 
 void appendLabelPart(std::string& label, std::string_view part) {
@@ -931,24 +844,9 @@ bool positionInRange(int line, int character, const lsp::Range& range) {
            comparePosition(line, character, range.end.line, range.end.character) <= 0;
 }
 
-bool isEmptyRange(const lsp::Range& range) {
-    return range.start.line == range.end.line && range.start.character == range.end.character;
-}
-
 bool parseRangeContainsPosition(const analysis::ParseRange& range, const lsp::Position& position) {
     return comparePosition(position.line, position.character, range.start_line, range.start_character) >= 0 &&
            comparePosition(position.line, position.character, range.end_line, range.end_character) < 0;
-}
-
-bool parseRangeIntersects(const analysis::ParseRange& target, const lsp::Range& range) {
-    if (isEmptyRange(range)) {
-        return parseRangeContainsPosition(target, range.start);
-    }
-
-    return comparePosition(target.end_line, target.end_character,
-                           range.start.line, range.start.character) > 0 &&
-           comparePosition(range.end.line, range.end.character,
-                           target.start_line, target.start_character) > 0;
 }
 
 bool sameParseRange(const analysis::ParseRange& lhs, const analysis::ParseRange& rhs) {
@@ -969,33 +867,6 @@ analysis::ParseRange pointRange(const lsp::Position& position) {
                                 .start_character = position.character,
                                 .end_line = position.line,
                                 .end_character = position.character};
-}
-
-analysis::ParseRange pointRangeAtOffset(std::string_view text, size_t target_offset) {
-    int line = 0;
-    int character = 0;
-    const auto clamped_offset = std::min(target_offset, text.size());
-    for (size_t offset = 0; offset < clamped_offset; ++offset) {
-        const char value = text[offset];
-        if (value == '\r') {
-            if (offset + 1 < clamped_offset && text[offset + 1] == '\n') {
-                ++offset;
-            }
-            ++line;
-            character = 0;
-            continue;
-        }
-        if (value == '\n') {
-            ++line;
-            character = 0;
-            continue;
-        }
-        ++character;
-    }
-    return analysis::ParseRange{.start_line = line,
-                                .start_character = character,
-                                .end_line = line,
-                                .end_character = character};
 }
 
 std::optional<analysis::ParseRange> lineRangeAtPosition(std::string_view text, const lsp::Position& position) {
@@ -1075,31 +946,6 @@ std::optional<size_t> offsetAtPosition(std::string_view text, const lsp::Positio
 
 std::optional<size_t> offsetAtParsePosition(std::string_view text, int line, int character) {
     return offsetAtPosition(text, lsp::Position{.line = line, .character = character});
-}
-
-std::optional<std::string> textForParseRange(std::string_view text, const analysis::ParseRange& range) {
-    const auto start_offset = offsetAtParsePosition(text, range.start_line, range.start_character);
-    const auto end_offset = offsetAtParsePosition(text, range.end_line, range.end_character);
-    if (!start_offset.has_value() || !end_offset.has_value() || *start_offset > *end_offset) {
-        return std::nullopt;
-    }
-    return std::string(text.substr(*start_offset, *end_offset - *start_offset));
-}
-
-std::optional<analysis::ParseRange> instancePortInsertionRange(std::string_view text,
-                                                               const analysis::SchematicCell& cell) {
-    const auto start_offset = offsetAtParsePosition(text, cell.range.start_line, cell.range.start_character);
-    const auto end_offset = offsetAtParsePosition(text, cell.range.end_line, cell.range.end_character);
-    if (!start_offset.has_value() || !end_offset.has_value() || *start_offset >= *end_offset) {
-        return std::nullopt;
-    }
-
-    for (size_t offset = *end_offset; offset > *start_offset; --offset) {
-        if (text[offset - 1] == ')') {
-            return pointRangeAtOffset(text, offset - 1);
-        }
-    }
-    return std::nullopt;
 }
 
 std::optional<size_t> completionPrefixStartOffset(std::string_view text,
@@ -1380,6 +1226,44 @@ jsonrpc::Json toSelectionRangeJson(const std::vector<analysis::SemanticSelection
         result["parent"] = toSelectionRangeJson(ranges, *range.parent);
     }
     return result;
+}
+
+jsonrpc::Json toCodeActionJson(const analysis::SemanticCodeAction& action,
+                               std::string_view diagnostic_source) {
+    jsonrpc::Json diagnostics = jsonrpc::Json::array();
+    for (const auto& diagnostic : action.diagnostics) {
+        diagnostics.push_back(toDiagnosticJson(diagnostic, diagnostic_source));
+    }
+
+    jsonrpc::Json item{{"title", action.title},
+                       {"kind", action.kind}};
+    if (action.is_preferred) {
+        item["isPreferred"] = true;
+    }
+    if (!diagnostics.empty()) {
+        item["diagnostics"] = std::move(diagnostics);
+    }
+
+    if (!action.create_files.empty()) {
+        jsonrpc::Json document_changes = jsonrpc::Json::array();
+        for (const auto& create_file : action.create_files) {
+            document_changes.push_back(jsonrpc::Json{{"kind", "create"},
+                                                     {"uri", create_file.uri},
+                                                     {"options", jsonrpc::Json{{"ignoreIfExists",
+                                                                                 create_file.ignore_if_exists}}}});
+        }
+        item["edit"] = jsonrpc::Json{{"documentChanges", std::move(document_changes)}};
+        return item;
+    }
+
+    if (!action.edits.empty()) {
+        jsonrpc::Json changes = jsonrpc::Json::object();
+        for (const auto& edit : action.edits) {
+            changes[edit.uri].push_back(toTextEditJson(edit.range, edit.new_text));
+        }
+        item["edit"] = jsonrpc::Json{{"changes", std::move(changes)}};
+    }
+    return item;
 }
 
 bool hasStructuredSelectionParent(const std::vector<analysis::SemanticSelectionRange>& ranges) {
@@ -1830,6 +1714,11 @@ jsonrpc::Json ServerSession::handleInitialize(const jsonrpc::Json& params) {
                                        .build_pattern = workspace_config.build_pattern,
                                        .build_relative_paths = workspace_config.build_relative_paths,
                                        .flags = workspace_config.flags,
+                                       .workspace_root_uri =
+                                           workspace_manager_.state().root_path.has_value()
+                                               ? std::optional<std::string>{toFileUri(
+                                                     *workspace_manager_.state().root_path)}
+                                               : std::optional<std::string>{},
                                        .top_modules = workspace_config.top_modules});
     if (const auto& root_path = workspace_manager_.state().root_path) {
         semantic_workspace_.setWorkspaceRoot(toFileUri(*root_path));
@@ -2247,136 +2136,15 @@ jsonrpc::Json ServerSession::handleCodeAction(const jsonrpc::Json& params) {
     }
 
     const auto action = lsp::parseCodeActionParams(params);
-    const auto* document = document_store_.find(action.text_document.uri);
-    if (!document) {
-        return jsonrpc::Json::array();
-    }
-
+    const auto actions = semantic_workspace_.engineCodeActionsAt(
+        action.text_document.uri,
+        analysis::ParseRange{.start_line = action.range.start.line,
+                             .start_character = action.range.start.character,
+                             .end_line = action.range.end.line,
+                             .end_character = action.range.end.character});
     jsonrpc::Json result = jsonrpc::Json::array();
-    for (const auto& include : compilation_service_.includeDirectives(document->text)) {
-        if (!parseRangeIntersects(include.range, action.range) ||
-            resolveIncludeTarget(workspace_manager_, document->uri, include.target).has_value()) {
-            continue;
-        }
-
-        const auto target = proposedIncludeTarget(workspace_manager_, document->uri, include.target);
-        if (!target.has_value()) {
-            continue;
-        }
-
-        jsonrpc::Json create_file{{"kind", "create"},
-                                  {"uri", toFileUri(*target)},
-                                  {"options", jsonrpc::Json{{"ignoreIfExists", true}}}};
-        jsonrpc::Json edit{{"documentChanges", jsonrpc::Json::array({std::move(create_file)})}};
-        result.push_back(jsonrpc::Json{
-            {"title", std::string("Create include file '") + include.target + "'"},
-            {"kind", "quickfix"},
-            {"isPreferred", true},
-            {"diagnostics", jsonrpc::Json::array({makeUnknownIncludeDiagnostic(include, server_name_)})},
-            {"edit", std::move(edit)}});
-    }
-
-    try {
-        const auto module_lookup = buildModuleLookup(sortedModuleDefinitions(hierarchy_documents_));
-        const auto insert_range = endOfTextRange(document->text);
-        for (const auto& module : compilation_service_.moduleDefinitions(document->text, document->uri)) {
-            for (const auto& instance : module.instances) {
-                if (!parseRangeIntersects(instance.module_selection_range, action.range) ||
-                    module_lookup.contains(instance.module_name) || !isValidIdentifier(instance.module_name)) {
-                    continue;
-                }
-
-                jsonrpc::Json edit{{"changes",
-                                    jsonrpc::Json{{document->uri,
-                                                   jsonrpc::Json::array({toTextEditJson(
-                                                       insert_range,
-                                                       moduleStubInsertionText(document->text,
-                                                                               instance.module_name))})}}}};
-                result.push_back(jsonrpc::Json{
-                    {"title", std::string("Create stub module '") + instance.module_name + "'"},
-                    {"kind", "quickfix"},
-                    {"diagnostics",
-                     jsonrpc::Json::array({makeUnresolvedModuleDiagnostic(instance, server_name_)})},
-                    {"edit", std::move(edit)}});
-            }
-        }
-    }
-    catch (...) {
-    }
-
-    try {
-        const auto module_lookup = buildModuleLookup(sortedModuleDefinitions(hierarchy_documents_));
-        for (const auto& schematic : compilation_service_.moduleSchematics(document->text, document->uri)) {
-            for (const auto& cell : schematic.cells) {
-                if (cell.kind != "module" || !parseRangeIntersects(cell.range, action.range)) {
-                    continue;
-                }
-
-                const auto module_it = module_lookup.find(cell.type);
-                if (module_it == module_lookup.end()) {
-                    continue;
-                }
-
-                const auto missing_ports = missingPorts(cell, module_it->second.definition);
-                if (missing_ports.empty()) {
-                    continue;
-                }
-
-                const auto insertion_range = instancePortInsertionRange(document->text, cell);
-                if (!insertion_range.has_value()) {
-                    continue;
-                }
-
-                jsonrpc::Json edit{{"changes",
-                                    jsonrpc::Json{{document->uri,
-                                                   jsonrpc::Json::array({toTextEditJson(
-                                                       *insertion_range,
-                                                       missingPortConnectionText(missing_ports,
-                                                                                 !cell.connections.empty()))})}}}};
-                result.push_back(jsonrpc::Json{
-                    {"title", std::string("Add missing port connections to '") + cell.name + "'"},
-                    {"kind", "quickfix"},
-                    {"edit", std::move(edit)}});
-            }
-        }
-    }
-    catch (...) {
-    }
-
-    try {
-        const auto insert_range = endOfTextRange(document->text);
-        std::set<std::string> emitted_type_names;
-        for (const auto& diagnostic : semantic_workspace_.diagnosticsFor(document->uri)) {
-            if (diagnostic.code != kUnresolvedTypeDiagnosticCode ||
-                !parseRangeIntersects(diagnostic.range, action.range)) {
-                continue;
-            }
-
-            const auto type_name = textForParseRange(document->text, diagnostic.range);
-            if (!type_name.has_value() || !isValidIdentifier(*type_name) ||
-                !emitted_type_names.insert(*type_name).second) {
-                continue;
-            }
-
-            jsonrpc::Json edit{{"changes",
-                                jsonrpc::Json{{document->uri,
-                                               jsonrpc::Json::array({toTextEditJson(
-                                                   insert_range,
-                                                   typedefSkeletonInsertionText(document->text,
-                                                                               *type_name))})}}}};
-            result.push_back(jsonrpc::Json{
-                {"title", std::string("Create typedef '") + *type_name + "'"},
-                {"kind", "quickfix"},
-                {"diagnostics",
-                 jsonrpc::Json::array({makeDiagnosticJson(diagnostic.range,
-                                                          diagnostic.severity,
-                                                          diagnostic.code,
-                                                          server_name_,
-                                                          diagnostic.message)})},
-                {"edit", std::move(edit)}});
-        }
-    }
-    catch (...) {
+    for (const auto& item : actions.actions) {
+        result.push_back(toCodeActionJson(item, server_name_));
     }
 
     return result;

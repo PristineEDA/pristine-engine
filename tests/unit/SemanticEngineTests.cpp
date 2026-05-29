@@ -429,4 +429,81 @@ TEST_CASE("SemanticEngine reports partial design results for unresolved modules 
     }));
 }
 
+TEST_CASE("SemanticEngine owns code actions for unresolved modules, ports, and types",
+          "[analysis][semantic-engine][code-action]") {
+    SemanticEngine engine;
+    engine.updateDocument("file:///workspace/child.sv",
+                          "module child(input logic clk, output logic rst_n, input logic data);\n"
+                          "endmodule\n",
+                          SemanticEngineDocumentState{.version = 1});
+    engine.updateDocument("file:///workspace/actions.sv",
+                          "module top;\n"
+                          "  child u_child(.clk(clk));\n"
+                          "  missing_child u_missing();\n"
+                          "  missing_t value;\n"
+                          "endmodule\n",
+                          SemanticEngineDocumentState{.version = 1, .is_open = true});
+
+    const auto port_actions = engine.codeActionsAt(
+        "file:///workspace/actions.sv",
+        ParseRange{.start_line = 1, .start_character = 2, .end_line = 1, .end_character = 25});
+    REQUIRE_FALSE(port_actions.unresolved);
+    REQUIRE(std::any_of(port_actions.actions.begin(), port_actions.actions.end(), [](const SemanticCodeAction& action) {
+        return action.title == "Add missing port connections to 'u_child'" &&
+               action.edits.size() == 1 &&
+               action.edits.front().new_text == ", .rst_n(rst_n), .data(data)";
+    }));
+
+    const auto module_actions = engine.codeActionsAt(
+        "file:///workspace/actions.sv",
+        ParseRange{.start_line = 2, .start_character = 2, .end_line = 2, .end_character = 15});
+    REQUIRE(std::any_of(module_actions.actions.begin(),
+                        module_actions.actions.end(),
+                        [](const SemanticCodeAction& action) {
+                            return action.title == "Create stub module 'missing_child'" &&
+                                   action.diagnostics.size() == 1 &&
+                                   action.diagnostics.front().code == "unresolvedModule" &&
+                                   action.edits.size() == 1 &&
+                                   action.edits.front().new_text.find("module missing_child;") !=
+                                       std::string::npos;
+                        }));
+
+    const auto type_actions = engine.codeActionsAt(
+        "file:///workspace/actions.sv",
+        ParseRange{.start_line = 3, .start_character = 2, .end_line = 3, .end_character = 11});
+    REQUIRE(std::any_of(type_actions.actions.begin(),
+                        type_actions.actions.end(),
+                        [](const SemanticCodeAction& action) {
+                            return action.title == "Create typedef 'missing_t'" &&
+                                   action.diagnostics.size() == 1 &&
+                                   action.diagnostics.front().code == "unresolvedType" &&
+                                   action.edits.size() == 1 &&
+                                   action.edits.front().new_text.find("typedef logic missing_t;") !=
+                                       std::string::npos;
+                        }));
+}
+
+TEST_CASE("SemanticEngine owns include creation code actions",
+          "[analysis][semantic-engine][code-action][include]") {
+    SemanticEngine engine;
+    engine.configure(SemanticEngineConfig{.workspace_root_uri = std::string("file:///workspace")});
+    engine.updateDocument("file:///workspace/rtl/top.sv",
+                          "`include \"missing.svh\"\n"
+                          "module top;\n"
+                          "endmodule\n",
+                          SemanticEngineDocumentState{.version = 1, .is_open = true});
+
+    const auto actions = engine.codeActionsAt(
+        "file:///workspace/rtl/top.sv",
+        ParseRange{.start_line = 0, .start_character = 10, .end_line = 0, .end_character = 21});
+
+    REQUIRE_FALSE(actions.unresolved);
+    REQUIRE(actions.actions.size() == 1);
+    CHECK(actions.actions.front().title == "Create include file 'missing.svh'");
+    REQUIRE(actions.actions.front().diagnostics.size() == 1);
+    CHECK(actions.actions.front().diagnostics.front().code == "unknownInclude");
+    REQUIRE(actions.actions.front().create_files.size() == 1);
+    CHECK(actions.actions.front().create_files.front().uri == "file:///workspace/rtl/missing.svh");
+}
+
 } // namespace pristine::analysis

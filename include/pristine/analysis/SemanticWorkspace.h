@@ -207,6 +207,7 @@ public:
                                                                                 int character) const;
     [[nodiscard]] SemanticCallHierarchyCallsResult engineIncomingCalls(const SemanticCallHierarchyItem& item) const;
     [[nodiscard]] SemanticCallHierarchyCallsResult engineOutgoingCalls(const SemanticCallHierarchyItem& item) const;
+    [[nodiscard]] SemanticCodeActionResult engineCodeActionsAt(std::string_view uri, ParseRange range) const;
     [[nodiscard]] size_t documentCount() const { return documents_.size(); }
 
 private:
