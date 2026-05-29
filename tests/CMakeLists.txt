@@ -2,6 +2,7 @@ add_executable(
 	pristine_unit_tests
 	unit/CompletionProviderTests.cpp
 	unit/CompilationServiceTests.cpp
+	unit/DesignGraphProviderTests.cpp
 	unit/GoldenSemanticTests.cpp
 	unit/MessageStreamTests.cpp
 	unit/SemanticEngineTests.cpp

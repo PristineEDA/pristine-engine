@@ -1,6 +1,7 @@
 #include "pristine/analysis/SemanticEngine.h"
 
 #include "semantic/CompletionProvider.h"
+#include "semantic/DesignGraphProvider.h"
 #include "semantic/DiagnosticProvider.h"
 #include "semantic/QueryCache.h"
 #include "semantic/SignatureInlayProvider.h"
@@ -665,6 +666,32 @@ struct SemanticEngine::SnapshotData {
     std::unordered_map<std::string, std::vector<PackageImport>> package_imports_by_uri;
     std::unordered_map<std::string, std::vector<SemanticSymbolMetadata>> metadata_by_uri;
 };
+
+namespace {
+
+template<typename SnapshotData>
+semantic::DesignGraphContext designGraphContextFor(const SnapshotData* data,
+                                                   const SemanticEngineSnapshot& snapshot,
+                                                   const SemanticEngineConfig& config) {
+    semantic::DesignGraphContext context{.generation = snapshot.generation,
+                                         .snapshot_available = data != nullptr,
+                                         .top_modules = config.top_modules};
+    if (data == nullptr) {
+        return context;
+    }
+    context.modules_by_name = data->modules_by_name;
+    context.module_uris_by_name = data->module_uris_by_name;
+    context.schematics_by_name = data->schematics_by_name;
+    context.schematic_uris_by_name = data->schematic_uris_by_name;
+    context.module_entries.reserve(data->module_entries.size());
+    for (const auto& entry : data->module_entries) {
+        context.module_entries.push_back(semantic::DesignGraphModuleEntry{.uri = entry.uri,
+                                                                          .definition = entry.definition});
+    }
+    return context;
+}
+
+} // namespace
 
 namespace {
 
@@ -2641,104 +2668,8 @@ SemanticModuleHierarchyResult SemanticEngine::moduleHierarchy(std::optional<std:
         return value;
     };
     const auto* data = snapshotData();
-    if (data == nullptr) {
-        result.unresolved = true;
-        result.messages.push_back("AST-backed SemanticEngine snapshot is unavailable");
-        return finish(std::move(result));
-    }
-
-    std::vector<std::string> root_names;
-    if (module_name.has_value()) {
-        root_names.push_back(std::string(*module_name));
-    }
-    else if (!config_.top_modules.empty()) {
-        root_names = config_.top_modules;
-    }
-    else if (const auto inferred = firstUninstantiatedModuleName(data->modules_by_name)) {
-        root_names.push_back(*inferred);
-    }
-
-    if (root_names.empty()) {
-        result.unresolved = true;
-        result.messages.push_back("No module definitions are indexed in the design snapshot.");
-        return finish(std::move(result));
-    }
-
-    const auto build_node = [&](const auto& self,
-                                std::string_view current_name,
-                                const SnapshotData::ModuleInstance* instance,
-                                std::vector<std::string>& stack,
-                                int depth) -> SemanticHierarchyNode {
-        const auto definition_it = data->modules_by_name.find(std::string(current_name));
-        if (definition_it == data->modules_by_name.end()) {
-            result.partial = true;
-            auto node = SemanticHierarchyNode{.module_name = std::string(current_name),
-                                              .kind = "module",
-                                              .unresolved = true};
-            if (instance != nullptr) {
-                node.instance_name = instance->instance_name;
-                node.instance_range = instance->range;
-                node.instance_selection_range = instance->selection_range;
-                node.module_selection_range = instance->module_selection_range;
-            }
-            result.messages.push_back("Unresolved module '" + std::string(current_name) +
-                                      "' in design hierarchy.");
-            return node;
-        }
-
-        const auto& definition = definition_it->second;
-        const auto uri_it = data->module_uris_by_name.find(definition.name);
-        const auto definition_uri = uri_it == data->module_uris_by_name.end()
-                                        ? std::string{}
-                                        : uri_it->second;
-        const auto is_cycle = std::find(stack.begin(), stack.end(), definition.name) != stack.end();
-        auto node = SemanticHierarchyNode{
-            .module_name = definition.name,
-            .kind = definition.kind,
-            .location = SemanticLocation{.uri = definition_uri, .range = definition.range},
-            .selection_range = definition.selection_range,
-            .unresolved = false,
-            .cycle = is_cycle};
-
-        if (instance != nullptr) {
-            node.instance_name = instance->instance_name;
-            node.instance_range = instance->range;
-            node.instance_selection_range = instance->selection_range;
-            node.module_selection_range = instance->module_selection_range;
-        }
-
-        if (is_cycle) {
-            result.partial = true;
-            result.messages.push_back("Cycle detected while expanding module '" + definition.name + "'.");
-            return node;
-        }
-        if (depth >= max_depth) {
-            node.truncated = true;
-            result.truncated = true;
-            result.partial = true;
-            result.messages.push_back("Module hierarchy expansion reached maxDepth.");
-            return node;
-        }
-
-        stack.push_back(definition.name);
-        for (const auto& child_instance : definition.instances) {
-            const auto child = SnapshotData::ModuleInstance{.module_name = child_instance.module_name,
-                                                            .instance_name = child_instance.instance_name,
-                                                            .uri = definition_uri,
-                                                            .range = child_instance.range,
-                                                            .selection_range = child_instance.selection_range,
-                                                            .module_selection_range =
-                                                                child_instance.module_selection_range};
-            node.children.push_back(self(self, child.module_name, &child, stack, depth + 1));
-        }
-        stack.pop_back();
-        return node;
-    };
-
-    for (const auto& root_name : root_names) {
-        std::vector<std::string> stack;
-        result.roots.push_back(build_node(build_node, root_name, nullptr, stack, 0));
-    }
+    auto context = designGraphContextFor(data, current_snapshot, config_);
+    result = semantic::moduleHierarchy(context, module_name, max_depth);
     return finish(std::move(result));
 }
 
@@ -2755,89 +2686,8 @@ SemanticSchematicResult SemanticEngine::schematic(std::optional<std::string_view
         return value;
     };
     const auto* data = snapshotData();
-    if (data == nullptr) {
-        result.unresolved = true;
-        result.messages.push_back("AST-backed SemanticEngine snapshot is unavailable");
-        return finish(std::move(result));
-    }
-
-    std::optional<std::string> root_name;
-    if (module_name.has_value()) {
-        root_name = std::string(*module_name);
-    }
-    else if (!config_.top_modules.empty()) {
-        root_name = config_.top_modules.front();
-    }
-    else {
-        root_name = firstUninstantiatedModuleName(data->modules_by_name);
-        if (!root_name.has_value() && !data->modules_by_name.empty()) {
-            root_name = data->modules_by_name.begin()->first;
-            result.messages.push_back("No uninstantiated top module could be inferred for this workspace.");
-        }
-    }
-
-    if (!root_name.has_value()) {
-        result.unresolved = true;
-        result.messages.push_back("No module definitions are indexed in the design snapshot.");
-        return finish(std::move(result));
-    }
-    result.root_module_id = *root_name;
-
-    std::set<std::string> emitted;
-    std::vector<std::string> stack;
-    const auto collect = [&](const auto& self,
-                             std::string_view current_name,
-                             int depth) -> void {
-        const auto current = std::string(current_name);
-        if (emitted.contains(current)) {
-            return;
-        }
-        const auto schematic_it = data->schematics_by_name.find(current);
-        if (schematic_it == data->schematics_by_name.end()) {
-            result.partial = true;
-            result.messages.push_back("No schematic data found for module '" + current + "'.");
-            return;
-        }
-
-        const auto uri_it = data->schematic_uris_by_name.find(current);
-        const auto schematic_uri = uri_it == data->schematic_uris_by_name.end()
-                                       ? std::string{}
-                                       : uri_it->second;
-        emitted.insert(current);
-        result.modules.push_back(SemanticSchematicModuleView{
-            .module = SemanticSchematicModule{.id = schematic_it->second.name,
-                                              .name = schematic_it->second.name,
-                                              .uri = schematic_uri,
-                                              .range = schematic_it->second.range,
-                                              .selection_range = schematic_it->second.selection_range,
-                                              .ports = schematic_it->second.ports,
-                                              .cells = schematic_it->second.cells},
-            .nets = buildSchematicNets(schematic_it->second, *data)});
-
-        if (depth >= max_depth) {
-            result.truncated = true;
-            result.partial = true;
-            result.messages.push_back("Schematic expansion reached maxDepth.");
-            return;
-        }
-        if (std::find(stack.begin(), stack.end(), current) != stack.end()) {
-            result.partial = true;
-            result.messages.push_back("Cycle detected while expanding schematic module '" + current + "'.");
-            return;
-        }
-
-        const auto definition_it = data->modules_by_name.find(current);
-        if (definition_it == data->modules_by_name.end()) {
-            return;
-        }
-        stack.push_back(current);
-        for (const auto& instance : definition_it->second.instances) {
-            self(self, instance.module_name, depth + 1);
-        }
-        stack.pop_back();
-    };
-
-    collect(collect, *root_name, 0);
+    auto context = designGraphContextFor(data, current_snapshot, config_);
+    result = semantic::schematic(context, module_name, max_depth);
     return finish(std::move(result));
 }
 
@@ -2846,146 +2696,23 @@ SemanticCallHierarchyPrepareResult SemanticEngine::prepareCallHierarchy(std::str
                                                                         int character) const {
     const auto& current_snapshot = snapshot();
     const auto document_uri = withoutTrailingSlash(normalizeFileUri(uri));
-    SemanticCallHierarchyPrepareResult result{.generation = current_snapshot.generation};
     const auto* data = snapshotData();
-    if (data == nullptr) {
-        result.unresolved = true;
-        result.messages.push_back("AST-backed SemanticEngine snapshot is unavailable");
-        return result;
-    }
-
-    const auto append_module = [&](const ModuleDefinition& definition, const std::string& module_uri) {
-        result.items.push_back(SemanticCallHierarchyItem{.name = definition.name,
-                                                         .kind = definition.kind == "interface" ? 11 : 2,
-                                                         .detail = definition.kind,
-                                                         .uri = module_uri,
-                                                         .range = definition.range,
-                                                         .selection_range = definition.selection_range});
-    };
-
-    for (const auto& entry : data->module_entries) {
-        const auto& definition = entry.definition;
-        if (entry.uri != document_uri) {
-            continue;
-        }
-        if (parseRangeContainsPosition(definition.selection_range, line, character)) {
-            append_module(definition, entry.uri);
-            return result;
-        }
-        for (const auto& instance : definition.instances) {
-            if (!parseRangeContainsPosition(instance.module_selection_range, line, character) &&
-                !parseRangeContainsPosition(instance.selection_range, line, character)) {
-                continue;
-            }
-            const auto target_it = data->modules_by_name.find(instance.module_name);
-            if (target_it == data->modules_by_name.end()) {
-                result.unresolved = true;
-                result.messages.push_back("Call hierarchy target module is unresolved.");
-                return result;
-            }
-            const auto target_uri_it = data->module_uris_by_name.find(target_it->first);
-            append_module(target_it->second,
-                          target_uri_it == data->module_uris_by_name.end()
-                              ? std::string{}
-                              : target_uri_it->second);
-            return result;
-        }
-        if (parseRangeContainsPosition(definition.range, line, character)) {
-            append_module(definition, entry.uri);
-            return result;
-        }
-    }
-
-    result.unresolved = true;
-    result.messages.push_back("No design hierarchy item at position.");
-    return result;
+    auto context = designGraphContextFor(data, current_snapshot, config_);
+    return semantic::prepareCallHierarchy(context, document_uri, line, character);
 }
 
 SemanticCallHierarchyCallsResult SemanticEngine::incomingCalls(const SemanticCallHierarchyItem& item) const {
     const auto& current_snapshot = snapshot();
-    SemanticCallHierarchyCallsResult result{.generation = current_snapshot.generation};
     const auto* data = snapshotData();
-    if (data == nullptr) {
-        result.unresolved = true;
-        result.messages.push_back("AST-backed SemanticEngine snapshot is unavailable");
-        return result;
-    }
-
-    const auto target_entry_it = std::find_if(data->module_entries.begin(),
-                                              data->module_entries.end(),
-                                              [&](const SnapshotData::ModuleEntry& entry) {
-                                                  return entry.definition.name == item.name &&
-                                                         entry.uri == item.uri &&
-                                                         sameParseRange(entry.definition.selection_range,
-                                                                        item.selection_range);
-                                              });
-    if (target_entry_it == data->module_entries.end()) {
-        result.unresolved = true;
-        result.messages.push_back("Call hierarchy target module is not indexed.");
-        return result;
-    }
-
-    for (const auto& caller_entry : data->module_entries) {
-        const auto& caller = caller_entry.definition;
-        for (const auto& instance : caller.instances) {
-            if (instance.module_name != target_entry_it->definition.name) {
-                continue;
-            }
-            result.calls.push_back(SemanticCallHierarchyCall{
-                .item = SemanticCallHierarchyItem{.name = caller.name,
-                                                  .kind = caller.kind == "interface" ? 11 : 2,
-                                                  .detail = caller.kind,
-                                                  .uri = caller_entry.uri,
-                                                  .range = caller.range,
-                                                  .selection_range = caller.selection_range},
-                .from_ranges = {instance.module_selection_range}});
-        }
-    }
-    return result;
+    auto context = designGraphContextFor(data, current_snapshot, config_);
+    return semantic::incomingCalls(context, item);
 }
 
 SemanticCallHierarchyCallsResult SemanticEngine::outgoingCalls(const SemanticCallHierarchyItem& item) const {
     const auto& current_snapshot = snapshot();
-    SemanticCallHierarchyCallsResult result{.generation = current_snapshot.generation};
     const auto* data = snapshotData();
-    if (data == nullptr) {
-        result.unresolved = true;
-        result.messages.push_back("AST-backed SemanticEngine snapshot is unavailable");
-        return result;
-    }
-
-    const auto source_entry_it = std::find_if(data->module_entries.begin(),
-                                              data->module_entries.end(),
-                                              [&](const SnapshotData::ModuleEntry& entry) {
-                                                  return entry.definition.name == item.name &&
-                                                         entry.uri == item.uri &&
-                                                         sameParseRange(entry.definition.selection_range,
-                                                                        item.selection_range);
-                                              });
-    if (source_entry_it == data->module_entries.end()) {
-        result.unresolved = true;
-        result.messages.push_back("Call hierarchy source module is not indexed.");
-        return result;
-    }
-
-    for (const auto& instance : source_entry_it->definition.instances) {
-        const auto target_it = data->modules_by_name.find(instance.module_name);
-        if (target_it == data->modules_by_name.end()) {
-            continue;
-        }
-        const auto target_uri_it = data->module_uris_by_name.find(target_it->first);
-        result.calls.push_back(SemanticCallHierarchyCall{
-            .item = SemanticCallHierarchyItem{.name = target_it->second.name,
-                                              .kind = target_it->second.kind == "interface" ? 11 : 2,
-                                              .detail = target_it->second.kind,
-                                              .uri = target_uri_it == data->module_uris_by_name.end()
-                                                         ? std::string{}
-                                                         : target_uri_it->second,
-                                              .range = target_it->second.range,
-                                              .selection_range = target_it->second.selection_range},
-            .from_ranges = {instance.module_selection_range}});
-    }
-    return result;
+    auto context = designGraphContextFor(data, current_snapshot, config_);
+    return semantic::outgoingCalls(context, item);
 }
 
 SemanticConeTrace SemanticEngine::backwardConeAt(std::string_view uri,
