@@ -454,8 +454,8 @@ private:
     std::string workspace_root_uri_;
     SemanticEngineConfig config_;
     std::unordered_map<std::string, SemanticEngineDocument> documents_;
-    std::unordered_map<std::string, std::vector<std::string>> includes_;
-    std::unordered_map<std::string, std::vector<std::string>> reverse_includes_;
+    mutable std::unordered_map<std::string, std::vector<std::string>> includes_;
+    mutable std::unordered_map<std::string, std::vector<std::string>> reverse_includes_;
     mutable std::optional<SemanticEngineSnapshot> snapshot_;
     mutable std::unique_ptr<semantic::SnapshotData> snapshot_data_;
     mutable std::unique_ptr<semantic::QueryCache> query_cache_;

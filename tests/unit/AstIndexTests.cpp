@@ -1,4 +1,5 @@
 #include "../../src/analysis/semantic/AstIndex.h"
+#include "../../src/analysis/semantic/SnapshotBuilder.h"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -110,6 +111,53 @@ TEST_CASE("AstIndex builds provider-facing symbol and reference views",
                       }));
     REQUIRE(view.design_graph_symbol_ranges_by_uri.contains("file:///workspace/top.sv"));
     CHECK(view.design_graph_symbol_ranges_by_uri.at("file:///workspace/top.sv").size() == 2);
+}
+
+TEST_CASE("AstIndex builds AST symbol, reference, and module instance indexes",
+          "[analysis][semantic][ast-index][build]") {
+    SnapshotBuildInput input{.generation = 21,
+                             .documents = {{"file:///workspace/child.sv",
+                                            SemanticEngineDocument{.uri = "file:///workspace/child.sv",
+                                                                   .text = "module child; endmodule\n",
+                                                                   .version = 1}},
+                                           {"file:///workspace/top.sv",
+                                            SemanticEngineDocument{
+                                                .uri = "file:///workspace/top.sv",
+                                                .text = "module top;\n"
+                                                        "  logic ready;\n"
+                                                        "  assign ready = ready;\n"
+                                                        "  child u_child();\n"
+                                                        "endmodule\n",
+                                                .version = 1,
+                                                .is_open = true}}}};
+
+    auto output = SnapshotBuilder{}.build(std::move(input));
+    REQUIRE(output.data != nullptr);
+
+    const auto& data = *output.data;
+    const auto ready_id = symbolIdAtLocation(data, "file:///workspace/top.sv", 1, 9);
+    REQUIRE(ready_id.has_value());
+    bool ready_truncated = false;
+    const auto ready_locations = locationsForSymbol(data, *ready_id, true, 100, ready_truncated);
+    REQUIRE_FALSE(ready_truncated);
+    CHECK(ready_locations.size() == 3);
+
+    const auto child_id = findDefinitionSymbolId(data, "child");
+    REQUIRE(child_id.has_value());
+    REQUIRE(data.symbols_by_id.contains(*child_id));
+    CHECK(data.symbols_by_id.at(*child_id).identity.location.uri == "file:///workspace/child.sv");
+
+    const auto instance = moduleInstanceAt(data, "file:///workspace/top.sv", 3, 4);
+    REQUIRE(instance.has_value());
+    CHECK(instance->module_name == "child");
+    CHECK(instance->instance_name == "u_child");
+    CHECK(instance->target_stable_id == *child_id);
+
+    bool truncated = false;
+    const auto implementations = moduleImplementationLocations(data, "child", 100, truncated);
+    REQUIRE_FALSE(truncated);
+    REQUIRE(implementations.size() == 1);
+    CHECK(implementations.front().uri == "file:///workspace/top.sv");
 }
 
 } // namespace

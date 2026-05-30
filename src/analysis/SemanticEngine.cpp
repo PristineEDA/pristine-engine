@@ -11,19 +11,9 @@
 #include "semantic/SnapshotBuilder.h"
 #include "pristine/analysis/SourceUtil.h"
 
-#include "slang/ast/ASTVisitor.h"
-#include "slang/ast/Compilation.h"
-#include "slang/ast/Expression.h"
-#include "slang/ast/Scope.h"
 #include "slang/ast/Symbol.h"
-#include "slang/ast/symbols/InstanceSymbols.h"
 #include "slang/ast/types/DeclaredType.h"
 #include "slang/ast/types/Type.h"
-#include "slang/diagnostics/DiagnosticEngine.h"
-#include "slang/diagnostics/Diagnostics.h"
-#include "slang/syntax/SyntaxTree.h"
-#include "slang/text/SourceManager.h"
-#include "slang/util/Bag.h"
 
 #include <algorithm>
 #include <cctype>
@@ -31,59 +21,12 @@
 #include <memory>
 #include <set>
 #include <sstream>
-#include <type_traits>
 #include <utility>
 
 namespace pristine::analysis {
 namespace {
 
 constexpr std::string_view kUnresolvedTypeDiagnosticCode = "unresolvedType";
-
-int toLspSeverity(slang::DiagnosticSeverity severity) {
-    switch (severity) {
-        case slang::DiagnosticSeverity::Fatal:
-        case slang::DiagnosticSeverity::Error:
-            return 1;
-        case slang::DiagnosticSeverity::Warning:
-            return 2;
-        case slang::DiagnosticSeverity::Note:
-            return 3;
-        case slang::DiagnosticSeverity::Ignored:
-            return 4;
-    }
-    return 1;
-}
-
-std::string diagnosticUri(const slang::SourceManager& source_manager,
-                          const slang::Diagnostic& diagnostic) {
-    if (!diagnostic.location.valid()) {
-        return {};
-    }
-
-    const auto location = source_manager.getFullyOriginalLoc(diagnostic.location);
-    const auto path = source_manager.getFullPath(location.buffer());
-    if (!path.empty()) {
-        return pathToFileUri(path);
-    }
-
-    const auto file_name = source_manager.getFileName(location);
-    if (file_name.empty()) {
-        return {};
-    }
-    return withoutTrailingSlash(normalizeFileUri(file_name));
-}
-
-slang::Bag makeCompilationOptions() {
-    slang::ast::CompilationOptions compilation_options;
-    compilation_options.flags |= slang::ast::CompilationFlags::LintMode;
-    compilation_options.flags |= slang::ast::CompilationFlags::IgnoreUnknownModules;
-    compilation_options.flags |= slang::ast::CompilationFlags::AllowUseBeforeDeclare;
-    compilation_options.errorLimit = 0;
-
-    slang::Bag options;
-    options.set(compilation_options);
-    return options;
-}
 
 bool containsPosition(const ParseRange& range, int line, int character) {
     if (line < range.start_line || line > range.end_line) {
@@ -120,69 +63,6 @@ bool sameLocation(const SemanticLocation& lhs, const SemanticLocation& rhs) {
            lhs.range.end_line == rhs.range.end_line && lhs.range.end_character == rhs.range.end_character;
 }
 
-std::string symbolKindName(slang::ast::SymbolKind kind) {
-    return std::string(slang::ast::toString(kind));
-}
-
-std::string symbolStableId(const slang::SourceManager& source_manager,
-                           const slang::ast::Symbol& symbol,
-                           const SemanticLocation& location) {
-    std::string path = symbol.getLexicalPath();
-    if (path.empty()) {
-        path = symbol.getHierarchicalPath();
-    }
-    if (path.empty()) {
-        path = std::string(symbol.name);
-    }
-
-    return location.uri + "|" + path + "|" + symbolKindName(symbol.kind) + "|" +
-           std::to_string(location.range.start_line) + ":" +
-           std::to_string(location.range.start_character) + ":" +
-           std::to_string(source_manager.getFullyOriginalLoc(symbol.location).offset());
-}
-
-std::string locationUriForSourceLocation(const slang::SourceManager& source_manager,
-                                         slang::SourceLocation location) {
-    if (!location.valid()) {
-        return {};
-    }
-    const auto original = source_manager.getFullyOriginalLoc(location);
-    const auto path = source_manager.getFullPath(original.buffer());
-    if (!path.empty()) {
-        return pathToFileUri(path);
-    }
-    const auto file_name = source_manager.getFileName(original);
-    return file_name.empty() ? std::string{} : withoutTrailingSlash(normalizeFileUri(file_name));
-}
-
-std::optional<SemanticLocation> locationForSourceRange(const slang::SourceManager& source_manager,
-                                                       slang::SourceRange range) {
-    if (!range.start().valid()) {
-        return std::nullopt;
-    }
-    const auto uri = locationUriForSourceLocation(source_manager, range.start());
-    if (uri.empty()) {
-        return std::nullopt;
-    }
-    return SemanticLocation{.uri = uri, .range = sourceRangeForSourceRange(source_manager, range)};
-}
-
-std::optional<SemanticLocation> declarationLocationForSymbol(const slang::SourceManager& source_manager,
-                                                             const slang::ast::Symbol& symbol) {
-    if (!symbol.location.valid() || symbol.name.empty()) {
-        return std::nullopt;
-    }
-    const auto original = source_manager.getFullyOriginalLoc(symbol.location);
-    const auto uri = locationUriForSourceLocation(source_manager, original);
-    if (uri.empty()) {
-        return std::nullopt;
-    }
-    const auto name_length = static_cast<int>(symbol.name.size());
-    auto range = sourceRangeForSourceRange(source_manager,
-                                           slang::SourceRange(original, original + name_length));
-    return SemanticLocation{.uri = uri, .range = range};
-}
-
 bool rangesOverlapOrTouch(const ParseRange& lhs, const ParseRange& rhs) {
     if (lhs.end_line < rhs.start_line || rhs.end_line < lhs.start_line) {
         return false;
@@ -209,19 +89,6 @@ bool rangeContainsRange(const ParseRange& outer, const ParseRange& inner) {
     return true;
 }
 
-bool rangeLessWideFirst(const ParseRange& lhs, const ParseRange& rhs) {
-    if (lhs.start_line != rhs.start_line) {
-        return lhs.start_line < rhs.start_line;
-    }
-    if (lhs.start_character != rhs.start_character) {
-        return lhs.start_character < rhs.start_character;
-    }
-    if (lhs.end_line != rhs.end_line) {
-        return lhs.end_line > rhs.end_line;
-    }
-    return lhs.end_character > rhs.end_character;
-}
-
 bool isIdentifierStart(char value) {
     const auto ch = static_cast<unsigned char>(value);
     return std::isalpha(ch) != 0 || value == '_' || value == '$';
@@ -236,15 +103,6 @@ bool isBuiltinTypeName(std::string_view name) {
     return name == "bit" || name == "logic" || name == "reg" || name == "wire" || name == "tri" ||
            name == "byte" || name == "shortint" || name == "int" || name == "integer" ||
            name == "longint" || name == "time" || name == "genvar";
-}
-
-bool isTypeDefinitionKind(std::string_view kind) {
-    return kind == "Definition" || kind == "TypeAlias" || kind == "Type" || kind == "ClassType" ||
-           kind == "EnumType" || kind == "Interface" || kind == "Modport";
-}
-
-bool isModuleDefinitionKind(std::string_view kind) {
-    return kind == "Definition" || kind == "Instance" || kind == "InstanceBody";
 }
 
 bool startsWithInsensitive(std::string_view prefix, std::string_view candidate) {
@@ -503,412 +361,6 @@ semantic::CodeActionContext codeActionContextFor(const SnapshotData* data,
 namespace {
 
 template<typename SnapshotData>
-void insertSymbol(SnapshotData& data,
-                  const slang::SourceManager& source_manager,
-                  const slang::ast::Symbol& symbol) {
-    if (symbol.name.empty()) {
-        return;
-    }
-
-    const auto location = declarationLocationForSymbol(source_manager, symbol);
-    if (!location.has_value()) {
-        return;
-    }
-
-    const auto stable_id = symbolStableId(source_manager, symbol, *location);
-    if (data.symbols_by_id.find(stable_id) == data.symbols_by_id.end()) {
-        std::string type_display;
-        if (const auto* declared_type = symbol.getDeclaredType()) {
-            type_display = declared_type->getType().toString();
-        }
-        else if (symbol.isType()) {
-            if (const auto* type = symbol.as_if<slang::ast::Type>()) {
-                type_display = type->toString();
-            }
-        }
-
-        data.symbols_by_id.emplace(
-            stable_id,
-            semantic::SnapshotIndexedSymbol{
-                .identity = SemanticSymbolIdentity{.stable_id = stable_id,
-                                                   .name = std::string(symbol.name),
-                                                   .kind = symbolKindName(symbol.kind),
-                                                   .location = *location},
-                .symbol = &symbol,
-                .type_display = std::move(type_display)});
-    }
-    data.ids_by_symbol.emplace(&symbol, stable_id);
-
-    auto& completions = data.completions_by_uri[location->uri];
-    const auto duplicate = std::any_of(completions.begin(),
-                                       completions.end(),
-                                       [&](const SemanticCompletionItem& item) {
-                                           return item.label == symbol.name;
-                                       });
-    if (!duplicate) {
-        const auto kind_name = symbolKindName(symbol.kind);
-        completions.push_back(SemanticCompletionItem{.stable_id = stable_id,
-                                                      .label = std::string(symbol.name),
-                .detail = semantic::completionDetailForSemanticKind(kind_name),
-                .documentation = {},
-                .insert_text = std::string(symbol.name),
-                .kind = semantic::completionKindForSemanticKind(kind_name),
-                .unresolved = false});
-    }
-}
-
-template<typename SnapshotData>
-void insertReference(SnapshotData& data,
-                     std::string stable_id,
-                     std::string name,
-                     SemanticLocation location,
-                     bool is_declaration) {
-    const auto duplicate = std::any_of(data.references.begin(),
-                                       data.references.end(),
-                                       [&](const auto& reference) {
-                                           return reference.stable_id == stable_id &&
-                                                  sameLocation(reference.location, location);
-                                       });
-    if (duplicate) {
-        return;
-    }
-
-    const auto index = data.references.size();
-    data.references.push_back(semantic::SnapshotIndexedReference{
-        .stable_id = std::move(stable_id),
-        .name = std::move(name),
-        .location = std::move(location),
-        .is_declaration = is_declaration});
-    data.references_by_symbol[data.references.back().stable_id].push_back(index);
-}
-
-template<typename SnapshotData>
-void indexSymbolReferences(SnapshotData& data,
-                           const slang::SourceManager& source_manager,
-                           const std::unordered_map<std::string, SemanticEngineDocument>& documents,
-                           const slang::ast::Expression& expression) {
-    expression.visitSymbolReferences([&](const slang::ast::Expression& reference_expression,
-                                          const slang::ast::Symbol& symbol) {
-        const auto id_it = data.ids_by_symbol.find(&symbol);
-        if (id_it == data.ids_by_symbol.end()) {
-            return;
-        }
-
-        auto location = locationForSourceRange(source_manager, reference_expression.sourceRange);
-        if (!location.has_value()) {
-            return;
-        }
-
-        const auto document_it = documents.find(location->uri);
-        if (document_it != documents.end()) {
-            if (const auto narrow_location = identifierRangeWithin(document_it->second,
-                                                                   *location,
-                                                                   symbol.name)) {
-                location = narrow_location;
-            }
-        }
-
-        insertReference(data, id_it->second, std::string(symbol.name), *location, false);
-    });
-}
-
-template<typename SnapshotData>
-void indexModuleInstanceBinding(SnapshotData& data,
-                                const slang::SourceManager& source_manager,
-                                const slang::ast::InstanceSymbol& instance) {
-    const auto instance_location = declarationLocationForSymbol(source_manager, instance);
-    if (!instance_location.has_value()) {
-        return;
-    }
-
-    const auto& definition = instance.getDefinition();
-    insertSymbol(data, source_manager, definition);
-    const auto definition_location = declarationLocationForSymbol(source_manager, definition);
-    if (!definition_location.has_value()) {
-        return;
-    }
-    const auto definition_id = symbolStableId(source_manager, definition, *definition_location);
-
-    const auto ranges_equal = [](const ParseRange& lhs, const ParseRange& rhs) {
-        return lhs.start_line == rhs.start_line && lhs.start_character == rhs.start_character &&
-               lhs.end_line == rhs.end_line && lhs.end_character == rhs.end_character;
-    };
-
-    const auto instances_it = data.module_instances_by_uri.find(instance_location->uri);
-    if (instances_it == data.module_instances_by_uri.end()) {
-        return;
-    }
-    for (auto& module_instance : instances_it->second) {
-        if (module_instance.instance_name == instance.name &&
-            ranges_equal(module_instance.selection_range, instance_location->range)) {
-            module_instance.target_stable_id = definition_id;
-            return;
-        }
-    }
-}
-
-template<typename SnapshotData>
-struct SemanticIndexVisitor
-    : slang::ast::ASTVisitor<SemanticIndexVisitor<SnapshotData>,
-                             slang::ast::VisitFlags::AllGood> {
-    SnapshotData& data;
-    const slang::SourceManager& source_manager;
-    const std::unordered_map<std::string, SemanticEngineDocument>& documents;
-
-    SemanticIndexVisitor(SnapshotData& data,
-                         const slang::SourceManager& source_manager,
-                         const std::unordered_map<std::string, SemanticEngineDocument>& documents) :
-        data(data),
-        source_manager(source_manager),
-        documents(documents) {}
-
-    template<typename T>
-    void handle(const T& symbol)
-        requires std::is_base_of_v<slang::ast::Symbol, T>
-    {
-        insertSymbol(data, source_manager, symbol);
-        if constexpr (std::is_same_v<T, slang::ast::InstanceSymbol>) {
-            indexModuleInstanceBinding(data, source_manager, symbol);
-        }
-        this->visitDefault(symbol);
-    }
-
-    template<typename T>
-    void handle(const T& expression)
-        requires std::is_base_of_v<slang::ast::Expression, T>
-    {
-        indexSymbolReferences(data, source_manager, documents, expression);
-        this->visitDefault(expression);
-    }
-};
-
-template<typename SnapshotData>
-void addDeclarationReferences(SnapshotData& data) {
-    for (const auto& [stable_id, indexed_symbol] : data.symbols_by_id) {
-        insertReference(data,
-                        stable_id,
-                        indexed_symbol.identity.name,
-                        indexed_symbol.identity.location,
-                        true);
-    }
-}
-
-template<typename SnapshotData>
-std::optional<std::string> findDefinitionSymbolId(const SnapshotData& data,
-                                                  std::string_view name) {
-    std::optional<std::string> definition_result;
-    for (const auto& [stable_id, indexed_symbol] : data.symbols_by_id) {
-        if (indexed_symbol.identity.name == name && indexed_symbol.identity.kind == "Definition") {
-            if (definition_result.has_value()) {
-                return std::nullopt;
-            }
-            definition_result = stable_id;
-        }
-    }
-    if (definition_result.has_value()) {
-        return definition_result;
-    }
-
-    std::optional<std::string> module_like_result;
-    for (const auto& [stable_id, indexed_symbol] : data.symbols_by_id) {
-        if (indexed_symbol.identity.name == name && isModuleDefinitionKind(indexed_symbol.identity.kind)) {
-            if (module_like_result.has_value()) {
-                return std::nullopt;
-            }
-            module_like_result = stable_id;
-        }
-    }
-    return module_like_result;
-}
-
-template<typename SnapshotData>
-std::optional<std::string> findSymbolIdByNameAndKind(const SnapshotData& data,
-                                                     std::string_view name,
-                                                     std::string_view kind) {
-    std::optional<std::string> result;
-    for (const auto& [stable_id, indexed_symbol] : data.symbols_by_id) {
-        if (indexed_symbol.identity.name == name && indexed_symbol.identity.kind == kind) {
-            if (result.has_value()) {
-                return std::nullopt;
-            }
-            result = stable_id;
-        }
-    }
-    return result;
-}
-
-template<typename SnapshotData>
-std::vector<SemanticLocation> typeDefinitionLocationsByName(const SnapshotData& data,
-                                                            std::string_view name) {
-    std::vector<SemanticLocation> locations;
-    for (const auto& [_, symbol] : data.symbols_by_id) {
-        if (symbol.identity.name == name && isTypeDefinitionKind(symbol.identity.kind) &&
-            !isModuleDefinitionKind(symbol.identity.kind)) {
-            locations.push_back(symbol.identity.location);
-        }
-    }
-    std::sort(locations.begin(), locations.end(), locationLess);
-    locations.erase(std::unique(locations.begin(), locations.end(), sameLocation), locations.end());
-    return locations;
-}
-
-template<typename SnapshotData>
-std::optional<std::string> symbolIdAtLocation(const SnapshotData& data,
-                                              std::string_view uri,
-                                              int line,
-                                              int character);
-
-template<typename SnapshotData>
-void addModuleInstantiationReferences(SnapshotData& data,
-                                       const std::unordered_map<std::string, SemanticEngineDocument>& documents) {
-    for (const auto& [document_uri, instances] : data.module_instances_by_uri) {
-        if (!documents.contains(document_uri)) {
-            continue;
-        }
-        for (const auto& instance : instances) {
-            const auto target_id = !instance.target_stable_id.empty()
-                                       ? std::optional<std::string>{instance.target_stable_id}
-                                       : findDefinitionSymbolId(data, instance.module_name);
-            if (!target_id.has_value()) {
-                continue;
-            }
-            insertReference(data,
-                            *target_id,
-                            instance.module_name,
-                            SemanticLocation{.uri = document_uri, .range = instance.module_selection_range},
-                            false);
-        }
-    }
-}
-
-template<typename SnapshotData>
-std::vector<SemanticLocation> moduleImplementationLocations(const SnapshotData& data,
-                                                            std::string_view module_name,
-                                                            bool& truncated) {
-    std::vector<SemanticLocation> locations;
-    for (const auto& [_, instances] : data.module_instances_by_uri) {
-        for (const auto& instance : instances) {
-            if (instance.module_name != module_name) {
-                continue;
-            }
-            locations.push_back(SemanticLocation{.uri = instance.uri,
-                                                 .range = instance.module_selection_range});
-            if (locations.size() >= kMaxSemanticLocations) {
-                truncated = true;
-                break;
-            }
-        }
-        if (truncated) {
-            break;
-        }
-    }
-    std::sort(locations.begin(), locations.end(), locationLess);
-    locations.erase(std::unique(locations.begin(), locations.end(), sameLocation), locations.end());
-    return locations;
-}
-
-template<typename SnapshotData>
-std::optional<semantic::SnapshotModuleInstance> moduleInstanceAt(const SnapshotData& data,
-                                                                 std::string_view uri,
-                                                                 int line,
-                                                                 int character) {
-    const auto instances_it = data.module_instances_by_uri.find(std::string(uri));
-    if (instances_it == data.module_instances_by_uri.end()) {
-        return std::nullopt;
-    }
-    std::optional<semantic::SnapshotModuleInstance> best;
-    for (const auto& instance : instances_it->second) {
-        if (!containsPosition(instance.module_selection_range, line, character)) {
-            continue;
-        }
-        if (!best.has_value() ||
-            locationLess(SemanticLocation{.uri = instance.uri, .range = instance.module_selection_range},
-                         SemanticLocation{.uri = best->uri, .range = best->module_selection_range})) {
-            best = instance;
-        }
-    }
-    return best;
-}
-
-template<typename SnapshotData>
-void sortSnapshotIndexes(SnapshotData& data) {
-    for (auto& [_, indexes] : data.references_by_symbol) {
-        std::sort(indexes.begin(), indexes.end(), [&](size_t lhs, size_t rhs) {
-            return locationLess(data.references[lhs].location, data.references[rhs].location);
-        });
-    }
-    for (auto& [_, completions] : data.completions_by_uri) {
-        std::sort(completions.begin(), completions.end(), [](const auto& lhs, const auto& rhs) {
-            const auto lhs_priority = semantic::completionPriorityForDetail(lhs.detail);
-            const auto rhs_priority = semantic::completionPriorityForDetail(rhs.detail);
-            if (lhs_priority != rhs_priority) {
-                return lhs_priority < rhs_priority;
-            }
-            return lhs.label < rhs.label;
-        });
-    }
-    for (auto& [_, ranges] : data.selection_ranges_by_uri) {
-        std::sort(ranges.begin(), ranges.end(), rangeLessWideFirst);
-        ranges.erase(std::unique(ranges.begin(), ranges.end(), [](const ParseRange& lhs,
-                                                                 const ParseRange& rhs) {
-                         return lhs.start_line == rhs.start_line &&
-                                lhs.start_character == rhs.start_character &&
-                                lhs.end_line == rhs.end_line &&
-                                lhs.end_character == rhs.end_character;
-                     }),
-                     ranges.end());
-    }
-}
-
-template<typename SnapshotData>
-std::optional<std::string> symbolIdAtLocation(const SnapshotData& data,
-                                              std::string_view uri,
-                                              int line,
-                                              int character) {
-    std::optional<std::string> best_id;
-    std::optional<SemanticLocation> best_location;
-    for (const auto& reference : data.references) {
-        if (reference.location.uri != uri || !containsPosition(reference.location.range, line, character)) {
-            continue;
-        }
-        if (!best_location.has_value() ||
-            (reference.location.range.start_line >= best_location->range.start_line &&
-             reference.location.range.start_character >= best_location->range.start_character)) {
-            best_id = reference.stable_id;
-            best_location = reference.location;
-        }
-    }
-    return best_id;
-}
-
-template<typename SnapshotData>
-std::vector<SemanticLocation> locationsForSymbol(const SnapshotData& data,
-                                                 std::string_view stable_id,
-                                                 bool include_declaration,
-                                                 bool& truncated) {
-    std::vector<SemanticLocation> locations;
-    const auto references_it = data.references_by_symbol.find(std::string(stable_id));
-    if (references_it == data.references_by_symbol.end()) {
-        return locations;
-    }
-
-    for (const auto index : references_it->second) {
-        const auto& reference = data.references[index];
-        if (!include_declaration && reference.is_declaration) {
-            continue;
-        }
-        locations.push_back(reference.location);
-        if (locations.size() >= kMaxSemanticLocations) {
-            truncated = true;
-            break;
-        }
-    }
-    std::sort(locations.begin(), locations.end(), locationLess);
-    locations.erase(std::unique(locations.begin(), locations.end(), sameLocation), locations.end());
-    return locations;
-}
-
-template<typename SnapshotData>
 void appendModulePortCompletions(std::vector<SemanticCompletionItem>& items,
                                  std::set<std::string>& emitted,
                                  const SnapshotData& data,
@@ -917,7 +369,7 @@ void appendModulePortCompletions(std::vector<SemanticCompletionItem>& items,
                                  std::string_view prefix,
                                  const std::set<std::string>& excluded_ports,
                                  bool& truncated) {
-    const auto module_id = findSymbolIdByNameAndKind(data, module.name, "Definition")
+    const auto module_id = semantic::findSymbolIdByNameAndKind(data, module.name, "Definition")
                                .value_or(std::string("module|") + module.name);
     semantic::appendModulePortCompletions(items,
                                           emitted,
@@ -1263,10 +715,10 @@ SemanticLookupResult SemanticEngine::lookupAt(std::string_view uri, int line, in
         return result;
     }
 
-    if (const auto instance = moduleInstanceAt(*data, document_uri, line, character)) {
+    if (const auto instance = semantic::moduleInstanceAt(*data, document_uri, line, character)) {
         const auto target_id = !instance->target_stable_id.empty()
                                    ? std::optional<std::string>{instance->target_stable_id}
-                                   : findDefinitionSymbolId(*data, instance->module_name);
+                                   : semantic::findDefinitionSymbolId(*data, instance->module_name);
         if (target_id.has_value()) {
             const auto symbol_it = data->symbols_by_id.find(*target_id);
             if (symbol_it != data->symbols_by_id.end()) {
@@ -1281,7 +733,7 @@ SemanticLookupResult SemanticEngine::lookupAt(std::string_view uri, int line, in
         return result;
     }
 
-    const auto id = symbolIdAtLocation(*data, document_uri, line, character);
+    const auto id = semantic::symbolIdAtLocation(*data, document_uri, line, character);
     if (!id.has_value()) {
         result.messages.push_back("no AST symbol at position");
         return result;
@@ -1342,7 +794,7 @@ SemanticReferenceResult SemanticEngine::typeDefinitionsAt(std::string_view uri,
                 if (!type_range.has_value() || !containsPosition(*type_range, line, character)) {
                     continue;
                 }
-                auto locations = typeDefinitionLocationsByName(*data, metadata.type_name);
+                auto locations = semantic::typeDefinitionLocationsByName(*data, metadata.type_name);
                 if (!locations.empty()) {
                     result.locations = std::move(locations);
                     result.unresolved = false;
@@ -1362,7 +814,7 @@ SemanticReferenceResult SemanticEngine::typeDefinitionsAt(std::string_view uri,
             const auto* declared_type = symbol_it->second.symbol->getDeclaredType();
             if (declared_type != nullptr) {
                 const auto& type = declared_type->getType();
-                if (const auto type_location = declarationLocationForSymbol(*data->source_manager, type)) {
+                if (const auto type_location = semantic::declarationLocationForSymbol(*data->source_manager, type)) {
                     result.locations.push_back(*type_location);
                     return result;
                 }
@@ -1413,14 +865,15 @@ SemanticReferenceResult SemanticEngine::referencesAt(std::string_view uri,
         return finish(std::move(result));
     }
 
-    if (const auto instance = moduleInstanceAt(*data, document_uri, line, character)) {
-        result.locations = moduleImplementationLocations(*data,
-                                                         instance->module_name,
-                                                         result.truncated);
+    if (const auto instance = semantic::moduleInstanceAt(*data, document_uri, line, character)) {
+        result.locations = semantic::moduleImplementationLocations(*data,
+                                                                   instance->module_name,
+                                                                   kMaxSemanticLocations,
+                                                                   result.truncated);
         if (include_declaration) {
             const auto target_id = !instance->target_stable_id.empty()
                                        ? std::optional<std::string>{instance->target_stable_id}
-                                       : findDefinitionSymbolId(*data, instance->module_name);
+                                       : semantic::findDefinitionSymbolId(*data, instance->module_name);
             if (target_id.has_value()) {
                 const auto target_it = data->symbols_by_id.find(*target_id);
                 if (target_it != data->symbols_by_id.end()) {
@@ -1435,15 +888,17 @@ SemanticReferenceResult SemanticEngine::referencesAt(std::string_view uri,
         return finish(std::move(result));
     }
 
-    result.locations = locationsForSymbol(*data,
-                                          lookup.symbol->stable_id,
-                                          include_declaration,
-                                          result.truncated);
+    result.locations = semantic::locationsForSymbol(*data,
+                                                    lookup.symbol->stable_id,
+                                                    include_declaration,
+                                                    kMaxSemanticLocations,
+                                                    result.truncated);
     if (lookup.symbol->kind == "Definition") {
         bool implementation_truncated = false;
-        auto implementations = moduleImplementationLocations(*data,
-                                                             lookup.symbol->name,
-                                                             implementation_truncated);
+        auto implementations = semantic::moduleImplementationLocations(*data,
+                                                                       lookup.symbol->name,
+                                                                       kMaxSemanticLocations,
+                                                                       implementation_truncated);
         for (auto& location : implementations) {
             if (!include_declaration && sameLocation(location, lookup.query_location)) {
                 continue;
@@ -1492,7 +947,10 @@ SemanticReferenceResult SemanticEngine::implementationsAt(std::string_view uri,
         result.messages.push_back("AST-backed SemanticEngine snapshot is unavailable");
         return result;
     }
-    result.locations = moduleImplementationLocations(*data, lookup.symbol->name, result.truncated);
+    result.locations = semantic::moduleImplementationLocations(*data,
+                                                               lookup.symbol->name,
+                                                               kMaxSemanticLocations,
+                                                               result.truncated);
     result.unresolved = false;
     return result;
 }
@@ -1755,7 +1213,7 @@ SemanticCompletionResult SemanticEngine::completionsAt(std::string_view uri,
             std::sort(module_names.begin(), module_names.end());
             for (const auto& module_name : module_names) {
                 const auto& module = data->modules_by_name.at(module_name);
-                const auto module_id = findSymbolIdByNameAndKind(*data, module.name, "Definition")
+                const auto module_id = semantic::findSymbolIdByNameAndKind(*data, module.name, "Definition")
                                            .value_or(std::string("module|") + module.name);
                 const auto module_uri_it = data->module_uris_by_name.find(module.name);
                 semantic::appendCompletionItem(
@@ -2084,157 +1542,16 @@ void SemanticEngine::rebuildDependenciesFor(std::string_view document_uri, std::
 }
 
 void SemanticEngine::rebuildSnapshot() const {
-    auto data = std::make_unique<semantic::SnapshotData>();
-    data->source_manager = std::make_unique<slang::SourceManager>();
-    data->source_manager->setDisableProximatePaths(true);
-    const auto options = makeCompilationOptions();
-    data->syntax_trees.reserve(documents_.size());
+    auto output = semantic::SnapshotBuilder{}.build(
+        semantic::SnapshotBuildInput{.generation = generation_,
+                                     .config = config_,
+                                     .dirty_document_uris = dirtyDocumentUris(),
+                                     .documents = documents_});
 
-    SemanticEngineSnapshot next{};
-    next.generation = generation_;
-    next.mode = config_.build.has_value() || config_.build_pattern.has_value() ||
-                        !config_.top_modules.empty()
-                    ? SemanticEngineMode::Design
-                    : SemanticEngineMode::Shallow;
-    next.top_modules = config_.top_modules;
-    next.dirty_document_uris = dirtyDocumentUris();
-    next.has_shallow_ast = false;
-    next.has_design_ast = false;
-
-    for (const auto& document_entry : documents_) {
-        next.document_uris.push_back(document_entry.first);
-    }
-    std::sort(next.document_uris.begin(), next.document_uris.end());
-
-    for (const auto& uri : next.document_uris) {
-        const auto document_it = documents_.find(uri);
-        if (document_it == documents_.end()) {
-            continue;
-        }
-
-        CompilationService compilation_service;
-        data->macros_by_uri[uri] = compilation_service.macroDefinitions(document_it->second.text);
-        data->package_imports_by_uri[uri] = compilation_service.packageImports(document_it->second.text);
-        data->metadata_by_uri[uri] = compilation_service.semanticSymbolMetadata(document_it->second.text,
-                                                                                uri);
-        const auto append_symbol_ranges = [&](const auto& self,
-                                              const std::vector<DocumentSymbol>& symbols) -> void {
-            for (const auto& symbol : symbols) {
-                data->selection_ranges_by_uri[uri].push_back(symbol.range);
-                data->selection_ranges_by_uri[uri].push_back(symbol.selection_range);
-                self(self, symbol.children);
-            }
-        };
-        append_symbol_ranges(append_symbol_ranges,
-                             compilation_service.documentSymbols(document_it->second.text, uri));
-
-        const auto modules = compilation_service.moduleDefinitions(document_it->second.text, uri);
-        for (const auto& module : modules) {
-            data->module_entries.push_back(semantic::SnapshotModuleEntry{.uri = uri, .definition = module});
-            data->modules_by_name.try_emplace(module.name, module);
-            data->module_uris_by_name.try_emplace(module.name, uri);
-            for (const auto& instance : module.instances) {
-                data->module_instances_by_uri[uri].push_back(semantic::SnapshotModuleInstance{
-                    .module_name = instance.module_name,
-                    .instance_name = instance.instance_name,
-                    .target_stable_id = {},
-                    .uri = uri,
-                    .range = instance.range,
-                    .selection_range = instance.selection_range,
-                    .module_selection_range = instance.module_selection_range});
-            }
-            data->selection_ranges_by_uri[uri].push_back(module.range);
-            data->selection_ranges_by_uri[uri].push_back(module.selection_range);
-            for (const auto& instance : module.instances) {
-                data->selection_ranges_by_uri[uri].push_back(instance.range);
-                data->selection_ranges_by_uri[uri].push_back(instance.selection_range);
-                data->selection_ranges_by_uri[uri].push_back(instance.module_selection_range);
-            }
-        }
-        for (const auto& schematic : compilation_service.moduleSchematics(document_it->second.text, uri)) {
-            data->schematics_by_name.try_emplace(schematic.name, schematic);
-            data->schematic_uris_by_name.try_emplace(schematic.name, uri);
-        }
-        const auto assignments = compilation_service.continuousAssignments(document_it->second.text, uri);
-        data->assignments_by_uri[uri] = assignments;
-        for (const auto& assignment : assignments) {
-            data->selection_ranges_by_uri[uri].push_back(assignment.range);
-            data->selection_ranges_by_uri[uri].push_back(assignment.left_range);
-            data->selection_ranges_by_uri[uri].push_back(assignment.right_range);
-        }
-
-        auto tree = slang::syntax::SyntaxTree::fromFileInMemory(document_it->second.text,
-                                                                *data->source_manager,
-                                                                "source",
-                                                                fileUriToPath(uri),
-                                                                options);
-        if (tree) {
-            data->syntax_trees.push_back(std::move(tree));
-        }
-    }
-
-    if (!data->syntax_trees.empty()) {
-        try {
-            data->compilation = std::make_unique<slang::ast::Compilation>(options);
-            for (auto& tree : data->syntax_trees) {
-                data->compilation->addSyntaxTree(tree);
-            }
-            slang::DiagnosticEngine diagnostic_engine(*data->source_manager);
-            for (auto& tree : data->syntax_trees) {
-                for (const auto& diagnostic : tree->diagnostics()) {
-                    const auto uri = diagnosticUri(*data->source_manager, diagnostic);
-                    if (uri.empty() || documents_.find(uri) == documents_.end()) {
-                        continue;
-                    }
-                    const auto severity = diagnostic_engine.getSeverity(diagnostic.code, diagnostic.location);
-                    next.diagnostics.push_back(
-                        SemanticEngineDiagnostic{.uri = uri,
-                                                 .code = std::string("slang:") +
-                                                         std::string(slang::toString(diagnostic.code)),
-                                                 .message = diagnostic_engine.formatMessage(diagnostic),
-                                                 .range = sourceRangeForDiagnostic(*data->source_manager, diagnostic),
-                                                 .severity = toLspSeverity(severity)});
-                }
-            }
-            next.has_shallow_ast = true;
-            next.has_design_ast = next.mode == SemanticEngineMode::Design;
-
-            const auto& root = data->compilation->getRoot();
-            SemanticIndexVisitor<semantic::SnapshotData> visitor(*data, *data->source_manager, documents_);
-            root.visit(visitor);
-            for (const auto* definition : data->compilation->getDefinitions()) {
-                if (definition != nullptr) {
-                    insertSymbol(*data, *data->source_manager, *definition);
-                }
-            }
-            addDeclarationReferences(*data);
-            addModuleInstantiationReferences(*data, documents_);
-            sortSnapshotIndexes(*data);
-
-            for (const auto& diagnostic : data->compilation->getSemanticDiagnostics()) {
-                const auto uri = diagnosticUri(*data->source_manager, diagnostic);
-                if (uri.empty() || documents_.find(uri) == documents_.end()) {
-                    continue;
-                }
-                const auto severity = diagnostic_engine.getSeverity(diagnostic.code, diagnostic.location);
-                next.diagnostics.push_back(
-                    SemanticEngineDiagnostic{.uri = uri,
-                                             .code = std::string("slang:") +
-                                                     std::string(slang::toString(diagnostic.code)),
-                                             .message = diagnostic_engine.formatMessage(diagnostic),
-                                             .range = sourceRangeForDiagnostic(*data->source_manager, diagnostic),
-                                             .severity = toLspSeverity(severity)});
-            }
-        }
-        catch (...) {
-            next.has_shallow_ast = false;
-            next.has_design_ast = false;
-            data.reset();
-        }
-    }
-
-    snapshot_ = std::move(next);
-    snapshot_data_ = std::move(data);
+    includes_ = std::move(output.includes);
+    reverse_includes_ = std::move(output.reverse_includes);
+    snapshot_ = std::move(output.snapshot);
+    snapshot_data_ = std::move(output.data);
     snapshot_dirty_ = false;
 }
 

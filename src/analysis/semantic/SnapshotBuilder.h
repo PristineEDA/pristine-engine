@@ -90,10 +90,17 @@ struct SnapshotBuildInput {
 struct SnapshotBuildOutput {
     SemanticEngineSnapshot snapshot;
     std::unique_ptr<SnapshotData> data;
+    std::unordered_map<std::string, std::vector<std::string>> includes;
+    std::unordered_map<std::string, std::vector<std::string>> reverse_includes;
 };
 
 [[nodiscard]] constexpr std::string_view snapshotBuilderProviderName() {
     return "SnapshotBuilder";
 }
+
+class SnapshotBuilder {
+public:
+    [[nodiscard]] SnapshotBuildOutput build(SnapshotBuildInput input) const;
+};
 
 } // namespace pristine::analysis::semantic

@@ -7,6 +7,7 @@
 #include "pristine/analysis/SemanticEngine.h"
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -41,8 +42,46 @@ struct AstIndexView {
     return "AstIndex";
 }
 
+void buildAstIndexes(SnapshotData& data,
+                     const std::unordered_map<std::string, SemanticEngineDocument>& documents);
+
 [[nodiscard]] AstIndexView buildAstIndexView(const SnapshotData* data,
                                              std::uint64_t generation);
+
+[[nodiscard]] std::optional<std::string> findDefinitionSymbolId(const SnapshotData& data,
+                                                                std::string_view name);
+
+[[nodiscard]] std::optional<std::string> findSymbolIdByNameAndKind(const SnapshotData& data,
+                                                                   std::string_view name,
+                                                                   std::string_view kind);
+
+[[nodiscard]] std::vector<SemanticLocation> typeDefinitionLocationsByName(const SnapshotData& data,
+                                                                          std::string_view name);
+
+[[nodiscard]] std::optional<std::string> symbolIdAtLocation(const SnapshotData& data,
+                                                            std::string_view uri,
+                                                            int line,
+                                                            int character);
+
+[[nodiscard]] std::vector<SemanticLocation> locationsForSymbol(const SnapshotData& data,
+                                                               std::string_view stable_id,
+                                                               bool include_declaration,
+                                                               size_t max_locations,
+                                                               bool& truncated);
+
+[[nodiscard]] std::vector<SemanticLocation> moduleImplementationLocations(const SnapshotData& data,
+                                                                          std::string_view module_name,
+                                                                          size_t max_locations,
+                                                                          bool& truncated);
+
+[[nodiscard]] std::optional<SnapshotModuleInstance> moduleInstanceAt(const SnapshotData& data,
+                                                                     std::string_view uri,
+                                                                     int line,
+                                                                     int character);
+
+[[nodiscard]] std::optional<SemanticLocation> declarationLocationForSymbol(
+    const slang::SourceManager& source_manager,
+    const slang::ast::Symbol& symbol);
 
 [[nodiscard]] AstIndexContext workspaceSymbolContext(const AstIndexView& view);
 
