@@ -1491,13 +1491,22 @@ void addTypeReferenceForSymbol(SnapshotData& data,
         return;
     }
 
-    const auto reference_location = locationForDeclaredTypeReference(source_manager,
-                                                                     *declared_type->getTypeSyntax());
+    auto reference_location = locationForDeclaredTypeReference(source_manager,
+                                                              *declared_type->getTypeSyntax());
     if (!reference_location.has_value()) {
         return;
     }
 
     const auto& type = declared_type->getType();
+    const auto document_it = documents.find(reference_location->uri);
+    if (document_it != documents.end() && !type.name.empty()) {
+        if (auto narrowed_range = identifierRangeByName(document_it->second.text,
+                                                        reference_location->range,
+                                                        type.name)) {
+            reference_location->range = *narrowed_range;
+        }
+    }
+
     std::vector<SemanticLocation> definitions;
     if (const auto type_location = declarationLocationForSymbol(source_manager, type)) {
         definitions.push_back(*type_location);
@@ -1521,8 +1530,7 @@ void addTypeReferenceForSymbol(SnapshotData& data,
         return;
     }
     std::string type_name = type.toString();
-    if (const auto document_it = documents.find(reference_location->uri);
-        document_it != documents.end()) {
+    if (document_it != documents.end()) {
         if (auto text = textForRange(document_it->second.text, reference_location->range)) {
             type_name = std::move(*text);
         }

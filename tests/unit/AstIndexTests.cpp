@@ -419,5 +419,38 @@ TEST_CASE("AstIndex derives declared type references from slang AST",
     CHECK(locations.front().range.end_character == 30);
 }
 
+TEST_CASE("AstIndex narrows package-qualified type references to the AST type token",
+          "[analysis][semantic][ast-index][type-definition][package][no-fallback]") {
+    SnapshotBuildInput input{
+        .generation = 38,
+        .documents = {{"file:///workspace/defs.sv",
+                       SemanticEngineDocument{.uri = "file:///workspace/defs.sv",
+                                              .text = "package defs;\n"
+                                                      "  typedef logic [7:0] word_t;\n"
+                                                      "endpackage\n",
+                                              .version = 1}},
+                      {"file:///workspace/top.sv",
+                       SemanticEngineDocument{.uri = "file:///workspace/top.sv",
+                                              .text = "module top;\n"
+                                                      "  defs::word_t value;\n"
+                                                      "endmodule\n",
+                                              .version = 1,
+                                              .is_open = true}}}};
+
+    auto output = SnapshotBuilder{}.build(std::move(input));
+    REQUIRE(output.data != nullptr);
+
+    const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
+
+    CHECK(typeDefinitionLocationsAt(view, "file:///workspace/top.sv", 1, 3).empty());
+
+    auto locations = typeDefinitionLocationsAt(view, "file:///workspace/top.sv", 1, 10);
+    REQUIRE(locations.size() == 1);
+    CHECK(locations.front().uri == "file:///workspace/defs.sv");
+    CHECK(locations.front().range.start_line == 1);
+    CHECK(locations.front().range.start_character == 22);
+    CHECK(locations.front().range.end_character == 28);
+}
+
 } // namespace
 } // namespace pristine::analysis::semantic
