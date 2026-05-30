@@ -184,6 +184,48 @@ TEST_CASE("DesignGraphProvider traces backward cone through continuous assignmen
     }));
 }
 
+TEST_CASE("DesignGraphProvider truncates backward cone at the requested result cap",
+          "[analysis][semantic][design-graph-provider][cone][truncated][no-fallback]") {
+    auto context = simpleDesignContext();
+    const auto a = symbol("symbol|a", "a", 1, 8, 9);
+    const auto b = symbol("symbol|b", "b", 2, 8, 9);
+    const auto c = symbol("symbol|c", "c", 3, 8, 9);
+    const auto out = symbol("symbol|out", "out", 4, 8, 11);
+    context.symbols_by_id = {{"symbol|a", DesignGraphSymbol{.identity = a}},
+                             {"symbol|b", DesignGraphSymbol{.identity = b}},
+                             {"symbol|c", DesignGraphSymbol{.identity = c}},
+                             {"symbol|out", DesignGraphSymbol{.identity = out}}};
+    context.assignment_edges_by_uri["file:///workspace/cone.sv"] = {
+        SnapshotAssignmentEdge{.from_symbol_id = "symbol|out",
+                               .to_symbol_id = "symbol|a",
+                               .location = SemanticLocation{.uri = "file:///workspace/cone.sv",
+                                                            .range = rangeAt(5, 2, 15)},
+                               .expression = "a"},
+        SnapshotAssignmentEdge{.from_symbol_id = "symbol|out",
+                               .to_symbol_id = "symbol|b",
+                               .location = SemanticLocation{.uri = "file:///workspace/cone.sv",
+                                                            .range = rangeAt(6, 2, 15)},
+                               .expression = "b"},
+        SnapshotAssignmentEdge{.from_symbol_id = "symbol|out",
+                               .to_symbol_id = "symbol|c",
+                               .location = SemanticLocation{.uri = "file:///workspace/cone.sv",
+                                                            .range = rangeAt(7, 2, 15)},
+                               .expression = "c"}};
+    const SemanticLookupResult lookup{.generation = 9,
+                                      .symbol = out,
+                                      .unresolved = false};
+
+    const auto trace = backwardCone(context, "file:///workspace/cone.sv", lookup, 2);
+
+    REQUIRE_FALSE(trace.unresolved);
+    CHECK(trace.partial);
+    CHECK(trace.truncated);
+    REQUIRE(trace.messages.size() == 1);
+    CHECK(trace.messages.front().find("result cap") != std::string::npos);
+    CHECK(trace.nodes.size() <= 2);
+    CHECK(trace.edges.size() <= 2);
+}
+
 TEST_CASE("DesignGraphProvider reports missing cone assignments",
           "[analysis][semantic][design-graph-provider][cone]") {
     auto context = simpleDesignContext();

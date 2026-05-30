@@ -524,20 +524,42 @@ SemanticConeTrace backwardCone(const DesignGraphContext& context,
         return trace;
     }
 
-    const auto append_node = [&](const std::string& stable_id) {
+    const auto mark_truncated = [&]() {
+        if (!trace.truncated) {
+            trace.truncated = true;
+            trace.partial = true;
+            trace.messages.push_back("Backward cone reached the result cap.");
+        }
+    };
+    const auto reached_cap = [&]() {
+        return max_results > 0 && (trace.nodes.size() >= max_results ||
+                                   trace.edges.size() >= max_results);
+    };
+    const auto has_node = [&](const std::string& stable_id) {
         if (std::find_if(trace.nodes.begin(), trace.nodes.end(), [&](const SemanticConeNode& node) {
                 return node.id == stable_id;
             }) != trace.nodes.end()) {
-            return;
+            return true;
+        }
+        return false;
+    };
+    const auto append_node = [&](const std::string& stable_id) {
+        if (has_node(stable_id)) {
+            return true;
+        }
+        if (reached_cap()) {
+            mark_truncated();
+            return false;
         }
         const auto symbol_it = context.symbols_by_id.find(stable_id);
         if (symbol_it == context.symbols_by_id.end()) {
-            return;
+            return true;
         }
         trace.nodes.push_back(SemanticConeNode{.id = stable_id,
                                                .name = symbol_it->second.identity.name,
                                                .location = symbol_it->second.identity.location,
                                                .bit_width = std::nullopt});
+        return true;
     };
 
     trace.root_symbol_id = lookup.symbol->stable_id;
@@ -554,31 +576,41 @@ SemanticConeTrace backwardCone(const DesignGraphContext& context,
         if (!context.symbols_by_id.contains(current_id)) {
             continue;
         }
+        if (reached_cap()) {
+            mark_truncated();
+            break;
+        }
 
         for (const auto& edge : assignment_edges_it->second) {
             if (edge.from_symbol_id != current_id) {
                 continue;
             }
+            if (reached_cap()) {
+                mark_truncated();
+                break;
+            }
 
-            append_node(edge.to_symbol_id);
+            const auto node_available = append_node(edge.to_symbol_id);
             const auto edge_key = edge.from_symbol_id + "\n" + edge.to_symbol_id + "\n" +
                                   std::to_string(edge.location.range.start_line) + ":" +
                                   std::to_string(edge.location.range.start_character);
-            if (emitted_edges.insert(edge_key).second) {
+            if (node_available && emitted_edges.insert(edge_key).second) {
+                if (max_results > 0 && trace.edges.size() >= max_results) {
+                    mark_truncated();
+                    break;
+                }
                 trace.edges.push_back(SemanticConeEdge{.from_symbol_id = edge.from_symbol_id,
                                                        .to_symbol_id = edge.to_symbol_id,
                                                        .location = edge.location,
                                                        .expression = edge.expression});
             }
-            if (!visited.contains(edge.to_symbol_id)) {
+            if (node_available && !visited.contains(edge.to_symbol_id) && !reached_cap()) {
                 pending.push_back(edge.to_symbol_id);
             }
         }
 
-        if (trace.nodes.size() >= max_results || trace.edges.size() >= max_results) {
-            trace.truncated = true;
-            trace.partial = true;
-            trace.messages.push_back("Backward cone reached the result cap.");
+        if (reached_cap()) {
+            mark_truncated();
             break;
         }
     }
