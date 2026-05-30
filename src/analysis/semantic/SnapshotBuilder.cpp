@@ -107,9 +107,6 @@ SnapshotBuildOutput SnapshotBuilder::build(SnapshotBuildInput input) const {
         CompilationService compilation_service;
         data->macros_by_uri[uri] = compilation_service.macroDefinitions(document_it->second.text);
         data->package_imports_by_uri[uri] = compilation_service.packageImports(document_it->second.text);
-        // Temporary lexical range enrichment for AST symbol references. LSP-visible semantic
-        // facts are owned by AstIndex views, not by CompilationService extraction.
-        data->identifiers_by_uri[uri] = compilation_service.identifiers(document_it->second.text);
 
         auto include_directives = compilation_service.includeDirectives(document_it->second.text);
         data->include_directives_by_uri[uri] = include_directives;

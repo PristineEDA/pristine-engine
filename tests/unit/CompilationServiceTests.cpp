@@ -2,7 +2,6 @@
 
 #include <catch2/catch_test_macros.hpp>
 
-#include <algorithm>
 #include <string_view>
 
 namespace pristine::analysis {
@@ -52,33 +51,6 @@ TEST_CASE("CompilationService returns hover for declaration symbols", "[analysis
     CHECK(hover->range.start_character == 8);
     CHECK(hover->range.end_line == 1);
     CHECK(hover->range.end_character == 13);
-}
-
-TEST_CASE("CompilationService extracts identifier ranges outside comments and strings", "[analysis][identifiers]") {
-    CompilationService service;
-
-    const auto identifiers = service.identifiers(
-        "module top;\n"
-        "  logic ready; // fake_comment\n"
-        "  string name = \"fake_string\";\n"
-        "endmodule\n");
-
-    const auto contains_name = [&](std::string_view name) {
-        return std::any_of(identifiers.begin(), identifiers.end(), [&](const Identifier& identifier) {
-            return identifier.name == name;
-        });
-    };
-
-    CHECK(contains_name("ready"));
-    CHECK_FALSE(contains_name("fake_comment"));
-    CHECK_FALSE(contains_name("fake_string"));
-
-    const auto ready = service.identifierAt("module top;\n  logic ready;\nendmodule\n", 1, 9);
-    REQUIRE(ready.has_value());
-    CHECK(ready->name == "ready");
-    CHECK(ready->range.start_line == 1);
-    CHECK(ready->range.start_character == 8);
-    CHECK(ready->range.end_character == 13);
 }
 
 TEST_CASE("CompilationService computes completion prefix", "[analysis][completion]") {
@@ -160,85 +132,6 @@ TEST_CASE("CompilationService extracts package imports", "[analysis][imports]") 
     CHECK(imports[2].package_name == "util");
     REQUIRE(imports[2].item_name.has_value());
     CHECK(*imports[2].item_name == "flag_t");
-}
-
-TEST_CASE("CompilationService extracts continuous assignments", "[analysis][assignments]") {
-    CompilationService service;
-
-    const auto assignments = service.continuousAssignments(
-        "module top;\n"
-        "  logic [3:0] lhs;\n"
-        "  logic [7:0] rhs;\n"
-        "  assign lhs = rhs;\n"
-        "endmodule\n",
-        "file:///workspace/assignments.sv");
-
-    REQUIRE(assignments.size() == 1);
-    CHECK(assignments.front().left_expression == "lhs");
-    CHECK(assignments.front().right_expression == "rhs");
-    CHECK(assignments.front().left_range.start_line == 3);
-    CHECK(assignments.front().left_range.start_character == 9);
-    CHECK(assignments.front().right_range.start_line == 3);
-    CHECK(assignments.front().right_range.start_character == 15);
-}
-
-TEST_CASE("CompilationService extracts nested continuous assignments", "[analysis][assignments]") {
-    CompilationService service;
-
-    const auto assignments = service.continuousAssignments(
-        "interface bus_if;\n"
-        "  logic [3:0] lhs;\n"
-        "  logic [7:0] rhs;\n"
-        "  generate\n"
-        "    if (1) begin : g\n"
-        "      assign lhs = rhs;\n"
-        "    end\n"
-        "  endgenerate\n"
-        "endinterface\n",
-        "file:///workspace/nested-assignments.sv");
-
-    REQUIRE(assignments.size() == 1);
-    CHECK(assignments.front().left_expression == "lhs");
-    CHECK(assignments.front().right_expression == "rhs");
-    CHECK(assignments.front().left_range.start_line == 5);
-    CHECK(assignments.front().left_range.start_character == 13);
-    CHECK(assignments.front().right_range.start_line == 5);
-    CHECK(assignments.front().right_range.start_character == 19);
-}
-
-TEST_CASE("CompilationService extracts semantic type metadata", "[analysis][types]") {
-    CompilationService service;
-
-    const auto metadata = service.semanticSymbolMetadata(
-        "module top #(parameter int WIDTH = 8) (input logic [WIDTH-1:0] data);\n"
-        "  typedef logic [7:0] byte_t;\n"
-        "endmodule\n",
-        "file:///workspace/types.sv");
-
-    const auto find_metadata = [&](std::string_view name) {
-        return std::find_if(metadata.begin(), metadata.end(), [&](const SemanticSymbolMetadata& candidate) {
-            return candidate.name == name;
-        });
-    };
-
-    const auto width = find_metadata("WIDTH");
-    REQUIRE(width != metadata.end());
-    CHECK(width->kind == 14);
-    CHECK(width->type_name == "int");
-    CHECK(width->value_expression == "8");
-
-    const auto data = find_metadata("data");
-    REQUIRE(data != metadata.end());
-    CHECK(data->kind == 13);
-    CHECK(data->direction == "input");
-    CHECK(data->type_name == "logic");
-    CHECK(data->type_display_name.find("WIDTH") != std::string::npos);
-
-    const auto byte_t = find_metadata("byte_t");
-    REQUIRE(byte_t != metadata.end());
-    CHECK(byte_t->kind == 26);
-    CHECK(byte_t->alias_target.find("logic") != std::string::npos);
-    CHECK(byte_t->alias_target.find("[7:0]") != std::string::npos);
 }
 
 TEST_CASE("CompilationService extracts top-level document symbols", "[analysis][symbols]") {
@@ -445,70 +338,6 @@ TEST_CASE("CompilationService extracts hierarchy instantiations inside generate 
     REQUIRE(modules[1].instances.size() == 1);
     CHECK(modules[1].instances[0].module_name == "lane");
     CHECK(modules[1].instances[0].instance_name == "u_lane");
-}
-
-TEST_CASE("CompilationService extracts schematic ports cells and assign logic", "[analysis][schematic]") {
-    CompilationService service;
-
-    const auto schematics = service.moduleSchematics(
-        "module child(input logic a, output logic y); endmodule\n"
-        "module top(input logic a, input logic b, input logic sel, output logic y);\n"
-        "  logic n1, n2;\n"
-        "  child u_child(.a(a), .y(n1));\n"
-        "  and u_and(n2, a, b);\n"
-        "  assign y = sel ? n1 : (a | b);\n"
-        "endmodule\n",
-        "file:///workspace/schematic.sv");
-
-    REQUIRE(schematics.size() == 2);
-    const auto& top = schematics[1];
-    CHECK(top.name == "top");
-    REQUIRE(top.ports.size() == 4);
-    CHECK(top.ports[0].name == "a");
-    CHECK(top.ports[0].direction == "input");
-    CHECK(top.ports[3].name == "y");
-    CHECK(top.ports[3].direction == "output");
-
-    const auto has_cell_kind = [&](std::string_view kind) {
-        return std::any_of(top.cells.begin(), top.cells.end(), [&](const SchematicCell& cell) {
-            return cell.kind == kind;
-        });
-    };
-
-    CHECK(has_cell_kind("module"));
-    CHECK(has_cell_kind("and"));
-    CHECK(has_cell_kind("or"));
-    CHECK(has_cell_kind("mux"));
-
-    const auto child_cell = std::find_if(top.cells.begin(), top.cells.end(), [](const SchematicCell& cell) {
-        return cell.name == "u_child";
-    });
-    REQUIRE(child_cell != top.cells.end());
-    CHECK(child_cell->type == "child");
-    REQUIRE(child_cell->connections.size() == 2);
-    CHECK(child_cell->connections[0].port_name == "a");
-    CHECK(child_cell->connections[0].signal == "a");
-    CHECK(child_cell->connections[1].port_name == "y");
-    CHECK(child_cell->connections[1].signal == "n1");
-
-    const auto primitive_cell = std::find_if(top.cells.begin(), top.cells.end(), [](const SchematicCell& cell) {
-        return cell.name == "u_and";
-    });
-    REQUIRE(primitive_cell != top.cells.end());
-    REQUIRE(primitive_cell->connections.size() == 3);
-    CHECK(primitive_cell->connections[0].port_name == "Y");
-    CHECK(primitive_cell->connections[0].signal == "n2");
-
-    const auto mux_cell = std::find_if(top.cells.begin(), top.cells.end(), [](const SchematicCell& cell) {
-        return cell.kind == "mux";
-    });
-    REQUIRE(mux_cell != top.cells.end());
-    CHECK(std::any_of(mux_cell->connections.begin(), mux_cell->connections.end(), [](const SchematicConnection& connection) {
-        return connection.port_name == "Y" && connection.signal == "y";
-    }));
-    CHECK(std::any_of(mux_cell->connections.begin(), mux_cell->connections.end(), [](const SchematicConnection& connection) {
-        return connection.port_name == "S" && connection.signal == "sel";
-    }));
 }
 
 TEST_CASE("CompilationService extracts named generate block symbols", "[analysis][symbols]") {

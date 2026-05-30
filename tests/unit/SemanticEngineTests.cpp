@@ -412,6 +412,35 @@ TEST_CASE("SemanticEngine uses AST symbol identity to avoid same-name false refe
     }));
 }
 
+TEST_CASE("SemanticEngine references ignore comment and string tokens without identifier-scan fallback",
+          "[analysis][semantic-engine][ast-identity][no-fallback]") {
+    SemanticEngine engine;
+    engine.updateDocument("file:///workspace/no-text-scan.sv",
+                          "module top;\n"
+                          "  logic ready;\n"
+                          "  // ready in a comment is not a reference\n"
+                          "  string label = \"ready\";\n"
+                          "  assign ready = ready;\n"
+                          "endmodule\n",
+                          SemanticEngineDocumentState{.version = 1, .is_open = true});
+
+    const auto references = engine.referencesAt("file:///workspace/no-text-scan.sv", 1, 9, true);
+    REQUIRE_FALSE(references.unresolved);
+    REQUIRE(references.locations.size() == 3);
+    CHECK(std::all_of(references.locations.begin(),
+                      references.locations.end(),
+                      [](const SemanticLocation& location) {
+                          return location.range.start_line == 1 || location.range.start_line == 4;
+                      }));
+
+    const auto rename = engine.renameAt("file:///workspace/no-text-scan.sv", 1, 9, "valid");
+    REQUIRE_FALSE(rename.unresolved);
+    REQUIRE(rename.edits.size() == 3);
+    CHECK(std::none_of(rename.edits.begin(), rename.edits.end(), [](const SemanticTextEdit& edit) {
+        return edit.location.range.start_line == 2 || edit.location.range.start_line == 3;
+    }));
+}
+
 TEST_CASE("SemanticEngine resolves cross-file module definitions through AST identity",
           "[analysis][semantic-engine][ast-identity]") {
     SemanticEngine engine;

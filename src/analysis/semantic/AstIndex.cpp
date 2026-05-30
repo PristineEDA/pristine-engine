@@ -883,22 +883,6 @@ void upsertAstContinuousAssignment(SnapshotData& data,
                        context);
 }
 
-std::optional<SemanticLocation> identifierRangeWithin(const std::vector<Identifier>& identifiers,
-                                                      const SemanticLocation& broad_location,
-                                                      std::string_view name) {
-    std::optional<SemanticLocation> best;
-    for (const auto& identifier : identifiers) {
-        if (identifier.name != name || !rangesOverlapOrTouch(identifier.range, broad_location.range)) {
-            continue;
-        }
-        const auto location = SemanticLocation{.uri = broad_location.uri, .range = identifier.range};
-        if (!best.has_value() || locationLess(location, *best)) {
-            best = location;
-        }
-    }
-    return best;
-}
-
 void insertReference(SnapshotData& data,
                      std::string stable_id,
                      std::string name,
@@ -988,15 +972,6 @@ void indexSymbolReferences(SnapshotData& data,
         auto location = locationForSourceRange(source_manager, reference_expression.sourceRange);
         if (!location.has_value()) {
             return;
-        }
-
-        if (const auto identifiers_it = data.identifiers_by_uri.find(location->uri);
-            identifiers_it != data.identifiers_by_uri.end()) {
-            if (const auto narrow_location = identifierRangeWithin(identifiers_it->second,
-                                                                   *location,
-                                                                   symbol.name)) {
-                location = narrow_location;
-            }
         }
 
         insertReference(data, id_it->second, std::string(symbol.name), *location, false);

@@ -61,18 +61,6 @@ struct ModuleDefinition {
     std::vector<ModuleInstantiation> instances;
 };
 
-struct SemanticSymbolMetadata {
-    std::string name;
-    int kind = 0;
-    ParseRange selection_range;
-    std::string type_name;
-    std::string type_display_name;
-    std::string direction;
-    std::string value_expression;
-    std::string alias_target;
-    std::vector<std::string> enum_members;
-};
-
 struct SchematicConnection {
     std::string port_name;
     int port_index = -1;
@@ -111,11 +99,6 @@ struct HoverResult {
     ParseRange range;
 };
 
-struct Identifier {
-    std::string name;
-    ParseRange range;
-};
-
 struct IncludeDirective {
     std::string target;
     ParseRange range;
@@ -150,20 +133,10 @@ public:
                                                               std::string_view uri) const;
     [[nodiscard]] std::vector<ModuleDefinition> moduleDefinitions(std::string_view text,
                                                                   std::string_view uri) const;
-    [[nodiscard]] std::vector<ModuleSchematic> moduleSchematics(std::string_view text,
-                                                                std::string_view uri) const;
-    [[nodiscard]] std::vector<ContinuousAssignment> continuousAssignments(std::string_view text,
-                                                                          std::string_view uri) const;
-    [[nodiscard]] std::vector<SemanticSymbolMetadata> semanticSymbolMetadata(std::string_view text,
-                                                                             std::string_view uri) const;
     [[nodiscard]] std::optional<HoverResult> hover(std::string_view text,
                                                    std::string_view uri,
                                                    int line,
                                                    int character) const;
-    [[nodiscard]] std::vector<Identifier> identifiers(std::string_view text) const;
-    [[nodiscard]] std::optional<Identifier> identifierAt(std::string_view text,
-                                                         int line,
-                                                         int character) const;
     [[nodiscard]] std::string completionPrefix(std::string_view text,
                                                int line,
                                                int character) const;

@@ -3,8 +3,6 @@
 #include "pristine/analysis/SemanticEngine.h"
 
 #include <cstddef>
-#include <cstdint>
-#include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -17,73 +15,11 @@ struct Location {
     ParseRange range;
 };
 
-enum class SemanticTypeKind {
-    Unknown,
-    Builtin,
-    Alias,
-    Enum,
-    Module,
-    Interface,
-    Class
-};
-
-struct SemanticType {
-    SemanticTypeKind kind = SemanticTypeKind::Unknown;
-    std::string name;
-    std::string display_name;
-    std::string alias_target;
-    std::optional<std::int64_t> bit_width;
-    std::optional<Location> declaration;
-    std::vector<std::string> enum_members;
-};
-
 struct SemanticDocumentState {
     int version = -1;
     bool is_open = false;
     bool dirty = false;
     bool invalidate_dependents = false;
-};
-
-struct SemanticScope {
-    std::string path;
-    std::string parent_path;
-    ParseRange range;
-};
-
-struct SemanticSymbol {
-    std::string id;
-    std::string name;
-    int kind = 0;
-    std::string scope_path;
-    Location location;
-    ParseRange selection_range;
-    std::optional<SemanticType> type;
-    std::string direction;
-    std::string constant_expression;
-    std::optional<std::int64_t> constant_value;
-};
-
-struct SemanticReference {
-    std::string name;
-    std::string scope_path;
-    Location location;
-};
-
-struct SemanticImport {
-    std::string package_name;
-    std::optional<std::string> item_name;
-    std::string scope_path;
-    ParseRange package_range;
-    ParseRange range;
-};
-
-struct SemanticAssignment {
-    std::string left_expression;
-    std::string right_expression;
-    std::string scope_path;
-    Location location;
-    ParseRange left_range;
-    ParseRange right_range;
 };
 
 struct SemanticDocument {
@@ -94,11 +30,6 @@ struct SemanticDocument {
     bool stale = false;
     std::vector<IncludeDirective> includes;
     std::vector<std::string> included_uris;
-    std::vector<SemanticImport> imports;
-    std::vector<SemanticAssignment> assignments;
-    std::vector<SemanticScope> scopes;
-    std::vector<SemanticSymbol> symbols;
-    std::vector<SemanticReference> references;
 };
 
 class SemanticWorkspace {
@@ -176,12 +107,8 @@ public:
     [[nodiscard]] size_t documentCount() const { return documents_.size(); }
 
 private:
-    [[nodiscard]] std::vector<SemanticSymbol> resolveName(std::string_view name,
-                                                          std::string_view scope_path,
-                                                          std::string_view preferred_uri) const;
     [[nodiscard]] std::vector<std::string> resolveIncludeUris(std::string_view including_uri,
                                                               std::string_view target) const;
-    void rebuildSemanticMetadata();
     void rebuildReverseIncludes();
     void markDependentsStale(std::string_view uri);
 

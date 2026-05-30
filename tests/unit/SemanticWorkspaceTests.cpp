@@ -75,30 +75,10 @@ TEST_CASE("SemanticWorkspace evaluates parameterized widths and hover metadata",
                              ");\n"
                              "endmodule\n");
 
-    const auto* document = workspace.document("file:///workspace/typed.sv");
-    REQUIRE(document != nullptr);
-
-    const auto width = std::find_if(document->symbols.begin(), document->symbols.end(), [](const SemanticSymbol& symbol) {
-        return symbol.name == "WIDTH";
-    });
-    REQUIRE(width != document->symbols.end());
-    REQUIRE(width->constant_value.has_value());
-    CHECK(*width->constant_value == 8);
-
-    const auto data = std::find_if(document->symbols.begin(), document->symbols.end(), [](const SemanticSymbol& symbol) {
-        return symbol.name == "data";
-    });
-    REQUIRE(data != document->symbols.end());
-    CHECK(data->direction == "input");
-    REQUIRE(data->type.has_value());
-    REQUIRE(data->type->bit_width.has_value());
-    CHECK(*data->type->bit_width == 8);
-
-    const auto hover = workspace.engineHoverAt("file:///workspace/typed.sv",
-                                               data->selection_range.start_line,
-                                               data->selection_range.start_character);
+    const auto hover = workspace.engineHoverAt("file:///workspace/typed.sv", 1, 28);
     REQUIRE_FALSE(hover.unresolved);
     CHECK(hover.contents.find("data") != std::string::npos);
+    CHECK(hover.contents.find("logic") != std::string::npos);
 }
 
 TEST_CASE("SemanticWorkspace resolves typedef aliases into hover metadata", "[analysis][semantic][types]") {
@@ -109,23 +89,16 @@ TEST_CASE("SemanticWorkspace resolves typedef aliases into hover metadata", "[an
                              "  byte_t value;\n"
                              "endmodule\n");
 
-    const auto* document = workspace.document("file:///workspace/alias.sv");
-    REQUIRE(document != nullptr);
-    const auto value = std::find_if(document->symbols.begin(), document->symbols.end(), [](const SemanticSymbol& symbol) {
-        return symbol.name == "value";
-    });
-    REQUIRE(value != document->symbols.end());
-    REQUIRE(value->type.has_value());
-    CHECK(value->type->kind == SemanticTypeKind::Alias);
-    CHECK(value->type->alias_target.find("logic") != std::string::npos);
-    REQUIRE(value->type->bit_width.has_value());
-    CHECK(*value->type->bit_width == 8);
+    const auto definitions = workspace.engineTypeDefinitionsAt("file:///workspace/alias.sv", 2, 3);
+    REQUIRE_FALSE(definitions.unresolved);
+    REQUIRE(definitions.locations.size() == 1);
+    CHECK(definitions.locations.front().range.start_line == 0);
+    CHECK(definitions.locations.front().range.start_character == 20);
 
-    const auto hover = workspace.engineHoverAt("file:///workspace/alias.sv",
-                                               value->selection_range.start_line,
-                                               value->selection_range.start_character);
+    const auto hover = workspace.engineHoverAt("file:///workspace/alias.sv", 2, 9);
     REQUIRE_FALSE(hover.unresolved);
     CHECK(hover.contents.find("value") != std::string::npos);
+    CHECK(hover.contents.find("byte_t") != std::string::npos);
 }
 
 TEST_CASE("SemanticWorkspace scopes named generate blocks", "[analysis][semantic]") {

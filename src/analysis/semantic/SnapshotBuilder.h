@@ -102,7 +102,6 @@ struct SnapshotData {
     std::vector<SnapshotAssignmentEdgeSeed> assignment_edge_seeds;
     std::unordered_map<std::string, std::vector<SnapshotAssignmentEdge>> assignment_edges_by_uri;
     std::unordered_map<std::string, std::vector<SnapshotTypeReference>> type_references_by_uri;
-    std::unordered_map<std::string, std::vector<Identifier>> identifiers_by_uri;
     std::unordered_map<std::string, std::vector<IncludeDirective>> include_directives_by_uri;
     std::unordered_map<std::string, std::vector<SnapshotModuleInstance>> module_instances_by_uri;
     std::unordered_map<std::string, std::vector<ParseRange>> selection_ranges_by_uri;
