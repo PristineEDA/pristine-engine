@@ -882,7 +882,6 @@ SemanticCompletionResult SemanticEngine::completionsAt(std::string_view uri,
                                                                             line,
                                                                             character,
                                                                             prefix);
-    const auto prefix_start = completion_context.prefix_start;
 
     const auto append_items = [&](const std::vector<SemanticCompletionItem>& items) {
         for (const auto& item : items) {

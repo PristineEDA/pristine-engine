@@ -126,19 +126,6 @@ std::string directionName(slang::ast::ArgumentDirection direction) {
     return {};
 }
 
-std::string primitiveDirectionName(slang::ast::PrimitivePortDirection direction) {
-    switch (direction) {
-        case slang::ast::PrimitivePortDirection::In:
-            return "input";
-        case slang::ast::PrimitivePortDirection::Out:
-        case slang::ast::PrimitivePortDirection::OutReg:
-            return "output";
-        case slang::ast::PrimitivePortDirection::InOut:
-            return "inout";
-    }
-    return {};
-}
-
 std::string normalizedTypeDisplay(std::string value) {
     value.erase(std::remove(value.begin(), value.end(), '\n'), value.end());
     value.erase(std::remove(value.begin(), value.end(), '\r'), value.end());
