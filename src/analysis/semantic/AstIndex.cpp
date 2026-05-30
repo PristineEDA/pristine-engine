@@ -574,6 +574,41 @@ std::optional<SchematicPort> schematicPortForAstPort(const slang::SourceManager&
                          .selection_range = location->range};
 }
 
+std::string typeDisplayForSymbol(const slang::ast::Symbol& symbol) {
+    if (const auto* declared_type = symbol.getDeclaredType()) {
+        return normalizedTypeDisplay(declared_type->getType().toString());
+    }
+    if (symbol.kind == slang::ast::SymbolKind::Port) {
+        return normalizedTypeDisplay(symbol.as<slang::ast::PortSymbol>().getType().toString());
+    }
+    if (symbol.kind == slang::ast::SymbolKind::MultiPort) {
+        return normalizedTypeDisplay(symbol.as<slang::ast::MultiPortSymbol>().getType().toString());
+    }
+    if (symbol.kind == slang::ast::SymbolKind::InterfacePort) {
+        const auto& port = symbol.as<slang::ast::InterfacePortSymbol>();
+        std::string display;
+        if (port.interfaceDef != nullptr) {
+            display = std::string(port.interfaceDef->name);
+        }
+        if (!port.modport.empty()) {
+            if (!display.empty()) {
+                display += ".";
+            }
+            display += std::string(port.modport);
+        }
+        if (display.empty() && port.isGeneric) {
+            display = "interface";
+        }
+        return display;
+    }
+    if (symbol.isType()) {
+        if (const auto* type = symbol.as_if<slang::ast::Type>()) {
+            return normalizedTypeDisplay(type->toString());
+        }
+    }
+    return {};
+}
+
 std::optional<ModuleDefinition> moduleDefinitionForAstBody(const slang::SourceManager& source_manager,
                                                            const slang::ast::InstanceBodySymbol& body) {
     const auto& definition = body.getDefinition();
@@ -969,15 +1004,7 @@ void insertSymbol(SnapshotData& data,
 
     const auto stable_id = symbolStableId(source_manager, symbol, *location);
     if (data.symbols_by_id.find(stable_id) == data.symbols_by_id.end()) {
-        std::string type_display;
-        if (const auto* declared_type = symbol.getDeclaredType()) {
-            type_display = declared_type->getType().toString();
-        }
-        else if (symbol.isType()) {
-            if (const auto* type = symbol.as_if<slang::ast::Type>()) {
-                type_display = type->toString();
-            }
-        }
+        auto type_display = typeDisplayForSymbol(symbol);
 
         data.symbols_by_id.emplace(
             stable_id,
