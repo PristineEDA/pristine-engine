@@ -245,11 +245,10 @@ semantic::DiagnosticContext diagnosticContextFor(const SnapshotData* data,
     }
     context.symbols_by_id = ast_index.diagnostic_symbols_by_id;
     context.references = ast_index.diagnostic_references;
-    context.assignments_by_uri = ast_index.assignments_by_uri;
-    context.identifiers_by_uri = ast_index.identifiers_by_uri;
+    context.assignment_edges_by_uri = ast_index.assignment_edges_by_uri;
+    context.type_references_by_uri = ast_index.type_references_by_uri;
     context.include_directives_by_uri = ast_index.include_directives_by_uri;
     context.package_imports_by_uri = ast_index.package_imports_by_uri;
-    context.metadata_by_uri = ast_index.metadata_by_uri;
     context.modules_by_name = ast_index.modules_by_name;
     context.module_instances_by_uri = ast_index.module_instances_by_uri;
     return context;

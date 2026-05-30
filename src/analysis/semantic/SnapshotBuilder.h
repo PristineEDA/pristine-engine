@@ -63,6 +63,7 @@ struct SnapshotAssignmentEdge {
     std::string from_symbol_id;
     std::string to_symbol_id;
     SemanticLocation location;
+    SemanticLocation expression_location;
     std::string expression;
 };
 
@@ -98,7 +99,6 @@ struct SnapshotData {
     std::unordered_map<std::string, ModuleDefinition> modules_by_name;
     std::unordered_map<std::string, std::string> module_uris_by_name;
     std::unordered_map<std::string, SemanticModuleSignature> ast_module_signatures_by_name;
-    std::unordered_map<std::string, std::vector<ContinuousAssignment>> assignments_by_uri;
     std::vector<SnapshotAssignmentEdgeSeed> assignment_edge_seeds;
     std::unordered_map<std::string, std::vector<SnapshotAssignmentEdge>> assignment_edges_by_uri;
     std::unordered_map<std::string, std::vector<SnapshotTypeReference>> type_references_by_uri;
@@ -108,7 +108,6 @@ struct SnapshotData {
     std::unordered_map<std::string, std::vector<ParseRange>> selection_ranges_by_uri;
     std::unordered_map<std::string, std::vector<MacroDefinition>> macros_by_uri;
     std::unordered_map<std::string, std::vector<PackageImport>> package_imports_by_uri;
-    std::unordered_map<std::string, std::vector<SemanticSymbolMetadata>> metadata_by_uri;
 };
 
 struct SnapshotBuildInput {

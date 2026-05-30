@@ -107,8 +107,8 @@ SnapshotBuildOutput SnapshotBuilder::build(SnapshotBuildInput input) const {
         CompilationService compilation_service;
         data->macros_by_uri[uri] = compilation_service.macroDefinitions(document_it->second.text);
         data->package_imports_by_uri[uri] = compilation_service.packageImports(document_it->second.text);
-        data->metadata_by_uri[uri] = compilation_service.semanticSymbolMetadata(document_it->second.text,
-                                                                                uri);
+        // Temporary lexical range enrichment for AST symbol references. LSP-visible semantic
+        // facts are owned by AstIndex views, not by CompilationService extraction.
         data->identifiers_by_uri[uri] = compilation_service.identifiers(document_it->second.text);
 
         auto include_directives = compilation_service.includeDirectives(document_it->second.text);
@@ -157,14 +157,6 @@ SnapshotBuildOutput SnapshotBuilder::build(SnapshotBuildInput input) const {
                 data->selection_ranges_by_uri[uri].push_back(instance.module_selection_range);
             }
         }
-        const auto assignments = compilation_service.continuousAssignments(document_it->second.text, uri);
-        data->assignments_by_uri[uri] = assignments;
-        for (const auto& assignment : assignments) {
-            data->selection_ranges_by_uri[uri].push_back(assignment.range);
-            data->selection_ranges_by_uri[uri].push_back(assignment.left_range);
-            data->selection_ranges_by_uri[uri].push_back(assignment.right_range);
-        }
-
         auto tree = slang::syntax::SyntaxTree::fromFileInMemory(document_it->second.text,
                                                                 *data->source_manager,
                                                                 "source",

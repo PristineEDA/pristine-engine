@@ -1158,6 +1158,7 @@ void buildAssignmentEdges(SnapshotData& data) {
                 .from_symbol_id = *left_id,
                 .to_symbol_id = reference.stable_id,
                 .location = SemanticLocation{.uri = seed.uri, .range = seed.assignment_range},
+                .expression_location = reference.location,
                 .expression = seed.right_expression});
         }
     }
@@ -1192,6 +1193,7 @@ std::optional<SemanticLocation> locationForDeclaredTypeReference(
 
 void addTypeReferenceForSymbol(SnapshotData& data,
                                const slang::SourceManager& source_manager,
+                               const std::unordered_map<std::string, SemanticEngineDocument>& documents,
                                const slang::ast::Symbol& symbol) {
     const auto* declared_type = symbol.getDeclaredType();
     if (declared_type == nullptr || declared_type->getTypeSyntax() == nullptr) {
@@ -1218,10 +1220,6 @@ void addTypeReferenceForSymbol(SnapshotData& data,
     std::sort(definitions.begin(), definitions.end(), locationLess);
     definitions.erase(std::unique(definitions.begin(), definitions.end(), sameLocation),
                       definitions.end());
-    if (definitions.empty()) {
-        return;
-    }
-
     auto& references = data.type_references_by_uri[reference_location->uri];
     const auto duplicate = std::any_of(references.begin(),
                                        references.end(),
@@ -1231,12 +1229,21 @@ void addTypeReferenceForSymbol(SnapshotData& data,
     if (duplicate) {
         return;
     }
+    std::string type_name = type.toString();
+    if (const auto document_it = documents.find(reference_location->uri);
+        document_it != documents.end()) {
+        if (auto text = textForRange(document_it->second.text, reference_location->range)) {
+            type_name = std::move(*text);
+        }
+    }
+
     references.push_back(SnapshotTypeReference{.reference = *reference_location,
-                                               .type_name = type.toString(),
+                                               .type_name = std::move(type_name),
                                                .definitions = std::move(definitions)});
 }
 
-void buildTypeReferences(SnapshotData& data) {
+void buildTypeReferences(SnapshotData& data,
+                         const std::unordered_map<std::string, SemanticEngineDocument>& documents) {
     data.type_references_by_uri.clear();
     if (!data.source_manager) {
         return;
@@ -1245,7 +1252,7 @@ void buildTypeReferences(SnapshotData& data) {
         if (indexed_symbol.symbol == nullptr) {
             continue;
         }
-        addTypeReferenceForSymbol(data, *data.source_manager, *indexed_symbol.symbol);
+        addTypeReferenceForSymbol(data, *data.source_manager, documents, *indexed_symbol.symbol);
     }
     for (auto& [_, references] : data.type_references_by_uri) {
         std::sort(references.begin(), references.end(), [](const auto& lhs, const auto& rhs) {
@@ -1372,7 +1379,7 @@ void buildAstIndexes(SnapshotData& data,
     addDeclarationReferences(data);
     addModuleInstantiationReferences(data, documents);
     buildAssignmentEdges(data);
-    buildTypeReferences(data);
+    buildTypeReferences(data, documents);
     sortSnapshotIndexes(data);
 }
 
@@ -1558,14 +1565,11 @@ AstIndexView buildAstIndexView(const SnapshotData* data, std::uint64_t generatio
             view.module_uris_by_name[name] = signature.uri;
         }
     }
-    view.assignments_by_uri = data->assignments_by_uri;
     view.assignment_edges_by_uri = data->assignment_edges_by_uri;
     view.type_references_by_uri = data->type_references_by_uri;
-    view.identifiers_by_uri = data->identifiers_by_uri;
     view.include_directives_by_uri = data->include_directives_by_uri;
     view.macros_by_uri = data->macros_by_uri;
     view.package_imports_by_uri = data->package_imports_by_uri;
-    view.metadata_by_uri = data->metadata_by_uri;
     view.module_instances_by_uri = data->module_instances_by_uri;
     view.design_graph_module_entries.reserve(view.module_signatures_by_name.size() +
                                              data->module_entries.size());

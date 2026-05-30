@@ -36,14 +36,11 @@ struct AstIndexView {
     std::unordered_map<std::string, std::string> module_uris_by_name;
     std::unordered_map<std::string, SemanticModuleSignature> module_signatures_by_name;
     std::vector<DesignGraphModuleEntry> design_graph_module_entries;
-    std::unordered_map<std::string, std::vector<ContinuousAssignment>> assignments_by_uri;
     std::unordered_map<std::string, std::vector<SnapshotAssignmentEdge>> assignment_edges_by_uri;
     std::unordered_map<std::string, std::vector<SnapshotTypeReference>> type_references_by_uri;
-    std::unordered_map<std::string, std::vector<Identifier>> identifiers_by_uri;
     std::unordered_map<std::string, std::vector<IncludeDirective>> include_directives_by_uri;
     std::unordered_map<std::string, std::vector<MacroDefinition>> macros_by_uri;
     std::unordered_map<std::string, std::vector<PackageImport>> package_imports_by_uri;
-    std::unordered_map<std::string, std::vector<SemanticSymbolMetadata>> metadata_by_uri;
     std::unordered_map<std::string, std::vector<SnapshotModuleInstance>> module_instances_by_uri;
     std::unordered_map<std::string, std::vector<SignatureInlayModuleInstance>> signature_module_instances_by_uri;
     std::vector<NavigationReference> navigation_references;

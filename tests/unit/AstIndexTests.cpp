@@ -129,22 +129,18 @@ TEST_CASE("AstIndex builds provider-facing graph, diagnostic, and signature view
     data.module_uris_by_name.emplace("child", "file:///workspace/child.sv");
     data.module_entries.push_back(SnapshotModuleEntry{.uri = "file:///workspace/child.sv",
                                                       .definition = data.modules_by_name.at("child")});
-    data.assignments_by_uri["file:///workspace/top.sv"] = {
-        ContinuousAssignment{.left_expression = "ready",
-                             .right_expression = "clk",
-                             .range = rangeAt(3, 2, 20),
-                             .left_range = rangeAt(3, 9, 14),
-                             .right_range = rangeAt(3, 17, 20)}};
-    data.identifiers_by_uri["file:///workspace/top.sv"] = {Identifier{.name = "ready",
-                                                                       .range = rangeAt(3, 9, 14)}};
+    data.assignment_edges_by_uri["file:///workspace/top.sv"] = {
+        SnapshotAssignmentEdge{.from_symbol_id = "symbol|ready",
+                               .to_symbol_id = "symbol|clk",
+                               .location = SemanticLocation{.uri = "file:///workspace/top.sv",
+                                                            .range = rangeAt(3, 2, 20)},
+                               .expression_location = SemanticLocation{.uri = "file:///workspace/top.sv",
+                                                                       .range = rangeAt(3, 17, 20)},
+                               .expression = "clk"}};
     data.package_imports_by_uri["file:///workspace/top.sv"] = {
         PackageImport{.package_name = "defs",
                       .package_range = rangeAt(1, 9, 13),
                       .range = rangeAt(1, 2, 16)}};
-    data.metadata_by_uri["file:///workspace/top.sv"] = {
-        SemanticSymbolMetadata{.name = "ready",
-                               .selection_range = rangeAt(2, 8, 13),
-                               .type_display_name = "logic"}};
     data.macros_by_uri["file:///workspace/top.sv"] = {
         MacroDefinition{.name = "READY",
                         .body = "1",
@@ -163,10 +159,8 @@ TEST_CASE("AstIndex builds provider-facing graph, diagnostic, and signature view
     CHECK(view.modules_by_name.contains("child"));
     CHECK(view.module_uris_by_name.at("child") == "file:///workspace/child.sv");
     REQUIRE(view.design_graph_module_entries.size() == 1);
-    CHECK(view.assignments_by_uri.at("file:///workspace/top.sv").size() == 1);
-    CHECK(view.identifiers_by_uri.at("file:///workspace/top.sv").size() == 1);
+    CHECK(view.assignment_edges_by_uri.at("file:///workspace/top.sv").size() == 1);
     CHECK(view.package_imports_by_uri.at("file:///workspace/top.sv").front().package_name == "defs");
-    CHECK(view.metadata_by_uri.at("file:///workspace/top.sv").front().name == "ready");
     CHECK(view.macros_by_uri.at("file:///workspace/top.sv").front().name == "READY");
     REQUIRE(view.signature_module_instances_by_uri.contains("file:///workspace/top.sv"));
     CHECK(view.signature_module_instances_by_uri.at("file:///workspace/top.sv").front().module_name == "child");
