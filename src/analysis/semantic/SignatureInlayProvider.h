@@ -15,6 +15,7 @@ struct SignatureInlaySymbol {
 
 struct SignatureInlayModuleInstance {
     std::string module_name;
+    std::string instance_name;
     ParseRange range;
     ParseRange selection_range;
     std::vector<SchematicConnection> connections;

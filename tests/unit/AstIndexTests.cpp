@@ -257,6 +257,87 @@ TEST_CASE("AstIndex derives module signatures and schematic views from slang AST
     CHECK(top_schematic.cells.front().connections[1].port_name == "data");
 }
 
+TEST_CASE("AstIndex derives module instances from slang AST rather than syntax model",
+          "[analysis][semantic][ast-index][module-instance][no-fallback]") {
+    SnapshotBuildInput input{
+        .generation = 36,
+        .documents = {{"file:///workspace/child.sv",
+                       SemanticEngineDocument{.uri = "file:///workspace/child.sv",
+                                              .text = "module child(input logic clk, output logic ready);\n"
+                                                      "endmodule\n",
+                                              .version = 1}},
+                      {"file:///workspace/top.sv",
+                       SemanticEngineDocument{.uri = "file:///workspace/top.sv",
+                                              .text = "module top;\n"
+                                                      "  logic clk;\n"
+                                                      "  logic ready;\n"
+                                                      "  child #(.WIDTH(4)) u_child(\n"
+                                                      "    .clk(clk),\n"
+                                                      "    .ready(ready)\n"
+                                                      "  );\n"
+                                                      "endmodule\n",
+                                              .version = 1,
+                                              .is_open = true}}}};
+
+    auto output = SnapshotBuilder{}.build(std::move(input));
+    REQUIRE(output.data != nullptr);
+
+    const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
+    const auto instances_it = view.module_instances_by_uri.find("file:///workspace/top.sv");
+    REQUIRE(instances_it != view.module_instances_by_uri.end());
+    const auto instance_it = std::find_if(instances_it->second.begin(),
+                                          instances_it->second.end(),
+                                          [](const SnapshotModuleInstance& candidate) {
+                                              return candidate.module_name == "child" &&
+                                                     candidate.instance_name == "u_child" &&
+                                                     !candidate.target_stable_id.empty();
+                                          });
+    REQUIRE(instance_it != instances_it->second.end());
+    const auto& instance = *instance_it;
+    CHECK(instance.module_name == "child");
+    CHECK(instance.instance_name == "u_child");
+    CHECK_FALSE(instance.target_stable_id.empty());
+    CHECK(instance.range.start_line == 3);
+    CHECK(instance.range.end_line == 6);
+    CHECK(instance.module_selection_range.start_line == 3);
+    CHECK(instance.module_selection_range.start_character == 2);
+    CHECK(instance.selection_range.start_line == 3);
+    CHECK(instance.selection_range.start_character > instance.module_selection_range.start_character);
+
+    REQUIRE(view.signature_module_instances_by_uri.contains("file:///workspace/top.sv"));
+    REQUIRE(view.signature_module_instances_by_uri.at("file:///workspace/top.sv").size() == 1);
+    const auto& inlay_instance = view.signature_module_instances_by_uri.at("file:///workspace/top.sv").front();
+    REQUIRE(inlay_instance.connections.size() == 2);
+    CHECK(inlay_instance.connections[0].port_name == "clk");
+    CHECK(inlay_instance.connections[1].port_name == "ready");
+}
+
+TEST_CASE("AstIndex attaches self-cycle and unresolved instance candidates to module definitions",
+          "[analysis][semantic][ast-index][module-instance][hierarchy][no-fallback]") {
+    SnapshotBuildInput input{.generation = 37,
+                             .documents = {{"file:///workspace/top.sv",
+                                            SemanticEngineDocument{
+                                                .uri = "file:///workspace/top.sv",
+                                                .text = "module top;\n"
+                                                        "  top u_self();\n"
+                                                        "  missing u_missing();\n"
+                                                        "endmodule\n",
+                                                .version = 1,
+                                                .is_open = true}}}};
+
+    auto output = SnapshotBuilder{}.build(std::move(input));
+    REQUIRE(output.data != nullptr);
+
+    const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
+    REQUIRE(view.modules_by_name.contains("top"));
+    const auto& top = view.modules_by_name.at("top");
+    REQUIRE(top.instances.size() == 2);
+    CHECK(top.instances[0].module_name == "top");
+    CHECK(top.instances[0].instance_name == "u_self");
+    CHECK(top.instances[1].module_name == "missing");
+    CHECK(top.instances[1].instance_name == "u_missing");
+}
+
 TEST_CASE("AstIndex derives primitive and assignment schematic cells from slang AST",
           "[analysis][semantic][ast-index][schematic][no-fallback]") {
     SnapshotBuildInput input{.generation = 34,

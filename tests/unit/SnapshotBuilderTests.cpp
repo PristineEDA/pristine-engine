@@ -92,8 +92,8 @@ TEST_CASE("SnapshotBuilder builds syntax, diagnostics, and include dependency ed
     CHECK(output.reverse_includes.at("file:///workspace/include/defs.svh") ==
           std::vector<std::string>{"file:///workspace/rtl/top.sv"});
     REQUIRE(output.data != nullptr);
-    CHECK(output.data->module_entries.size() == 1);
-    CHECK(output.data->modules_by_name.contains("top"));
+    CHECK(output.data->include_directives_by_uri.contains("file:///workspace/rtl/top.sv"));
+    CHECK(output.data->syntax_trees.size() == 2);
     CHECK(std::any_of(output.snapshot.diagnostics.begin(),
                       output.snapshot.diagnostics.end(),
                       [](const SemanticEngineDiagnostic& diagnostic) {

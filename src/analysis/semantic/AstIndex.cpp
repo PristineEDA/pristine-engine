@@ -17,6 +17,8 @@
 #include "slang/ast/types/Type.h"
 #include "slang/syntax/AllSyntax.h"
 #include "slang/syntax/SyntaxNode.h"
+#include "slang/syntax/SyntaxTree.h"
+#include "slang/syntax/SyntaxVisitor.h"
 #include "slang/text/SourceManager.h"
 
 #include <algorithm>
@@ -223,6 +225,11 @@ std::optional<std::string> logicKindForUnary(slang::ast::UnaryOperator op) {
 
 std::string generatedName(std::string_view prefix, int index) {
     return std::string("$") + std::string(prefix) + std::to_string(index);
+}
+
+std::string rangeKey(const ParseRange& range) {
+    return std::to_string(range.start_line) + ":" + std::to_string(range.start_character) + ":" +
+           std::to_string(range.end_line) + ":" + std::to_string(range.end_character);
 }
 
 SchematicConnection makeConnection(std::string port_name,
@@ -493,6 +500,11 @@ std::optional<SemanticLocation> locationForSourceRange(const slang::SourceManage
     return SemanticLocation{.uri = uri, .range = sourceRangeForSourceRange(source_manager, range)};
 }
 
+std::optional<SemanticLocation> locationForSyntaxToken(const slang::SourceManager& source_manager,
+                                                       slang::parsing::Token token) {
+    return locationForSourceRange(source_manager, token.range());
+}
+
 std::optional<ParseRange> parseRangeForSymbolSyntax(const slang::SourceManager& source_manager,
                                                     const slang::ast::Symbol& symbol) {
     if (const auto* syntax = symbol.getSyntax()) {
@@ -583,10 +595,11 @@ std::optional<ModuleDefinition> moduleDefinitionForAstBody(const slang::SourceMa
     if (!location.has_value() || !range.has_value()) {
         return std::nullopt;
     }
+    const auto body_range = parseRangeForSymbolSyntax(source_manager, body).value_or(*range);
 
     ModuleDefinition module{.name = std::string(definition.name),
                             .kind = std::string(definition.getKindString()),
-                            .range = *range,
+                            .range = body_range,
                             .selection_range = location->range};
     for (const auto* port_symbol : body.getPortList()) {
         if (port_symbol == nullptr || port_symbol->name.empty()) {
@@ -813,10 +826,28 @@ void upsertAstModuleSignature(SnapshotData& data,
     const auto uri = definition->selection_range.start_line >= 0
                          ? declarationLocationForSymbol(source_manager, body.getDefinition())->uri
                          : std::string{};
-    data.ast_module_signatures_by_name[definition->name] = SemanticModuleSignature{
-        .definition = *definition,
-        .schematic = std::move(schematic),
-        .uri = uri};
+    const auto name = definition->name;
+    SemanticModuleSignature signature{.definition = *definition,
+                                      .schematic = std::move(schematic),
+                                      .uri = uri};
+
+    data.modules_by_name[name] = signature.definition;
+    if (!uri.empty()) {
+        data.module_uris_by_name[name] = uri;
+    }
+    const auto entry = SnapshotModuleEntry{.uri = uri, .definition = signature.definition};
+    const auto entry_it = std::find_if(data.module_entries.begin(),
+                                       data.module_entries.end(),
+                                       [&](const SnapshotModuleEntry& existing) {
+                                           return existing.definition.name == name;
+                                       });
+    if (entry_it == data.module_entries.end()) {
+        data.module_entries.push_back(entry);
+    }
+    else {
+        *entry_it = entry;
+    }
+    data.ast_module_signatures_by_name[name] = std::move(signature);
 }
 
 void upsertAstContinuousAssignment(SnapshotData& data,
@@ -906,6 +937,33 @@ void insertReference(SnapshotData& data,
     data.references_by_symbol[data.references.back().stable_id].push_back(index);
 }
 
+std::optional<std::string> findUniqueModuleDefinitionSymbolId(const SnapshotData& data,
+                                                              std::string_view name) {
+    std::optional<std::string> definition_result;
+    for (const auto& [stable_id, indexed_symbol] : data.symbols_by_id) {
+        if (indexed_symbol.identity.name == name && indexed_symbol.identity.kind == "Definition") {
+            if (definition_result.has_value()) {
+                return std::nullopt;
+            }
+            definition_result = stable_id;
+        }
+    }
+    if (definition_result.has_value()) {
+        return definition_result;
+    }
+
+    std::optional<std::string> module_like_result;
+    for (const auto& [stable_id, indexed_symbol] : data.symbols_by_id) {
+        if (indexed_symbol.identity.name == name && isModuleDefinitionKind(indexed_symbol.identity.kind)) {
+            if (module_like_result.has_value()) {
+                return std::nullopt;
+            }
+            module_like_result = stable_id;
+        }
+    }
+    return module_like_result;
+}
+
 void insertSymbol(SnapshotData& data,
                   const slang::SourceManager& source_manager,
                   const slang::ast::Symbol& symbol) {
@@ -980,6 +1038,7 @@ void indexSymbolReferences(SnapshotData& data,
 
 void indexModuleInstanceBinding(SnapshotData& data,
                                 const slang::SourceManager& source_manager,
+                                const std::unordered_map<std::string, SemanticEngineDocument>& documents,
                                 const slang::ast::InstanceSymbol& instance) {
     const auto instance_location = declarationLocationForSymbol(source_manager, instance);
     if (!instance_location.has_value()) {
@@ -994,21 +1053,310 @@ void indexModuleInstanceBinding(SnapshotData& data,
     }
     const auto definition_id = symbolStableId(source_manager, definition, *definition_location);
 
-    const auto ranges_equal = [](const ParseRange& lhs, const ParseRange& rhs) {
-        return lhs.start_line == rhs.start_line && lhs.start_character == rhs.start_character &&
-               lhs.end_line == rhs.end_line && lhs.end_character == rhs.end_character;
-    };
-
-    const auto instances_it = data.module_instances_by_uri.find(instance_location->uri);
-    if (instances_it == data.module_instances_by_uri.end()) {
+    const auto document_it = documents.find(instance_location->uri);
+    const auto* document = document_it == documents.end() ? nullptr : &document_it->second;
+    auto cell = schematicCellForAstInstance(source_manager, instance, document);
+    if (!cell.has_value()) {
         return;
     }
-    for (auto& module_instance : instances_it->second) {
-        if (module_instance.instance_name == instance.name &&
-            ranges_equal(module_instance.selection_range, instance_location->range)) {
+    if (instance.name == definition.name && sameLocation(*instance_location, *definition_location)) {
+        return;
+    }
+
+    auto instance_range = cell->range;
+    auto module_selection_range = cell->range;
+    if (document != nullptr) {
+        if (auto module_range = identifierRangeByName(document->text, cell->range, cell->type)) {
+            module_selection_range = *module_range;
+        }
+    }
+
+    auto& instances = data.module_instances_by_uri[instance_location->uri];
+    for (auto& module_instance : instances) {
+        if (module_instance.instance_name == instance.name && module_instance.uri == instance_location->uri &&
+            (rangeContainsRange(module_instance.range, instance_location->range) ||
+             rangesOverlapOrTouch(module_instance.selection_range, instance_location->range))) {
+            module_instance.module_name = std::string(definition.name);
             module_instance.target_stable_id = definition_id;
             return;
         }
+    }
+
+    instances.push_back(SnapshotModuleInstance{.module_name = std::string(definition.name),
+                                               .instance_name = std::string(instance.name),
+                                               .target_stable_id = definition_id,
+                                               .uri = instance_location->uri,
+                                               .range = instance_range,
+                                               .selection_range = instance_location->range,
+                                               .module_selection_range = module_selection_range});
+    data.selection_ranges_by_uri[instance_location->uri].push_back(instance_range);
+    data.selection_ranges_by_uri[instance_location->uri].push_back(instance_location->range);
+    data.selection_ranges_by_uri[instance_location->uri].push_back(module_selection_range);
+}
+
+void upsertModuleInstanceCandidate(SnapshotData& data,
+                                   std::string module_name,
+                                   std::string instance_name,
+                                   SemanticLocation instance_location,
+                                   ParseRange range,
+                                   ParseRange module_selection_range) {
+    auto& instances = data.module_instances_by_uri[instance_location.uri];
+    const auto duplicate = std::find_if(instances.begin(),
+                                        instances.end(),
+                                        [&](const SnapshotModuleInstance& existing) {
+                                            return existing.instance_name == instance_name &&
+                                                   sameLocation(SemanticLocation{.uri = existing.uri,
+                                                                                 .range = existing.selection_range},
+                                                                instance_location);
+                                        });
+    if (duplicate != instances.end()) {
+        if (duplicate->target_stable_id.empty()) {
+            duplicate->module_name = std::move(module_name);
+            duplicate->range = range;
+            duplicate->module_selection_range = module_selection_range;
+        }
+        return;
+    }
+
+    instances.push_back(SnapshotModuleInstance{.module_name = std::move(module_name),
+                                               .instance_name = std::move(instance_name),
+                                               .target_stable_id = {},
+                                               .uri = instance_location.uri,
+                                               .range = range,
+                                               .selection_range = instance_location.range,
+                                               .module_selection_range = module_selection_range});
+    data.selection_ranges_by_uri[instance_location.uri].push_back(range);
+    data.selection_ranges_by_uri[instance_location.uri].push_back(instance_location.range);
+    data.selection_ranges_by_uri[instance_location.uri].push_back(module_selection_range);
+}
+
+void upsertModuleDeclarationCandidate(SnapshotData& data,
+                                      const slang::SourceManager& source_manager,
+                                      const slang::syntax::ModuleDeclarationSyntax& declaration) {
+    if (declaration.header == nullptr) {
+        return;
+    }
+    const auto name_location = locationForSyntaxToken(source_manager, declaration.header->name);
+    const auto declaration_location = locationForSourceRange(source_manager, declaration.sourceRange());
+    if (!name_location.has_value() || !declaration_location.has_value()) {
+        return;
+    }
+    const auto name = std::string(declaration.header->name.valueText());
+    if (name.empty()) {
+        return;
+    }
+
+    ModuleDefinition candidate{.name = name,
+                               .kind = declaration.kind == slang::syntax::SyntaxKind::InterfaceDeclaration
+                                           ? "interface"
+                                           : "module",
+                               .range = declaration_location->range,
+                               .selection_range = name_location->range};
+    data.modules_by_name.try_emplace(name, candidate);
+    data.module_uris_by_name.try_emplace(name, declaration_location->uri);
+    const auto entry_it = std::find_if(data.module_entries.begin(),
+                                       data.module_entries.end(),
+                                       [&](const SnapshotModuleEntry& entry) {
+                                           return entry.definition.name == name;
+                                       });
+    if (entry_it == data.module_entries.end()) {
+        data.module_entries.push_back(SnapshotModuleEntry{.uri = declaration_location->uri,
+                                                          .definition = std::move(candidate)});
+    }
+    data.selection_ranges_by_uri[declaration_location->uri].push_back(declaration_location->range);
+    data.selection_ranges_by_uri[declaration_location->uri].push_back(name_location->range);
+}
+
+void collectSyntaxModuleCandidates(SnapshotData& data,
+                                   const slang::SourceManager& source_manager) {
+    for (const auto& tree : data.syntax_trees) {
+        if (!tree) {
+            continue;
+        }
+        auto visitor = slang::syntax::makeSyntaxVisitor(
+            [&](auto& self, const slang::syntax::ModuleDeclarationSyntax& node) {
+                upsertModuleDeclarationCandidate(data, source_manager, node);
+                self.visitDefault(node);
+            },
+            [&](auto& self, const slang::syntax::HierarchyInstantiationSyntax& node) {
+                const auto module_location = locationForSyntaxToken(source_manager, node.type);
+                if (!module_location.has_value()) {
+                    self.visitDefault(node);
+                    return;
+                }
+                const auto module_name = std::string(node.type.valueText());
+                if (module_name.empty()) {
+                    self.visitDefault(node);
+                    return;
+                }
+                for (const auto* instance : node.instances) {
+                    if (instance == nullptr || instance->decl == nullptr) {
+                        continue;
+                    }
+                    const auto instance_location = locationForSyntaxToken(source_manager,
+                                                                          instance->decl->name);
+                    if (!instance_location.has_value()) {
+                        continue;
+                    }
+                    const auto statement_location = locationForSourceRange(source_manager,
+                                                                           node.sourceRange());
+                    const auto instance_range = statement_location.has_value()
+                                                    ? statement_location->range
+                                                    : sourceRangeForSourceRange(source_manager,
+                                                                                instance->sourceRange());
+                    upsertModuleInstanceCandidate(data,
+                                                  module_name,
+                                                  std::string(instance->decl->name.valueText()),
+                                                  *instance_location,
+                                                  instance_range,
+                                                  module_location->range);
+                }
+                self.visitDefault(node);
+            });
+        tree->root().visit(visitor);
+    }
+}
+
+std::vector<ModuleInstantiation> instancesForModule(const SnapshotData& data,
+                                                    const ModuleDefinition& definition,
+                                                    std::string_view uri) {
+    std::vector<ModuleInstantiation> result;
+    const auto instances_it = data.module_instances_by_uri.find(std::string(uri));
+    if (instances_it == data.module_instances_by_uri.end()) {
+        return result;
+    }
+    for (const auto& instance : instances_it->second) {
+        if (!rangeContainsRange(definition.range, instance.selection_range)) {
+            continue;
+        }
+        const auto duplicate = std::any_of(result.begin(),
+                                           result.end(),
+                                           [&](const ModuleInstantiation& existing) {
+                                               return rangeKey(existing.selection_range) ==
+                                                      rangeKey(instance.selection_range);
+                                           });
+        if (duplicate) {
+            continue;
+        }
+        result.push_back(ModuleInstantiation{.module_name = instance.module_name,
+                                             .instance_name = instance.instance_name,
+                                             .range = instance.range,
+                                             .selection_range = instance.selection_range,
+                                             .module_selection_range = instance.module_selection_range});
+    }
+    return result;
+}
+
+void updateModuleInstanceTargets(SnapshotData& data) {
+    for (auto& [_, instances] : data.module_instances_by_uri) {
+        for (auto& module_instance : instances) {
+            if (!module_instance.target_stable_id.empty()) {
+                continue;
+            }
+            const auto target_id = findUniqueModuleDefinitionSymbolId(data, module_instance.module_name);
+            if (target_id.has_value()) {
+                module_instance.target_stable_id = *target_id;
+            }
+        }
+    }
+}
+
+void addModuleInstantiationReferences(SnapshotData& data,
+                                       const std::unordered_map<std::string, SemanticEngineDocument>& documents) {
+    for (const auto& [document_uri, instances] : data.module_instances_by_uri) {
+        if (!documents.contains(document_uri)) {
+            continue;
+        }
+        for (const auto& instance : instances) {
+            const auto target_id = !instance.target_stable_id.empty()
+                                       ? std::optional<std::string>{instance.target_stable_id}
+                                       : findUniqueModuleDefinitionSymbolId(data, instance.module_name);
+            if (!target_id.has_value()) {
+                continue;
+            }
+            insertReference(data,
+                            *target_id,
+                            instance.module_name,
+                            SemanticLocation{.uri = document_uri, .range = instance.module_selection_range},
+                            false);
+        }
+    }
+}
+
+void sortModuleInstances(SnapshotData& data) {
+    for (auto& [_, instances] : data.module_instances_by_uri) {
+        std::sort(instances.begin(), instances.end(), [](const auto& lhs, const auto& rhs) {
+            if (lhs.uri != rhs.uri) {
+                return lhs.uri < rhs.uri;
+            }
+            const auto lhs_key = rangeKey(lhs.selection_range);
+            const auto rhs_key = rangeKey(rhs.selection_range);
+            if (lhs_key != rhs_key) {
+                return lhs_key < rhs_key;
+            }
+            if (lhs.target_stable_id.empty() != rhs.target_stable_id.empty()) {
+                return !lhs.target_stable_id.empty();
+            }
+            if (lhs.instance_name != rhs.instance_name) {
+                return lhs.instance_name < rhs.instance_name;
+            }
+            if (lhs.module_name != rhs.module_name) {
+                return lhs.module_name < rhs.module_name;
+            }
+            return locationLess(SemanticLocation{.uri = lhs.uri, .range = lhs.range},
+                                SemanticLocation{.uri = rhs.uri, .range = rhs.range});
+        });
+        instances.erase(std::unique(instances.begin(),
+                                    instances.end(),
+                                    [](const auto& lhs, const auto& rhs) {
+                                        return lhs.uri == rhs.uri &&
+                                               rangeKey(lhs.selection_range) == rangeKey(rhs.selection_range);
+                                     }),
+                        instances.end());
+    }
+}
+
+void attachInstancesToModuleDefinitions(SnapshotData& data) {
+    for (auto& [name, signature] : data.ast_module_signatures_by_name) {
+        signature.definition.instances = instancesForModule(data, signature.definition, signature.uri);
+        data.modules_by_name[name] = signature.definition;
+        const auto entry_it = std::find_if(data.module_entries.begin(),
+                                           data.module_entries.end(),
+                                           [&](const SnapshotModuleEntry& entry) {
+                                               return entry.definition.name == name;
+                                           });
+        if (entry_it != data.module_entries.end()) {
+            entry_it->definition = signature.definition;
+        }
+    }
+
+    for (auto& [name, definition] : data.modules_by_name) {
+        if (data.ast_module_signatures_by_name.contains(name)) {
+            continue;
+        }
+        const auto uri_it = data.module_uris_by_name.find(name);
+        if (uri_it == data.module_uris_by_name.end()) {
+            continue;
+        }
+        definition.instances = instancesForModule(data, definition, uri_it->second);
+        const auto entry_it = std::find_if(data.module_entries.begin(),
+                                           data.module_entries.end(),
+                                           [&](const SnapshotModuleEntry& entry) {
+                                               return entry.definition.name == name;
+                                           });
+        if (entry_it != data.module_entries.end()) {
+            entry_it->definition = definition;
+        }
+    }
+}
+
+void addDeclarationReferences(SnapshotData& data) {
+    for (const auto& [stable_id, indexed_symbol] : data.symbols_by_id) {
+        insertReference(data,
+                        stable_id,
+                        indexed_symbol.identity.name,
+                        indexed_symbol.identity.location,
+                        true);
     }
 }
 
@@ -1031,7 +1379,7 @@ struct SemanticIndexVisitor
     {
         insertSymbol(data, source_manager, symbol);
         if constexpr (std::is_same_v<T, slang::ast::InstanceSymbol>) {
-            indexModuleInstanceBinding(data, source_manager, symbol);
+            indexModuleInstanceBinding(data, source_manager, documents, symbol);
         }
         if constexpr (std::is_same_v<T, slang::ast::InstanceBodySymbol>) {
             upsertAstModuleSignature(data, source_manager, documents, symbol);
@@ -1050,38 +1398,6 @@ struct SemanticIndexVisitor
         this->visitDefault(expression);
     }
 };
-
-void addDeclarationReferences(SnapshotData& data) {
-    for (const auto& [stable_id, indexed_symbol] : data.symbols_by_id) {
-        insertReference(data,
-                        stable_id,
-                        indexed_symbol.identity.name,
-                        indexed_symbol.identity.location,
-                        true);
-    }
-}
-
-void addModuleInstantiationReferences(SnapshotData& data,
-                                       const std::unordered_map<std::string, SemanticEngineDocument>& documents) {
-    for (const auto& [document_uri, instances] : data.module_instances_by_uri) {
-        if (!documents.contains(document_uri)) {
-            continue;
-        }
-        for (const auto& instance : instances) {
-            const auto target_id = !instance.target_stable_id.empty()
-                                       ? std::optional<std::string>{instance.target_stable_id}
-                                       : findDefinitionSymbolId(data, instance.module_name);
-            if (!target_id.has_value()) {
-                continue;
-            }
-            insertReference(data,
-                            *target_id,
-                            instance.module_name,
-                            SemanticLocation{.uri = document_uri, .range = instance.module_selection_range},
-                            false);
-        }
-    }
-}
 
 std::optional<std::string> symbolIdAtReferenceRangeStart(const SnapshotData& data,
                                                          std::string_view uri,
@@ -1344,6 +1660,7 @@ void buildAstIndexes(SnapshotData& data,
     }
 
     const auto& root = data.compilation->getRoot();
+    collectSyntaxModuleCandidates(data, *data.source_manager);
     SemanticIndexVisitor visitor(data, *data.source_manager, documents);
     root.visit(visitor);
     for (const auto* definition : data.compilation->getDefinitions()) {
@@ -1351,6 +1668,9 @@ void buildAstIndexes(SnapshotData& data,
             insertSymbol(data, *data.source_manager, *definition);
         }
     }
+    updateModuleInstanceTargets(data);
+    sortModuleInstances(data);
+    attachInstancesToModuleDefinitions(data);
     addDeclarationReferences(data);
     addModuleInstantiationReferences(data, documents);
     buildAssignmentEdges(data);
@@ -1360,29 +1680,7 @@ void buildAstIndexes(SnapshotData& data,
 
 std::optional<std::string> findDefinitionSymbolId(const SnapshotData& data,
                                                   std::string_view name) {
-    std::optional<std::string> definition_result;
-    for (const auto& [stable_id, indexed_symbol] : data.symbols_by_id) {
-        if (indexed_symbol.identity.name == name && indexed_symbol.identity.kind == "Definition") {
-            if (definition_result.has_value()) {
-                return std::nullopt;
-            }
-            definition_result = stable_id;
-        }
-    }
-    if (definition_result.has_value()) {
-        return definition_result;
-    }
-
-    std::optional<std::string> module_like_result;
-    for (const auto& [stable_id, indexed_symbol] : data.symbols_by_id) {
-        if (indexed_symbol.identity.name == name && isModuleDefinitionKind(indexed_symbol.identity.kind)) {
-            if (module_like_result.has_value()) {
-                return std::nullopt;
-            }
-            module_like_result = stable_id;
-        }
-    }
-    return module_like_result;
+    return findUniqueModuleDefinitionSymbolId(data, name);
 }
 
 std::optional<std::string> findSymbolIdByNameAndKind(const SnapshotData& data,
@@ -1565,7 +1863,21 @@ AstIndexView buildAstIndexView(const SnapshotData* data, std::uint64_t generatio
         auto& view_instances = view.signature_module_instances_by_uri[uri];
         view_instances.reserve(instances.size());
         for (const auto& instance : instances) {
+            const auto duplicate = std::any_of(view_instances.begin(),
+                                               view_instances.end(),
+                                               [&](const SignatureInlayModuleInstance& existing) {
+                                                   return existing.module_name == instance.module_name &&
+                                                          ((!existing.instance_name.empty() &&
+                                                            existing.instance_name == instance.instance_name) ||
+                                                           rangesOverlapOrTouch(existing.range, instance.range) ||
+                                                           rangesOverlapOrTouch(existing.selection_range,
+                                                                                instance.selection_range));
+                                               });
+            if (duplicate) {
+                continue;
+            }
             SignatureInlayModuleInstance view_instance{.module_name = instance.module_name,
+                                                       .instance_name = instance.instance_name,
                                                        .range = instance.range,
                                                        .selection_range = instance.selection_range};
             for (const auto& [_, signature] : view.module_signatures_by_name) {

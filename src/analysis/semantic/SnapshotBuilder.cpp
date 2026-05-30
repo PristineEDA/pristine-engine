@@ -131,29 +131,6 @@ SnapshotBuildOutput SnapshotBuilder::build(SnapshotBuildInput input) const {
         append_symbol_ranges(append_symbol_ranges,
                              compilation_service.documentSymbols(document_it->second.text, uri));
 
-        const auto modules = compilation_service.moduleDefinitions(document_it->second.text, uri);
-        for (const auto& module : modules) {
-            data->module_entries.push_back(SnapshotModuleEntry{.uri = uri, .definition = module});
-            data->modules_by_name.try_emplace(module.name, module);
-            data->module_uris_by_name.try_emplace(module.name, uri);
-            for (const auto& instance : module.instances) {
-                data->module_instances_by_uri[uri].push_back(SnapshotModuleInstance{
-                    .module_name = instance.module_name,
-                    .instance_name = instance.instance_name,
-                    .target_stable_id = {},
-                    .uri = uri,
-                    .range = instance.range,
-                    .selection_range = instance.selection_range,
-                    .module_selection_range = instance.module_selection_range});
-            }
-            data->selection_ranges_by_uri[uri].push_back(module.range);
-            data->selection_ranges_by_uri[uri].push_back(module.selection_range);
-            for (const auto& instance : module.instances) {
-                data->selection_ranges_by_uri[uri].push_back(instance.range);
-                data->selection_ranges_by_uri[uri].push_back(instance.selection_range);
-                data->selection_ranges_by_uri[uri].push_back(instance.module_selection_range);
-            }
-        }
         auto tree = slang::syntax::SyntaxTree::fromFileInMemory(document_it->second.text,
                                                                 *data->source_manager,
                                                                 "source",
