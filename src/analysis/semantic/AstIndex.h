@@ -3,6 +3,7 @@
 #include "DesignGraphProvider.h"
 #include "DiagnosticProvider.h"
 #include "NavigationProvider.h"
+#include "SignatureInlayProvider.h"
 #include "SnapshotBuilder.h"
 #include "pristine/analysis/SemanticEngine.h"
 
@@ -30,6 +31,17 @@ struct AstIndexView {
     std::uint64_t generation = 0;
     bool snapshot_available = false;
     std::vector<AstIndexSymbol> symbols;
+    std::unordered_map<std::string, ModuleDefinition> modules_by_name;
+    std::unordered_map<std::string, std::string> module_uris_by_name;
+    std::unordered_map<std::string, ModuleSchematic> schematics_by_name;
+    std::unordered_map<std::string, std::string> schematic_uris_by_name;
+    std::vector<DesignGraphModuleEntry> design_graph_module_entries;
+    std::unordered_map<std::string, std::vector<ContinuousAssignment>> assignments_by_uri;
+    std::unordered_map<std::string, std::vector<Identifier>> identifiers_by_uri;
+    std::unordered_map<std::string, std::vector<MacroDefinition>> macros_by_uri;
+    std::unordered_map<std::string, std::vector<PackageImport>> package_imports_by_uri;
+    std::unordered_map<std::string, std::vector<SemanticSymbolMetadata>> metadata_by_uri;
+    std::unordered_map<std::string, std::vector<SignatureInlayModuleInstance>> signature_module_instances_by_uri;
     std::vector<NavigationReference> navigation_references;
     std::unordered_map<std::string, SemanticSymbolIdentity> navigation_symbols_by_id;
     std::unordered_map<std::string, DiagnosticSymbol> diagnostic_symbols_by_id;

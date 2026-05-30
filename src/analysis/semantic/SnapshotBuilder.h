@@ -73,6 +73,7 @@ struct SnapshotData {
     std::unordered_map<std::string, ModuleSchematic> schematics_by_name;
     std::unordered_map<std::string, std::string> schematic_uris_by_name;
     std::unordered_map<std::string, std::vector<ContinuousAssignment>> assignments_by_uri;
+    std::unordered_map<std::string, std::vector<Identifier>> identifiers_by_uri;
     std::unordered_map<std::string, std::vector<SnapshotModuleInstance>> module_instances_by_uri;
     std::unordered_map<std::string, std::vector<ParseRange>> selection_ranges_by_uri;
     std::unordered_map<std::string, std::vector<MacroDefinition>> macros_by_uri;

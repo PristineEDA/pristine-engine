@@ -265,16 +265,13 @@ semantic::DesignGraphContext designGraphContextFor(const SnapshotData* data,
     if (data == nullptr) {
         return context;
     }
-    context.modules_by_name = data->modules_by_name;
-    context.module_uris_by_name = data->module_uris_by_name;
-    context.schematics_by_name = data->schematics_by_name;
-    context.schematic_uris_by_name = data->schematic_uris_by_name;
-    context.module_entries.reserve(data->module_entries.size());
-    for (const auto& entry : data->module_entries) {
-        context.module_entries.push_back(semantic::DesignGraphModuleEntry{.uri = entry.uri,
-                                                                          .definition = entry.definition});
-    }
-    context.assignments_by_uri = data->assignments_by_uri;
+    context.modules_by_name = ast_index.modules_by_name;
+    context.module_uris_by_name = ast_index.module_uris_by_name;
+    context.schematics_by_name = ast_index.schematics_by_name;
+    context.schematic_uris_by_name = ast_index.schematic_uris_by_name;
+    context.module_entries = ast_index.design_graph_module_entries;
+    context.assignments_by_uri = ast_index.assignments_by_uri;
+    context.identifiers_by_uri = ast_index.identifiers_by_uri;
     context.symbols_by_id = ast_index.design_graph_symbols_by_id;
     context.symbol_ranges_by_uri = ast_index.design_graph_symbol_ranges_by_uri;
     return context;
@@ -324,20 +321,20 @@ semantic::DiagnosticContext diagnosticContextFor(const SnapshotData* data,
     }
     context.symbols_by_id = ast_index.diagnostic_symbols_by_id;
     context.references = ast_index.diagnostic_references;
-    context.assignments_by_uri = data->assignments_by_uri;
-    context.package_imports_by_uri = data->package_imports_by_uri;
-    context.metadata_by_uri = data->metadata_by_uri;
-    context.modules_by_name = data->modules_by_name;
+    context.assignments_by_uri = ast_index.assignments_by_uri;
+    context.package_imports_by_uri = ast_index.package_imports_by_uri;
+    context.metadata_by_uri = ast_index.metadata_by_uri;
+    context.modules_by_name = ast_index.modules_by_name;
     return context;
 }
 
-template<typename SnapshotData>
-semantic::CodeActionContext codeActionContextFor(const SnapshotData* data,
+semantic::CodeActionContext codeActionContextFor(const semantic::SnapshotData* data,
                                                  const SemanticEngineSnapshot& snapshot,
                                                  std::string document_uri,
                                                  ParseRange range,
                                                  const std::unordered_map<std::string, SemanticEngineDocument>& documents,
                                                  std::string workspace_root_uri,
+                                                 const semantic::AstIndexView& ast_index,
                                                  std::vector<SemanticEngineDiagnostic> diagnostics) {
     semantic::CodeActionContext context{.generation = snapshot.generation,
                                        .snapshot_available = data != nullptr,
@@ -351,7 +348,7 @@ semantic::CodeActionContext codeActionContextFor(const SnapshotData* data,
         context.document.uri = std::move(document_uri);
     }
     if (data != nullptr) {
-        context.modules_by_name = data->modules_by_name;
+        context.modules_by_name = ast_index.modules_by_name;
     }
     return context;
 }
@@ -1257,15 +1254,17 @@ SemanticCompletionResult SemanticEngine::completionsAt(std::string_view uri,
 
 SemanticCompletionItem SemanticEngine::resolveCompletion(std::string_view stable_id,
                                                          std::string_view label) const {
+    const auto& current_snapshot = snapshot();
     const auto* data = snapshotData();
+    const auto ast_index = semantic::buildAstIndexView(data, current_snapshot.generation);
     if (data == nullptr) {
         return semantic::resolveCompletionItem(stable_id, label, semantic::CompletionResolveContext{});
     }
 
     semantic::CompletionResolveContext context;
-    context.modules_by_name = &data->modules_by_name;
-    context.module_uris_by_name = &data->module_uris_by_name;
-    context.macros_by_uri = &data->macros_by_uri;
+    context.modules_by_name = &ast_index.modules_by_name;
+    context.module_uris_by_name = &ast_index.module_uris_by_name;
+    context.macros_by_uri = &ast_index.macros_by_uri;
 
     const auto symbol_it = data->symbols_by_id.find(std::string(stable_id));
     if (symbol_it != data->symbols_by_id.end()) {
@@ -1281,6 +1280,7 @@ SemanticSignatureHelpResult SemanticEngine::signatureHelpAt(std::string_view uri
     const auto& current_snapshot = snapshot();
     const auto document_uri = withoutTrailingSlash(normalizeFileUri(uri));
     const auto* data = snapshotData();
+    const auto ast_index = semantic::buildAstIndexView(data, current_snapshot.generation);
     const auto document_it = documents_.find(document_uri);
 
     semantic::SignatureInlayContext context{.generation = current_snapshot.generation,
@@ -1288,18 +1288,12 @@ SemanticSignatureHelpResult SemanticEngine::signatureHelpAt(std::string_view uri
                                             .document_text = document_it == documents_.end()
                                                                  ? nullptr
                                                                  : &document_it->second.text,
-                                            .modules_by_name = data == nullptr ? nullptr : &data->modules_by_name,
+                                            .modules_by_name = data == nullptr ? nullptr : &ast_index.modules_by_name,
                                             .snapshot_available = data != nullptr};
     if (data != nullptr) {
-        const auto instances_it = data->module_instances_by_uri.find(document_uri);
-        if (instances_it != data->module_instances_by_uri.end()) {
-            context.module_instances.reserve(instances_it->second.size());
-            for (const auto& instance : instances_it->second) {
-                context.module_instances.push_back(semantic::SignatureInlayModuleInstance{
-                    .module_name = instance.module_name,
-                    .range = instance.range,
-                    .selection_range = instance.selection_range});
-            }
+        const auto instances_it = ast_index.signature_module_instances_by_uri.find(document_uri);
+        if (instances_it != ast_index.signature_module_instances_by_uri.end()) {
+            context.module_instances = instances_it->second;
         }
     }
     return semantic::signatureHelpAt(context, line, character);
@@ -1309,10 +1303,11 @@ SemanticInlayHintResult SemanticEngine::inlayHints(std::string_view uri, ParseRa
     const auto& current_snapshot = snapshot();
     const auto document_uri = withoutTrailingSlash(normalizeFileUri(uri));
     const auto* data = snapshotData();
+    const auto ast_index = semantic::buildAstIndexView(data, current_snapshot.generation);
 
     semantic::SignatureInlayContext context{.generation = current_snapshot.generation,
                                             .document_uri = document_uri,
-                                            .modules_by_name = data == nullptr ? nullptr : &data->modules_by_name,
+                                            .modules_by_name = data == nullptr ? nullptr : &ast_index.modules_by_name,
                                             .snapshot_available = data != nullptr};
     if (data != nullptr) {
         context.symbols.reserve(data->symbols_by_id.size());
@@ -1323,15 +1318,9 @@ SemanticInlayHintResult SemanticEngine::inlayHints(std::string_view uri, ParseRa
         }
     }
     if (data != nullptr) {
-        const auto instances_it = data->module_instances_by_uri.find(document_uri);
-        if (instances_it != data->module_instances_by_uri.end()) {
-            context.module_instances.reserve(instances_it->second.size());
-            for (const auto& instance : instances_it->second) {
-                context.module_instances.push_back(semantic::SignatureInlayModuleInstance{
-                    .module_name = instance.module_name,
-                    .range = instance.range,
-                    .selection_range = instance.selection_range});
-            }
+        const auto instances_it = ast_index.signature_module_instances_by_uri.find(document_uri);
+        if (instances_it != ast_index.signature_module_instances_by_uri.end()) {
+            context.module_instances = instances_it->second;
         }
     }
     return semantic::inlayHints(context, range);
@@ -1466,10 +1455,6 @@ SemanticConeTrace SemanticEngine::backwardConeAt(std::string_view uri,
     const auto* data = snapshotData();
     const auto ast_index = semantic::buildAstIndexView(data, current_snapshot.generation);
     auto context = designGraphContextFor(data, current_snapshot, config_, ast_index);
-    if (const auto document_it = documents_.find(document_uri); document_it != documents_.end()) {
-        CompilationService compilation_service;
-        context.identifiers_by_uri[document_uri] = compilation_service.identifiers(document_it->second.text);
-    }
     trace = semantic::backwardCone(context, document_uri, lookup, kMaxSemanticLocations);
     return finish(std::move(trace));
 }
@@ -1490,12 +1475,14 @@ SemanticCodeActionResult SemanticEngine::codeActionsAt(std::string_view uri, Par
         return value;
     };
     const auto* data = snapshotData();
+    const auto ast_index = semantic::buildAstIndexView(data, current_snapshot.generation);
     auto context = codeActionContextFor(data,
                                         current_snapshot,
                                         document_uri,
                                         range,
                                         documents_,
                                         workspace_root_uri_,
+                                        ast_index,
                                         diagnosticsFor(document_uri));
     result = semantic::codeActionsAt(context);
 

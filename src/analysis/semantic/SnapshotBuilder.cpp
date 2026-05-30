@@ -109,6 +109,7 @@ SnapshotBuildOutput SnapshotBuilder::build(SnapshotBuildInput input) const {
         data->package_imports_by_uri[uri] = compilation_service.packageImports(document_it->second.text);
         data->metadata_by_uri[uri] = compilation_service.semanticSymbolMetadata(document_it->second.text,
                                                                                 uri);
+        data->identifiers_by_uri[uri] = compilation_service.identifiers(document_it->second.text);
 
         std::vector<std::string> included_uris;
         for (const auto& include : compilation_service.includeDirectives(document_it->second.text)) {

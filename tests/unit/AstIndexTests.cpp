@@ -113,6 +113,76 @@ TEST_CASE("AstIndex builds provider-facing symbol and reference views",
     CHECK(view.design_graph_symbol_ranges_by_uri.at("file:///workspace/top.sv").size() == 2);
 }
 
+TEST_CASE("AstIndex builds provider-facing graph, diagnostic, and signature views",
+          "[analysis][semantic][ast-index][provider-view]") {
+    SnapshotData data;
+    data.modules_by_name.emplace("child",
+                                 ModuleDefinition{.name = "child",
+                                                  .kind = "module",
+                                                  .range = rangeAt(0, 0, 48),
+                                                  .selection_range = rangeAt(0, 7, 12),
+                                                  .port_details = {SchematicPort{.name = "clk",
+                                                                                 .direction = "input",
+                                                                                 .width_text = "logic",
+                                                                                 .range = rangeAt(0, 13, 28),
+                                                                                 .selection_range = rangeAt(0, 25, 28)}}});
+    data.module_uris_by_name.emplace("child", "file:///workspace/child.sv");
+    data.schematics_by_name.emplace("child",
+                                    ModuleSchematic{.name = "child",
+                                                    .range = rangeAt(0, 0, 48),
+                                                    .selection_range = rangeAt(0, 7, 12),
+                                                    .ports = {SchematicPort{.name = "clk",
+                                                                            .direction = "input",
+                                                                            .width_text = "logic",
+                                                                            .range = rangeAt(0, 13, 28),
+                                                                            .selection_range = rangeAt(0, 25, 28)}}});
+    data.schematic_uris_by_name.emplace("child", "file:///workspace/child.sv");
+    data.module_entries.push_back(SnapshotModuleEntry{.uri = "file:///workspace/child.sv",
+                                                      .definition = data.modules_by_name.at("child")});
+    data.assignments_by_uri["file:///workspace/top.sv"] = {
+        ContinuousAssignment{.left_expression = "ready",
+                             .right_expression = "clk",
+                             .range = rangeAt(3, 2, 20),
+                             .left_range = rangeAt(3, 9, 14),
+                             .right_range = rangeAt(3, 17, 20)}};
+    data.identifiers_by_uri["file:///workspace/top.sv"] = {Identifier{.name = "ready",
+                                                                       .range = rangeAt(3, 9, 14)}};
+    data.package_imports_by_uri["file:///workspace/top.sv"] = {
+        PackageImport{.package_name = "defs",
+                      .package_range = rangeAt(1, 9, 13),
+                      .range = rangeAt(1, 2, 16)}};
+    data.metadata_by_uri["file:///workspace/top.sv"] = {
+        SemanticSymbolMetadata{.name = "ready",
+                               .selection_range = rangeAt(2, 8, 13),
+                               .type_display_name = "logic"}};
+    data.macros_by_uri["file:///workspace/top.sv"] = {
+        MacroDefinition{.name = "READY",
+                        .body = "1",
+                        .range = rangeAt(0, 0, 15),
+                        .selection_range = rangeAt(0, 8, 13)}};
+    data.module_instances_by_uri["file:///workspace/top.sv"] = {
+        SnapshotModuleInstance{.module_name = "child",
+                               .instance_name = "u_child",
+                               .uri = "file:///workspace/top.sv",
+                               .range = rangeAt(4, 2, 26),
+                               .selection_range = rangeAt(4, 8, 15),
+                               .module_selection_range = rangeAt(4, 2, 7)}};
+
+    const auto view = buildAstIndexView(&data, 77);
+
+    CHECK(view.modules_by_name.contains("child"));
+    CHECK(view.module_uris_by_name.at("child") == "file:///workspace/child.sv");
+    CHECK(view.schematics_by_name.contains("child"));
+    REQUIRE(view.design_graph_module_entries.size() == 1);
+    CHECK(view.assignments_by_uri.at("file:///workspace/top.sv").size() == 1);
+    CHECK(view.identifiers_by_uri.at("file:///workspace/top.sv").size() == 1);
+    CHECK(view.package_imports_by_uri.at("file:///workspace/top.sv").front().package_name == "defs");
+    CHECK(view.metadata_by_uri.at("file:///workspace/top.sv").front().name == "ready");
+    CHECK(view.macros_by_uri.at("file:///workspace/top.sv").front().name == "READY");
+    REQUIRE(view.signature_module_instances_by_uri.contains("file:///workspace/top.sv"));
+    CHECK(view.signature_module_instances_by_uri.at("file:///workspace/top.sv").front().module_name == "child");
+}
+
 TEST_CASE("AstIndex builds AST symbol, reference, and module instance indexes",
           "[analysis][semantic][ast-index][build]") {
     SnapshotBuildInput input{.generation = 21,

@@ -662,6 +662,36 @@ TEST_CASE("SemanticEngine reports partial design results for unresolved modules 
     }));
 }
 
+TEST_CASE("SemanticEngine traces backward cone through AstIndex identifiers without same-name leakage",
+          "[analysis][semantic-engine][design][cone][no-fallback]") {
+    SemanticEngine engine;
+    engine.configure(SemanticEngineConfig{.top_modules = {"top"}});
+    engine.updateDocument("file:///workspace/cones.sv",
+                          "module top;\n"
+                          "  logic mid;\n"
+                          "  logic out;\n"
+                          "  assign out = mid;\n"
+                          "endmodule\n"
+                          "module other;\n"
+                          "  logic mid;\n"
+                          "  logic out;\n"
+                          "  assign out = mid;\n"
+                          "endmodule\n",
+                          SemanticEngineDocumentState{.version = 1, .is_open = true});
+
+    const auto cone = engine.backwardConeAt("file:///workspace/cones.sv", 2, 9);
+
+    REQUIRE_FALSE(cone.unresolved);
+    REQUIRE(cone.root_symbol_id.has_value());
+    REQUIRE(cone.nodes.size() == 2);
+    CHECK(std::all_of(cone.nodes.begin(), cone.nodes.end(), [](const SemanticConeNode& node) {
+        return node.location.range.start_line < 4;
+    }));
+    REQUIRE(cone.edges.size() == 1);
+    CHECK(cone.edges.front().expression == "mid");
+    CHECK(cone.edges.front().location.range.start_line == 3);
+}
+
 TEST_CASE("SemanticEngine owns code actions for unresolved modules, ports, and types",
           "[analysis][semantic-engine][code-action]") {
     SemanticEngine engine;

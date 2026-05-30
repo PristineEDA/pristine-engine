@@ -636,6 +636,30 @@ AstIndexView buildAstIndexView(const SnapshotData* data, std::uint64_t generatio
         return view;
     }
 
+    view.modules_by_name = data->modules_by_name;
+    view.module_uris_by_name = data->module_uris_by_name;
+    view.schematics_by_name = data->schematics_by_name;
+    view.schematic_uris_by_name = data->schematic_uris_by_name;
+    view.assignments_by_uri = data->assignments_by_uri;
+    view.identifiers_by_uri = data->identifiers_by_uri;
+    view.macros_by_uri = data->macros_by_uri;
+    view.package_imports_by_uri = data->package_imports_by_uri;
+    view.metadata_by_uri = data->metadata_by_uri;
+    view.design_graph_module_entries.reserve(data->module_entries.size());
+    for (const auto& entry : data->module_entries) {
+        view.design_graph_module_entries.push_back(DesignGraphModuleEntry{.uri = entry.uri,
+                                                                          .definition = entry.definition});
+    }
+    for (const auto& [uri, instances] : data->module_instances_by_uri) {
+        auto& view_instances = view.signature_module_instances_by_uri[uri];
+        view_instances.reserve(instances.size());
+        for (const auto& instance : instances) {
+            view_instances.push_back(SignatureInlayModuleInstance{.module_name = instance.module_name,
+                                                                  .range = instance.range,
+                                                                  .selection_range = instance.selection_range});
+        }
+    }
+
     view.symbols.reserve(data->symbols_by_id.size());
     view.navigation_symbols_by_id.reserve(data->symbols_by_id.size());
     view.diagnostic_symbols_by_id.reserve(data->symbols_by_id.size());
