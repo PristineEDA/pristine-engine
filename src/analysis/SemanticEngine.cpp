@@ -25,8 +25,6 @@
 namespace pristine::analysis {
 namespace {
 
-constexpr std::string_view kUnresolvedTypeDiagnosticCode = "unresolvedType";
-
 bool containsPosition(const ParseRange& range, int line, int character) {
     if (line < range.start_line || line > range.end_line) {
         return false;
@@ -70,48 +68,6 @@ bool isIdentifierStart(char value) {
 bool isIdentifierContinue(char value) {
     const auto ch = static_cast<unsigned char>(value);
     return std::isalnum(ch) != 0 || value == '_' || value == '$';
-}
-
-bool startsWithInsensitive(std::string_view prefix, std::string_view candidate) {
-    if (prefix.size() > candidate.size()) {
-        return false;
-    }
-    for (size_t index = 0; index < prefix.size(); ++index) {
-        const auto lhs = static_cast<char>(std::tolower(static_cast<unsigned char>(prefix[index])));
-        const auto rhs = static_cast<char>(std::tolower(static_cast<unsigned char>(candidate[index])));
-        if (lhs != rhs) {
-            return false;
-        }
-    }
-    return true;
-}
-
-std::string declarationLocationLabel(const SemanticLocation& location) {
-    return location.uri + ":" + std::to_string(location.range.start_line + 1) + ":" +
-           std::to_string(location.range.start_character + 1);
-}
-
-int activeParameterAt(std::string_view text, size_t open_paren_offset, size_t position_offset) {
-    int active_parameter = 0;
-    int depth = 0;
-    for (size_t offset = open_paren_offset + 1; offset < position_offset && offset < text.size(); ++offset) {
-        const char value = text[offset];
-        if (value == '(') {
-            ++depth;
-            continue;
-        }
-        if (value == ')') {
-            if (depth == 0) {
-                break;
-            }
-            --depth;
-            continue;
-        }
-        if (value == ',' && depth == 0) {
-            ++active_parameter;
-        }
-    }
-    return active_parameter;
 }
 
 std::optional<size_t> openParenBeforePosition(std::string_view text,
@@ -345,11 +301,6 @@ std::optional<std::string> firstUninstantiatedModuleName(const Map& modules_by_n
         return modules_by_name.begin()->first;
     }
     return std::nullopt;
-}
-
-bool sameParseRange(const ParseRange& lhs, const ParseRange& rhs) {
-    return lhs.start_line == rhs.start_line && lhs.start_character == rhs.start_character &&
-           lhs.end_line == rhs.end_line && lhs.end_character == rhs.end_character;
 }
 
 } // namespace
