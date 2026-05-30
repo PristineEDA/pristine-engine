@@ -72,7 +72,8 @@ bool sameRange(const ParseRange& lhs, const ParseRange& rhs) {
 } // namespace
 
 SemanticTokenResult semanticTokens(const NavigationContext& context) {
-    SemanticTokenResult result{.generation = context.generation};
+    SemanticTokenResult result;
+    result.generation = context.generation;
     if (!context.snapshot_available) {
         result.unresolved = true;
         result.messages.push_back("AST-backed SemanticEngine snapshot is unavailable");
@@ -104,9 +105,10 @@ SemanticSelectionRangeResult selectionRangesAt(const NavigationContext& context,
                                                const SemanticLookupResult& lookup,
                                                int line,
                                                int character) {
-    SemanticSelectionRangeResult result{.generation = lookup.generation,
-                                        .messages = lookup.messages,
-                                        .unresolved = lookup.unresolved};
+    SemanticSelectionRangeResult result;
+    result.generation = lookup.generation;
+    result.messages = lookup.messages;
+    result.unresolved = lookup.unresolved;
     if (lookup.unresolved) {
         return result;
     }

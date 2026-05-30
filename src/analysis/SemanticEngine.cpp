@@ -141,9 +141,10 @@ semantic::DesignGraphContext designGraphContextFor(const SnapshotData* data,
                                                    const SemanticEngineSnapshot& snapshot,
                                                    const SemanticEngineConfig& config,
                                                    const semantic::AstIndexView& ast_index) {
-    semantic::DesignGraphContext context{.generation = snapshot.generation,
-                                         .snapshot_available = data != nullptr,
-                                         .top_modules = config.top_modules};
+    semantic::DesignGraphContext context;
+    context.generation = snapshot.generation;
+    context.snapshot_available = data != nullptr;
+    context.top_modules = config.top_modules;
     if (data == nullptr) {
         return context;
     }
@@ -163,10 +164,11 @@ semantic::NavigationContext navigationContextFor(const SnapshotData* data,
                                                  std::string document_uri,
                                                  const semantic::AstIndexView& ast_index,
                                                  const std::string* document_text = nullptr) {
-    semantic::NavigationContext context{.generation = snapshot.generation,
-                                       .snapshot_available = data != nullptr,
-                                       .document_uri = std::move(document_uri),
-                                       .document_text = document_text};
+    semantic::NavigationContext context;
+    context.generation = snapshot.generation;
+    context.snapshot_available = data != nullptr;
+    context.document_uri = std::move(document_uri);
+    context.document_text = document_text;
     if (data == nullptr) {
         return context;
     }
@@ -186,10 +188,11 @@ semantic::DiagnosticContext diagnosticContextFor(const SnapshotData* data,
                                                  const std::unordered_map<std::string, SemanticEngineDocument>& documents,
                                                  std::string workspace_root_uri,
                                                  const semantic::AstIndexView& ast_index) {
-    semantic::DiagnosticContext context{.generation = snapshot.generation,
-                                        .snapshot_available = data != nullptr,
-                                        .workspace_root_uri = std::move(workspace_root_uri),
-                                        .snapshot_diagnostics = snapshot.diagnostics};
+    semantic::DiagnosticContext context;
+    context.generation = snapshot.generation;
+    context.snapshot_available = data != nullptr;
+    context.workspace_root_uri = std::move(workspace_root_uri);
+    context.snapshot_diagnostics = snapshot.diagnostics;
     if (const auto document_it = documents.find(document_uri); document_it != documents.end()) {
         context.document = document_it->second;
     }
@@ -218,11 +221,12 @@ semantic::CodeActionContext codeActionContextFor(const semantic::SnapshotData* d
                                                  std::string workspace_root_uri,
                                                  const semantic::AstIndexView& ast_index,
                                                  std::vector<SemanticEngineDiagnostic> diagnostics) {
-    semantic::CodeActionContext context{.generation = snapshot.generation,
-                                       .snapshot_available = data != nullptr,
-                                       .workspace_root_uri = std::move(workspace_root_uri),
-                                       .range = range,
-                                       .diagnostics = std::move(diagnostics)};
+    semantic::CodeActionContext context;
+    context.generation = snapshot.generation;
+    context.snapshot_available = data != nullptr;
+    context.workspace_root_uri = std::move(workspace_root_uri);
+    context.range = range;
+    context.diagnostics = std::move(diagnostics);
     if (const auto document_it = documents.find(document_uri); document_it != documents.end()) {
         context.document = document_it->second;
     }
@@ -479,14 +483,15 @@ const semantic::SnapshotData* SemanticEngine::snapshotData() const {
 SemanticLookupResult SemanticEngine::lookupAt(std::string_view uri, int line, int character) const {
     const auto& current_snapshot = snapshot();
     const auto document_uri = withoutTrailingSlash(normalizeFileUri(uri));
-    SemanticLookupResult result{.mode = current_snapshot.mode,
-                                .generation = current_snapshot.generation,
-                                .query_location = SemanticLocation{.uri = document_uri,
-                                                                   .range = ParseRange{.start_line = line,
-                                                                                       .start_character = character,
-                                                                                       .end_line = line,
-                                                                                       .end_character = character}},
-                                .unresolved = true};
+    SemanticLookupResult result;
+    result.mode = current_snapshot.mode;
+    result.generation = current_snapshot.generation;
+    result.query_location = SemanticLocation{.uri = document_uri,
+                                             .range = ParseRange{.start_line = line,
+                                                                 .start_character = character,
+                                                                 .end_line = line,
+                                                                 .end_character = character}};
+    result.unresolved = true;
     const auto* data = snapshotData();
     if (data == nullptr || !data->compilation) {
         result.messages.push_back("AST-backed SemanticEngine snapshot is unavailable");
@@ -545,9 +550,10 @@ SemanticReferenceResult SemanticEngine::definitionsAt(std::string_view uri,
                                                       int line,
                                                       int character) const {
     const auto lookup = lookupAt(uri, line, character);
-    SemanticReferenceResult result{.generation = lookup.generation,
-                                   .messages = lookup.messages,
-                                   .unresolved = lookup.unresolved};
+    SemanticReferenceResult result;
+    result.generation = lookup.generation;
+    result.messages = lookup.messages;
+    result.unresolved = lookup.unresolved;
     if (lookup.symbol.has_value()) {
         result.locations.push_back(lookup.symbol->location);
     }
@@ -558,9 +564,10 @@ SemanticReferenceResult SemanticEngine::typeDefinitionsAt(std::string_view uri,
                                                           int line,
                                                           int character) const {
     const auto lookup = lookupAt(uri, line, character);
-    SemanticReferenceResult result{.generation = lookup.generation,
-                                    .messages = lookup.messages,
-                                    .unresolved = lookup.unresolved};
+    SemanticReferenceResult result;
+    result.generation = lookup.generation;
+    result.messages = lookup.messages;
+    result.unresolved = lookup.unresolved;
 
     const auto* data = snapshotData();
     if (data != nullptr) {
@@ -612,9 +619,10 @@ SemanticReferenceResult SemanticEngine::referencesAt(std::string_view uri,
     }
 
     const auto lookup = lookupAt(uri, line, character);
-    SemanticReferenceResult result{.generation = lookup.generation,
-                                   .messages = lookup.messages,
-                                   .unresolved = lookup.unresolved};
+    SemanticReferenceResult result;
+    result.generation = lookup.generation;
+    result.messages = lookup.messages;
+    result.unresolved = lookup.unresolved;
     const auto finish = [&](SemanticReferenceResult value) {
         query_cache_->storeReferences(current_snapshot.generation,
                                       document_uri,
@@ -705,9 +713,10 @@ SemanticReferenceResult SemanticEngine::implementationsAt(std::string_view uri,
                                                           int line,
                                                           int character) const {
     const auto lookup = lookupAt(uri, line, character);
-    SemanticReferenceResult result{.generation = lookup.generation,
-                                   .messages = lookup.messages,
-                                   .unresolved = lookup.unresolved};
+    SemanticReferenceResult result;
+    result.generation = lookup.generation;
+    result.messages = lookup.messages;
+    result.unresolved = lookup.unresolved;
     if (!lookup.symbol.has_value()) {
         return result;
     }
@@ -727,9 +736,10 @@ SemanticReferenceResult SemanticEngine::implementationsAt(std::string_view uri,
 
 SemanticHoverResult SemanticEngine::hoverAt(std::string_view uri, int line, int character) const {
     const auto lookup = lookupAt(uri, line, character);
-    SemanticHoverResult result{.generation = lookup.generation,
-                               .messages = lookup.messages,
-                               .unresolved = lookup.unresolved};
+    SemanticHoverResult result;
+    result.generation = lookup.generation;
+    result.messages = lookup.messages;
+    result.unresolved = lookup.unresolved;
     if (!lookup.symbol.has_value()) {
         return result;
     }
@@ -750,9 +760,10 @@ SemanticPrepareRenameResult SemanticEngine::prepareRenameAt(std::string_view uri
                                                             int line,
                                                             int character) const {
     const auto lookup = lookupAt(uri, line, character);
-    SemanticPrepareRenameResult result{.generation = lookup.generation,
-                                       .messages = lookup.messages,
-                                       .unresolved = lookup.unresolved};
+    SemanticPrepareRenameResult result;
+    result.generation = lookup.generation;
+    result.messages = lookup.messages;
+    result.unresolved = lookup.unresolved;
     if (!lookup.symbol.has_value()) {
         return result;
     }
@@ -776,10 +787,11 @@ SemanticRenameResult SemanticEngine::renameAt(std::string_view uri,
     }
 
     const auto references = referencesAt(uri, line, character, true);
-    SemanticRenameResult result{.generation = references.generation,
-                                .messages = references.messages,
-                                .unresolved = references.unresolved,
-                                .truncated = references.truncated};
+    SemanticRenameResult result;
+    result.generation = references.generation;
+    result.messages = references.messages;
+    result.unresolved = references.unresolved;
+    result.truncated = references.truncated;
     for (const auto& location : references.locations) {
         result.edits.push_back(SemanticTextEdit{.location = location,
                                                 .new_text = std::string(new_name)});
@@ -807,7 +819,8 @@ SemanticCompletionResult SemanticEngine::completionsAt(std::string_view uri,
         return *cached;
     }
 
-    SemanticCompletionResult result{.generation = current_snapshot.generation};
+    SemanticCompletionResult result;
+    result.generation = current_snapshot.generation;
     const auto finish = [&](SemanticCompletionResult value) {
         query_cache_->storeCompletions(current_snapshot.generation,
                                        document_uri,
@@ -1055,13 +1068,12 @@ SemanticSignatureHelpResult SemanticEngine::signatureHelpAt(std::string_view uri
     const auto ast_index = semantic::buildAstIndexView(data, current_snapshot.generation);
     const auto document_it = documents_.find(document_uri);
 
-    semantic::SignatureInlayContext context{.generation = current_snapshot.generation,
-                                            .document_uri = document_uri,
-                                            .document_text = document_it == documents_.end()
-                                                                 ? nullptr
-                                                                 : &document_it->second.text,
-                                            .modules_by_name = data == nullptr ? nullptr : &ast_index.modules_by_name,
-                                            .snapshot_available = data != nullptr};
+    semantic::SignatureInlayContext context;
+    context.generation = current_snapshot.generation;
+    context.document_uri = document_uri;
+    context.document_text = document_it == documents_.end() ? nullptr : &document_it->second.text;
+    context.modules_by_name = data == nullptr ? nullptr : &ast_index.modules_by_name;
+    context.snapshot_available = data != nullptr;
     if (data != nullptr) {
         const auto instances_it = ast_index.signature_module_instances_by_uri.find(document_uri);
         if (instances_it != ast_index.signature_module_instances_by_uri.end()) {
@@ -1081,10 +1093,11 @@ SemanticInlayHintResult SemanticEngine::inlayHints(std::string_view uri, ParseRa
     const auto* data = snapshotData();
     const auto ast_index = semantic::buildAstIndexView(data, current_snapshot.generation);
 
-    semantic::SignatureInlayContext context{.generation = current_snapshot.generation,
-                                            .document_uri = document_uri,
-                                            .modules_by_name = data == nullptr ? nullptr : &ast_index.modules_by_name,
-                                            .snapshot_available = data != nullptr};
+    semantic::SignatureInlayContext context;
+    context.generation = current_snapshot.generation;
+    context.document_uri = document_uri;
+    context.modules_by_name = data == nullptr ? nullptr : &ast_index.modules_by_name;
+    context.snapshot_available = data != nullptr;
     if (data != nullptr) {
         context.symbols.reserve(data->symbols_by_id.size());
         for (const auto& [_, indexed_symbol] : data->symbols_by_id) {
@@ -1136,7 +1149,8 @@ SemanticModuleHierarchyResult SemanticEngine::moduleHierarchy(std::optional<std:
         return *cached;
     }
 
-    SemanticModuleHierarchyResult result{.generation = current_snapshot.generation};
+    SemanticModuleHierarchyResult result;
+    result.generation = current_snapshot.generation;
     const auto finish = [&](SemanticModuleHierarchyResult value) {
         query_cache_->storeModuleHierarchy(current_snapshot.generation,
                                            module_name,
@@ -1158,7 +1172,8 @@ SemanticSchematicResult SemanticEngine::schematic(std::optional<std::string_view
         return *cached;
     }
 
-    SemanticSchematicResult result{.generation = current_snapshot.generation};
+    SemanticSchematicResult result;
+    result.generation = current_snapshot.generation;
     const auto finish = [&](SemanticSchematicResult value) {
         query_cache_->storeSchematic(current_snapshot.generation, module_name, max_depth, value);
         return value;
@@ -1210,9 +1225,10 @@ SemanticConeTrace SemanticEngine::backwardConeAt(std::string_view uri,
     }
 
     const auto lookup = lookupAt(uri, line, character);
-    SemanticConeTrace trace{.generation = lookup.generation,
-                            .messages = lookup.messages,
-                            .unresolved = lookup.unresolved};
+    SemanticConeTrace trace;
+    trace.generation = lookup.generation;
+    trace.messages = lookup.messages;
+    trace.unresolved = lookup.unresolved;
     const auto finish = [&](SemanticConeTrace value) {
         query_cache_->storeBackwardCone(current_snapshot.generation,
                                         document_uri,
@@ -1242,7 +1258,8 @@ SemanticCodeActionResult SemanticEngine::codeActionsAt(std::string_view uri, Par
         return *cached;
     }
 
-    SemanticCodeActionResult result{.generation = current_snapshot.generation};
+    SemanticCodeActionResult result;
+    result.generation = current_snapshot.generation;
     const auto finish = [&](SemanticCodeActionResult value) {
         query_cache_->storeCodeActions(current_snapshot.generation,
                                        document_uri,
@@ -1305,11 +1322,12 @@ void SemanticEngine::rebuildDependenciesFor(std::string_view document_uri, std::
 }
 
 void SemanticEngine::rebuildSnapshot() const {
-    auto output = semantic::SnapshotBuilder{}.build(
-        semantic::SnapshotBuildInput{.generation = generation_,
-                                     .config = config_,
-                                     .dirty_document_uris = dirtyDocumentUris(),
-                                     .documents = documents_});
+    semantic::SnapshotBuildInput input;
+    input.generation = generation_;
+    input.config = config_;
+    input.dirty_document_uris = dirtyDocumentUris();
+    input.documents = documents_;
+    auto output = semantic::SnapshotBuilder{}.build(std::move(input));
 
     includes_ = std::move(output.includes);
     reverse_includes_ = std::move(output.reverse_includes);

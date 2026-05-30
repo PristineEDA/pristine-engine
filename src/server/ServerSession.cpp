@@ -30,10 +30,6 @@ jsonrpc::Json toRangeJson(const analysis::ParseRange& range) {
                                          {"character", range.end_character}}}};
 }
 
-jsonrpc::Json toLocationJson(const analysis::Location& location) {
-    return jsonrpc::Json{{"uri", location.uri}, {"range", toRangeJson(location.range)}};
-}
-
 jsonrpc::Json toLocationJson(const analysis::SemanticLocation& location) {
     return jsonrpc::Json{{"uri", location.uri}, {"range", toRangeJson(location.range)}};
 }
@@ -53,10 +49,6 @@ jsonrpc::Json toTextEditJson(const analysis::ParseRange& range, std::string_view
 
 jsonrpc::Json toPositionJson(int line, int character) {
     return jsonrpc::Json{{"line", line}, {"character", character}};
-}
-
-jsonrpc::Json toDocumentHighlightJson(const analysis::Location& location) {
-    return jsonrpc::Json{{"range", toRangeJson(location.range)}, {"kind", 1}};
 }
 
 jsonrpc::Json toDocumentHighlightJson(const analysis::SemanticLocation& location) {
@@ -445,26 +437,6 @@ std::optional<fs::path> resolveIncludeTarget(const workspace::WorkspaceManager& 
     return std::nullopt;
 }
 
-std::optional<fs::path> proposedIncludeTarget(const workspace::WorkspaceManager& workspace_manager,
-                                              std::string_view document_uri,
-                                              std::string_view target) {
-    const auto target_path = fs::path(std::string(target));
-    if (target_path.is_absolute()) {
-        return target_path;
-    }
-
-    if (const auto document_path = workspace::WorkspaceManager::pathFromFileUri(document_uri)) {
-        return document_path->parent_path() / target_path;
-    }
-
-    const auto& workspace_state = workspace_manager.state();
-    if (workspace_state.root_path.has_value()) {
-        return *workspace_state.root_path / target_path;
-    }
-
-    return std::nullopt;
-}
-
 jsonrpc::Json toDocumentSymbolJson(const analysis::DocumentSymbol& symbol) {
     jsonrpc::Json result{{"name", symbol.name},
                          {"kind", symbol.kind},
@@ -648,10 +620,12 @@ analysis::ParseRange parseRangeFromLspRange(const lsp::Range& range) {
 }
 
 analysis::SemanticCallHierarchyItem toSemanticCallHierarchyItem(const lsp::CallHierarchyItem& item) {
-    return analysis::SemanticCallHierarchyItem{.name = item.name,
-                                               .uri = item.uri,
-                                               .range = parseRangeFromLspRange(item.range),
-                                               .selection_range = parseRangeFromLspRange(item.selection_range)};
+    analysis::SemanticCallHierarchyItem result;
+    result.name = item.name;
+    result.uri = item.uri;
+    result.range = parseRangeFromLspRange(item.range);
+    result.selection_range = parseRangeFromLspRange(item.selection_range);
+    return result;
 }
 
 std::optional<std::string> parseOptionalModuleName(const jsonrpc::Json& params) {

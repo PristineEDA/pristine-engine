@@ -326,9 +326,10 @@ std::string portDocumentation(const ModuleDefinition& module,
 SemanticCompletionItem resolveCompletionItem(std::string_view stable_id,
                                              std::string_view label,
                                              const CompletionResolveContext& context) {
-    SemanticCompletionItem item{.stable_id = std::string(stable_id),
-                                .label = std::string(label),
-                                .insert_text = std::string(label)};
+    SemanticCompletionItem item;
+    item.stable_id = std::string(stable_id);
+    item.label = std::string(label);
+    item.insert_text = std::string(label);
     const auto stable_id_text = std::string(stable_id);
     const auto port_marker = stable_id_text.find("|port|");
     if (port_marker != std::string::npos && context.modules_by_name != nullptr) {

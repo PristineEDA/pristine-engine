@@ -27,9 +27,10 @@ std::optional<std::vector<SemanticEngineDiagnostic>> QueryCache::diagnostics(
 void QueryCache::storeDiagnostics(std::uint64_t generation,
                                   std::string_view uri,
                                   std::vector<SemanticEngineDiagnostic> diagnostics) {
-    diagnostics_by_uri_.insert_or_assign(std::string(uri),
-                                         DiagnosticsEntry{.generation = generation,
-                                                          .diagnostics = std::move(diagnostics)});
+    DiagnosticsEntry entry;
+    entry.generation = generation;
+    entry.diagnostics = std::move(diagnostics);
+    diagnostics_by_uri_.insert_or_assign(std::string(uri), std::move(entry));
 }
 
 std::optional<SemanticWorkspaceSymbolResult> QueryCache::workspaceSymbols(
@@ -47,9 +48,10 @@ void QueryCache::storeWorkspaceSymbols(std::uint64_t generation,
                                        std::string_view query,
                                        size_t limit,
                                        SemanticWorkspaceSymbolResult result) {
-    workspace_symbols_by_key_.insert_or_assign(workspaceSymbolsKey(query, limit),
-                                               WorkspaceSymbolsEntry{.generation = generation,
-                                                                     .result = std::move(result)});
+    WorkspaceSymbolsEntry entry;
+    entry.generation = generation;
+    entry.result = std::move(result);
+    workspace_symbols_by_key_.insert_or_assign(workspaceSymbolsKey(query, limit), std::move(entry));
 }
 
 std::optional<SemanticReferenceResult> QueryCache::references(std::uint64_t generation,
@@ -70,9 +72,11 @@ void QueryCache::storeReferences(std::uint64_t generation,
                                  int character,
                                  bool include_declaration,
                                  SemanticReferenceResult result) {
+    ReferencesEntry entry;
+    entry.generation = generation;
+    entry.result = std::move(result);
     references_by_key_.insert_or_assign(referencesKey(uri, line, character, include_declaration),
-                                        ReferencesEntry{.generation = generation,
-                                                        .result = std::move(result)});
+                                        std::move(entry));
 }
 
 std::optional<SemanticRenameResult> QueryCache::rename(std::uint64_t generation,
@@ -93,9 +97,10 @@ void QueryCache::storeRename(std::uint64_t generation,
                              int character,
                              std::string_view new_name,
                              SemanticRenameResult result) {
-    rename_by_key_.insert_or_assign(renameKey(uri, line, character, new_name),
-                                    RenameEntry{.generation = generation,
-                                                .result = std::move(result)});
+    RenameEntry entry;
+    entry.generation = generation;
+    entry.result = std::move(result);
+    rename_by_key_.insert_or_assign(renameKey(uri, line, character, new_name), std::move(entry));
 }
 
 std::optional<SemanticCompletionResult> QueryCache::completions(std::uint64_t generation,
@@ -116,9 +121,11 @@ void QueryCache::storeCompletions(std::uint64_t generation,
                                   int character,
                                   std::string_view prefix,
                                   SemanticCompletionResult result) {
+    CompletionEntry entry;
+    entry.generation = generation;
+    entry.result = std::move(result);
     completions_by_key_.insert_or_assign(completionKey(uri, line, character, prefix),
-                                         CompletionEntry{.generation = generation,
-                                                         .result = std::move(result)});
+                                         std::move(entry));
 }
 
 std::optional<SemanticModuleHierarchyResult> QueryCache::moduleHierarchy(
@@ -136,9 +143,11 @@ void QueryCache::storeModuleHierarchy(std::uint64_t generation,
                                       std::optional<std::string_view> module_name,
                                       int max_depth,
                                       SemanticModuleHierarchyResult result) {
+    ModuleHierarchyEntry entry;
+    entry.generation = generation;
+    entry.result = std::move(result);
     module_hierarchy_by_key_.insert_or_assign(moduleQueryKey(module_name, max_depth),
-                                              ModuleHierarchyEntry{.generation = generation,
-                                                                   .result = std::move(result)});
+                                              std::move(entry));
 }
 
 std::optional<SemanticSchematicResult> QueryCache::schematic(std::uint64_t generation,
@@ -155,9 +164,10 @@ void QueryCache::storeSchematic(std::uint64_t generation,
                                 std::optional<std::string_view> module_name,
                                 int max_depth,
                                 SemanticSchematicResult result) {
-    schematic_by_key_.insert_or_assign(moduleQueryKey(module_name, max_depth),
-                                       SchematicEntry{.generation = generation,
-                                                      .result = std::move(result)});
+    SchematicEntry entry;
+    entry.generation = generation;
+    entry.result = std::move(result);
+    schematic_by_key_.insert_or_assign(moduleQueryKey(module_name, max_depth), std::move(entry));
 }
 
 std::optional<SemanticConeTrace> QueryCache::backwardCone(std::uint64_t generation,
@@ -176,9 +186,10 @@ void QueryCache::storeBackwardCone(std::uint64_t generation,
                                    int line,
                                    int character,
                                    SemanticConeTrace result) {
-    backward_cone_by_key_.insert_or_assign(positionKey(uri, line, character),
-                                           BackwardConeEntry{.generation = generation,
-                                                             .result = std::move(result)});
+    BackwardConeEntry entry;
+    entry.generation = generation;
+    entry.result = std::move(result);
+    backward_cone_by_key_.insert_or_assign(positionKey(uri, line, character), std::move(entry));
 }
 
 std::optional<SemanticCodeActionResult> QueryCache::codeActions(std::uint64_t generation,
@@ -195,9 +206,10 @@ void QueryCache::storeCodeActions(std::uint64_t generation,
                                   std::string_view uri,
                                   ParseRange range,
                                   SemanticCodeActionResult result) {
-    code_actions_by_key_.insert_or_assign(rangeKey(uri, range),
-                                          CodeActionsEntry{.generation = generation,
-                                                           .result = std::move(result)});
+    CodeActionsEntry entry;
+    entry.generation = generation;
+    entry.result = std::move(result);
+    code_actions_by_key_.insert_or_assign(rangeKey(uri, range), std::move(entry));
 }
 
 std::string QueryCache::workspaceSymbolsKey(std::string_view query, size_t limit) {

@@ -106,9 +106,10 @@ std::vector<SemanticSchematicNet> buildSchematicNets(const ModuleSchematic& sche
                                                      const DesignGraphContext& context) {
     std::map<std::string, SemanticSchematicNet> nets;
     const auto ensure_net = [&](std::string_view signal) -> SemanticSchematicNet& {
-        auto [it, inserted] = nets.try_emplace(std::string(signal),
-                                               SemanticSchematicNet{.name = std::string(signal)});
-        (void)inserted;
+        auto [it, inserted] = nets.try_emplace(std::string(signal));
+        if (inserted) {
+            it->second.name = std::string(signal);
+        }
         return it->second;
     };
 
@@ -189,7 +190,8 @@ SemanticCallHierarchyItem callHierarchyItemFor(const ModuleDefinition& definitio
 SemanticModuleHierarchyResult moduleHierarchy(const DesignGraphContext& context,
                                               std::optional<std::string_view> module_name,
                                               int max_depth) {
-    SemanticModuleHierarchyResult result{.generation = context.generation};
+    SemanticModuleHierarchyResult result;
+    result.generation = context.generation;
     if (!context.snapshot_available) {
         result.unresolved = true;
         result.messages.push_back("AST-backed SemanticEngine snapshot is unavailable");
@@ -222,9 +224,10 @@ SemanticModuleHierarchyResult moduleHierarchy(const DesignGraphContext& context,
         const auto definition_it = context.modules_by_name.find(std::string(current_name));
         if (definition_it == context.modules_by_name.end()) {
             result.partial = true;
-            auto node = SemanticHierarchyNode{.module_name = std::string(current_name),
-                                              .kind = "module",
-                                              .unresolved = true};
+            SemanticHierarchyNode node;
+            node.module_name = std::string(current_name);
+            node.kind = "module";
+            node.unresolved = true;
             if (instance != nullptr) {
                 node.instance_name = instance->instance_name;
                 node.instance_range = instance->range;
@@ -242,13 +245,13 @@ SemanticModuleHierarchyResult moduleHierarchy(const DesignGraphContext& context,
                                         ? std::string{}
                                         : uri_it->second;
         const auto is_cycle = std::find(stack.begin(), stack.end(), definition.name) != stack.end();
-        auto node = SemanticHierarchyNode{
-            .module_name = definition.name,
-            .kind = definition.kind,
-            .location = SemanticLocation{.uri = definition_uri, .range = definition.range},
-            .selection_range = definition.selection_range,
-            .unresolved = false,
-            .cycle = is_cycle};
+        SemanticHierarchyNode node;
+        node.module_name = definition.name;
+        node.kind = definition.kind;
+        node.location = SemanticLocation{.uri = definition_uri, .range = definition.range};
+        node.selection_range = definition.selection_range;
+        node.unresolved = false;
+        node.cycle = is_cycle;
 
         if (instance != nullptr) {
             node.instance_name = instance->instance_name;
@@ -294,7 +297,8 @@ SemanticModuleHierarchyResult moduleHierarchy(const DesignGraphContext& context,
 SemanticSchematicResult schematic(const DesignGraphContext& context,
                                   std::optional<std::string_view> module_name,
                                   int max_depth) {
-    SemanticSchematicResult result{.generation = context.generation};
+    SemanticSchematicResult result;
+    result.generation = context.generation;
     if (!context.snapshot_available) {
         result.unresolved = true;
         result.messages.push_back("AST-backed SemanticEngine snapshot is unavailable");
@@ -380,7 +384,8 @@ SemanticCallHierarchyPrepareResult prepareCallHierarchy(const DesignGraphContext
                                                         std::string_view document_uri,
                                                         int line,
                                                         int character) {
-    SemanticCallHierarchyPrepareResult result{.generation = context.generation};
+    SemanticCallHierarchyPrepareResult result;
+    result.generation = context.generation;
     if (!context.snapshot_available) {
         result.unresolved = true;
         result.messages.push_back("AST-backed SemanticEngine snapshot is unavailable");
@@ -426,7 +431,8 @@ SemanticCallHierarchyPrepareResult prepareCallHierarchy(const DesignGraphContext
 
 SemanticCallHierarchyCallsResult incomingCalls(const DesignGraphContext& context,
                                                const SemanticCallHierarchyItem& item) {
-    SemanticCallHierarchyCallsResult result{.generation = context.generation};
+    SemanticCallHierarchyCallsResult result;
+    result.generation = context.generation;
     if (!context.snapshot_available) {
         result.unresolved = true;
         result.messages.push_back("AST-backed SemanticEngine snapshot is unavailable");
@@ -463,7 +469,8 @@ SemanticCallHierarchyCallsResult incomingCalls(const DesignGraphContext& context
 
 SemanticCallHierarchyCallsResult outgoingCalls(const DesignGraphContext& context,
                                                const SemanticCallHierarchyItem& item) {
-    SemanticCallHierarchyCallsResult result{.generation = context.generation};
+    SemanticCallHierarchyCallsResult result;
+    result.generation = context.generation;
     if (!context.snapshot_available) {
         result.unresolved = true;
         result.messages.push_back("AST-backed SemanticEngine snapshot is unavailable");
@@ -503,9 +510,10 @@ SemanticConeTrace backwardCone(const DesignGraphContext& context,
                                std::string_view document_uri,
                                const SemanticLookupResult& lookup,
                                size_t max_results) {
-    SemanticConeTrace trace{.generation = lookup.generation,
-                            .messages = lookup.messages,
-                            .unresolved = lookup.unresolved};
+    SemanticConeTrace trace;
+    trace.generation = lookup.generation;
+    trace.messages = lookup.messages;
+    trace.unresolved = lookup.unresolved;
     if (!lookup.symbol.has_value()) {
         if (trace.messages.empty()) {
             trace.messages.push_back("No signal symbol was found at the requested position.");

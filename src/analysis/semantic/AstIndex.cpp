@@ -584,10 +584,11 @@ std::optional<ModuleDefinition> moduleDefinitionForAstBody(const slang::SourceMa
     }
     const auto body_range = parseRangeForSymbolSyntax(source_manager, body).value_or(*range);
 
-    ModuleDefinition module{.name = std::string(definition.name),
-                            .kind = std::string(definition.getKindString()),
-                            .range = body_range,
-                            .selection_range = location->range};
+    ModuleDefinition module;
+    module.name = std::string(definition.name);
+    module.kind = std::string(definition.getKindString());
+    module.range = body_range;
+    module.selection_range = location->range;
     for (const auto* port_symbol : body.getPortList()) {
         if (port_symbol == nullptr || port_symbol->name.empty()) {
             continue;
@@ -609,12 +610,13 @@ std::optional<SchematicCell> schematicCellForAstInstance(const slang::SourceMana
         return std::nullopt;
     }
 
-    SchematicCell cell{.id = std::string(instance.name),
-                       .name = std::string(instance.name),
-                       .type = std::string(instance.getDefinition().name),
-                       .kind = instance.isInterface() ? "interface" : "module",
-                       .range = *range,
-                       .selection_range = location->range};
+    SchematicCell cell;
+    cell.id = std::string(instance.name);
+    cell.name = std::string(instance.name);
+    cell.type = std::string(instance.getDefinition().name);
+    cell.kind = instance.isInterface() ? "interface" : "module";
+    cell.range = *range;
+    cell.selection_range = location->range;
     if (document != nullptr) {
         if (const auto statement_range = instanceStatementRange(document->text,
                                                                 location->range,
@@ -671,12 +673,13 @@ std::optional<SchematicCell> schematicCellForAstPrimitiveInstance(
         return std::nullopt;
     }
 
-    SchematicCell cell{.id = std::string(instance.name),
-                       .name = std::string(instance.name),
-                       .type = std::string(instance.primitiveType.name),
-                       .kind = std::string(instance.primitiveType.name),
-                       .range = *range,
-                       .selection_range = location->range};
+    SchematicCell cell;
+    cell.id = std::string(instance.name);
+    cell.name = std::string(instance.name);
+    cell.type = std::string(instance.primitiveType.name);
+    cell.kind = std::string(instance.primitiveType.name);
+    cell.range = *range;
+    cell.selection_range = location->range;
     if (document != nullptr) {
         if (const auto statement_range = instanceStatementRange(document->text,
                                                                 location->range,
@@ -760,10 +763,11 @@ void upsertAstModuleSignature(SnapshotData& data,
         return;
     }
 
-    ModuleSchematic schematic{.name = definition->name,
-                              .range = definition->range,
-                              .selection_range = definition->selection_range,
-                              .ports = definition->port_details};
+    ModuleSchematic schematic;
+    schematic.name = definition->name;
+    schematic.range = definition->range;
+    schematic.selection_range = definition->selection_range;
+    schematic.ports = definition->port_details;
     for (const auto& member : body.members()) {
         if (member.kind != slang::ast::SymbolKind::Instance) {
             continue;
@@ -1133,12 +1137,12 @@ void upsertModuleDeclarationCandidate(SnapshotData& data,
         return;
     }
 
-    ModuleDefinition candidate{.name = name,
-                               .kind = declaration.kind == slang::syntax::SyntaxKind::InterfaceDeclaration
-                                           ? "interface"
-                                           : "module",
-                               .range = declaration_location->range,
-                               .selection_range = name_location->range};
+    ModuleDefinition candidate;
+    candidate.name = name;
+    candidate.kind = declaration.kind == slang::syntax::SyntaxKind::InterfaceDeclaration ? "interface"
+                                                                                         : "module";
+    candidate.range = declaration_location->range;
+    candidate.selection_range = name_location->range;
     data.modules_by_name.try_emplace(name, candidate);
     data.module_uris_by_name.try_emplace(name, declaration_location->uri);
     const auto entry_it = std::find_if(data.module_entries.begin(),
@@ -1819,7 +1823,9 @@ std::optional<SnapshotModuleInstance> moduleInstanceAt(const SnapshotData& data,
 }
 
 AstIndexView buildAstIndexView(const SnapshotData* data, std::uint64_t generation) {
-    AstIndexView view{.generation = generation, .snapshot_available = data != nullptr};
+    AstIndexView view;
+    view.generation = generation;
+    view.snapshot_available = data != nullptr;
     if (data == nullptr) {
         return view;
     }
@@ -1843,16 +1849,20 @@ AstIndexView buildAstIndexView(const SnapshotData* data, std::uint64_t generatio
                                              data->module_entries.size());
     std::set<std::string> emitted_graph_entries;
     for (const auto& [name, signature] : view.module_signatures_by_name) {
-        view.design_graph_module_entries.push_back(DesignGraphModuleEntry{.uri = signature.uri,
-                                                                          .definition = signature.definition});
+        DesignGraphModuleEntry graph_entry;
+        graph_entry.uri = signature.uri;
+        graph_entry.definition = signature.definition;
+        view.design_graph_module_entries.push_back(std::move(graph_entry));
         emitted_graph_entries.insert(name);
     }
     for (const auto& entry : data->module_entries) {
         if (!emitted_graph_entries.insert(entry.definition.name).second) {
             continue;
         }
-        view.design_graph_module_entries.push_back(DesignGraphModuleEntry{.uri = entry.uri,
-                                                                          .definition = entry.definition});
+        DesignGraphModuleEntry graph_entry;
+        graph_entry.uri = entry.uri;
+        graph_entry.definition = entry.definition;
+        view.design_graph_module_entries.push_back(std::move(graph_entry));
     }
     for (const auto& [uri, instances] : data->module_instances_by_uri) {
         auto& view_instances = view.signature_module_instances_by_uri[uri];
@@ -1871,10 +1881,11 @@ AstIndexView buildAstIndexView(const SnapshotData* data, std::uint64_t generatio
             if (duplicate) {
                 continue;
             }
-            SignatureInlayModuleInstance view_instance{.module_name = instance.module_name,
-                                                       .instance_name = instance.instance_name,
-                                                       .range = instance.range,
-                                                       .selection_range = instance.selection_range};
+            SignatureInlayModuleInstance view_instance;
+            view_instance.module_name = instance.module_name;
+            view_instance.instance_name = instance.instance_name;
+            view_instance.range = instance.range;
+            view_instance.selection_range = instance.selection_range;
             for (const auto& [_, signature] : view.module_signatures_by_name) {
                 if (signature.uri != uri) {
                     continue;
@@ -1927,15 +1938,18 @@ AstIndexView buildAstIndexView(const SnapshotData* data, std::uint64_t generatio
 }
 
 AstIndexContext workspaceSymbolContext(const AstIndexView& view) {
-    return AstIndexContext{.generation = view.generation,
-                           .snapshot_available = view.snapshot_available,
-                           .symbols = view.symbols};
+    AstIndexContext context;
+    context.generation = view.generation;
+    context.snapshot_available = view.snapshot_available;
+    context.symbols = view.symbols;
+    return context;
 }
 
 SemanticWorkspaceSymbolResult workspaceSymbols(const AstIndexContext& context,
                                                std::string_view query,
                                                size_t limit) {
-    SemanticWorkspaceSymbolResult result{.generation = context.generation};
+    SemanticWorkspaceSymbolResult result;
+    result.generation = context.generation;
     if (!context.snapshot_available) {
         result.unresolved = true;
         result.messages.push_back("AST-backed SemanticEngine snapshot is unavailable");

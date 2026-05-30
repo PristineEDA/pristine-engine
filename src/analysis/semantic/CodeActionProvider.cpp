@@ -284,7 +284,8 @@ std::vector<SchematicPort> missingPorts(const SchematicCell& cell,
 } // namespace
 
 SemanticCodeActionResult codeActionsAt(const CodeActionContext& context) {
-    SemanticCodeActionResult result{.generation = context.generation};
+    SemanticCodeActionResult result;
+    result.generation = context.generation;
     if (!context.snapshot_available) {
         result.unresolved = true;
         result.messages.push_back("AST-backed SemanticEngine snapshot is unavailable");
@@ -311,16 +312,17 @@ SemanticCodeActionResult codeActionsAt(const CodeActionContext& context) {
             continue;
         }
 
-        result.actions.push_back(SemanticCodeAction{
-            .title = "Create include file '" + include.target + "'",
-            .kind = "quickfix",
-            .is_preferred = true,
-            .diagnostics = {SemanticDiagnosticData{.code = std::string(kUnknownIncludeDiagnosticCode),
-                                                   .message = unknownIncludeMessage(include.target),
-                                                   .range = include.range,
-                                                   .severity = 1}},
-            .create_files = {SemanticCodeActionCreateFile{.uri = pathToFileUri(*target),
-                                                          .ignore_if_exists = true}}});
+        SemanticCodeAction action;
+        action.title = "Create include file '" + include.target + "'";
+        action.kind = "quickfix";
+        action.is_preferred = true;
+        action.diagnostics.push_back(SemanticDiagnosticData{.code = std::string(kUnknownIncludeDiagnosticCode),
+                                                            .message = unknownIncludeMessage(include.target),
+                                                            .range = include.range,
+                                                            .severity = 1});
+        action.create_files.push_back(SemanticCodeActionCreateFile{.uri = pathToFileUri(*target),
+                                                                   .ignore_if_exists = true});
+        result.actions.push_back(std::move(action));
     }
 
     for (const auto& instance : context.module_instances) {
@@ -329,17 +331,19 @@ SemanticCodeActionResult codeActionsAt(const CodeActionContext& context) {
             !isValidIdentifier(instance.module_name)) {
             continue;
         }
-        result.actions.push_back(SemanticCodeAction{
-            .title = "Create stub module '" + instance.module_name + "'",
-            .kind = "quickfix",
-            .diagnostics = {SemanticDiagnosticData{.code = std::string(kUnresolvedModuleDiagnosticCode),
-                                                   .message = unresolvedModuleMessage(instance.module_name),
-                                                   .range = instance.module_selection_range,
-                                                   .severity = 1}},
-            .edits = {SemanticCodeActionEdit{.uri = context.document.uri,
-                                             .range = insert_range,
-                                             .new_text = moduleStubInsertionText(context.document.text,
-                                                                                 instance.module_name)}}});
+        SemanticCodeAction action;
+        action.title = "Create stub module '" + instance.module_name + "'";
+        action.kind = "quickfix";
+        action.diagnostics.push_back(SemanticDiagnosticData{
+            .code = std::string(kUnresolvedModuleDiagnosticCode),
+            .message = unresolvedModuleMessage(instance.module_name),
+            .range = instance.module_selection_range,
+            .severity = 1});
+        action.edits.push_back(SemanticCodeActionEdit{.uri = context.document.uri,
+                                                      .range = insert_range,
+                                                      .new_text = moduleStubInsertionText(context.document.text,
+                                                                                          instance.module_name)});
+        result.actions.push_back(std::move(action));
     }
 
     for (const auto& schematic : context.document_schematics) {
@@ -360,13 +364,14 @@ SemanticCodeActionResult codeActionsAt(const CodeActionContext& context) {
             if (!insertion_range.has_value()) {
                 continue;
             }
-            result.actions.push_back(SemanticCodeAction{
-                .title = "Add missing port connections to '" + cell.name + "'",
-                .kind = "quickfix",
-                .edits = {SemanticCodeActionEdit{.uri = context.document.uri,
-                                                 .range = *insertion_range,
-                                                 .new_text = missingPortConnectionText(missing_ports,
-                                                                                       !cell.connections.empty())}}});
+            SemanticCodeAction action;
+            action.title = "Add missing port connections to '" + cell.name + "'";
+            action.kind = "quickfix";
+            action.edits.push_back(SemanticCodeActionEdit{
+                .uri = context.document.uri,
+                .range = *insertion_range,
+                .new_text = missingPortConnectionText(missing_ports, !cell.connections.empty())});
+            result.actions.push_back(std::move(action));
         }
     }
 
@@ -381,17 +386,18 @@ SemanticCodeActionResult codeActionsAt(const CodeActionContext& context) {
             !emitted_type_names.insert(*type_name).second) {
             continue;
         }
-        result.actions.push_back(SemanticCodeAction{
-            .title = "Create typedef '" + *type_name + "'",
-            .kind = "quickfix",
-            .diagnostics = {SemanticDiagnosticData{.code = diagnostic.code,
-                                                   .message = diagnostic.message,
-                                                   .range = diagnostic.range,
-                                                   .severity = diagnostic.severity}},
-            .edits = {SemanticCodeActionEdit{.uri = context.document.uri,
-                                             .range = insert_range,
-                                             .new_text = typedefSkeletonInsertionText(context.document.text,
-                                                                                     *type_name)}}});
+        SemanticCodeAction action;
+        action.title = "Create typedef '" + *type_name + "'";
+        action.kind = "quickfix";
+        action.diagnostics.push_back(SemanticDiagnosticData{.code = diagnostic.code,
+                                                            .message = diagnostic.message,
+                                                            .range = diagnostic.range,
+                                                            .severity = diagnostic.severity});
+        action.edits.push_back(SemanticCodeActionEdit{.uri = context.document.uri,
+                                                      .range = insert_range,
+                                                      .new_text = typedefSkeletonInsertionText(context.document.text,
+                                                                                              *type_name)});
+        result.actions.push_back(std::move(action));
     }
 
     return result;

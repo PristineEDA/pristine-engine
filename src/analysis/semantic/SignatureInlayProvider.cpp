@@ -146,7 +146,8 @@ std::optional<size_t> macroInvocationOpenParen(std::string_view text,
 SemanticSignatureHelpResult signatureHelpAt(const SignatureInlayContext& context,
                                             int line,
                                             int character) {
-    SemanticSignatureHelpResult result{.generation = context.generation};
+    SemanticSignatureHelpResult result;
+    result.generation = context.generation;
     if (!context.snapshot_available) {
         result.unresolved = true;
         result.messages.push_back("AST-backed SemanticEngine snapshot is unavailable");
@@ -241,7 +242,8 @@ SemanticSignatureHelpResult signatureHelpAt(const SignatureInlayContext& context
 
 SemanticInlayHintResult inlayHints(const SignatureInlayContext& context,
                                    ParseRange range) {
-    SemanticInlayHintResult result{.generation = context.generation};
+    SemanticInlayHintResult result;
+    result.generation = context.generation;
     if (!context.snapshot_available) {
         result.unresolved = true;
         result.messages.push_back("AST-backed SemanticEngine snapshot is unavailable");
