@@ -1117,6 +1117,10 @@ SemanticSignatureHelpResult SemanticEngine::signatureHelpAt(std::string_view uri
         if (instances_it != ast_index.signature_module_instances_by_uri.end()) {
             context.module_instances = instances_it->second;
         }
+        const auto macros_it = ast_index.macros_by_uri.find(document_uri);
+        if (macros_it != ast_index.macros_by_uri.end()) {
+            context.macros = macros_it->second;
+        }
     }
     return semantic::signatureHelpAt(context, line, character);
 }

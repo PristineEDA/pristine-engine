@@ -28,6 +28,7 @@ struct SignatureInlayContext {
     const std::unordered_map<std::string, ModuleDefinition>* modules_by_name = nullptr;
     std::vector<SignatureInlaySymbol> symbols;
     std::vector<SignatureInlayModuleInstance> module_instances;
+    std::vector<MacroDefinition> macros;
     bool snapshot_available = false;
 };
 

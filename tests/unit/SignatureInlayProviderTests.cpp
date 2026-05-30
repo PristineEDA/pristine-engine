@@ -57,6 +57,41 @@ TEST_CASE("SignatureInlayProvider computes module signature active parameter",
     CHECK(result.active_parameter == 1);
 }
 
+TEST_CASE("SignatureInlayProvider computes macro function active parameter",
+          "[analysis][semantic][signature-inlay-provider][signature][macro][no-fallback]") {
+    const std::string text = "`define ADD(lhs, rhs) ((lhs) + (rhs))\n"
+                             "module top;\n"
+                             "  assign value = `ADD(a, b);\n"
+                             "endmodule\n";
+    const SignatureInlayContext context{
+        .generation = 13,
+        .document_uri = "file:///workspace/top.sv",
+        .document_text = &text,
+        .macros = {MacroDefinition{.name = "ADD",
+                                   .parameters = {"lhs", "rhs"},
+                                   .body = "((lhs) + (rhs))",
+                                   .range = ParseRange{.start_line = 0,
+                                                       .start_character = 0,
+                                                       .end_line = 0,
+                                                       .end_character = 37},
+                                   .selection_range = ParseRange{.start_line = 0,
+                                                                 .start_character = 8,
+                                                                 .end_line = 0,
+                                                                 .end_character = 11},
+                                   .function_like = true}},
+        .snapshot_available = true};
+
+    const auto result = signatureHelpAt(context, 2, 25);
+
+    REQUIRE_FALSE(result.unresolved);
+    CHECK(result.generation == 13);
+    CHECK(result.label == "ADD(lhs, rhs)");
+    REQUIRE(result.parameters.size() == 2);
+    CHECK(result.parameters[0] == "lhs");
+    CHECK(result.parameters[1] == "rhs");
+    CHECK(result.active_parameter == 1);
+}
+
 TEST_CASE("SignatureInlayProvider emits type and instance inlay hints in location order",
           "[analysis][semantic][signature-inlay-provider][inlay]") {
     const ModuleDefinition child{.name = "child",

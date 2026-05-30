@@ -4,6 +4,7 @@
 #include "pristine/analysis/SourceUtil.h"
 
 #include <algorithm>
+#include <cctype>
 #include <optional>
 
 namespace pristine::analysis::semantic {
@@ -102,6 +103,44 @@ std::optional<size_t> openParenBeforePosition(std::string_view text,
     return std::nullopt;
 }
 
+std::optional<size_t> macroInvocationOpenParen(std::string_view text,
+                                               const MacroDefinition& macro,
+                                               size_t position_offset) {
+    if (!macro.function_like || macro.name.empty()) {
+        return std::nullopt;
+    }
+    const auto bounded_position = std::min(position_offset, text.size());
+    if (bounded_position == 0) {
+        return std::nullopt;
+    }
+
+    const auto invocation = std::string("`") + macro.name;
+    auto search_end = bounded_position;
+    while (search_end > 0) {
+        const auto found = text.rfind(invocation, search_end - 1);
+        if (found == std::string_view::npos) {
+            break;
+        }
+        const auto name_end = found + invocation.size();
+        if (name_end < text.size() && (std::isalnum(static_cast<unsigned char>(text[name_end])) ||
+                                       text[name_end] == '_')) {
+            search_end = found;
+            continue;
+        }
+        auto open_paren = name_end;
+        while (open_paren < text.size() &&
+               std::isspace(static_cast<unsigned char>(text[open_paren]))) {
+            ++open_paren;
+        }
+        if (open_paren < text.size() && text[open_paren] == '(' &&
+            open_paren < bounded_position) {
+            return open_paren;
+        }
+        search_end = found;
+    }
+    return std::nullopt;
+}
+
 } // namespace
 
 SemanticSignatureHelpResult signatureHelpAt(const SignatureInlayContext& context,
@@ -123,6 +162,25 @@ SemanticSignatureHelpResult signatureHelpAt(const SignatureInlayContext& context
     if (!position_offset.has_value()) {
         result.unresolved = true;
         result.messages.push_back("signature help position could not be mapped to a source offset");
+        return result;
+    }
+
+    for (const auto& macro : context.macros) {
+        const auto open_paren = macroInvocationOpenParen(*context.document_text,
+                                                         macro,
+                                                         *position_offset);
+        if (!open_paren.has_value()) {
+            continue;
+        }
+        result.label = macroSignatureLabel(macro);
+        result.parameters = macro.parameters;
+        const auto parameter_count = result.parameters.size();
+        result.active_parameter = parameter_count == 0
+                                      ? 0
+                                      : std::min(activeParameterAt(*context.document_text,
+                                                                   *open_paren,
+                                                                   *position_offset),
+                                                 static_cast<int>(parameter_count) - 1);
         return result;
     }
 
