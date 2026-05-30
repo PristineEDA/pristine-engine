@@ -111,8 +111,11 @@ SnapshotBuildOutput SnapshotBuilder::build(SnapshotBuildInput input) const {
                                                                                 uri);
         data->identifiers_by_uri[uri] = compilation_service.identifiers(document_it->second.text);
 
+        auto include_directives = compilation_service.includeDirectives(document_it->second.text);
+        data->include_directives_by_uri[uri] = include_directives;
+
         std::vector<std::string> included_uris;
-        for (const auto& include : compilation_service.includeDirectives(document_it->second.text)) {
+        for (const auto& include : include_directives) {
             addUnique(included_uris, joinFileUri(uriDirectory(uri), include.target));
         }
         output.includes[uri] = included_uris;

@@ -40,9 +40,11 @@ struct AstIndexView {
     std::vector<DesignGraphModuleEntry> design_graph_module_entries;
     std::unordered_map<std::string, std::vector<ContinuousAssignment>> assignments_by_uri;
     std::unordered_map<std::string, std::vector<Identifier>> identifiers_by_uri;
+    std::unordered_map<std::string, std::vector<IncludeDirective>> include_directives_by_uri;
     std::unordered_map<std::string, std::vector<MacroDefinition>> macros_by_uri;
     std::unordered_map<std::string, std::vector<PackageImport>> package_imports_by_uri;
     std::unordered_map<std::string, std::vector<SemanticSymbolMetadata>> metadata_by_uri;
+    std::unordered_map<std::string, std::vector<SnapshotModuleInstance>> module_instances_by_uri;
     std::unordered_map<std::string, std::vector<SignatureInlayModuleInstance>> signature_module_instances_by_uri;
     std::vector<NavigationReference> navigation_references;
     std::unordered_map<std::string, SemanticSymbolIdentity> navigation_symbols_by_id;

@@ -180,8 +180,8 @@ std::vector<SemanticSchematicNet> buildSchematicNets(const ModuleSchematic& sche
 
     for (const auto& cell : cells) {
         const auto target_it = cell.kind == "module"
-                                   ? context.schematics_by_name.find(cell.type)
-                                   : context.schematics_by_name.end();
+                                   ? context.module_signatures_by_name.find(cell.type)
+                                   : context.module_signatures_by_name.end();
         for (const auto& connection : cell.connections) {
             if (connection.signal.empty()) {
                 continue;
@@ -189,10 +189,11 @@ std::vector<SemanticSchematicNet> buildSchematicNets(const ModuleSchematic& sche
 
             std::string port_name = connection.port_name;
             std::string direction;
-            if (target_it != context.schematics_by_name.end()) {
+            if (target_it != context.module_signatures_by_name.end()) {
+                const auto& target_schematic = target_it->second.schematic;
                 const auto* port = !port_name.empty()
-                                       ? findSchematicPortByName(target_it->second, port_name)
-                                       : findSchematicPortByIndex(target_it->second, connection.port_index);
+                                       ? findSchematicPortByName(target_schematic, port_name)
+                                       : findSchematicPortByIndex(target_schematic, connection.port_index);
                 if (port != nullptr) {
                     port_name = port->name;
                     direction = port->direction;
@@ -447,10 +448,6 @@ SemanticCallHierarchyPrepareResult prepareCallHierarchy(const DesignGraphContext
         if (entry.uri != document_uri) {
             continue;
         }
-        if (parseRangeContainsPosition(definition.selection_range, line, character)) {
-            result.items.push_back(callHierarchyItemFor(definition, entry.uri));
-            return result;
-        }
         for (const auto& instance : definition.instances) {
             if (!parseRangeContainsPosition(instance.module_selection_range, line, character) &&
                 !parseRangeContainsPosition(instance.selection_range, line, character)) {
@@ -466,6 +463,10 @@ SemanticCallHierarchyPrepareResult prepareCallHierarchy(const DesignGraphContext
             result.items.push_back(callHierarchyItemFor(
                 target_it->second,
                 target_uri_it == context.module_uris_by_name.end() ? std::string{} : target_uri_it->second));
+            return result;
+        }
+        if (parseRangeContainsPosition(definition.selection_range, line, character)) {
+            result.items.push_back(callHierarchyItemFor(definition, entry.uri));
             return result;
         }
         if (parseRangeContainsPosition(definition.range, line, character)) {

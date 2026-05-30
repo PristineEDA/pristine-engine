@@ -220,6 +220,22 @@ std::optional<ParseRange> instancePortInsertionRange(std::string_view text,
     return std::nullopt;
 }
 
+bool hasPortListSyntax(std::string_view text, const SchematicCell& cell) {
+    const auto start_offset = utf8OffsetAtUtf16Position(text,
+                                                        cell.range.start_line,
+                                                        cell.range.start_character);
+    const auto end_offset = utf8OffsetAtUtf16Position(text,
+                                                      cell.range.end_line,
+                                                      cell.range.end_character);
+    if (!start_offset.has_value() || !end_offset.has_value() || *start_offset >= *end_offset) {
+        return false;
+    }
+    const auto bounded_end = std::min(*end_offset, text.size());
+    return std::find(text.begin() + static_cast<std::ptrdiff_t>(*start_offset),
+                     text.begin() + static_cast<std::ptrdiff_t>(bounded_end),
+                     '(') != text.begin() + static_cast<std::ptrdiff_t>(bounded_end);
+}
+
 std::vector<SchematicPort> modulePorts(const ModuleDefinition& module) {
     if (!module.port_details.empty()) {
         return module.port_details;
@@ -281,8 +297,7 @@ SemanticCodeActionResult codeActionsAt(const CodeActionContext& context) {
     }
 
     const auto insert_range = endOfTextRange(context.document.text);
-    CompilationService compilation_service;
-    for (const auto& include : compilation_service.includeDirectives(context.document.text)) {
+    for (const auto& include : context.include_directives) {
         if (!rangesIntersect(include.range, context.range) ||
             resolveIncludeTarget(context.workspace_root_uri,
                                  context.document.uri,
@@ -308,33 +323,29 @@ SemanticCodeActionResult codeActionsAt(const CodeActionContext& context) {
                                                           .ignore_if_exists = true}}});
     }
 
-    const auto modules = compilation_service.moduleDefinitions(context.document.text,
-                                                               context.document.uri);
-    for (const auto& module : modules) {
-        for (const auto& instance : module.instances) {
-            if (!rangesIntersect(instance.module_selection_range, context.range) ||
-                context.modules_by_name.contains(instance.module_name) ||
-                !isValidIdentifier(instance.module_name)) {
-                continue;
-            }
-            result.actions.push_back(SemanticCodeAction{
-                .title = "Create stub module '" + instance.module_name + "'",
-                .kind = "quickfix",
-                .diagnostics = {SemanticDiagnosticData{.code = std::string(kUnresolvedModuleDiagnosticCode),
-                                                       .message = unresolvedModuleMessage(instance.module_name),
-                                                       .range = instance.module_selection_range,
-                                                       .severity = 1}},
-                .edits = {SemanticCodeActionEdit{.uri = context.document.uri,
-                                                 .range = insert_range,
-                                                 .new_text = moduleStubInsertionText(context.document.text,
-                                                                                     instance.module_name)}}});
+    for (const auto& instance : context.module_instances) {
+        if (!rangesIntersect(instance.module_selection_range, context.range) ||
+            context.modules_by_name.contains(instance.module_name) ||
+            !isValidIdentifier(instance.module_name)) {
+            continue;
         }
+        result.actions.push_back(SemanticCodeAction{
+            .title = "Create stub module '" + instance.module_name + "'",
+            .kind = "quickfix",
+            .diagnostics = {SemanticDiagnosticData{.code = std::string(kUnresolvedModuleDiagnosticCode),
+                                                   .message = unresolvedModuleMessage(instance.module_name),
+                                                   .range = instance.module_selection_range,
+                                                   .severity = 1}},
+            .edits = {SemanticCodeActionEdit{.uri = context.document.uri,
+                                             .range = insert_range,
+                                             .new_text = moduleStubInsertionText(context.document.text,
+                                                                                 instance.module_name)}}});
     }
 
-    for (const auto& schematic : compilation_service.moduleSchematics(context.document.text,
-                                                                      context.document.uri)) {
+    for (const auto& schematic : context.document_schematics) {
         for (const auto& cell : schematic.cells) {
-            if (cell.kind != "module" || !rangesIntersect(cell.range, context.range)) {
+            if (cell.kind != "module" || !rangesIntersect(cell.range, context.range) ||
+                !hasPortListSyntax(context.document.text, cell)) {
                 continue;
             }
             const auto module_it = context.modules_by_name.find(cell.type);

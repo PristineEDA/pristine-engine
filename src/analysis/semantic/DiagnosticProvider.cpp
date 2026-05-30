@@ -185,7 +185,7 @@ std::optional<std::int64_t> bitWidthFromDisplayName(std::string_view display_nam
     }
 }
 
-std::optional<ParseRange> userTypeReferenceRange(std::string_view text,
+std::optional<ParseRange> userTypeReferenceRange(const std::vector<Identifier>& identifiers,
                                                  const SemanticSymbolMetadata& metadata) {
     if (metadata.type_name.empty() || metadata.type_name == "enum" ||
         metadata.type_display_name.find("::") != std::string::npos ||
@@ -193,9 +193,8 @@ std::optional<ParseRange> userTypeReferenceRange(std::string_view text,
         return std::nullopt;
     }
 
-    CompilationService compilation_service;
     std::optional<ParseRange> best;
-    for (const auto& identifier : compilation_service.identifiers(text)) {
+    for (const auto& identifier : identifiers) {
         if (identifier.name != metadata.type_name ||
             identifier.range.start_line != metadata.selection_range.start_line ||
             identifier.range.end_line != metadata.selection_range.start_line ||
@@ -381,8 +380,11 @@ void appendAmbiguousReferenceDiagnostics(std::vector<SemanticEngineDiagnostic>& 
         return;
     }
 
-    CompilationService compilation_service;
-    for (const auto& identifier : compilation_service.identifiers(context.document.text)) {
+    const auto identifiers_it = context.identifiers_by_uri.find(context.document.uri);
+    if (identifiers_it == context.identifiers_by_uri.end()) {
+        return;
+    }
+    for (const auto& identifier : identifiers_it->second) {
         size_t definition_count = 0;
         for (const auto& import : imports_it->second) {
             for (const auto& package_id : packageDefinitionIds(context, import.package_name)) {
@@ -418,14 +420,18 @@ void appendAmbiguousReferenceDiagnostics(std::vector<SemanticEngineDiagnostic>& 
 
 void appendUnresolvedTypeDiagnostics(std::vector<SemanticEngineDiagnostic>& result,
                                      const DiagnosticContext& context) {
-    CompilationService compilation_service;
     std::set<std::pair<int, int>> reported_type_ranges;
-    for (const auto& metadata : compilation_service.semanticSymbolMetadata(context.document.text,
-                                                                           context.document.uri)) {
+    const auto metadata_it = context.metadata_by_uri.find(context.document.uri);
+    const auto identifiers_it = context.identifiers_by_uri.find(context.document.uri);
+    if (metadata_it == context.metadata_by_uri.end() ||
+        identifiers_it == context.identifiers_by_uri.end()) {
+        return;
+    }
+    for (const auto& metadata : metadata_it->second) {
         if (!canHaveUserDefinedTypeReference(metadata)) {
             continue;
         }
-        const auto type_range = userTypeReferenceRange(context.document.text, metadata);
+        const auto type_range = userTypeReferenceRange(identifiers_it->second, metadata);
         if (!type_range.has_value() || hasTypeDefinitionSymbol(context, metadata.type_name)) {
             continue;
         }
@@ -443,8 +449,11 @@ void appendUnresolvedTypeDiagnostics(std::vector<SemanticEngineDiagnostic>& resu
 
 void appendUnknownIncludeDiagnostics(std::vector<SemanticEngineDiagnostic>& result,
                                      const DiagnosticContext& context) {
-    CompilationService compilation_service;
-    for (const auto& include : compilation_service.includeDirectives(context.document.text)) {
+    const auto includes_it = context.include_directives_by_uri.find(context.document.uri);
+    if (includes_it == context.include_directives_by_uri.end()) {
+        return;
+    }
+    for (const auto& include : includes_it->second) {
         if (resolveIncludeTarget(context.workspace_root_uri,
                                  context.document.uri,
                                  include.target).has_value()) {
@@ -473,33 +482,33 @@ void appendUnknownIncludeDiagnostics(std::vector<SemanticEngineDiagnostic>& resu
 
 void appendUnresolvedModuleDiagnostics(std::vector<SemanticEngineDiagnostic>& result,
                                        const DiagnosticContext& context) {
-    CompilationService compilation_service;
-    for (const auto& module : compilation_service.moduleDefinitions(context.document.text,
-                                                                    context.document.uri)) {
-        for (const auto& instance : module.instances) {
-            if (context.modules_by_name.contains(instance.module_name) ||
-                !isValidIdentifier(instance.module_name)) {
-                continue;
-            }
-            const auto key = std::tuple(std::string(kUnresolvedModuleDiagnosticCode),
-                                        instance.module_selection_range.start_line,
-                                        instance.module_selection_range.start_character,
-                                        unresolvedModuleMessage(instance.module_name));
-            const auto already_reported = std::any_of(result.begin(), result.end(), [&](const auto& diagnostic) {
-                return std::tuple(diagnostic.code,
-                                  diagnostic.range.start_line,
-                                  diagnostic.range.start_character,
-                                  diagnostic.message) == key;
-            });
-            if (already_reported) {
-                continue;
-            }
-            result.push_back(SemanticEngineDiagnostic{.uri = context.document.uri,
-                                                      .code = std::string(kUnresolvedModuleDiagnosticCode),
-                                                      .message = unresolvedModuleMessage(instance.module_name),
-                                                      .range = instance.module_selection_range,
-                                                      .severity = 1});
+    const auto instances_it = context.module_instances_by_uri.find(context.document.uri);
+    if (instances_it == context.module_instances_by_uri.end()) {
+        return;
+    }
+    for (const auto& instance : instances_it->second) {
+        if (context.modules_by_name.contains(instance.module_name) ||
+            !isValidIdentifier(instance.module_name)) {
+            continue;
         }
+        const auto key = std::tuple(std::string(kUnresolvedModuleDiagnosticCode),
+                                    instance.module_selection_range.start_line,
+                                    instance.module_selection_range.start_character,
+                                    unresolvedModuleMessage(instance.module_name));
+        const auto already_reported = std::any_of(result.begin(), result.end(), [&](const auto& diagnostic) {
+            return std::tuple(diagnostic.code,
+                              diagnostic.range.start_line,
+                              diagnostic.range.start_character,
+                              diagnostic.message) == key;
+        });
+        if (already_reported) {
+            continue;
+        }
+        result.push_back(SemanticEngineDiagnostic{.uri = context.document.uri,
+                                                  .code = std::string(kUnresolvedModuleDiagnosticCode),
+                                                  .message = unresolvedModuleMessage(instance.module_name),
+                                                  .range = instance.module_selection_range,
+                                                  .severity = 1});
     }
 }
 

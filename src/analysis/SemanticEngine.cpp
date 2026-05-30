@@ -63,32 +63,6 @@ bool sameLocation(const SemanticLocation& lhs, const SemanticLocation& rhs) {
            lhs.range.end_line == rhs.range.end_line && lhs.range.end_character == rhs.range.end_character;
 }
 
-bool rangesOverlapOrTouch(const ParseRange& lhs, const ParseRange& rhs) {
-    if (lhs.end_line < rhs.start_line || rhs.end_line < lhs.start_line) {
-        return false;
-    }
-    if (lhs.end_line == rhs.start_line && lhs.end_character < rhs.start_character) {
-        return false;
-    }
-    if (rhs.end_line == lhs.start_line && rhs.end_character < lhs.start_character) {
-        return false;
-    }
-    return true;
-}
-
-bool rangeContainsRange(const ParseRange& outer, const ParseRange& inner) {
-    if (inner.start_line < outer.start_line || inner.end_line > outer.end_line) {
-        return false;
-    }
-    if (inner.start_line == outer.start_line && inner.start_character < outer.start_character) {
-        return false;
-    }
-    if (inner.end_line == outer.end_line && inner.end_character > outer.end_character) {
-        return false;
-    }
-    return true;
-}
-
 bool isIdentifierStart(char value) {
     const auto ch = static_cast<unsigned char>(value);
     return std::isalpha(ch) != 0 || value == '_' || value == '$';
@@ -97,12 +71,6 @@ bool isIdentifierStart(char value) {
 bool isIdentifierContinue(char value) {
     const auto ch = static_cast<unsigned char>(value);
     return std::isalnum(ch) != 0 || value == '_' || value == '$';
-}
-
-bool isBuiltinTypeName(std::string_view name) {
-    return name == "bit" || name == "logic" || name == "reg" || name == "wire" || name == "tri" ||
-           name == "byte" || name == "shortint" || name == "int" || name == "integer" ||
-           name == "longint" || name == "time" || name == "genvar";
 }
 
 bool startsWithInsensitive(std::string_view prefix, std::string_view candidate) {
@@ -207,34 +175,15 @@ std::set<std::string> connectedNamedPortsBeforePosition(std::string_view text,
     return connected_ports;
 }
 
-std::optional<SemanticLocation> identifierRangeWithin(const SemanticEngineDocument& document,
-                                                      const SemanticLocation& broad_location,
-                                                      std::string_view name) {
-    CompilationService compilation_service;
-    std::optional<SemanticLocation> best;
-    for (const auto& identifier : compilation_service.identifiers(document.text)) {
-        if (identifier.name != name || !rangesOverlapOrTouch(identifier.range, broad_location.range)) {
-            continue;
-        }
-        const auto location = SemanticLocation{.uri = broad_location.uri, .range = identifier.range};
-        if (!best.has_value() || locationLess(location, *best)) {
-            best = location;
-        }
-    }
-    return best;
-}
-
-std::optional<ParseRange> userTypeReferenceRange(std::string_view text,
+std::optional<ParseRange> userTypeReferenceRange(const std::vector<Identifier>& identifiers,
                                                  const SemanticSymbolMetadata& metadata) {
     if (metadata.type_name.empty() || metadata.type_name == "enum" ||
-        metadata.type_display_name.find("::") != std::string::npos ||
-        isBuiltinTypeName(metadata.type_name)) {
+        metadata.type_display_name.find("::") != std::string::npos) {
         return std::nullopt;
     }
 
-    CompilationService compilation_service;
     std::optional<ParseRange> best;
-    for (const auto& identifier : compilation_service.identifiers(text)) {
+    for (const auto& identifier : identifiers) {
         if (identifier.name != metadata.type_name ||
             identifier.range.start_line != metadata.selection_range.start_line ||
             identifier.range.end_line != metadata.selection_range.start_line ||
@@ -323,9 +272,12 @@ semantic::DiagnosticContext diagnosticContextFor(const SnapshotData* data,
     context.symbols_by_id = ast_index.diagnostic_symbols_by_id;
     context.references = ast_index.diagnostic_references;
     context.assignments_by_uri = ast_index.assignments_by_uri;
+    context.identifiers_by_uri = ast_index.identifiers_by_uri;
+    context.include_directives_by_uri = ast_index.include_directives_by_uri;
     context.package_imports_by_uri = ast_index.package_imports_by_uri;
     context.metadata_by_uri = ast_index.metadata_by_uri;
     context.modules_by_name = ast_index.modules_by_name;
+    context.module_instances_by_uri = ast_index.module_instances_by_uri;
     return context;
 }
 
@@ -350,6 +302,35 @@ semantic::CodeActionContext codeActionContextFor(const semantic::SnapshotData* d
     }
     if (data != nullptr) {
         context.modules_by_name = ast_index.modules_by_name;
+        for (const auto& [name, signature] : ast_index.module_signatures_by_name) {
+            const auto schematic_uri_it = ast_index.schematic_uris_by_name.find(name);
+            const auto signature_uri = !signature.uri.empty()
+                                           ? std::string_view(signature.uri)
+                                           : schematic_uri_it == ast_index.schematic_uris_by_name.end()
+                                                 ? std::string_view{}
+                                                 : std::string_view(schematic_uri_it->second);
+            if (signature_uri == context.document.uri ||
+                std::any_of(signature.schematic.cells.begin(),
+                            signature.schematic.cells.end(),
+                            [&](const SchematicCell& cell) {
+                                return parseRangeContainsPosition(cell.range,
+                                                                  range.start_line,
+                                                                  range.start_character) ||
+                                       parseRangeContainsPosition(cell.range,
+                                                                  range.end_line,
+                                                                  range.end_character);
+                            })) {
+                context.document_schematics.push_back(signature.schematic);
+            }
+        }
+        if (const auto includes_it = ast_index.include_directives_by_uri.find(context.document.uri);
+            includes_it != ast_index.include_directives_by_uri.end()) {
+            context.include_directives = includes_it->second;
+        }
+        if (const auto instances_it = ast_index.module_instances_by_uri.find(context.document.uri);
+            instances_it != ast_index.module_instances_by_uri.end()) {
+            context.module_instances = instances_it->second;
+        }
     }
     return context;
 }
@@ -784,11 +765,13 @@ SemanticReferenceResult SemanticEngine::typeDefinitionsAt(std::string_view uri,
 
     const auto* data = snapshotData();
     if (data != nullptr) {
-        if (const auto document_it = documents_.find(withoutTrailingSlash(normalizeFileUri(uri)));
-            document_it != documents_.end()) {
-            for (const auto& metadata : CompilationService{}.semanticSymbolMetadata(document_it->second.text,
-                                                                                    document_it->second.uri)) {
-                const auto type_range = userTypeReferenceRange(document_it->second.text, metadata);
+        const auto document_uri = withoutTrailingSlash(normalizeFileUri(uri));
+        const auto metadata_it = data->metadata_by_uri.find(document_uri);
+        const auto identifiers_it = data->identifiers_by_uri.find(document_uri);
+        if (metadata_it != data->metadata_by_uri.end() &&
+            identifiers_it != data->identifiers_by_uri.end()) {
+            for (const auto& metadata : metadata_it->second) {
+                const auto type_range = userTypeReferenceRange(identifiers_it->second, metadata);
                 if (!type_range.has_value() || !containsPosition(*type_range, line, character)) {
                     continue;
                 }

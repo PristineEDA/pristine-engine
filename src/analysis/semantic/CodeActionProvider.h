@@ -1,5 +1,6 @@
 #pragma once
 
+#include "SnapshotBuilder.h"
 #include "pristine/analysis/SemanticEngine.h"
 
 #include <string>
@@ -16,6 +17,9 @@ struct CodeActionContext {
     SemanticEngineDocument document;
     ParseRange range;
     std::unordered_map<std::string, ModuleDefinition> modules_by_name;
+    std::vector<ModuleSchematic> document_schematics;
+    std::vector<IncludeDirective> include_directives;
+    std::vector<SnapshotModuleInstance> module_instances;
     std::vector<SemanticEngineDiagnostic> diagnostics;
 };
 

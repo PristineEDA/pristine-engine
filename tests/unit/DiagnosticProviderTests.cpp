@@ -83,6 +83,14 @@ TEST_CASE("DiagnosticProvider aggregates UX diagnostics and dedupes snapshot dia
                                                       .range = rangeAt(9, 2, 18),
                                                       .left_range = rangeAt(9, 9, 12),
                                                       .right_range = rangeAt(9, 15, 18)}}}},
+        .identifiers_by_uri = {{std::string(uri),
+                                {Identifier{.name = "word_t", .range = rangeAt(5, 2, 8)},
+                                 Identifier{.name = "value", .range = rangeAt(5, 9, 14)},
+                                 Identifier{.name = "missing_t", .range = rangeAt(6, 2, 11)},
+                                 Identifier{.name = "missing", .range = rangeAt(6, 12, 19)}}}},
+        .include_directives_by_uri = {{std::string(uri),
+                                       {IncludeDirective{.target = "missing.svh",
+                                                         .range = rangeAt(10, 0, 22)}}}},
         .package_imports_by_uri = {{std::string(uri),
                                     {PackageImport{.package_name = "pkg_a",
                                                    .package_range = rangeAt(3, 9, 14),
@@ -124,7 +132,14 @@ TEST_CASE("DiagnosticProvider aggregates UX diagnostics and dedupes snapshot dia
                              {SemanticSymbolMetadata{.name = "word_t",
                                                      .kind = 26,
                                                      .selection_range = rangeAt(1, 23, 29)}}}},
-        .modules_by_name = {{"top", ModuleDefinition{.name = "top"}}}};
+        .modules_by_name = {{"top", ModuleDefinition{.name = "top"}}},
+        .module_instances_by_uri = {{std::string(uri),
+                                     {SnapshotModuleInstance{.module_name = "missing_child",
+                                                             .instance_name = "u_missing",
+                                                             .uri = std::string(uri),
+                                                             .range = rangeAt(11, 2, 28),
+                                                             .selection_range = rangeAt(11, 16, 25),
+                                                             .module_selection_range = rangeAt(11, 2, 15)}}}}};
 
     const auto diagnostics = diagnosticsFor(context);
 
@@ -142,6 +157,12 @@ TEST_CASE("DiagnosticProvider aggregates UX diagnostics and dedupes snapshot dia
     }));
     CHECK(std::any_of(diagnostics.begin(), diagnostics.end(), [](const SemanticEngineDiagnostic& diagnostic) {
         return diagnostic.code == "widthMismatch" && diagnostic.severity == 2;
+    }));
+    CHECK(std::any_of(diagnostics.begin(), diagnostics.end(), [](const SemanticEngineDiagnostic& diagnostic) {
+        return diagnostic.code == "unknownInclude";
+    }));
+    CHECK(std::any_of(diagnostics.begin(), diagnostics.end(), [](const SemanticEngineDiagnostic& diagnostic) {
+        return diagnostic.code == "unresolvedModule";
     }));
 }
 

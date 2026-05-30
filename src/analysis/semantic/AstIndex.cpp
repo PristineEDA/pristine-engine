@@ -1,7 +1,6 @@
 #include "AstIndex.h"
 
 #include "CompletionProvider.h"
-#include "pristine/analysis/CompilationService.h"
 #include "pristine/analysis/SourceUtil.h"
 
 #include "slang/ast/ASTVisitor.h"
@@ -144,6 +143,94 @@ std::optional<std::string> textForRange(std::string_view text, const ParseRange&
             return std::string(line.substr(static_cast<size_t>(range.start_character),
                                            static_cast<size_t>(range.end_character -
                                                                range.start_character)));
+        }
+        ++current_line;
+        line_start = offset + 1;
+    }
+    return std::nullopt;
+}
+
+std::optional<ParseRange> identifierRangeByName(std::string_view text,
+                                                const ParseRange& range,
+                                                std::string_view name) {
+    if (range.start_line != range.end_line || range.start_line < 0 ||
+        range.start_character < 0 || range.end_character < range.start_character || name.empty()) {
+        return std::nullopt;
+    }
+
+    int current_line = 0;
+    size_t line_start = 0;
+    for (size_t offset = 0; offset <= text.size(); ++offset) {
+        if (offset != text.size() && text[offset] != '\n') {
+            continue;
+        }
+        if (current_line == range.start_line) {
+            const auto line_end = offset > line_start && text[offset - 1] == '\r' ? offset - 1 : offset;
+            const auto line = text.substr(line_start, line_end - line_start);
+            if (static_cast<size_t>(range.end_character) > line.size()) {
+                return std::nullopt;
+            }
+            const auto bounded = line.substr(static_cast<size_t>(range.start_character),
+                                             static_cast<size_t>(range.end_character -
+                                                                 range.start_character));
+            const auto found = bounded.find(name);
+            if (found == std::string_view::npos) {
+                return std::nullopt;
+            }
+            const auto start = range.start_character + static_cast<int>(found);
+            return ParseRange{.start_line = range.start_line,
+                              .start_character = start,
+                              .end_line = range.start_line,
+                              .end_character = start + static_cast<int>(name.size())};
+        }
+        ++current_line;
+        line_start = offset + 1;
+    }
+    return std::nullopt;
+}
+
+std::optional<ParseRange> instanceStatementRange(std::string_view text,
+                                                 const ParseRange& instance_selection,
+                                                 std::string_view module_name) {
+    if (instance_selection.start_line != instance_selection.end_line ||
+        instance_selection.start_line < 0 || instance_selection.start_character < 0 ||
+        module_name.empty()) {
+        return std::nullopt;
+    }
+
+    int current_line = 0;
+    size_t line_start = 0;
+    for (size_t offset = 0; offset <= text.size(); ++offset) {
+        if (offset != text.size() && text[offset] != '\n') {
+            continue;
+        }
+        if (current_line == instance_selection.start_line) {
+            const auto line_end = offset > line_start && text[offset - 1] == '\r' ? offset - 1 : offset;
+            const auto line = text.substr(line_start, line_end - line_start);
+            if (static_cast<size_t>(instance_selection.start_character) > line.size()) {
+                return std::nullopt;
+            }
+            const auto before_instance = line.substr(0,
+                                                     static_cast<size_t>(
+                                                         instance_selection.start_character));
+            const auto module_start = before_instance.rfind(module_name);
+            if (module_start == std::string_view::npos) {
+                return std::nullopt;
+            }
+            auto statement_end = line.find(';',
+                                           static_cast<size_t>(
+                                               std::max(instance_selection.end_character,
+                                                        instance_selection.start_character)));
+            if (statement_end == std::string_view::npos) {
+                statement_end = line.size();
+            }
+            else {
+                ++statement_end;
+            }
+            return ParseRange{.start_line = instance_selection.start_line,
+                              .start_character = static_cast<int>(module_start),
+                              .end_line = instance_selection.start_line,
+                              .end_character = static_cast<int>(statement_end)};
         }
         ++current_line;
         line_start = offset + 1;
@@ -303,26 +390,42 @@ std::optional<SchematicCell> schematicCellForAstInstance(const slang::SourceMana
                        .kind = instance.isInterface() ? "interface" : "module",
                        .range = *range,
                        .selection_range = location->range};
+    if (document != nullptr) {
+        if (const auto statement_range = instanceStatementRange(document->text,
+                                                                location->range,
+                                                                cell.type)) {
+            cell.range = *statement_range;
+        }
+        else if (const auto module_range = identifierRangeByName(document->text, *range, cell.type)) {
+            cell.range = ParseRange{.start_line = module_range->start_line,
+                                    .start_character = module_range->start_character,
+                                    .end_line = range->end_line,
+                                    .end_character = range->end_character};
+        }
+    }
     int port_index = 0;
     for (const auto* connection : instance.getPortConnections()) {
         if (connection == nullptr || connection->port.name.empty()) {
             ++port_index;
             continue;
         }
+        const auto* expression = connection->getExpression();
+        if (expression == nullptr) {
+            ++port_index;
+            continue;
+        }
         std::string signal;
         ParseRange connection_range = location->range;
-        if (const auto* expression = connection->getExpression()) {
-            if (expression->sourceRange.start().valid()) {
-                connection_range = sourceRangeForSourceRange(source_manager, expression->sourceRange);
-                if (document != nullptr) {
-                    if (auto text = textForRange(document->text, connection_range)) {
-                        signal = std::move(*text);
-                    }
+        if (expression->sourceRange.start().valid()) {
+            connection_range = sourceRangeForSourceRange(source_manager, expression->sourceRange);
+            if (document != nullptr) {
+                if (auto text = textForRange(document->text, connection_range)) {
+                    signal = std::move(*text);
                 }
             }
-            if (signal.empty()) {
-                signal = std::string(connection->port.name);
-            }
+        }
+        if (signal.empty()) {
+            signal = std::string(connection->port.name);
         }
         cell.connections.push_back(SchematicConnection{.port_name = std::string(connection->port.name),
                                                        .port_index = port_index,
@@ -392,12 +495,11 @@ void upsertAstModuleSignature(SnapshotData& data,
         .uri = uri};
 }
 
-std::optional<SemanticLocation> identifierRangeWithin(const SemanticEngineDocument& document,
+std::optional<SemanticLocation> identifierRangeWithin(const std::vector<Identifier>& identifiers,
                                                       const SemanticLocation& broad_location,
                                                       std::string_view name) {
-    CompilationService compilation_service;
     std::optional<SemanticLocation> best;
-    for (const auto& identifier : compilation_service.identifiers(document.text)) {
+    for (const auto& identifier : identifiers) {
         if (identifier.name != name || !rangesOverlapOrTouch(identifier.range, broad_location.range)) {
             continue;
         }
@@ -487,7 +589,6 @@ void insertSymbol(SnapshotData& data,
 
 void indexSymbolReferences(SnapshotData& data,
                            const slang::SourceManager& source_manager,
-                           const std::unordered_map<std::string, SemanticEngineDocument>& documents,
                            const slang::ast::Expression& expression) {
     expression.visitSymbolReferences([&](const slang::ast::Expression& reference_expression,
                                           const slang::ast::Symbol& symbol) {
@@ -501,9 +602,9 @@ void indexSymbolReferences(SnapshotData& data,
             return;
         }
 
-        const auto document_it = documents.find(location->uri);
-        if (document_it != documents.end()) {
-            if (const auto narrow_location = identifierRangeWithin(document_it->second,
+        if (const auto identifiers_it = data.identifiers_by_uri.find(location->uri);
+            identifiers_it != data.identifiers_by_uri.end()) {
+            if (const auto narrow_location = identifierRangeWithin(identifiers_it->second,
                                                                    *location,
                                                                    symbol.name)) {
                 location = narrow_location;
@@ -579,7 +680,7 @@ struct SemanticIndexVisitor
     void handle(const T& expression)
         requires std::is_base_of_v<slang::ast::Expression, T>
     {
-        indexSymbolReferences(data, source_manager, documents, expression);
+        indexSymbolReferences(data, source_manager, expression);
         this->visitDefault(expression);
     }
 };
@@ -908,11 +1009,23 @@ AstIndexView buildAstIndexView(const SnapshotData* data, std::uint64_t generatio
     }
     view.assignments_by_uri = data->assignments_by_uri;
     view.identifiers_by_uri = data->identifiers_by_uri;
+    view.include_directives_by_uri = data->include_directives_by_uri;
     view.macros_by_uri = data->macros_by_uri;
     view.package_imports_by_uri = data->package_imports_by_uri;
     view.metadata_by_uri = data->metadata_by_uri;
-    view.design_graph_module_entries.reserve(data->module_entries.size());
+    view.module_instances_by_uri = data->module_instances_by_uri;
+    view.design_graph_module_entries.reserve(view.module_signatures_by_name.size() +
+                                             data->module_entries.size());
+    std::set<std::string> emitted_graph_entries;
+    for (const auto& [name, signature] : view.module_signatures_by_name) {
+        view.design_graph_module_entries.push_back(DesignGraphModuleEntry{.uri = signature.uri,
+                                                                          .definition = signature.definition});
+        emitted_graph_entries.insert(name);
+    }
     for (const auto& entry : data->module_entries) {
+        if (!emitted_graph_entries.insert(entry.definition.name).second) {
+            continue;
+        }
         view.design_graph_module_entries.push_back(DesignGraphModuleEntry{.uri = entry.uri,
                                                                           .definition = entry.definition});
     }
