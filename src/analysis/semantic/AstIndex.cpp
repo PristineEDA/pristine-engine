@@ -9,8 +9,10 @@
 #include "slang/ast/Scope.h"
 #include "slang/ast/Symbol.h"
 #include "slang/ast/symbols/InstanceSymbols.h"
+#include "slang/ast/symbols/PortSymbols.h"
 #include "slang/ast/types/DeclaredType.h"
 #include "slang/ast/types/Type.h"
+#include "slang/syntax/SyntaxNode.h"
 #include "slang/text/SourceManager.h"
 
 #include <algorithm>
@@ -91,6 +93,64 @@ bool isModuleDefinitionKind(std::string_view kind) {
     return kind == "Definition" || kind == "Instance" || kind == "InstanceBody";
 }
 
+std::string directionName(slang::ast::ArgumentDirection direction) {
+    switch (direction) {
+        case slang::ast::ArgumentDirection::In:
+            return "input";
+        case slang::ast::ArgumentDirection::Out:
+            return "output";
+        case slang::ast::ArgumentDirection::InOut:
+            return "inout";
+        case slang::ast::ArgumentDirection::Ref:
+            return "ref";
+    }
+    return {};
+}
+
+std::string normalizedTypeDisplay(std::string value) {
+    value.erase(std::remove(value.begin(), value.end(), '\n'), value.end());
+    value.erase(std::remove(value.begin(), value.end(), '\r'), value.end());
+    for (size_t index = 0; index + 1 < value.size();) {
+        if (value[index] == ' ' && value[index + 1] == ' ') {
+            value.erase(index, 1);
+            continue;
+        }
+        ++index;
+    }
+    const auto packed_open = value.find('[');
+    if (packed_open != std::string::npos && packed_open > 0 && value[packed_open - 1] != ' ') {
+        value.insert(packed_open, " ");
+    }
+    return value;
+}
+
+std::optional<std::string> textForRange(std::string_view text, const ParseRange& range) {
+    if (range.start_line != range.end_line || range.start_line < 0 ||
+        range.start_character < 0 || range.end_character < range.start_character) {
+        return std::nullopt;
+    }
+    int current_line = 0;
+    size_t line_start = 0;
+    for (size_t offset = 0; offset <= text.size(); ++offset) {
+        if (offset != text.size() && text[offset] != '\n') {
+            continue;
+        }
+        if (current_line == range.start_line) {
+            const auto line_end = offset > line_start && text[offset - 1] == '\r' ? offset - 1 : offset;
+            const auto line = text.substr(line_start, line_end - line_start);
+            if (static_cast<size_t>(range.end_character) > line.size()) {
+                return std::nullopt;
+            }
+            return std::string(line.substr(static_cast<size_t>(range.start_character),
+                                           static_cast<size_t>(range.end_character -
+                                                               range.start_character)));
+        }
+        ++current_line;
+        line_start = offset + 1;
+    }
+    return std::nullopt;
+}
+
 std::string symbolKindName(slang::ast::SymbolKind kind) {
     return std::string(slang::ast::toString(kind));
 }
@@ -121,6 +181,20 @@ std::optional<SemanticLocation> locationForSourceRange(const slang::SourceManage
     return SemanticLocation{.uri = uri, .range = sourceRangeForSourceRange(source_manager, range)};
 }
 
+std::optional<ParseRange> parseRangeForSymbolSyntax(const slang::SourceManager& source_manager,
+                                                    const slang::ast::Symbol& symbol) {
+    if (const auto* syntax = symbol.getSyntax()) {
+        return sourceRangeForSourceRange(source_manager, syntax->sourceRange());
+    }
+    if (const auto location = locationForSourceRange(source_manager,
+                                                    slang::SourceRange(symbol.location,
+                                                                       symbol.location +
+                                                                           symbol.name.size()))) {
+        return location->range;
+    }
+    return std::nullopt;
+}
+
 std::string symbolStableId(const slang::SourceManager& source_manager,
                            const slang::ast::Symbol& symbol,
                            const SemanticLocation& location) {
@@ -136,6 +210,186 @@ std::string symbolStableId(const slang::SourceManager& source_manager,
            std::to_string(location.range.start_line) + ":" +
            std::to_string(location.range.start_character) + ":" +
            std::to_string(source_manager.getFullyOriginalLoc(symbol.location).offset());
+}
+
+std::optional<SchematicPort> schematicPortForAstPort(const slang::SourceManager& source_manager,
+                                                     const slang::ast::Symbol& port_symbol) {
+    if (port_symbol.name.empty()) {
+        return std::nullopt;
+    }
+
+    std::string direction = "inout";
+    std::string type_display;
+    if (port_symbol.kind == slang::ast::SymbolKind::Port) {
+        const auto& port = port_symbol.as<slang::ast::PortSymbol>();
+        direction = directionName(port.direction);
+        type_display = normalizedTypeDisplay(port.getType().toString());
+    }
+    else if (port_symbol.kind == slang::ast::SymbolKind::MultiPort) {
+        const auto& port = port_symbol.as<slang::ast::MultiPortSymbol>();
+        direction = directionName(port.direction);
+        type_display = normalizedTypeDisplay(port.getType().toString());
+    }
+    else if (port_symbol.kind == slang::ast::SymbolKind::InterfacePort) {
+        const auto& port = port_symbol.as<slang::ast::InterfacePortSymbol>();
+        direction = "interface";
+        if (port.interfaceDef != nullptr) {
+            type_display = std::string(port.interfaceDef->name);
+        }
+        if (!port.modport.empty()) {
+            if (!type_display.empty()) {
+                type_display += ".";
+            }
+            type_display += std::string(port.modport);
+        }
+        if (type_display.empty() && port.isGeneric) {
+            type_display = "interface";
+        }
+    }
+    else {
+        return std::nullopt;
+    }
+
+    const auto location = declarationLocationForSymbol(source_manager, port_symbol);
+    const auto range = parseRangeForSymbolSyntax(source_manager, port_symbol);
+    if (!location.has_value() || !range.has_value()) {
+        return std::nullopt;
+    }
+
+    return SchematicPort{.name = std::string(port_symbol.name),
+                         .direction = std::move(direction),
+                         .width_text = std::move(type_display),
+                         .range = *range,
+                         .selection_range = location->range};
+}
+
+std::optional<ModuleDefinition> moduleDefinitionForAstBody(const slang::SourceManager& source_manager,
+                                                           const slang::ast::InstanceBodySymbol& body) {
+    const auto& definition = body.getDefinition();
+    const auto location = declarationLocationForSymbol(source_manager, definition);
+    const auto range = parseRangeForSymbolSyntax(source_manager, definition);
+    if (!location.has_value() || !range.has_value()) {
+        return std::nullopt;
+    }
+
+    ModuleDefinition module{.name = std::string(definition.name),
+                            .kind = std::string(definition.getKindString()),
+                            .range = *range,
+                            .selection_range = location->range};
+    for (const auto* port_symbol : body.getPortList()) {
+        if (port_symbol == nullptr || port_symbol->name.empty()) {
+            continue;
+        }
+        module.ports.push_back(std::string(port_symbol->name));
+        if (auto port = schematicPortForAstPort(source_manager, *port_symbol)) {
+            module.port_details.push_back(std::move(*port));
+        }
+    }
+    return module;
+}
+
+std::optional<SchematicCell> schematicCellForAstInstance(const slang::SourceManager& source_manager,
+                                                         const slang::ast::InstanceSymbol& instance,
+                                                         const SemanticEngineDocument* document) {
+    const auto location = declarationLocationForSymbol(source_manager, instance);
+    const auto range = parseRangeForSymbolSyntax(source_manager, instance);
+    if (!location.has_value() || !range.has_value()) {
+        return std::nullopt;
+    }
+
+    SchematicCell cell{.id = std::string(instance.name),
+                       .name = std::string(instance.name),
+                       .type = std::string(instance.getDefinition().name),
+                       .kind = instance.isInterface() ? "interface" : "module",
+                       .range = *range,
+                       .selection_range = location->range};
+    int port_index = 0;
+    for (const auto* connection : instance.getPortConnections()) {
+        if (connection == nullptr || connection->port.name.empty()) {
+            ++port_index;
+            continue;
+        }
+        std::string signal;
+        ParseRange connection_range = location->range;
+        if (const auto* expression = connection->getExpression()) {
+            if (expression->sourceRange.start().valid()) {
+                connection_range = sourceRangeForSourceRange(source_manager, expression->sourceRange);
+                if (document != nullptr) {
+                    if (auto text = textForRange(document->text, connection_range)) {
+                        signal = std::move(*text);
+                    }
+                }
+            }
+            if (signal.empty()) {
+                signal = std::string(connection->port.name);
+            }
+        }
+        cell.connections.push_back(SchematicConnection{.port_name = std::string(connection->port.name),
+                                                       .port_index = port_index,
+                                                       .signal = std::move(signal),
+                                                       .range = connection_range});
+        ++port_index;
+    }
+    return cell;
+}
+
+void upsertAstModuleSignature(SnapshotData& data,
+                              const slang::SourceManager& source_manager,
+                              const std::unordered_map<std::string, SemanticEngineDocument>& documents,
+                              const slang::ast::InstanceBodySymbol& body) {
+    auto definition = moduleDefinitionForAstBody(source_manager, body);
+    if (!definition.has_value()) {
+        return;
+    }
+
+    ModuleSchematic schematic{.name = definition->name,
+                              .range = definition->range,
+                              .selection_range = definition->selection_range,
+                              .ports = definition->port_details};
+    if (const auto existing_it = data.schematics_by_name.find(definition->name);
+        existing_it != data.schematics_by_name.end()) {
+        schematic.cells = existing_it->second.cells;
+    }
+    for (const auto& member : body.members()) {
+        if (member.kind != slang::ast::SymbolKind::Instance) {
+            continue;
+        }
+        const auto document_it = documents.find(declarationLocationForSymbol(
+                                                    source_manager,
+                                                    member.as<slang::ast::InstanceSymbol>())
+                                                    .value_or(SemanticLocation{})
+                                                    .uri);
+        const auto* document = document_it == documents.end() ? nullptr : &document_it->second;
+        if (auto cell = schematicCellForAstInstance(source_manager,
+                                                   member.as<slang::ast::InstanceSymbol>(),
+                                                   document)) {
+            definition->instances.push_back(ModuleInstantiation{.module_name = cell->type,
+                                                                .instance_name = cell->name,
+                                                                .range = cell->range,
+                                                                .selection_range = cell->selection_range,
+                                                                .module_selection_range = cell->range});
+            auto existing_cell = std::find_if(schematic.cells.begin(),
+                                              schematic.cells.end(),
+                                              [&](const SchematicCell& candidate) {
+                                                  return candidate.name == cell->name &&
+                                                         candidate.kind == cell->kind;
+                                              });
+            if (existing_cell == schematic.cells.end()) {
+                schematic.cells.push_back(std::move(*cell));
+            }
+            else {
+                *existing_cell = std::move(*cell);
+            }
+        }
+    }
+
+    const auto uri = definition->selection_range.start_line >= 0
+                         ? declarationLocationForSymbol(source_manager, body.getDefinition())->uri
+                         : std::string{};
+    data.ast_module_signatures_by_name[definition->name] = SemanticModuleSignature{
+        .definition = *definition,
+        .schematic = std::move(schematic),
+        .uri = uri};
 }
 
 std::optional<SemanticLocation> identifierRangeWithin(const SemanticEngineDocument& document,
@@ -314,6 +568,9 @@ struct SemanticIndexVisitor
         insertSymbol(data, source_manager, symbol);
         if constexpr (std::is_same_v<T, slang::ast::InstanceSymbol>) {
             indexModuleInstanceBinding(data, source_manager, symbol);
+        }
+        if constexpr (std::is_same_v<T, slang::ast::InstanceBodySymbol>) {
+            upsertAstModuleSignature(data, source_manager, documents, symbol);
         }
         this->visitDefault(symbol);
     }
@@ -640,6 +897,15 @@ AstIndexView buildAstIndexView(const SnapshotData* data, std::uint64_t generatio
     view.module_uris_by_name = data->module_uris_by_name;
     view.schematics_by_name = data->schematics_by_name;
     view.schematic_uris_by_name = data->schematic_uris_by_name;
+    view.module_signatures_by_name = data->ast_module_signatures_by_name;
+    for (const auto& [name, signature] : view.module_signatures_by_name) {
+        view.modules_by_name[name] = signature.definition;
+        if (!signature.uri.empty()) {
+            view.module_uris_by_name[name] = signature.uri;
+            view.schematic_uris_by_name[name] = signature.uri;
+        }
+        view.schematics_by_name[name] = signature.schematic;
+    }
     view.assignments_by_uri = data->assignments_by_uri;
     view.identifiers_by_uri = data->identifiers_by_uri;
     view.macros_by_uri = data->macros_by_uri;

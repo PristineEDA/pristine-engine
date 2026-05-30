@@ -269,6 +269,7 @@ semantic::DesignGraphContext designGraphContextFor(const SnapshotData* data,
     context.module_uris_by_name = ast_index.module_uris_by_name;
     context.schematics_by_name = ast_index.schematics_by_name;
     context.schematic_uris_by_name = ast_index.schematic_uris_by_name;
+    context.module_signatures_by_name = ast_index.module_signatures_by_name;
     context.module_entries = ast_index.design_graph_module_entries;
     context.assignments_by_uri = ast_index.assignments_by_uri;
     context.identifiers_by_uri = ast_index.identifiers_by_uri;

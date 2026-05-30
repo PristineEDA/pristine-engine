@@ -3,6 +3,7 @@
 #include "DesignGraphProvider.h"
 #include "DiagnosticProvider.h"
 #include "NavigationProvider.h"
+#include "CompletionProvider.h"
 #include "SignatureInlayProvider.h"
 #include "SnapshotBuilder.h"
 #include "pristine/analysis/SemanticEngine.h"
@@ -35,6 +36,7 @@ struct AstIndexView {
     std::unordered_map<std::string, std::string> module_uris_by_name;
     std::unordered_map<std::string, ModuleSchematic> schematics_by_name;
     std::unordered_map<std::string, std::string> schematic_uris_by_name;
+    std::unordered_map<std::string, SemanticModuleSignature> module_signatures_by_name;
     std::vector<DesignGraphModuleEntry> design_graph_module_entries;
     std::unordered_map<std::string, std::vector<ContinuousAssignment>> assignments_by_uri;
     std::unordered_map<std::string, std::vector<Identifier>> identifiers_by_uri;

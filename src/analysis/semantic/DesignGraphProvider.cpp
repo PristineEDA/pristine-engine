@@ -173,7 +173,12 @@ std::vector<SemanticSchematicNet> buildSchematicNets(const ModuleSchematic& sche
                                   true);
     }
 
-    for (const auto& cell : schematic.cells) {
+    const auto signature_it = context.module_signatures_by_name.find(schematic.name);
+    const auto& cells = signature_it == context.module_signatures_by_name.end()
+                            ? schematic.cells
+                            : signature_it->second.schematic.cells;
+
+    for (const auto& cell : cells) {
         const auto target_it = cell.kind == "module"
                                    ? context.schematics_by_name.find(cell.type)
                                    : context.schematics_by_name.end();
@@ -379,6 +384,10 @@ SemanticSchematicResult schematic(const DesignGraphContext& context,
             result.messages.push_back("No schematic data found for module '" + current + "'.");
             return;
         }
+        const auto signature_it = context.module_signatures_by_name.find(current);
+        const auto& schematic = signature_it == context.module_signatures_by_name.end()
+                                    ? schematic_it->second
+                                    : signature_it->second.schematic;
 
         const auto uri_it = context.schematic_uris_by_name.find(current);
         const auto schematic_uri = uri_it == context.schematic_uris_by_name.end()
@@ -386,14 +395,14 @@ SemanticSchematicResult schematic(const DesignGraphContext& context,
                                        : uri_it->second;
         emitted.insert(current);
         result.modules.push_back(SemanticSchematicModuleView{
-            .module = SemanticSchematicModule{.id = schematic_it->second.name,
-                                              .name = schematic_it->second.name,
+            .module = SemanticSchematicModule{.id = schematic.name,
+                                              .name = schematic.name,
                                               .uri = schematic_uri,
-                                              .range = schematic_it->second.range,
-                                              .selection_range = schematic_it->second.selection_range,
-                                              .ports = schematic_it->second.ports,
-                                              .cells = schematic_it->second.cells},
-            .nets = buildSchematicNets(schematic_it->second, context)});
+                                              .range = schematic.range,
+                                              .selection_range = schematic.selection_range,
+                                              .ports = schematic.ports,
+                                              .cells = schematic.cells},
+            .nets = buildSchematicNets(schematic, context)});
 
         if (depth >= max_depth) {
             result.truncated = true;

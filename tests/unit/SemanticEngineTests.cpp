@@ -636,6 +636,48 @@ TEST_CASE("SemanticEngine builds design snapshot hierarchy, schematic, call hier
     }));
 }
 
+TEST_CASE("SemanticEngine routes module signatures and schematic cells through AstIndex views",
+          "[analysis][semantic-engine][ast-index][schematic][signature]") {
+    SemanticEngine engine;
+    engine.configure(SemanticEngineConfig{.top_modules = {"top"}});
+    engine.updateDocument("file:///workspace/child.sv",
+                          "module child(input logic clk, output logic [3:0] data);\n"
+                          "endmodule\n",
+                          SemanticEngineDocumentState{.version = 1});
+    engine.updateDocument("file:///workspace/top.sv",
+                          "module top;\n"
+                          "  logic clk;\n"
+                          "  logic [3:0] data;\n"
+                          "  child u_child(.clk(clk), .data(data));\n"
+                          "endmodule\n",
+                          SemanticEngineDocumentState{.version = 1, .is_open = true});
+
+    const auto signature = engine.signatureHelpAt("file:///workspace/top.sv", 3, 26);
+    REQUIRE_FALSE(signature.unresolved);
+    CHECK(signature.label.find("child(") == 0);
+    CHECK(std::any_of(signature.parameters.begin(), signature.parameters.end(), [](const std::string& parameter) {
+        return parameter.find("data") != std::string::npos &&
+               parameter.find("output") != std::string::npos;
+    }));
+
+    const auto schematic = engine.schematic("top", 4);
+    REQUIRE_FALSE(schematic.unresolved);
+    const auto top = std::find_if(schematic.modules.begin(),
+                                  schematic.modules.end(),
+                                  [](const SemanticSchematicModuleView& view) {
+                                      return view.module.name == "top";
+                                  });
+    REQUIRE(top != schematic.modules.end());
+    REQUIRE(top->module.cells.size() == 1);
+    CHECK(top->module.cells.front().name == "u_child");
+    CHECK(top->module.cells.front().type == "child");
+    CHECK(std::any_of(top->module.cells.front().connections.begin(),
+                      top->module.cells.front().connections.end(),
+                      [](const SchematicConnection& connection) {
+                          return connection.port_name == "data";
+                      }));
+}
+
 TEST_CASE("SemanticEngine reports partial design results for unresolved modules and hierarchy caps",
           "[analysis][semantic-engine][design][negative]") {
     SemanticEngine engine;

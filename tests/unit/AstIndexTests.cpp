@@ -230,5 +230,49 @@ TEST_CASE("AstIndex builds AST symbol, reference, and module instance indexes",
     CHECK(implementations.front().uri == "file:///workspace/top.sv");
 }
 
+TEST_CASE("AstIndex derives module signatures and schematic views from slang AST",
+          "[analysis][semantic][ast-index][signature][schematic]") {
+    SnapshotBuildInput input{
+        .generation = 33,
+        .documents = {{"file:///workspace/child.sv",
+                       SemanticEngineDocument{.uri = "file:///workspace/child.sv",
+                                              .text = "module child(input logic clk, output logic [3:0] data);\n"
+                                                      "endmodule\n",
+                                              .version = 1}},
+                      {"file:///workspace/top.sv",
+                       SemanticEngineDocument{.uri = "file:///workspace/top.sv",
+                                              .text = "module top;\n"
+                                                      "  logic clk;\n"
+                                                      "  logic [3:0] data;\n"
+                                                      "  child u_child(.clk(clk), .data(data));\n"
+                                                      "endmodule\n",
+                                              .version = 1,
+                                              .is_open = true}}}};
+
+    auto output = SnapshotBuilder{}.build(std::move(input));
+    REQUIRE(output.data != nullptr);
+
+    const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
+
+    REQUIRE(view.module_signatures_by_name.contains("child"));
+    const auto& child = view.module_signatures_by_name.at("child");
+    CHECK(child.definition.name == "child");
+    REQUIRE(child.definition.port_details.size() == 2);
+    CHECK(child.definition.port_details[0].name == "clk");
+    CHECK(child.definition.port_details[0].direction == "input");
+    CHECK(child.definition.port_details[1].name == "data");
+    CHECK(child.definition.port_details[1].direction == "output");
+    CHECK(child.definition.port_details[1].width_text.find("logic") != std::string::npos);
+
+    REQUIRE(view.module_signatures_by_name.contains("top"));
+    const auto& top_schematic = view.module_signatures_by_name.at("top").schematic;
+    REQUIRE(top_schematic.cells.size() == 1);
+    CHECK(top_schematic.cells.front().name == "u_child");
+    CHECK(top_schematic.cells.front().type == "child");
+    REQUIRE(top_schematic.cells.front().connections.size() == 2);
+    CHECK(top_schematic.cells.front().connections[0].port_name == "clk");
+    CHECK(top_schematic.cells.front().connections[1].port_name == "data");
+}
+
 } // namespace
 } // namespace pristine::analysis::semantic

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "pristine/analysis/SemanticEngine.h"
+#include "SnapshotBuilder.h"
 
 #include <optional>
 #include <string>
@@ -32,6 +33,7 @@ struct DesignGraphContext {
     std::unordered_map<std::string, std::string> module_uris_by_name;
     std::unordered_map<std::string, ModuleSchematic> schematics_by_name;
     std::unordered_map<std::string, std::string> schematic_uris_by_name;
+    std::unordered_map<std::string, SemanticModuleSignature> module_signatures_by_name;
     std::vector<DesignGraphModuleEntry> module_entries;
     std::unordered_map<std::string, DesignGraphSymbol> symbols_by_id;
     std::unordered_map<std::string, std::vector<ContinuousAssignment>> assignments_by_uri;
