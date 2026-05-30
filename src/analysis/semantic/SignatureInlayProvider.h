@@ -17,6 +17,7 @@ struct SignatureInlayModuleInstance {
     std::string module_name;
     ParseRange range;
     ParseRange selection_range;
+    std::vector<SchematicConnection> connections;
 };
 
 struct SignatureInlayContext {

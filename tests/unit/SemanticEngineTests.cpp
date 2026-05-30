@@ -533,6 +533,39 @@ TEST_CASE("SemanticEngine provides AST-backed module signature help and port com
     }));
 }
 
+TEST_CASE("SemanticEngine emits AST-backed port inlay hints for module instances",
+          "[analysis][semantic-engine][inlay][ports]") {
+    SemanticEngine engine;
+    engine.updateDocument("file:///workspace/child.sv",
+                          "module child(input logic clk, output logic rst_n);\n"
+                          "endmodule\n",
+                          SemanticEngineDocumentState{.version = 1});
+    engine.updateDocument("file:///workspace/top.sv",
+                          "module top;\n"
+                          "  logic clk;\n"
+                          "  logic rst_n;\n"
+                          "  child u_named(.clk(clk), .rst_n(rst_n));\n"
+                          "  child u_ordered(clk, rst_n);\n"
+                          "endmodule\n",
+                          SemanticEngineDocumentState{.version = 1, .is_open = true});
+
+    const auto hints = engine.inlayHints("file:///workspace/top.sv",
+                                        ParseRange{.start_line = 0,
+                                                   .start_character = 0,
+                                                   .end_line = 6,
+                                                   .end_character = 0});
+
+    REQUIRE_FALSE(hints.unresolved);
+    CHECK(std::any_of(hints.hints.begin(), hints.hints.end(), [](const SemanticInlayHint& hint) {
+        return hint.kind == "parameter" && hint.label == ".clk" &&
+               hint.tooltip == "input logic clk";
+    }));
+    CHECK(std::any_of(hints.hints.begin(), hints.hints.end(), [](const SemanticInlayHint& hint) {
+        return hint.kind == "parameter" && hint.label == ".rst_n" &&
+               hint.tooltip == "output logic rst_n";
+    }));
+}
+
 TEST_CASE("SemanticEngine provides AST-backed macro completions and resolve docs",
           "[analysis][semantic-engine][completion][macro]") {
     SemanticEngine engine;

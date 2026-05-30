@@ -1565,9 +1565,27 @@ AstIndexView buildAstIndexView(const SnapshotData* data, std::uint64_t generatio
         auto& view_instances = view.signature_module_instances_by_uri[uri];
         view_instances.reserve(instances.size());
         for (const auto& instance : instances) {
-            view_instances.push_back(SignatureInlayModuleInstance{.module_name = instance.module_name,
-                                                                  .range = instance.range,
-                                                                  .selection_range = instance.selection_range});
+            SignatureInlayModuleInstance view_instance{.module_name = instance.module_name,
+                                                       .range = instance.range,
+                                                       .selection_range = instance.selection_range};
+            for (const auto& [_, signature] : view.module_signatures_by_name) {
+                if (signature.uri != uri) {
+                    continue;
+                }
+                const auto cell_it = std::find_if(signature.schematic.cells.begin(),
+                                                  signature.schematic.cells.end(),
+                                                  [&](const SchematicCell& cell) {
+                                                      return cell.name == instance.instance_name &&
+                                                             cell.type == instance.module_name &&
+                                                             rangesOverlapOrTouch(cell.selection_range,
+                                                                                  instance.selection_range);
+                                                  });
+                if (cell_it != signature.schematic.cells.end()) {
+                    view_instance.connections = cell_it->connections;
+                    break;
+                }
+            }
+            view_instances.push_back(std::move(view_instance));
         }
     }
 

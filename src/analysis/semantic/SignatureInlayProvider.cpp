@@ -38,6 +38,32 @@ bool rangesOverlapOrTouch(const ParseRange& lhs, const ParseRange& rhs) {
     return true;
 }
 
+bool sameRange(const ParseRange& lhs, const ParseRange& rhs) {
+    return lhs.start_line == rhs.start_line &&
+           lhs.start_character == rhs.start_character &&
+           lhs.end_line == rhs.end_line &&
+           lhs.end_character == rhs.end_character;
+}
+
+const SchematicPort* portForConnection(const ModuleDefinition& module,
+                                       const SchematicConnection& connection) {
+    if (!connection.port_name.empty()) {
+        const auto found = std::find_if(module.port_details.begin(),
+                                        module.port_details.end(),
+                                        [&](const SchematicPort& port) {
+                                            return port.name == connection.port_name;
+                                        });
+        if (found != module.port_details.end()) {
+            return &*found;
+        }
+    }
+    if (connection.port_index >= 0 &&
+        static_cast<size_t>(connection.port_index) < module.port_details.size()) {
+        return &module.port_details[static_cast<size_t>(connection.port_index)];
+    }
+    return nullptr;
+}
+
 int activeParameterAt(std::string_view text, size_t open_paren_offset, size_t position_offset) {
     int active_parameter = 0;
     int depth = 0;
@@ -194,6 +220,39 @@ SemanticInlayHintResult inlayHints(const SignatureInlayContext& context,
             .label = ": " + instance.module_name,
             .kind = "type",
             .tooltip = module_found ? moduleSignatureLabel(module_it->second) : std::string{}});
+
+        if (!module_found) {
+            continue;
+        }
+        for (const auto& connection : instance.connections) {
+            if (!rangesOverlapOrTouch(connection.range, range)) {
+                continue;
+            }
+            const auto* port = portForConnection(module_it->second, connection);
+            if (port == nullptr || port->name.empty()) {
+                continue;
+            }
+            const ParseRange label_range{.start_line = connection.range.start_line,
+                                         .start_character = connection.range.start_character,
+                                         .end_line = connection.range.start_line,
+                                         .end_character = connection.range.start_character};
+            const auto duplicate = std::any_of(result.hints.begin(),
+                                               result.hints.end(),
+                                               [&](const SemanticInlayHint& hint) {
+                                                   return hint.kind == "parameter" &&
+                                                          hint.label == "." + port->name &&
+                                                          sameRange(hint.location.range, label_range);
+                                               });
+            if (duplicate) {
+                continue;
+            }
+            result.hints.push_back(SemanticInlayHint{
+                .location = SemanticLocation{.uri = context.document_uri,
+                                             .range = label_range},
+                .label = "." + port->name,
+                .kind = "parameter",
+                .tooltip = portSignatureLabel(*port)});
+        }
     }
     std::sort(result.hints.begin(), result.hints.end(), [](const auto& lhs, const auto& rhs) {
         return locationLess(lhs.location, rhs.location);

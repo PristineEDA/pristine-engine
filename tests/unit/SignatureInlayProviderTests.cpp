@@ -2,6 +2,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <unordered_map>
 
 namespace pristine::analysis::semantic {
@@ -103,6 +104,69 @@ TEST_CASE("SignatureInlayProvider emits type and instance inlay hints in locatio
     CHECK(result.hints[0].tooltip == "child(clk)");
     CHECK(result.hints[1].label == ": logic [3:0]");
     CHECK(result.hints[1].tooltip == "Resolved type");
+}
+
+TEST_CASE("SignatureInlayProvider emits AST-derived named and ordered port inlay hints",
+          "[analysis][semantic][signature-inlay-provider][inlay][ports]") {
+    const ModuleDefinition child{.name = "child",
+                                 .kind = "module",
+                                 .range = ParseRange{},
+                                 .selection_range = ParseRange{},
+                                 .ports = {},
+                                 .port_details = {SchematicPort{.name = "clk",
+                                                                .direction = "input",
+                                                                .width_text = "logic",
+                                                                .range = ParseRange{},
+                                                                .selection_range = ParseRange{}},
+                                                  SchematicPort{.name = "rst_n",
+                                                                .direction = "output",
+                                                                .width_text = "logic",
+                                                                .range = ParseRange{},
+                                                                .selection_range = ParseRange{}}}};
+    const std::unordered_map<std::string, ModuleDefinition> modules{{"child", child}};
+    const SignatureInlayContext context{
+        .generation = 12,
+        .document_uri = "file:///workspace/top.sv",
+        .modules_by_name = &modules,
+        .module_instances = {SignatureInlayModuleInstance{
+            .module_name = "child",
+            .range = ParseRange{.start_line = 1, .start_character = 2, .end_line = 1, .end_character = 34},
+            .selection_range = ParseRange{.start_line = 1,
+                                          .start_character = 8,
+                                          .end_line = 1,
+                                          .end_character = 15},
+            .connections = {SchematicConnection{.port_name = "clk",
+                                                .port_index = 0,
+                                                .signal = "clk",
+                                                .range = ParseRange{.start_line = 1,
+                                                                    .start_character = 17,
+                                                                    .end_line = 1,
+                                                                    .end_character = 25}},
+                            SchematicConnection{.port_index = 1,
+                                                .signal = "rst_n",
+                                                .range = ParseRange{.start_line = 1,
+                                                                    .start_character = 27,
+                                                                    .end_line = 1,
+                                                                    .end_character = 32}}}}},
+        .snapshot_available = true};
+
+    const auto result = inlayHints(context,
+                                  ParseRange{.start_line = 1,
+                                             .start_character = 0,
+                                             .end_line = 1,
+                                             .end_character = 40});
+
+    REQUIRE_FALSE(result.unresolved);
+    CHECK(std::any_of(result.hints.begin(), result.hints.end(), [](const SemanticInlayHint& hint) {
+        return hint.kind == "parameter" && hint.label == ".clk" &&
+               hint.location.range.start_character == 17 &&
+               hint.tooltip == "input logic clk";
+    }));
+    CHECK(std::any_of(result.hints.begin(), result.hints.end(), [](const SemanticInlayHint& hint) {
+        return hint.kind == "parameter" && hint.label == ".rst_n" &&
+               hint.location.range.start_character == 27 &&
+               hint.tooltip == "output logic rst_n";
+    }));
 }
 
 TEST_CASE("SignatureInlayProvider reports unresolved snapshot and document states",
