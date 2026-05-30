@@ -17,7 +17,6 @@
 
 #include <algorithm>
 #include <cctype>
-#include <map>
 #include <memory>
 #include <set>
 #include <sstream>
@@ -216,8 +215,6 @@ semantic::DesignGraphContext designGraphContextFor(const SnapshotData* data,
     }
     context.modules_by_name = ast_index.modules_by_name;
     context.module_uris_by_name = ast_index.module_uris_by_name;
-    context.schematics_by_name = ast_index.schematics_by_name;
-    context.schematic_uris_by_name = ast_index.schematic_uris_by_name;
     context.module_signatures_by_name = ast_index.module_signatures_by_name;
     context.module_entries = ast_index.design_graph_module_entries;
     context.assignments_by_uri = ast_index.assignments_by_uri;
@@ -302,14 +299,9 @@ semantic::CodeActionContext codeActionContextFor(const semantic::SnapshotData* d
     }
     if (data != nullptr) {
         context.modules_by_name = ast_index.modules_by_name;
-        for (const auto& [name, signature] : ast_index.module_signatures_by_name) {
-            const auto schematic_uri_it = ast_index.schematic_uris_by_name.find(name);
-            const auto signature_uri = !signature.uri.empty()
-                                           ? std::string_view(signature.uri)
-                                           : schematic_uri_it == ast_index.schematic_uris_by_name.end()
-                                                 ? std::string_view{}
-                                                 : std::string_view(schematic_uri_it->second);
-            if (signature_uri == context.document.uri ||
+        for (const auto& signature_entry : ast_index.module_signatures_by_name) {
+            const auto& signature = signature_entry.second;
+            if (signature.uri == context.document.uri ||
                 std::any_of(signature.schematic.cells.begin(),
                             signature.schematic.cells.end(),
                             [&](const SchematicCell& cell) {
@@ -379,129 +371,9 @@ std::optional<std::string> firstUninstantiatedModuleName(const Map& modules_by_n
     return std::nullopt;
 }
 
-std::string lowerAsciiCopy(std::string value) {
-    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch) {
-        return static_cast<char>(std::tolower(ch));
-    });
-    return value;
-}
-
-bool isLogicOutputPortName(std::string_view port_name) {
-    const auto normalized = lowerAsciiCopy(std::string(port_name));
-    return normalized == "y" || normalized == "out" || normalized == "o" || normalized == "q";
-}
-
-const SchematicPort* findSchematicPortByName(const ModuleSchematic& schematic, std::string_view name) {
-    const auto found = std::find_if(schematic.ports.begin(), schematic.ports.end(), [&](const auto& port) {
-        return port.name == name;
-    });
-    return found == schematic.ports.end() ? nullptr : &*found;
-}
-
-const SchematicPort* findSchematicPortByIndex(const ModuleSchematic& schematic, int index) {
-    if (index < 0 || static_cast<size_t>(index) >= schematic.ports.size()) {
-        return nullptr;
-    }
-    return &schematic.ports[static_cast<size_t>(index)];
-}
-
 bool sameParseRange(const ParseRange& lhs, const ParseRange& rhs) {
     return lhs.start_line == rhs.start_line && lhs.start_character == rhs.start_character &&
            lhs.end_line == rhs.end_line && lhs.end_character == rhs.end_character;
-}
-
-void appendEndpointByDirection(SemanticSchematicNet& net,
-                               std::string direction,
-                               SemanticSchematicEndpoint endpoint,
-                               bool invert_direction = false) {
-    if (invert_direction) {
-        if (direction == "input") {
-            direction = "output";
-        }
-        else if (direction == "output") {
-            direction = "input";
-        }
-    }
-
-    if (direction == "output") {
-        net.drivers.push_back(std::move(endpoint));
-        return;
-    }
-    if (direction == "input") {
-        net.loads.push_back(std::move(endpoint));
-        return;
-    }
-
-    net.drivers.push_back(endpoint);
-    net.loads.push_back(std::move(endpoint));
-}
-
-template<typename SnapshotData>
-std::vector<SemanticSchematicNet> buildSchematicNets(const ModuleSchematic& schematic,
-                                                     const SnapshotData& data) {
-    std::map<std::string, SemanticSchematicNet> nets;
-    const auto ensure_net = [&](std::string_view signal) -> SemanticSchematicNet& {
-        auto [it, inserted] = nets.try_emplace(std::string(signal),
-                                               SemanticSchematicNet{.name = std::string(signal)});
-        (void)inserted;
-        return it->second;
-    };
-
-    for (const auto& port : schematic.ports) {
-        if (port.name.empty()) {
-            continue;
-        }
-        auto& net = ensure_net(port.name);
-        appendEndpointByDirection(net,
-                                  port.direction,
-                                  SemanticSchematicEndpoint{.node_id = std::string("$port:") + port.name,
-                                                            .port_name = port.name},
-                                  true);
-    }
-
-    for (const auto& cell : schematic.cells) {
-        const auto target_it = cell.kind == "module"
-                                   ? data.schematics_by_name.find(cell.type)
-                                   : data.schematics_by_name.end();
-        for (const auto& connection : cell.connections) {
-            if (connection.signal.empty()) {
-                continue;
-            }
-
-            std::string port_name = connection.port_name;
-            std::string direction;
-            if (target_it != data.schematics_by_name.end()) {
-                const auto* port = !port_name.empty()
-                                       ? findSchematicPortByName(target_it->second, port_name)
-                                       : findSchematicPortByIndex(target_it->second,
-                                                                  connection.port_index);
-                if (port != nullptr) {
-                    port_name = port->name;
-                    direction = port->direction;
-                }
-            }
-
-            if (port_name.empty() && connection.port_index >= 0) {
-                port_name = std::to_string(connection.port_index);
-            }
-            if (direction.empty()) {
-                direction = isLogicOutputPortName(port_name) ? "output" : "input";
-            }
-
-            auto& net = ensure_net(connection.signal);
-            appendEndpointByDirection(net,
-                                      direction,
-                                      SemanticSchematicEndpoint{.node_id = cell.id,
-                                                                .port_name = port_name});
-        }
-    }
-
-    std::vector<SemanticSchematicNet> result;
-    result.reserve(nets.size());
-    for (auto& [_, net] : nets) {
-        result.push_back(std::move(net));
-    }
-    return result;
 }
 
 } // namespace

@@ -127,16 +127,6 @@ TEST_CASE("AstIndex builds provider-facing graph, diagnostic, and signature view
                                                                                  .range = rangeAt(0, 13, 28),
                                                                                  .selection_range = rangeAt(0, 25, 28)}}});
     data.module_uris_by_name.emplace("child", "file:///workspace/child.sv");
-    data.schematics_by_name.emplace("child",
-                                    ModuleSchematic{.name = "child",
-                                                    .range = rangeAt(0, 0, 48),
-                                                    .selection_range = rangeAt(0, 7, 12),
-                                                    .ports = {SchematicPort{.name = "clk",
-                                                                            .direction = "input",
-                                                                            .width_text = "logic",
-                                                                            .range = rangeAt(0, 13, 28),
-                                                                            .selection_range = rangeAt(0, 25, 28)}}});
-    data.schematic_uris_by_name.emplace("child", "file:///workspace/child.sv");
     data.module_entries.push_back(SnapshotModuleEntry{.uri = "file:///workspace/child.sv",
                                                       .definition = data.modules_by_name.at("child")});
     data.assignments_by_uri["file:///workspace/top.sv"] = {
@@ -172,7 +162,6 @@ TEST_CASE("AstIndex builds provider-facing graph, diagnostic, and signature view
 
     CHECK(view.modules_by_name.contains("child"));
     CHECK(view.module_uris_by_name.at("child") == "file:///workspace/child.sv");
-    CHECK(view.schematics_by_name.contains("child"));
     REQUIRE(view.design_graph_module_entries.size() == 1);
     CHECK(view.assignments_by_uri.at("file:///workspace/top.sv").size() == 1);
     CHECK(view.identifiers_by_uri.at("file:///workspace/top.sv").size() == 1);
@@ -272,6 +261,41 @@ TEST_CASE("AstIndex derives module signatures and schematic views from slang AST
     REQUIRE(top_schematic.cells.front().connections.size() == 2);
     CHECK(top_schematic.cells.front().connections[0].port_name == "clk");
     CHECK(top_schematic.cells.front().connections[1].port_name == "data");
+}
+
+TEST_CASE("AstIndex derives primitive and assignment schematic cells from slang AST",
+          "[analysis][semantic][ast-index][schematic][no-fallback]") {
+    SnapshotBuildInput input{.generation = 34,
+                             .documents = {{"file:///workspace/top.sv",
+                                            SemanticEngineDocument{
+                                                .uri = "file:///workspace/top.sv",
+                                                .text = "module top(input logic a, input logic b, input logic sel, output logic y);\n"
+                                                        "  logic n1;\n"
+                                                        "  and u_and(n1, a, b);\n"
+                                                        "  assign y = sel ? n1 : (a | b);\n"
+                                                        "endmodule\n",
+                                                .version = 1,
+                                                .is_open = true}}}};
+
+    auto output = SnapshotBuilder{}.build(std::move(input));
+    REQUIRE(output.data != nullptr);
+
+    const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
+
+    REQUIRE(view.module_signatures_by_name.contains("top"));
+    const auto& cells = view.module_signatures_by_name.at("top").schematic.cells;
+    CHECK(std::any_of(cells.begin(), cells.end(), [](const SchematicCell& cell) {
+        return cell.name == "u_and" && cell.kind == "and";
+    }));
+    CHECK(std::any_of(cells.begin(), cells.end(), [](const SchematicCell& cell) {
+        return cell.kind == "or";
+    }));
+    CHECK(std::any_of(cells.begin(), cells.end(), [](const SchematicCell& cell) {
+        return cell.kind == "mux";
+    }));
+    CHECK(std::any_of(cells.begin(), cells.end(), [](const SchematicCell& cell) {
+        return cell.kind == "buf";
+    }));
 }
 
 } // namespace

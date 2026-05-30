@@ -6,8 +6,12 @@
 #include "slang/ast/ASTVisitor.h"
 #include "slang/ast/Expression.h"
 #include "slang/ast/Scope.h"
+#include "slang/ast/SemanticFacts.h"
 #include "slang/ast/Symbol.h"
+#include "slang/ast/expressions/AssignmentExpressions.h"
+#include "slang/ast/expressions/OperatorExpressions.h"
 #include "slang/ast/symbols/InstanceSymbols.h"
+#include "slang/ast/symbols/MemberSymbols.h"
 #include "slang/ast/symbols/PortSymbols.h"
 #include "slang/ast/types/DeclaredType.h"
 #include "slang/ast/types/Type.h"
@@ -106,6 +110,19 @@ std::string directionName(slang::ast::ArgumentDirection direction) {
     return {};
 }
 
+std::string primitiveDirectionName(slang::ast::PrimitivePortDirection direction) {
+    switch (direction) {
+        case slang::ast::PrimitivePortDirection::In:
+            return "input";
+        case slang::ast::PrimitivePortDirection::Out:
+        case slang::ast::PrimitivePortDirection::OutReg:
+            return "output";
+        case slang::ast::PrimitivePortDirection::InOut:
+            return "inout";
+    }
+    return {};
+}
+
 std::string normalizedTypeDisplay(std::string value) {
     value.erase(std::remove(value.begin(), value.end(), '\n'), value.end());
     value.erase(std::remove(value.begin(), value.end(), '\r'), value.end());
@@ -148,6 +165,200 @@ std::optional<std::string> textForRange(std::string_view text, const ParseRange&
         line_start = offset + 1;
     }
     return std::nullopt;
+}
+
+std::string expressionText(const SemanticEngineDocument* document,
+                           const slang::SourceManager& source_manager,
+                           const slang::ast::Expression& expression) {
+    if (document == nullptr) {
+        return {};
+    }
+    const auto range = sourceRangeForSourceRange(source_manager, expression.sourceRange);
+    if (auto text = textForRange(document->text, range)) {
+        return *text;
+    }
+    return {};
+}
+
+std::optional<std::string> logicKindForBinary(slang::ast::BinaryOperator op) {
+    switch (op) {
+        case slang::ast::BinaryOperator::BinaryAnd:
+        case slang::ast::BinaryOperator::LogicalAnd:
+            return "and";
+        case slang::ast::BinaryOperator::BinaryOr:
+        case slang::ast::BinaryOperator::LogicalOr:
+            return "or";
+        case slang::ast::BinaryOperator::BinaryXor:
+            return "xor";
+        case slang::ast::BinaryOperator::BinaryXnor:
+            return "xnor";
+        default:
+            return std::nullopt;
+    }
+}
+
+std::optional<std::string> logicKindForUnary(slang::ast::UnaryOperator op) {
+    switch (op) {
+        case slang::ast::UnaryOperator::BitwiseNot:
+        case slang::ast::UnaryOperator::LogicalNot:
+            return "not";
+        default:
+            return std::nullopt;
+    }
+}
+
+std::string generatedName(std::string_view prefix, int index) {
+    return std::string("$") + std::string(prefix) + std::to_string(index);
+}
+
+SchematicConnection makeConnection(std::string port_name,
+                                   int port_index,
+                                   std::string signal,
+                                   const slang::SourceManager& source_manager,
+                                   const slang::ast::Expression& expression) {
+    return SchematicConnection{.port_name = std::move(port_name),
+                               .port_index = port_index,
+                               .signal = std::move(signal),
+                               .range = sourceRangeForSourceRange(source_manager, expression.sourceRange)};
+}
+
+struct AstExpressionSchematicContext {
+    int cell_index = 0;
+    int net_index = 0;
+};
+
+std::string materializeAstExpression(ModuleSchematic& schematic,
+                                     const SemanticEngineDocument* document,
+                                     const slang::SourceManager& source_manager,
+                                     const slang::ast::Expression& expression,
+                                     AstExpressionSchematicContext& context);
+
+void appendAstLogicCell(ModuleSchematic& schematic,
+                        const slang::SourceManager& source_manager,
+                        std::string kind,
+                        const slang::ast::Expression& source,
+                        std::vector<SchematicConnection> connections,
+                        AstExpressionSchematicContext& context) {
+    const auto name = generatedName(kind, context.cell_index++);
+    const auto range = sourceRangeForSourceRange(source_manager, source.sourceRange);
+    schematic.cells.push_back(SchematicCell{.id = name,
+                                            .name = name,
+                                            .type = kind,
+                                            .kind = std::move(kind),
+                                            .range = range,
+                                            .selection_range = range,
+                                            .connections = std::move(connections)});
+}
+
+bool appendAstLogicExpression(ModuleSchematic& schematic,
+                              const SemanticEngineDocument* document,
+                              const slang::SourceManager& source_manager,
+                              const slang::ast::Expression& expression,
+                              std::string output_signal,
+                              AstExpressionSchematicContext& context) {
+    if (const auto* binary = expression.as_if<slang::ast::BinaryExpression>()) {
+        const auto kind = logicKindForBinary(binary->op);
+        if (!kind.has_value()) {
+            return false;
+        }
+        std::vector<SchematicConnection> connections;
+        connections.push_back(makeConnection("Y", -1, std::move(output_signal), source_manager, expression));
+        connections.push_back(makeConnection("A",
+                                             -1,
+                                             materializeAstExpression(schematic,
+                                                                      document,
+                                                                      source_manager,
+                                                                      binary->left(),
+                                                                      context),
+                                             source_manager,
+                                             binary->left()));
+        connections.push_back(makeConnection("B",
+                                             -1,
+                                             materializeAstExpression(schematic,
+                                                                      document,
+                                                                      source_manager,
+                                                                      binary->right(),
+                                                                      context),
+                                             source_manager,
+                                             binary->right()));
+        appendAstLogicCell(schematic, source_manager, *kind, expression, std::move(connections), context);
+        return true;
+    }
+
+    if (const auto* unary = expression.as_if<slang::ast::UnaryExpression>()) {
+        const auto kind = logicKindForUnary(unary->op);
+        if (!kind.has_value()) {
+            return false;
+        }
+        std::vector<SchematicConnection> connections;
+        connections.push_back(makeConnection("Y", -1, std::move(output_signal), source_manager, expression));
+        connections.push_back(makeConnection("A",
+                                             -1,
+                                             materializeAstExpression(schematic,
+                                                                      document,
+                                                                      source_manager,
+                                                                      unary->operand(),
+                                                                      context),
+                                             source_manager,
+                                             unary->operand()));
+        appendAstLogicCell(schematic, source_manager, *kind, expression, std::move(connections), context);
+        return true;
+    }
+
+    if (const auto* conditional = expression.as_if<slang::ast::ConditionalExpression>()) {
+        std::vector<SchematicConnection> connections;
+        connections.push_back(makeConnection("Y", -1, std::move(output_signal), source_manager, expression));
+        if (!conditional->conditions.empty()) {
+            const auto& condition = *conditional->conditions.begin();
+            connections.push_back(makeConnection("S",
+                                                 -1,
+                                                 materializeAstExpression(schematic,
+                                                                          document,
+                                                                          source_manager,
+                                                                          *condition.expr,
+                                                                          context),
+                                                 source_manager,
+                                                 *condition.expr));
+        }
+        connections.push_back(makeConnection("I1",
+                                             -1,
+                                             materializeAstExpression(schematic,
+                                                                      document,
+                                                                      source_manager,
+                                                                      conditional->left(),
+                                                                      context),
+                                             source_manager,
+                                             conditional->left()));
+        connections.push_back(makeConnection("I0",
+                                             -1,
+                                             materializeAstExpression(schematic,
+                                                                      document,
+                                                                      source_manager,
+                                                                      conditional->right(),
+                                                                      context),
+                                             source_manager,
+                                             conditional->right()));
+        appendAstLogicCell(schematic, source_manager, "mux", expression, std::move(connections), context);
+        return true;
+    }
+
+    return false;
+}
+
+std::string materializeAstExpression(ModuleSchematic& schematic,
+                                     const SemanticEngineDocument* document,
+                                     const slang::SourceManager& source_manager,
+                                     const slang::ast::Expression& expression,
+                                     AstExpressionSchematicContext& context) {
+    if (expression.as_if<slang::ast::BinaryExpression>() != nullptr ||
+        expression.as_if<slang::ast::UnaryExpression>() != nullptr ||
+        expression.as_if<slang::ast::ConditionalExpression>() != nullptr) {
+        const auto signal = generatedName("net", context.net_index++);
+        if (appendAstLogicExpression(schematic, document, source_manager, expression, signal, context)) {
+            return signal;
+        }
+    }
+    return expressionText(document, source_manager, expression);
 }
 
 std::optional<ParseRange> identifierRangeByName(std::string_view text,
@@ -436,6 +647,96 @@ std::optional<SchematicCell> schematicCellForAstInstance(const slang::SourceMana
     return cell;
 }
 
+std::optional<SchematicCell> schematicCellForAstPrimitiveInstance(
+    const slang::SourceManager& source_manager,
+    const slang::ast::PrimitiveInstanceSymbol& instance,
+    const SemanticEngineDocument* document) {
+    const auto location = declarationLocationForSymbol(source_manager, instance);
+    const auto range = parseRangeForSymbolSyntax(source_manager, instance);
+    if (!location.has_value() || !range.has_value()) {
+        return std::nullopt;
+    }
+
+    SchematicCell cell{.id = std::string(instance.name),
+                       .name = std::string(instance.name),
+                       .type = std::string(instance.primitiveType.name),
+                       .kind = std::string(instance.primitiveType.name),
+                       .range = *range,
+                       .selection_range = location->range};
+    if (document != nullptr) {
+        if (const auto statement_range = instanceStatementRange(document->text,
+                                                                location->range,
+                                                                cell.type)) {
+            cell.range = *statement_range;
+        }
+        else if (const auto type_range = identifierRangeByName(document->text, *range, cell.type)) {
+            cell.range = ParseRange{.start_line = type_range->start_line,
+                                    .start_character = type_range->start_character,
+                                    .end_line = range->end_line,
+                                    .end_character = range->end_character};
+        }
+    }
+
+    const auto connections = instance.getPortConnections();
+    for (size_t index = 0; index < connections.size(); ++index) {
+        const auto* expression = connections[index];
+        if (expression == nullptr) {
+            continue;
+        }
+
+        ParseRange connection_range = location->range;
+        std::string signal;
+        if (expression->sourceRange.start().valid()) {
+            connection_range = sourceRangeForSourceRange(source_manager, expression->sourceRange);
+            if (document != nullptr) {
+                if (auto text = textForRange(document->text, connection_range)) {
+                    signal = std::move(*text);
+                }
+            }
+        }
+        if (signal.empty()) {
+            signal = std::string("P") + std::to_string(index);
+        }
+
+        std::string port_name = std::string("P") + std::to_string(index);
+        if (index < instance.primitiveType.ports.size()) {
+            if (!instance.primitiveType.ports[index]->name.empty()) {
+                port_name = std::string(instance.primitiveType.ports[index]->name);
+            }
+            else if (index == 0) {
+                port_name = "Y";
+            }
+            else if (index == 1) {
+                port_name = "A";
+            }
+            else if (index == 2) {
+                port_name = "B";
+            }
+            else {
+                port_name = std::string("I") + std::to_string(index - 1);
+            }
+        }
+        else if (index == 0) {
+            port_name = "Y";
+        }
+        else if (index == 1) {
+            port_name = "A";
+        }
+        else if (index == 2) {
+            port_name = "B";
+        }
+        else {
+            port_name = std::string("I") + std::to_string(index - 1);
+        }
+
+        cell.connections.push_back(SchematicConnection{.port_name = std::move(port_name),
+                                                       .port_index = static_cast<int>(index),
+                                                       .signal = std::move(signal),
+                                                       .range = connection_range});
+    }
+    return cell;
+}
+
 void upsertAstModuleSignature(SnapshotData& data,
                               const slang::SourceManager& source_manager,
                               const std::unordered_map<std::string, SemanticEngineDocument>& documents,
@@ -449,10 +750,6 @@ void upsertAstModuleSignature(SnapshotData& data,
                               .range = definition->range,
                               .selection_range = definition->selection_range,
                               .ports = definition->port_details};
-    if (const auto existing_it = data.schematics_by_name.find(definition->name);
-        existing_it != data.schematics_by_name.end()) {
-        schematic.cells = existing_it->second.cells;
-    }
     for (const auto& member : body.members()) {
         if (member.kind != slang::ast::SymbolKind::Instance) {
             continue;
@@ -485,6 +782,19 @@ void upsertAstModuleSignature(SnapshotData& data,
             }
         }
     }
+    for (const auto& member : body.members()) {
+        if (member.kind != slang::ast::SymbolKind::PrimitiveInstance) {
+            continue;
+        }
+        const auto location = declarationLocationForSymbol(source_manager, member);
+        const auto document_it = location.has_value() ? documents.find(location->uri) : documents.end();
+        const auto* document = document_it == documents.end() ? nullptr : &document_it->second;
+        if (auto cell = schematicCellForAstPrimitiveInstance(source_manager,
+                                                            member.as<slang::ast::PrimitiveInstanceSymbol>(),
+                                                            document)) {
+            schematic.cells.push_back(std::move(*cell));
+        }
+    }
 
     const auto uri = definition->selection_range.start_line >= 0
                          ? declarationLocationForSymbol(source_manager, body.getDefinition())->uri
@@ -493,6 +803,60 @@ void upsertAstModuleSignature(SnapshotData& data,
         .definition = *definition,
         .schematic = std::move(schematic),
         .uri = uri};
+}
+
+void upsertAstContinuousAssignment(SnapshotData& data,
+                                   const slang::SourceManager& source_manager,
+                                   const std::unordered_map<std::string, SemanticEngineDocument>& documents,
+                                   const slang::ast::ContinuousAssignSymbol& assignment) {
+    const auto* parent_scope = assignment.getParentScope();
+    const auto* body = parent_scope != nullptr && parent_scope->asSymbol().kind ==
+                                                slang::ast::SymbolKind::InstanceBody
+                           ? &parent_scope->asSymbol().as<slang::ast::InstanceBodySymbol>()
+                           : nullptr;
+    if (body == nullptr) {
+        return;
+    }
+
+    const auto signature_it = data.ast_module_signatures_by_name.find(std::string(body->getDefinition().name));
+    if (signature_it == data.ast_module_signatures_by_name.end()) {
+        return;
+    }
+
+    const auto location = locationForSourceRange(source_manager, assignment.getAssignment().sourceRange);
+    const auto document_it = location.has_value() ? documents.find(location->uri) : documents.end();
+    const auto* document = document_it == documents.end() ? nullptr : &document_it->second;
+    const auto* assignment_expression =
+        assignment.getAssignment().as_if<slang::ast::AssignmentExpression>();
+    if (assignment_expression == nullptr) {
+        return;
+    }
+
+    auto& schematic = signature_it->second.schematic;
+    AstExpressionSchematicContext context{.cell_index = static_cast<int>(schematic.cells.size())};
+    std::vector<SchematicConnection> connections;
+    connections.push_back(makeConnection("Y",
+                                         -1,
+                                         expressionText(document,
+                                                        source_manager,
+                                                        assignment_expression->left()),
+                                         source_manager,
+                                         assignment_expression->left()));
+    connections.push_back(makeConnection("A",
+                                         -1,
+                                         materializeAstExpression(schematic,
+                                                                  document,
+                                                                  source_manager,
+                                                                  assignment_expression->right(),
+                                                                  context),
+                                         source_manager,
+                                         assignment_expression->right()));
+    appendAstLogicCell(schematic,
+                       source_manager,
+                       "buf",
+                       assignment.getAssignment(),
+                       std::move(connections),
+                       context);
 }
 
 std::optional<SemanticLocation> identifierRangeWithin(const std::vector<Identifier>& identifiers,
@@ -672,6 +1036,9 @@ struct SemanticIndexVisitor
         }
         if constexpr (std::is_same_v<T, slang::ast::InstanceBodySymbol>) {
             upsertAstModuleSignature(data, source_manager, documents, symbol);
+        }
+        if constexpr (std::is_same_v<T, slang::ast::ContinuousAssignSymbol>) {
+            upsertAstContinuousAssignment(data, source_manager, documents, symbol);
         }
         this->visitDefault(symbol);
     }
@@ -996,16 +1363,12 @@ AstIndexView buildAstIndexView(const SnapshotData* data, std::uint64_t generatio
 
     view.modules_by_name = data->modules_by_name;
     view.module_uris_by_name = data->module_uris_by_name;
-    view.schematics_by_name = data->schematics_by_name;
-    view.schematic_uris_by_name = data->schematic_uris_by_name;
     view.module_signatures_by_name = data->ast_module_signatures_by_name;
     for (const auto& [name, signature] : view.module_signatures_by_name) {
         view.modules_by_name[name] = signature.definition;
         if (!signature.uri.empty()) {
             view.module_uris_by_name[name] = signature.uri;
-            view.schematic_uris_by_name[name] = signature.uri;
         }
-        view.schematics_by_name[name] = signature.schematic;
     }
     view.assignments_by_uri = data->assignments_by_uri;
     view.identifiers_by_uri = data->identifiers_by_uri;

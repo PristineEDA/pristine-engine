@@ -157,10 +157,6 @@ SnapshotBuildOutput SnapshotBuilder::build(SnapshotBuildInput input) const {
                 data->selection_ranges_by_uri[uri].push_back(instance.module_selection_range);
             }
         }
-        for (const auto& schematic : compilation_service.moduleSchematics(document_it->second.text, uri)) {
-            data->schematics_by_name.try_emplace(schematic.name, schematic);
-            data->schematic_uris_by_name.try_emplace(schematic.name, uri);
-        }
         const auto assignments = compilation_service.continuousAssignments(document_it->second.text, uri);
         data->assignments_by_uri[uri] = assignments;
         for (const auto& assignment : assignments) {

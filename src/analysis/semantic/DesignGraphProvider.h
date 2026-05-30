@@ -31,8 +31,6 @@ struct DesignGraphContext {
     std::vector<std::string> top_modules;
     std::unordered_map<std::string, ModuleDefinition> modules_by_name;
     std::unordered_map<std::string, std::string> module_uris_by_name;
-    std::unordered_map<std::string, ModuleSchematic> schematics_by_name;
-    std::unordered_map<std::string, std::string> schematic_uris_by_name;
     std::unordered_map<std::string, SemanticModuleSignature> module_signatures_by_name;
     std::vector<DesignGraphModuleEntry> module_entries;
     std::unordered_map<std::string, DesignGraphSymbol> symbols_by_id;

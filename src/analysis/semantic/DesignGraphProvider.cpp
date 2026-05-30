@@ -379,21 +379,14 @@ SemanticSchematicResult schematic(const DesignGraphContext& context,
         if (emitted.contains(current)) {
             return;
         }
-        const auto schematic_it = context.schematics_by_name.find(current);
-        if (schematic_it == context.schematics_by_name.end()) {
+        const auto signature_it = context.module_signatures_by_name.find(current);
+        if (signature_it == context.module_signatures_by_name.end()) {
             result.partial = true;
             result.messages.push_back("No schematic data found for module '" + current + "'.");
             return;
         }
-        const auto signature_it = context.module_signatures_by_name.find(current);
-        const auto& schematic = signature_it == context.module_signatures_by_name.end()
-                                    ? schematic_it->second
-                                    : signature_it->second.schematic;
-
-        const auto uri_it = context.schematic_uris_by_name.find(current);
-        const auto schematic_uri = uri_it == context.schematic_uris_by_name.end()
-                                       ? std::string{}
-                                       : uri_it->second;
+        const auto& schematic = signature_it->second.schematic;
+        const auto& schematic_uri = signature_it->second.uri;
         emitted.insert(current);
         result.modules.push_back(SemanticSchematicModuleView{
             .module = SemanticSchematicModule{.id = schematic.name,
