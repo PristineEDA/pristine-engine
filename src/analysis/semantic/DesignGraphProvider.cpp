@@ -76,55 +76,6 @@ bool locationLess(const SemanticLocation& lhs, const SemanticLocation& rhs) {
     return lhs.range.end_character < rhs.range.end_character;
 }
 
-bool containsPosition(const ParseRange& range, int line, int character) {
-    if (line < range.start_line || line > range.end_line) {
-        return false;
-    }
-    if (line == range.start_line && character < range.start_character) {
-        return false;
-    }
-    if (line == range.end_line && character >= range.end_character) {
-        return false;
-    }
-    return true;
-}
-
-bool rangeContainsRange(const ParseRange& outer, const ParseRange& inner) {
-    if (inner.start_line < outer.start_line || inner.end_line > outer.end_line) {
-        return false;
-    }
-    if (inner.start_line == outer.start_line && inner.start_character < outer.start_character) {
-        return false;
-    }
-    if (inner.end_line == outer.end_line && inner.end_character > outer.end_character) {
-        return false;
-    }
-    return true;
-}
-
-std::optional<std::string> symbolIdAtRangeStart(const DesignGraphContext& context,
-                                                std::string_view uri,
-                                                const ParseRange& range) {
-    const auto symbols_it = context.symbol_ranges_by_uri.find(std::string(uri));
-    if (symbols_it == context.symbol_ranges_by_uri.end()) {
-        return std::nullopt;
-    }
-    std::optional<std::string> best_id;
-    std::optional<ParseRange> best_range;
-    for (const auto& symbol_range : symbols_it->second) {
-        if (!containsPosition(symbol_range.range, range.start_line, range.start_character)) {
-            continue;
-        }
-        if (!best_range.has_value() ||
-            (symbol_range.range.start_line >= best_range->start_line &&
-             symbol_range.range.start_character >= best_range->start_character)) {
-            best_id = symbol_range.stable_id;
-            best_range = symbol_range.range;
-        }
-    }
-    return best_id;
-}
-
 void appendEndpointByDirection(SemanticSchematicNet& net,
                                std::string direction,
                                SemanticSchematicEndpoint endpoint,
@@ -567,16 +518,11 @@ SemanticConeTrace backwardCone(const DesignGraphContext& context,
         return trace;
     }
 
-    const auto assignments_it = context.assignments_by_uri.find(std::string(document_uri));
-    if (assignments_it == context.assignments_by_uri.end()) {
-        trace.messages.push_back("No continuous assignments are indexed for the current document.");
+    const auto assignment_edges_it = context.assignment_edges_by_uri.find(std::string(document_uri));
+    if (assignment_edges_it == context.assignment_edges_by_uri.end()) {
+        trace.messages.push_back("No AST assignment edges are indexed for the current document.");
         return trace;
     }
-    const auto identifiers_it = context.identifiers_by_uri.find(std::string(document_uri));
-    const auto empty_identifiers = std::vector<Identifier>{};
-    const auto& document_identifiers = identifiers_it == context.identifiers_by_uri.end()
-                                           ? empty_identifiers
-                                           : identifiers_it->second;
 
     const auto append_node = [&](const std::string& stable_id) {
         if (std::find_if(trace.nodes.begin(), trace.nodes.end(), [&](const SemanticConeNode& node) {
@@ -609,35 +555,23 @@ SemanticConeTrace backwardCone(const DesignGraphContext& context,
             continue;
         }
 
-        for (const auto& assignment : assignments_it->second) {
-            const auto left_id = symbolIdAtRangeStart(context, document_uri, assignment.left_range);
-            if (!left_id.has_value() || *left_id != current_id) {
+        for (const auto& edge : assignment_edges_it->second) {
+            if (edge.from_symbol_id != current_id) {
                 continue;
             }
 
-            for (const auto& identifier : document_identifiers) {
-                if (!rangeContainsRange(assignment.right_range, identifier.range)) {
-                    continue;
-                }
-                const auto input_id = symbolIdAtRangeStart(context, document_uri, identifier.range);
-                if (!input_id.has_value()) {
-                    continue;
-                }
-
-                append_node(*input_id);
-                const auto edge_key = current_id + "\n" + *input_id + "\n" +
-                                      std::to_string(assignment.range.start_line) + ":" +
-                                      std::to_string(assignment.range.start_character);
-                if (emitted_edges.insert(edge_key).second) {
-                    trace.edges.push_back(SemanticConeEdge{.from_symbol_id = current_id,
-                                                           .to_symbol_id = *input_id,
-                                                           .location = SemanticLocation{.uri = std::string(document_uri),
-                                                                                        .range = assignment.range},
-                                                           .expression = assignment.right_expression});
-                }
-                if (!visited.contains(*input_id)) {
-                    pending.push_back(*input_id);
-                }
+            append_node(edge.to_symbol_id);
+            const auto edge_key = edge.from_symbol_id + "\n" + edge.to_symbol_id + "\n" +
+                                  std::to_string(edge.location.range.start_line) + ":" +
+                                  std::to_string(edge.location.range.start_character);
+            if (emitted_edges.insert(edge_key).second) {
+                trace.edges.push_back(SemanticConeEdge{.from_symbol_id = edge.from_symbol_id,
+                                                       .to_symbol_id = edge.to_symbol_id,
+                                                       .location = edge.location,
+                                                       .expression = edge.expression});
+            }
+            if (!visited.contains(edge.to_symbol_id)) {
+                pending.push_back(edge.to_symbol_id);
             }
         }
 

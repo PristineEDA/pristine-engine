@@ -34,8 +34,7 @@ struct DesignGraphContext {
     std::unordered_map<std::string, SemanticModuleSignature> module_signatures_by_name;
     std::vector<DesignGraphModuleEntry> module_entries;
     std::unordered_map<std::string, DesignGraphSymbol> symbols_by_id;
-    std::unordered_map<std::string, std::vector<ContinuousAssignment>> assignments_by_uri;
-    std::unordered_map<std::string, std::vector<Identifier>> identifiers_by_uri;
+    std::unordered_map<std::string, std::vector<SnapshotAssignmentEdge>> assignment_edges_by_uri;
     std::unordered_map<std::string, std::vector<DesignGraphRangeSymbol>> symbol_ranges_by_uri;
 };
 

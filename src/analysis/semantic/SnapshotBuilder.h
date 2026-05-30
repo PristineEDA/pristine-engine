@@ -51,6 +51,27 @@ struct SnapshotModuleEntry {
     ModuleDefinition definition;
 };
 
+struct SnapshotAssignmentEdgeSeed {
+    std::string uri;
+    ParseRange assignment_range;
+    ParseRange left_range;
+    ParseRange right_range;
+    std::string right_expression;
+};
+
+struct SnapshotAssignmentEdge {
+    std::string from_symbol_id;
+    std::string to_symbol_id;
+    SemanticLocation location;
+    std::string expression;
+};
+
+struct SnapshotTypeReference {
+    SemanticLocation reference;
+    std::string type_name;
+    std::vector<SemanticLocation> definitions;
+};
+
 struct SemanticModuleSignature {
     ModuleDefinition definition;
     ModuleSchematic schematic;
@@ -78,6 +99,9 @@ struct SnapshotData {
     std::unordered_map<std::string, std::string> module_uris_by_name;
     std::unordered_map<std::string, SemanticModuleSignature> ast_module_signatures_by_name;
     std::unordered_map<std::string, std::vector<ContinuousAssignment>> assignments_by_uri;
+    std::vector<SnapshotAssignmentEdgeSeed> assignment_edge_seeds;
+    std::unordered_map<std::string, std::vector<SnapshotAssignmentEdge>> assignment_edges_by_uri;
+    std::unordered_map<std::string, std::vector<SnapshotTypeReference>> type_references_by_uri;
     std::unordered_map<std::string, std::vector<Identifier>> identifiers_by_uri;
     std::unordered_map<std::string, std::vector<IncludeDirective>> include_directives_by_uri;
     std::unordered_map<std::string, std::vector<SnapshotModuleInstance>> module_instances_by_uri;

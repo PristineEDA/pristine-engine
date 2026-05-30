@@ -37,6 +37,8 @@ struct AstIndexView {
     std::unordered_map<std::string, SemanticModuleSignature> module_signatures_by_name;
     std::vector<DesignGraphModuleEntry> design_graph_module_entries;
     std::unordered_map<std::string, std::vector<ContinuousAssignment>> assignments_by_uri;
+    std::unordered_map<std::string, std::vector<SnapshotAssignmentEdge>> assignment_edges_by_uri;
+    std::unordered_map<std::string, std::vector<SnapshotTypeReference>> type_references_by_uri;
     std::unordered_map<std::string, std::vector<Identifier>> identifiers_by_uri;
     std::unordered_map<std::string, std::vector<IncludeDirective>> include_directives_by_uri;
     std::unordered_map<std::string, std::vector<MacroDefinition>> macros_by_uri;
@@ -71,6 +73,11 @@ void buildAstIndexes(SnapshotData& data,
 
 [[nodiscard]] std::vector<SemanticLocation> typeDefinitionLocationsByName(const SnapshotData& data,
                                                                           std::string_view name);
+
+[[nodiscard]] std::vector<SemanticLocation> typeDefinitionLocationsAt(const AstIndexView& view,
+                                                                      std::string_view uri,
+                                                                      int line,
+                                                                      int character);
 
 [[nodiscard]] std::optional<std::string> symbolIdAtLocation(const SnapshotData& data,
                                                             std::string_view uri,

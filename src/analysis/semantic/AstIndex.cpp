@@ -15,6 +15,7 @@
 #include "slang/ast/symbols/PortSymbols.h"
 #include "slang/ast/types/DeclaredType.h"
 #include "slang/ast/types/Type.h"
+#include "slang/syntax/AllSyntax.h"
 #include "slang/syntax/SyntaxNode.h"
 #include "slang/text/SourceManager.h"
 
@@ -69,6 +70,19 @@ bool rangesOverlapOrTouch(const ParseRange& lhs, const ParseRange& rhs) {
         return false;
     }
     if (rhs.end_line == lhs.start_line && rhs.end_character < lhs.start_character) {
+        return false;
+    }
+    return true;
+}
+
+bool rangeContainsRange(const ParseRange& outer, const ParseRange& inner) {
+    if (inner.start_line < outer.start_line || inner.end_line > outer.end_line) {
+        return false;
+    }
+    if (inner.start_line == outer.start_line && inner.start_character < outer.start_character) {
+        return false;
+    }
+    if (inner.end_line == outer.end_line && inner.end_character > outer.end_character) {
         return false;
     }
     return true;
@@ -831,6 +845,16 @@ void upsertAstContinuousAssignment(SnapshotData& data,
     if (assignment_expression == nullptr) {
         return;
     }
+    if (location.has_value()) {
+        data.assignment_edge_seeds.push_back(SnapshotAssignmentEdgeSeed{
+            .uri = location->uri,
+            .assignment_range = location->range,
+            .left_range = sourceRangeForSourceRange(source_manager,
+                                                    assignment_expression->left().sourceRange),
+            .right_range = sourceRangeForSourceRange(source_manager,
+                                                     assignment_expression->right().sourceRange),
+            .right_expression = expressionText(document, source_manager, assignment_expression->right())});
+    }
 
     auto& schematic = signature_it->second.schematic;
     AstExpressionSchematicContext context{.cell_index = static_cast<int>(schematic.cells.size())};
@@ -1084,6 +1108,152 @@ void addModuleInstantiationReferences(SnapshotData& data,
     }
 }
 
+std::optional<std::string> symbolIdAtReferenceRangeStart(const SnapshotData& data,
+                                                         std::string_view uri,
+                                                         const ParseRange& range) {
+    std::optional<std::string> best_id;
+    std::optional<ParseRange> best_range;
+    for (const auto& reference : data.references) {
+        if (reference.location.uri != uri ||
+            !containsPosition(reference.location.range, range.start_line, range.start_character)) {
+            continue;
+        }
+        if (!best_range.has_value() ||
+            (reference.location.range.start_line >= best_range->start_line &&
+             reference.location.range.start_character >= best_range->start_character)) {
+            best_id = reference.stable_id;
+            best_range = reference.location.range;
+        }
+    }
+    return best_id;
+}
+
+void buildAssignmentEdges(SnapshotData& data) {
+    data.assignment_edges_by_uri.clear();
+    std::set<std::string> emitted_edges;
+
+    for (const auto& seed : data.assignment_edge_seeds) {
+        const auto left_id = symbolIdAtReferenceRangeStart(data, seed.uri, seed.left_range);
+        if (!left_id.has_value()) {
+            continue;
+        }
+
+        for (const auto& reference : data.references) {
+            if (reference.location.uri != seed.uri || reference.is_declaration ||
+                reference.stable_id == *left_id ||
+                !rangeContainsRange(seed.right_range, reference.location.range)) {
+                continue;
+            }
+
+            const auto edge_key = seed.uri + "\n" + *left_id + "\n" + reference.stable_id + "\n" +
+                                  std::to_string(seed.assignment_range.start_line) + ":" +
+                                  std::to_string(seed.assignment_range.start_character) + "\n" +
+                                  std::to_string(reference.location.range.start_line) + ":" +
+                                  std::to_string(reference.location.range.start_character);
+            if (!emitted_edges.insert(edge_key).second) {
+                continue;
+            }
+
+            data.assignment_edges_by_uri[seed.uri].push_back(SnapshotAssignmentEdge{
+                .from_symbol_id = *left_id,
+                .to_symbol_id = reference.stable_id,
+                .location = SemanticLocation{.uri = seed.uri, .range = seed.assignment_range},
+                .expression = seed.right_expression});
+        }
+    }
+
+    for (auto& [_, edges] : data.assignment_edges_by_uri) {
+        std::sort(edges.begin(), edges.end(), [](const auto& lhs, const auto& rhs) {
+            if (lhs.from_symbol_id != rhs.from_symbol_id) {
+                return lhs.from_symbol_id < rhs.from_symbol_id;
+            }
+            if (lhs.to_symbol_id != rhs.to_symbol_id) {
+                return lhs.to_symbol_id < rhs.to_symbol_id;
+            }
+            return locationLess(lhs.location, rhs.location);
+        });
+    }
+}
+
+std::optional<SemanticLocation> locationForDeclaredTypeReference(
+    const slang::SourceManager& source_manager,
+    const slang::syntax::DataTypeSyntax& type_syntax) {
+    const auto type_range = sourceRangeForSourceRange(source_manager, type_syntax.sourceRange());
+    if (type_range.start_line < 0 || type_range.end_line < type_range.start_line) {
+        return std::nullopt;
+    }
+    const auto original = source_manager.getFullyOriginalLoc(type_syntax.sourceRange().start());
+    const auto type_uri = locationUriForSourceLocation(source_manager, original);
+    if (type_uri.empty()) {
+        return std::nullopt;
+    }
+    return SemanticLocation{.uri = type_uri, .range = type_range};
+}
+
+void addTypeReferenceForSymbol(SnapshotData& data,
+                               const slang::SourceManager& source_manager,
+                               const slang::ast::Symbol& symbol) {
+    const auto* declared_type = symbol.getDeclaredType();
+    if (declared_type == nullptr || declared_type->getTypeSyntax() == nullptr) {
+        return;
+    }
+
+    const auto reference_location = locationForDeclaredTypeReference(source_manager,
+                                                                     *declared_type->getTypeSyntax());
+    if (!reference_location.has_value()) {
+        return;
+    }
+
+    const auto& type = declared_type->getType();
+    std::vector<SemanticLocation> definitions;
+    if (const auto type_location = declarationLocationForSymbol(source_manager, type)) {
+        definitions.push_back(*type_location);
+    }
+    for (const auto& [_, indexed_symbol] : data.symbols_by_id) {
+        if (indexed_symbol.identity.location.uri == reference_location->uri &&
+            sameLocation(indexed_symbol.identity.location, *reference_location)) {
+            definitions.push_back(indexed_symbol.identity.location);
+        }
+    }
+    std::sort(definitions.begin(), definitions.end(), locationLess);
+    definitions.erase(std::unique(definitions.begin(), definitions.end(), sameLocation),
+                      definitions.end());
+    if (definitions.empty()) {
+        return;
+    }
+
+    auto& references = data.type_references_by_uri[reference_location->uri];
+    const auto duplicate = std::any_of(references.begin(),
+                                       references.end(),
+                                       [&](const SnapshotTypeReference& reference) {
+                                           return sameLocation(reference.reference, *reference_location);
+                                       });
+    if (duplicate) {
+        return;
+    }
+    references.push_back(SnapshotTypeReference{.reference = *reference_location,
+                                               .type_name = type.toString(),
+                                               .definitions = std::move(definitions)});
+}
+
+void buildTypeReferences(SnapshotData& data) {
+    data.type_references_by_uri.clear();
+    if (!data.source_manager) {
+        return;
+    }
+    for (const auto& [_, indexed_symbol] : data.symbols_by_id) {
+        if (indexed_symbol.symbol == nullptr) {
+            continue;
+        }
+        addTypeReferenceForSymbol(data, *data.source_manager, *indexed_symbol.symbol);
+    }
+    for (auto& [_, references] : data.type_references_by_uri) {
+        std::sort(references.begin(), references.end(), [](const auto& lhs, const auto& rhs) {
+            return locationLess(lhs.reference, rhs.reference);
+        });
+    }
+}
+
 void sortSnapshotIndexes(SnapshotData& data) {
     for (auto& [_, indexes] : data.references_by_symbol) {
         std::sort(indexes.begin(), indexes.end(), [&](size_t lhs, size_t rhs) {
@@ -1201,6 +1371,8 @@ void buildAstIndexes(SnapshotData& data,
     }
     addDeclarationReferences(data);
     addModuleInstantiationReferences(data, documents);
+    buildAssignmentEdges(data);
+    buildTypeReferences(data);
     sortSnapshotIndexes(data);
 }
 
@@ -1258,6 +1430,22 @@ std::vector<SemanticLocation> typeDefinitionLocationsByName(const SnapshotData& 
     std::sort(locations.begin(), locations.end(), locationLess);
     locations.erase(std::unique(locations.begin(), locations.end(), sameLocation), locations.end());
     return locations;
+}
+
+std::vector<SemanticLocation> typeDefinitionLocationsAt(const AstIndexView& view,
+                                                        std::string_view uri,
+                                                        int line,
+                                                        int character) {
+    const auto references_it = view.type_references_by_uri.find(std::string(uri));
+    if (references_it == view.type_references_by_uri.end()) {
+        return {};
+    }
+    for (const auto& reference : references_it->second) {
+        if (containsPosition(reference.reference.range, line, character)) {
+            return reference.definitions;
+        }
+    }
+    return {};
 }
 
 std::optional<std::string> symbolIdAtLocation(const SnapshotData& data,
@@ -1371,6 +1559,8 @@ AstIndexView buildAstIndexView(const SnapshotData* data, std::uint64_t generatio
         }
     }
     view.assignments_by_uri = data->assignments_by_uri;
+    view.assignment_edges_by_uri = data->assignment_edges_by_uri;
+    view.type_references_by_uri = data->type_references_by_uri;
     view.identifiers_by_uri = data->identifiers_by_uri;
     view.include_directives_by_uri = data->include_directives_by_uri;
     view.macros_by_uri = data->macros_by_uri;

@@ -174,28 +174,6 @@ std::set<std::string> connectedNamedPortsBeforePosition(std::string_view text,
     return connected_ports;
 }
 
-std::optional<ParseRange> userTypeReferenceRange(const std::vector<Identifier>& identifiers,
-                                                 const SemanticSymbolMetadata& metadata) {
-    if (metadata.type_name.empty() || metadata.type_name == "enum" ||
-        metadata.type_display_name.find("::") != std::string::npos) {
-        return std::nullopt;
-    }
-
-    std::optional<ParseRange> best;
-    for (const auto& identifier : identifiers) {
-        if (identifier.name != metadata.type_name ||
-            identifier.range.start_line != metadata.selection_range.start_line ||
-            identifier.range.end_line != metadata.selection_range.start_line ||
-            identifier.range.end_character > metadata.selection_range.start_character) {
-            continue;
-        }
-        if (!best.has_value() || identifier.range.start_character > best->start_character) {
-            best = identifier.range;
-        }
-    }
-    return best;
-}
-
 constexpr size_t kMaxSemanticLocations = 2000;
 
 } // namespace
@@ -217,8 +195,7 @@ semantic::DesignGraphContext designGraphContextFor(const SnapshotData* data,
     context.module_uris_by_name = ast_index.module_uris_by_name;
     context.module_signatures_by_name = ast_index.module_signatures_by_name;
     context.module_entries = ast_index.design_graph_module_entries;
-    context.assignments_by_uri = ast_index.assignments_by_uri;
-    context.identifiers_by_uri = ast_index.identifiers_by_uri;
+    context.assignment_edges_by_uri = ast_index.assignment_edges_by_uri;
     context.symbols_by_id = ast_index.design_graph_symbols_by_id;
     context.symbol_ranges_by_uri = ast_index.design_graph_symbol_ranges_by_uri;
     return context;
@@ -638,22 +615,12 @@ SemanticReferenceResult SemanticEngine::typeDefinitionsAt(std::string_view uri,
     const auto* data = snapshotData();
     if (data != nullptr) {
         const auto document_uri = withoutTrailingSlash(normalizeFileUri(uri));
-        const auto metadata_it = data->metadata_by_uri.find(document_uri);
-        const auto identifiers_it = data->identifiers_by_uri.find(document_uri);
-        if (metadata_it != data->metadata_by_uri.end() &&
-            identifiers_it != data->identifiers_by_uri.end()) {
-            for (const auto& metadata : metadata_it->second) {
-                const auto type_range = userTypeReferenceRange(identifiers_it->second, metadata);
-                if (!type_range.has_value() || !containsPosition(*type_range, line, character)) {
-                    continue;
-                }
-                auto locations = semantic::typeDefinitionLocationsByName(*data, metadata.type_name);
-                if (!locations.empty()) {
-                    result.locations = std::move(locations);
-                    result.unresolved = false;
-                    return result;
-                }
-            }
+        const auto ast_index = semantic::buildAstIndexView(data, lookup.generation);
+        auto locations = semantic::typeDefinitionLocationsAt(ast_index, document_uri, line, character);
+        if (!locations.empty()) {
+            result.locations = std::move(locations);
+            result.unresolved = false;
+            return result;
         }
     }
 

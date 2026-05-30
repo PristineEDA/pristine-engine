@@ -296,6 +296,52 @@ TEST_CASE("AstIndex derives primitive and assignment schematic cells from slang 
     CHECK(std::any_of(cells.begin(), cells.end(), [](const SchematicCell& cell) {
         return cell.kind == "buf";
     }));
+
+    const auto edges_it = view.assignment_edges_by_uri.find("file:///workspace/top.sv");
+    REQUIRE(edges_it != view.assignment_edges_by_uri.end());
+    const auto edgeTargetNames = [&](std::string_view expected) {
+        return std::any_of(edges_it->second.begin(),
+                           edges_it->second.end(),
+                           [&](const SnapshotAssignmentEdge& edge) {
+                               const auto from_it = view.design_graph_symbols_by_id.find(edge.from_symbol_id);
+                               const auto to_it = view.design_graph_symbols_by_id.find(edge.to_symbol_id);
+                               return from_it != view.design_graph_symbols_by_id.end() &&
+                                      to_it != view.design_graph_symbols_by_id.end() &&
+                                      from_it->second.identity.name == "y" &&
+                                      to_it->second.identity.name == expected &&
+                                      edge.expression == "sel ? n1 : (a | b)";
+                           });
+    };
+    CHECK(edgeTargetNames("sel"));
+    CHECK(edgeTargetNames("n1"));
+    CHECK(edgeTargetNames("a"));
+    CHECK(edgeTargetNames("b"));
+}
+
+TEST_CASE("AstIndex derives declared type references from slang AST",
+          "[analysis][semantic][ast-index][type-definition][no-fallback]") {
+    SnapshotBuildInput input{.generation = 35,
+                             .documents = {{"file:///workspace/types.sv",
+                                            SemanticEngineDocument{
+                                                .uri = "file:///workspace/types.sv",
+                                                .text = "module top;\n"
+                                                        "  typedef logic [3:0] nibble_t;\n"
+                                                        "  nibble_t value;\n"
+                                                        "endmodule\n",
+                                                .version = 1,
+                                                .is_open = true}}}};
+
+    auto output = SnapshotBuilder{}.build(std::move(input));
+    REQUIRE(output.data != nullptr);
+
+    const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
+    auto locations = typeDefinitionLocationsAt(view, "file:///workspace/types.sv", 2, 3);
+
+    REQUIRE(locations.size() == 1);
+    CHECK(locations.front().uri == "file:///workspace/types.sv");
+    CHECK(locations.front().range.start_line == 1);
+    CHECK(locations.front().range.start_character == 22);
+    CHECK(locations.front().range.end_character == 30);
 }
 
 } // namespace

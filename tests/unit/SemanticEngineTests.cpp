@@ -734,6 +734,26 @@ TEST_CASE("SemanticEngine traces backward cone through AstIndex identifiers with
     CHECK(cone.edges.front().location.range.start_line == 3);
 }
 
+TEST_CASE("SemanticEngine resolves type definitions through AstIndex type references",
+          "[analysis][semantic-engine][type-definition][no-fallback]") {
+    SemanticEngine engine;
+    engine.updateDocument("file:///workspace/types.sv",
+                          "module top;\n"
+                          "  typedef logic [3:0] nibble_t;\n"
+                          "  nibble_t value;\n"
+                          "endmodule\n",
+                          SemanticEngineDocumentState{.version = 1, .is_open = true});
+
+    const auto type_definitions = engine.typeDefinitionsAt("file:///workspace/types.sv", 2, 3);
+
+    REQUIRE_FALSE(type_definitions.unresolved);
+    REQUIRE(type_definitions.locations.size() == 1);
+    CHECK(type_definitions.locations.front().uri == "file:///workspace/types.sv");
+    CHECK(type_definitions.locations.front().range.start_line == 1);
+    CHECK(type_definitions.locations.front().range.start_character == 22);
+    CHECK(type_definitions.locations.front().range.end_character == 30);
+}
+
 TEST_CASE("SemanticEngine owns code actions for unresolved modules, ports, and types",
           "[analysis][semantic-engine][code-action]") {
     SemanticEngine engine;

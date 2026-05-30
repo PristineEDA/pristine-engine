@@ -146,27 +146,22 @@ TEST_CASE("DesignGraphProvider traces backward cone through continuous assignmen
         DesignGraphRangeSymbol{.range = rangeAt(5, 19, 20), .stable_id = "symbol|b"},
         DesignGraphRangeSymbol{.range = rangeAt(6, 9, 12), .stable_id = "symbol|out"},
         DesignGraphRangeSymbol{.range = rangeAt(6, 15, 18), .stable_id = "symbol|mid"}};
-    context.identifiers_by_uri["file:///workspace/cone.sv"] = {Identifier{.name = "mid",
-                                                                          .range = rangeAt(5, 9, 12)},
-                                                               Identifier{.name = "a",
-                                                                          .range = rangeAt(5, 15, 16)},
-                                                               Identifier{.name = "b",
-                                                                          .range = rangeAt(5, 19, 20)},
-                                                               Identifier{.name = "out",
-                                                                          .range = rangeAt(6, 9, 12)},
-                                                               Identifier{.name = "mid",
-                                                                          .range = rangeAt(6, 15, 18)}};
-    context.assignments_by_uri["file:///workspace/cone.sv"] = {
-        ContinuousAssignment{.left_expression = "mid",
-                             .right_expression = "a & b",
-                             .range = rangeAt(5, 2, 20),
-                             .left_range = rangeAt(5, 9, 12),
-                             .right_range = rangeAt(5, 15, 20)},
-        ContinuousAssignment{.left_expression = "out",
-                             .right_expression = "mid",
-                             .range = rangeAt(6, 2, 18),
-                             .left_range = rangeAt(6, 9, 12),
-                             .right_range = rangeAt(6, 15, 18)}};
+    context.assignment_edges_by_uri["file:///workspace/cone.sv"] = {
+        SnapshotAssignmentEdge{.from_symbol_id = "symbol|mid",
+                               .to_symbol_id = "symbol|a",
+                               .location = SemanticLocation{.uri = "file:///workspace/cone.sv",
+                                                            .range = rangeAt(5, 2, 20)},
+                               .expression = "a & b"},
+        SnapshotAssignmentEdge{.from_symbol_id = "symbol|mid",
+                               .to_symbol_id = "symbol|b",
+                               .location = SemanticLocation{.uri = "file:///workspace/cone.sv",
+                                                            .range = rangeAt(5, 2, 20)},
+                               .expression = "a & b"},
+        SnapshotAssignmentEdge{.from_symbol_id = "symbol|out",
+                               .to_symbol_id = "symbol|mid",
+                               .location = SemanticLocation{.uri = "file:///workspace/cone.sv",
+                                                            .range = rangeAt(6, 2, 18)},
+                               .expression = "mid"}};
     const SemanticLookupResult lookup{.generation = 9,
                                       .symbol = out,
                                       .unresolved = false};
@@ -203,7 +198,7 @@ TEST_CASE("DesignGraphProvider reports missing cone assignments",
     CHECK_FALSE(trace.unresolved);
     CHECK(trace.nodes.empty());
     REQUIRE_FALSE(trace.messages.empty());
-    CHECK(trace.messages.front().find("No continuous assignments") != std::string::npos);
+    CHECK(trace.messages.front().find("No AST assignment edges") != std::string::npos);
 }
 
 TEST_CASE("DesignGraphProvider prepares incoming and outgoing call hierarchy",
