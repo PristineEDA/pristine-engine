@@ -1,0 +1,30 @@
+{
+  "name": "function and task argument inlay hints",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/inlay-function-task.sv",
+      "text": "module top;\n  function automatic int add(input int lhs, input int rhs);\n    return lhs + rhs;\n  endfunction\n  task automatic emit(input logic ready);\n  endtask\n  initial begin\n    int value = add(1, 2);\n    emit(1'b1);\n  end\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "inlayHint",
+    "uri": "file:///golden/semantic/inlay-function-task.sv",
+    "range": {
+      "startLine": 0,
+      "startCharacter": 0,
+      "endLine": 10,
+      "endCharacter": 0
+    }
+  },
+  "expected": {
+    "labels": [
+      "input int lhs:",
+      "input int rhs:",
+      "input logic ready:"
+    ],
+    "tooltips": [
+      "function int add(input int lhs, input int rhs)",
+      "task emit(input logic ready)"
+    ]
+  }
+}

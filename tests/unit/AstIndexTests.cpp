@@ -489,6 +489,11 @@ TEST_CASE("AstIndex derives function and task signature calls from slang AST",
     REQUIRE(add_call != calls.end());
     CHECK(add_call->kind == "function");
     CHECK(add_call->return_type == "int");
+    CHECK(add_call->range.start_line == 7);
+    CHECK(add_call->range.start_character == 16);
+    CHECK(add_call->selection_range.start_line == 7);
+    CHECK(add_call->selection_range.start_character == 16);
+    CHECK(add_call->selection_range.end_character == 19);
     REQUIRE(add_call->parameters.size() == 2);
     CHECK(add_call->parameters[0] == "input int lhs");
     CHECK(add_call->parameters[1] == "input int rhs");
@@ -498,6 +503,11 @@ TEST_CASE("AstIndex derives function and task signature calls from slang AST",
     });
     REQUIRE(emit_call != calls.end());
     CHECK(emit_call->kind == "task");
+    CHECK(emit_call->range.start_line == 8);
+    CHECK(emit_call->range.start_character == 4);
+    CHECK(emit_call->selection_range.start_line == 8);
+    CHECK(emit_call->selection_range.start_character == 4);
+    CHECK(emit_call->selection_range.end_character == 8);
     REQUIRE(emit_call->parameters.size() == 1);
     CHECK(emit_call->parameters[0] == "input logic ready");
 }

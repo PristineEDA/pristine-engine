@@ -2,10 +2,12 @@
 
 #include "CompletionProvider.h"
 #include "pristine/analysis/SourceUtil.h"
+#include "pristine/text/Utf.h"
 
 #include <algorithm>
 #include <cctype>
 #include <optional>
+#include <stdexcept>
 
 namespace pristine::analysis::semantic {
 namespace {
@@ -101,6 +103,122 @@ std::optional<size_t> openParenBeforePosition(std::string_view text,
         }
     }
     return std::nullopt;
+}
+
+std::optional<ParseRange> pointRangeAtUtf8Offset(std::string_view text, size_t offset) {
+    if (offset > text.size()) {
+        return std::nullopt;
+    }
+
+    int line = 0;
+    size_t line_start = 0;
+    size_t current = 0;
+    while (current < offset) {
+        const char value = text[current];
+        if (value == '\n') {
+            ++line;
+            ++current;
+            line_start = current;
+            continue;
+        }
+        if (value == '\r') {
+            ++line;
+            ++current;
+            if (current < offset && text[current] == '\n') {
+                ++current;
+            }
+            line_start = current;
+            continue;
+        }
+        try {
+            const auto decoded = text::decodeNextCodePoint(text, current);
+            if (current + decoded.byte_length > offset) {
+                return std::nullopt;
+            }
+            current += decoded.byte_length;
+        }
+        catch (const std::runtime_error&) {
+            return std::nullopt;
+        }
+    }
+
+    try {
+        const auto character = static_cast<int>(
+            text::utf16UnitsForUtf8Prefix(text.substr(line_start, offset - line_start),
+                                          offset - line_start));
+        return ParseRange{.start_line = line,
+                          .start_character = character,
+                          .end_line = line,
+                          .end_character = character};
+    }
+    catch (const std::runtime_error&) {
+        return std::nullopt;
+    }
+}
+
+std::vector<ParseRange> argumentStartRanges(std::string_view text,
+                                            const SignatureInlayCall& call) {
+    std::vector<ParseRange> ranges;
+    if (call.parameters.empty()) {
+        return ranges;
+    }
+
+    const auto search_start = utf8OffsetAtUtf16Position(text,
+                                                        call.selection_range.end_line,
+                                                        call.selection_range.end_character);
+    const auto search_end = utf8OffsetAtUtf16Position(text,
+                                                      call.range.end_line,
+                                                      call.range.end_character);
+    if (!search_start.has_value() || !search_end.has_value()) {
+        return ranges;
+    }
+    const auto open_paren = openParenBeforePosition(text, *search_start, *search_end);
+    if (!open_paren.has_value()) {
+        return ranges;
+    }
+
+    size_t argument_start = *open_paren + 1;
+    int depth = 0;
+    for (size_t offset = *open_paren + 1; offset < *search_end && offset < text.size(); ++offset) {
+        const char value = text[offset];
+        if (value == '(') {
+            ++depth;
+            continue;
+        }
+        if (value == ')') {
+            if (depth == 0) {
+                break;
+            }
+            --depth;
+            continue;
+        }
+        if (value != ',' || depth != 0) {
+            continue;
+        }
+        while (argument_start < offset &&
+               std::isspace(static_cast<unsigned char>(text[argument_start])) != 0) {
+            ++argument_start;
+        }
+        if (auto range = pointRangeAtUtf8Offset(text, argument_start)) {
+            ranges.push_back(*range);
+        }
+        argument_start = offset + 1;
+    }
+
+    while (argument_start < *search_end &&
+           std::isspace(static_cast<unsigned char>(text[argument_start])) != 0) {
+        ++argument_start;
+    }
+    if (argument_start < *search_end) {
+        if (auto range = pointRangeAtUtf8Offset(text, argument_start)) {
+            ranges.push_back(*range);
+        }
+    }
+
+    if (ranges.size() > call.parameters.size()) {
+        ranges.resize(call.parameters.size());
+    }
+    return ranges;
 }
 
 std::optional<size_t> macroInvocationOpenParen(std::string_view text,
@@ -365,6 +483,40 @@ SemanticInlayHintResult inlayHints(const SignatureInlayContext& context,
                 .label = "." + port->name,
                 .kind = "parameter",
                 .tooltip = portSignatureLabel(*port)});
+        }
+    }
+
+    if (context.document_text != nullptr) {
+        for (const auto& call : context.calls) {
+            if (!rangesOverlapOrTouch(call.range, range)) {
+                continue;
+            }
+            const auto argument_ranges = argumentStartRanges(*context.document_text, call);
+            for (size_t index = 0; index < argument_ranges.size() && index < call.parameters.size(); ++index) {
+                if (!rangesOverlapOrTouch(argument_ranges[index], range)) {
+                    continue;
+                }
+                const auto label = call.parameters[index].empty()
+                                       ? std::string{"arg"}
+                                       : call.parameters[index] + ":";
+                const auto duplicate = std::any_of(result.hints.begin(),
+                                                   result.hints.end(),
+                                                   [&](const SemanticInlayHint& hint) {
+                                                       return hint.kind == "parameter" &&
+                                                              hint.label == label &&
+                                                              sameRange(hint.location.range,
+                                                                        argument_ranges[index]);
+                                                   });
+                if (duplicate) {
+                    continue;
+                }
+                result.hints.push_back(SemanticInlayHint{
+                    .location = SemanticLocation{.uri = context.document_uri,
+                                                 .range = argument_ranges[index]},
+                    .label = label,
+                    .kind = "parameter",
+                    .tooltip = callSignatureLabel(call)});
+            }
         }
     }
     std::sort(result.hints.begin(), result.hints.end(), [](const auto& lhs, const auto& rhs) {

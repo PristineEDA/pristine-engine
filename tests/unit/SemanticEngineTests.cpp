@@ -598,6 +598,44 @@ TEST_CASE("SemanticEngine emits AST-backed port inlay hints for module instances
     }));
 }
 
+TEST_CASE("SemanticEngine emits AST-backed function and task argument inlay hints",
+          "[analysis][semantic-engine][inlay][function][task][no-fallback]") {
+    SemanticEngine engine;
+    engine.updateDocument("file:///workspace/call-hints.sv",
+                          "module top;\n"
+                          "  function automatic int add(input int lhs, input int rhs);\n"
+                          "    return lhs + rhs;\n"
+                          "  endfunction\n"
+                          "  task automatic emit(input logic ready);\n"
+                          "  endtask\n"
+                          "  initial begin\n"
+                          "    int value = add(1, 2);\n"
+                          "    emit(1'b1);\n"
+                          "  end\n"
+                          "endmodule\n",
+                          SemanticEngineDocumentState{.version = 1, .is_open = true});
+
+    const auto hints = engine.inlayHints("file:///workspace/call-hints.sv",
+                                        ParseRange{.start_line = 0,
+                                                   .start_character = 0,
+                                                   .end_line = 10,
+                                                   .end_character = 0});
+
+    REQUIRE_FALSE(hints.unresolved);
+    CHECK(std::any_of(hints.hints.begin(), hints.hints.end(), [](const SemanticInlayHint& hint) {
+        return hint.kind == "parameter" && hint.label == "input int lhs:" &&
+               hint.tooltip == "function int add(input int lhs, input int rhs)";
+    }));
+    CHECK(std::any_of(hints.hints.begin(), hints.hints.end(), [](const SemanticInlayHint& hint) {
+        return hint.kind == "parameter" && hint.label == "input int rhs:" &&
+               hint.tooltip == "function int add(input int lhs, input int rhs)";
+    }));
+    CHECK(std::any_of(hints.hints.begin(), hints.hints.end(), [](const SemanticInlayHint& hint) {
+        return hint.kind == "parameter" && hint.label == "input logic ready:" &&
+               hint.tooltip == "task emit(input logic ready)";
+    }));
+}
+
 TEST_CASE("SemanticEngine provides AST-backed macro completions and resolve docs",
           "[analysis][semantic-engine][completion][macro]") {
     SemanticEngine engine;

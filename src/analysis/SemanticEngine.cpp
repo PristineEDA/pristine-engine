@@ -1100,6 +1100,8 @@ SemanticInlayHintResult SemanticEngine::inlayHints(std::string_view uri, ParseRa
     semantic::SignatureInlayContext context;
     context.generation = current_snapshot.generation;
     context.document_uri = document_uri;
+    const auto document_it = documents_.find(document_uri);
+    context.document_text = document_it == documents_.end() ? nullptr : &document_it->second.text;
     context.modules_by_name = data == nullptr ? nullptr : &ast_index.modules_by_name;
     context.snapshot_available = data != nullptr;
     if (data != nullptr) {
@@ -1114,6 +1116,10 @@ SemanticInlayHintResult SemanticEngine::inlayHints(std::string_view uri, ParseRa
         const auto instances_it = ast_index.signature_module_instances_by_uri.find(document_uri);
         if (instances_it != ast_index.signature_module_instances_by_uri.end()) {
             context.module_instances = instances_it->second;
+        }
+        const auto calls_it = ast_index.signature_calls_by_uri.find(document_uri);
+        if (calls_it != ast_index.signature_calls_by_uri.end()) {
+            context.calls = calls_it->second;
         }
     }
     return semantic::inlayHints(context, range);

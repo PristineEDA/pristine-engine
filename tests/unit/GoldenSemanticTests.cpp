@@ -317,6 +317,42 @@ void runDiagnosticsFixture(SemanticEngine& engine, const nlohmann::json& fixture
     }
 }
 
+void runInlayHintFixture(SemanticEngine& engine, const nlohmann::json& fixture) {
+    const auto& request = fixture.at("request");
+    const auto& expected = fixture.at("expected");
+    const auto range_json = request.at("range");
+    const auto result = engine.inlayHints(request.at("uri").get<std::string>(),
+                                          ParseRange{.start_line = range_json.at("startLine").get<int>(),
+                                                     .start_character =
+                                                         range_json.at("startCharacter").get<int>(),
+                                                     .end_line = range_json.at("endLine").get<int>(),
+                                                     .end_character =
+                                                         range_json.at("endCharacter").get<int>()});
+    CHECK(result.unresolved == expected.value("unresolved", false));
+    if (expected.contains("labels")) {
+        for (const auto& expected_label : expected.at("labels")) {
+            const auto label = expected_label.get<std::string>();
+            CAPTURE(label);
+            CHECK(std::any_of(result.hints.begin(),
+                              result.hints.end(),
+                              [&](const SemanticInlayHint& hint) {
+                                  return hint.label == label;
+                              }));
+        }
+    }
+    if (expected.contains("tooltips")) {
+        for (const auto& expected_tooltip : expected.at("tooltips")) {
+            const auto tooltip = expected_tooltip.get<std::string>();
+            CAPTURE(tooltip);
+            CHECK(std::any_of(result.hints.begin(),
+                              result.hints.end(),
+                              [&](const SemanticInlayHint& hint) {
+                                  return hint.tooltip == tooltip;
+                              }));
+        }
+    }
+}
+
 } // namespace
 
 TEST_CASE("Semantic golden cases exercise first-batch query contracts",
@@ -411,6 +447,9 @@ TEST_CASE("JSON semantic golden fixtures exercise stable request shapes",
         }
         else if (kind == "diagnostics") {
             runDiagnosticsFixture(engine, fixture);
+        }
+        else if (kind == "inlayHint") {
+            runInlayHintFixture(engine, fixture);
         }
         else {
             FAIL("Unsupported semantic golden request kind: " << kind);

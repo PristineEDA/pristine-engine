@@ -242,6 +242,70 @@ TEST_CASE("SignatureInlayProvider emits AST-derived named and ordered port inlay
     }));
 }
 
+TEST_CASE("SignatureInlayProvider emits AST-derived function and task argument hints",
+          "[analysis][semantic][signature-inlay-provider][inlay][function][task][no-fallback]") {
+    const std::string text = "module top;\n"
+                             "  initial begin\n"
+                             "    int value = add(lhs_value, rhs_value);\n"
+                             "    emit(ready);\n"
+                             "  end\n"
+                             "endmodule\n";
+    const SignatureInlayContext context{
+        .generation = 18,
+        .document_uri = "file:///workspace/top.sv",
+        .document_text = &text,
+        .calls = {SignatureInlayCall{.name = "add",
+                                     .kind = "function",
+                                     .return_type = "int",
+                                     .range = ParseRange{.start_line = 2,
+                                                         .start_character = 16,
+                                                         .end_line = 2,
+                                                         .end_character = 41},
+                                     .selection_range = ParseRange{.start_line = 2,
+                                                                   .start_character = 16,
+                                                                   .end_line = 2,
+                                                                   .end_character = 19},
+                                     .parameters = {"input int lhs", "input int rhs"}},
+                  SignatureInlayCall{.name = "emit",
+                                     .kind = "task",
+                                     .range = ParseRange{.start_line = 3,
+                                                         .start_character = 4,
+                                                         .end_line = 3,
+                                                         .end_character = 15},
+                                     .selection_range = ParseRange{.start_line = 3,
+                                                                   .start_character = 4,
+                                                                   .end_line = 3,
+                                                                   .end_character = 8},
+                                     .parameters = {"input logic ready"}}},
+        .snapshot_available = true};
+
+    const auto result = inlayHints(context,
+                                  ParseRange{.start_line = 0,
+                                             .start_character = 0,
+                                             .end_line = 5,
+                                             .end_character = 0});
+
+    REQUIRE_FALSE(result.unresolved);
+    CHECK(std::any_of(result.hints.begin(), result.hints.end(), [](const SemanticInlayHint& hint) {
+        return hint.kind == "parameter" && hint.label == "input int lhs:" &&
+               hint.location.range.start_line == 2 &&
+               hint.location.range.start_character == 20 &&
+               hint.tooltip == "function int add(input int lhs, input int rhs)";
+    }));
+    CHECK(std::any_of(result.hints.begin(), result.hints.end(), [](const SemanticInlayHint& hint) {
+        return hint.kind == "parameter" && hint.label == "input int rhs:" &&
+               hint.location.range.start_line == 2 &&
+               hint.location.range.start_character == 31 &&
+               hint.tooltip == "function int add(input int lhs, input int rhs)";
+    }));
+    CHECK(std::any_of(result.hints.begin(), result.hints.end(), [](const SemanticInlayHint& hint) {
+        return hint.kind == "parameter" && hint.label == "input logic ready:" &&
+               hint.location.range.start_line == 3 &&
+               hint.location.range.start_character == 9 &&
+               hint.tooltip == "task emit(input logic ready)";
+    }));
+}
+
 TEST_CASE("SignatureInlayProvider reports unresolved snapshot and document states",
           "[analysis][semantic][signature-inlay-provider][unresolved]") {
     {
