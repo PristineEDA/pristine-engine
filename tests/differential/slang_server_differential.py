@@ -1,9 +1,12 @@
 import json
 import os
 import pathlib
+import queue
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -17,6 +20,7 @@ class DifferentialCheck:
     required: tuple[str, ...] = ()
     min_count: int | None = None
     include_declaration: bool = True
+    optional: bool = False
 
 
 @dataclass(frozen=True)
@@ -85,7 +89,70 @@ FIXTURES: tuple[DifferentialFixture, ...] = (
             ),
         ),
     ),
+    DifferentialFixture(
+        name="diagnostics syntax error publication",
+        sources={
+            "bad.sv": (
+                "module top;\n"
+                "  logic ready\n"
+                "endmodule\n"
+            )
+        },
+        checks=(
+            DifferentialCheck(
+                kind="diagnostics",
+                uri="bad.sv",
+                min_count=1,
+                optional=True,
+            ),
+        ),
+    ),
+    DifferentialFixture(
+        name="type definition typedef lookup",
+        sources={
+            "type.sv": (
+                "module top;\n"
+                "  typedef logic [7:0] byte_t;\n"
+                "  byte_t data;\n"
+                "endmodule\n"
+            )
+        },
+        checks=(
+            DifferentialCheck(
+                kind="typeDefinition",
+                uri="type.sv",
+                position={"line": 2, "character": 3},
+                min_count=1,
+                optional=True,
+            ),
+        ),
+    ),
+    DifferentialFixture(
+        name="call hierarchy module outgoing",
+        sources={
+            "call.sv": (
+                "module child;\n"
+                "endmodule\n"
+                "module top;\n"
+                "  child u_child();\n"
+                "endmodule\n"
+            )
+        },
+        checks=(
+            DifferentialCheck(
+                kind="callHierarchyOutgoing",
+                uri="call.sv",
+                position={"line": 2, "character": 8},
+                required=("child",),
+                optional=True,
+            ),
+        ),
+    ),
 )
+
+
+class UnsupportedCheck(Exception):
+    pass
 
 
 def write_message(process: subprocess.Popen[bytes], message: dict[str, Any]) -> None:
@@ -116,29 +183,102 @@ def read_message(process: subprocess.Popen[bytes]) -> dict[str, Any]:
     return json.loads(payload.decode("utf-8"))
 
 
-def request(
-    process: subprocess.Popen[bytes],
-    request_id: int,
-    method: str,
-    params: dict[str, Any] | None,
-) -> dict[str, Any]:
-    message: dict[str, Any] = {"jsonrpc": "2.0", "id": request_id, "method": method}
-    if params is not None:
-        message["params"] = params
-    write_message(process, message)
-    while True:
-        response = read_message(process)
-        if response.get("id") == request_id:
-            if "error" in response:
-                raise AssertionError(f"{method} failed: {response['error']}")
-            return response
+def response_items(result: Any) -> list[dict[str, Any]]:
+    items = result.get("items", result) if isinstance(result, dict) else result
+    if not isinstance(items, list):
+        return []
+    return [item for item in items if isinstance(item, dict)]
 
 
-def notify(process: subprocess.Popen[bytes], method: str, params: dict[str, Any] | None) -> None:
-    message: dict[str, Any] = {"jsonrpc": "2.0", "method": method}
-    if params is not None:
-        message["params"] = params
-    write_message(process, message)
+class LspSession:
+    def __init__(self, server: pathlib.Path) -> None:
+        self.process = subprocess.Popen(
+            [str(server)],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        self.messages: queue.Queue[dict[str, Any] | BaseException] = queue.Queue()
+        self.notifications: list[dict[str, Any]] = []
+        self.reader = threading.Thread(target=self._read_loop, daemon=True)
+        self.reader.start()
+
+    def _read_loop(self) -> None:
+        while True:
+            try:
+                self.messages.put(read_message(self.process))
+            except BaseException as error:
+                self.messages.put(error)
+                return
+
+    def request(
+        self,
+        request_id: int,
+        method: str,
+        params: dict[str, Any] | None,
+        *,
+        allow_error: bool = False,
+        timeout_seconds: float = 5.0,
+    ) -> dict[str, Any]:
+        message: dict[str, Any] = {"jsonrpc": "2.0", "id": request_id, "method": method}
+        if params is not None:
+            message["params"] = params
+        write_message(self.process, message)
+
+        deadline = time.monotonic() + timeout_seconds
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError(f"Timed out waiting for {method}")
+            item = self.messages.get(timeout=remaining)
+            if isinstance(item, BaseException):
+                raise item
+            if item.get("id") == request_id:
+                if "error" in item and not allow_error:
+                    raise AssertionError(f"{method} failed: {item['error']}")
+                return item
+            self.notifications.append(item)
+
+    def notify(self, method: str, params: dict[str, Any] | None) -> None:
+        message: dict[str, Any] = {"jsonrpc": "2.0", "method": method}
+        if params is not None:
+            message["params"] = params
+        write_message(self.process, message)
+
+    def drain_notifications(self, timeout_seconds: float = 0.25) -> None:
+        deadline = time.monotonic() + timeout_seconds
+        while time.monotonic() < deadline:
+            try:
+                item = self.messages.get(timeout=max(0.01, deadline - time.monotonic()))
+            except queue.Empty:
+                return
+            if isinstance(item, BaseException):
+                return
+            self.notifications.append(item)
+
+    def initialize(self, root_uri: str) -> None:
+        self.request(1, "initialize", {"rootUri": root_uri, "capabilities": {}})
+        self.notify("initialized", {})
+
+    def did_open(self, uri: str, text: str) -> None:
+        self.notify(
+            "textDocument/didOpen",
+            {
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "systemverilog",
+                    "version": 1,
+                    "text": text,
+                }
+            },
+        )
+
+    def shutdown(self) -> None:
+        try:
+            self.request(999, "shutdown", None, allow_error=True, timeout_seconds=2.0)
+            self.notify("exit", None)
+        finally:
+            self.process.terminate()
 
 
 def find_slang_server_binary(root: pathlib.Path) -> pathlib.Path | None:
@@ -157,44 +297,8 @@ def find_slang_server_binary(root: pathlib.Path) -> pathlib.Path | None:
     return None
 
 
-def initialize(process: subprocess.Popen[bytes], root_uri: str) -> None:
-    request(process, 1, "initialize", {"rootUri": root_uri, "capabilities": {}})
-    notify(process, "initialized", {})
-
-
-def did_open(process: subprocess.Popen[bytes], uri: str, text: str) -> None:
-    notify(
-        process,
-        "textDocument/didOpen",
-        {
-            "textDocument": {
-                "uri": uri,
-                "languageId": "systemverilog",
-                "version": 1,
-                "text": text,
-            }
-        },
-    )
-
-
-def shutdown(process: subprocess.Popen[bytes]) -> None:
-    try:
-        request(process, 999, "shutdown", None)
-        notify(process, "exit", None)
-    finally:
-        process.terminate()
-
-
-def response_items(result: Any) -> list[dict[str, Any]]:
-    items = result.get("items", result) if isinstance(result, dict) else result
-    if not isinstance(items, list):
-        return []
-    return [item for item in items if isinstance(item, dict)]
-
-
-def check_completion(process: subprocess.Popen[bytes], request_id: int, uri: str, position: dict[str, int]) -> set[str]:
-    response = request(
-        process,
+def check_completion(session: LspSession, request_id: int, uri: str, position: dict[str, int]) -> set[str]:
+    response = session.request(
         request_id,
         "textDocument/completion",
         {
@@ -207,14 +311,13 @@ def check_completion(process: subprocess.Popen[bytes], request_id: int, uri: str
 
 
 def check_references(
-    process: subprocess.Popen[bytes],
+    session: LspSession,
     request_id: int,
     uri: str,
     position: dict[str, int],
     include_declaration: bool,
 ) -> int:
-    response = request(
-        process,
+    response = session.request(
         request_id,
         "textDocument/references",
         {
@@ -227,9 +330,67 @@ def check_references(
     return len(result) if isinstance(result, list) else 0
 
 
-def check_workspace_symbol(process: subprocess.Popen[bytes], request_id: int, query: str) -> set[str]:
-    response = request(process, request_id, "workspace/symbol", {"query": query})
+def check_workspace_symbol(session: LspSession, request_id: int, query: str) -> set[str]:
+    response = session.request(request_id, "workspace/symbol", {"query": query})
     return {item.get("name", "") for item in response_items(response.get("result"))}
+
+
+def check_diagnostics(session: LspSession, request_id: int, uri: str) -> int:
+    session.request(request_id, "workspace/symbol", {"query": ""}, allow_error=True)
+    session.drain_notifications()
+    count = 0
+    for notification in session.notifications:
+        if notification.get("method") != "textDocument/publishDiagnostics":
+            continue
+        params = notification.get("params", {})
+        if params.get("uri") == uri:
+            diagnostics = params.get("diagnostics", [])
+            count = max(count, len(diagnostics) if isinstance(diagnostics, list) else 0)
+    return count
+
+
+def check_type_definition(session: LspSession, request_id: int, uri: str, position: dict[str, int]) -> int:
+    response = session.request(
+        request_id,
+        "textDocument/typeDefinition",
+        {"textDocument": {"uri": uri}, "position": position},
+        allow_error=True,
+    )
+    if "error" in response:
+        raise UnsupportedCheck("textDocument/typeDefinition is not supported")
+    result = response.get("result")
+    return len(result) if isinstance(result, list) else 0
+
+
+def check_call_hierarchy_outgoing(session: LspSession,
+                                  request_id: int,
+                                  uri: str,
+                                  position: dict[str, int]) -> set[str]:
+    prepared = session.request(
+        request_id,
+        "textDocument/prepareCallHierarchy",
+        {"textDocument": {"uri": uri}, "position": position},
+        allow_error=True,
+    )
+    if "error" in prepared:
+        raise UnsupportedCheck("textDocument/prepareCallHierarchy is not supported")
+    items = response_items(prepared.get("result"))
+    if not items:
+        return set()
+    outgoing = session.request(
+        request_id + 1000,
+        "callHierarchy/outgoingCalls",
+        {"item": items[0]},
+        allow_error=True,
+    )
+    if "error" in outgoing:
+        raise UnsupportedCheck("callHierarchy/outgoingCalls is not supported")
+    names: set[str] = set()
+    for call in response_items(outgoing.get("result")):
+        item = call.get("to") or call.get("item") or {}
+        if isinstance(item, dict):
+            names.add(item.get("name", ""))
+    return names
 
 
 def run_fixture(server: pathlib.Path, root: pathlib.Path, fixture: DifferentialFixture) -> dict[str, Any]:
@@ -241,45 +402,59 @@ def run_fixture(server: pathlib.Path, root: pathlib.Path, fixture: DifferentialF
         path.write_text(text, encoding="utf-8")
         source_uris[relative] = path.resolve().as_uri()
 
-    process = subprocess.Popen(
-        [str(server)],
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
+    session = LspSession(server)
     try:
-        initialize(process, root_uri)
+        session.initialize(root_uri)
         for relative, text in fixture.sources.items():
-            did_open(process, source_uris[relative], text)
+            session.did_open(source_uris[relative], text)
+        session.drain_notifications()
 
         observed: dict[str, Any] = {}
         request_id = 10
         for check in fixture.checks:
             key = f"{check.kind}:{check.uri or check.query}:{request_id}"
-            if check.kind == "completion":
-                assert check.uri is not None and check.position is not None
-                observed[key] = check_completion(process, request_id, source_uris[check.uri], check.position)
-            elif check.kind == "references":
-                assert check.uri is not None and check.position is not None
-                observed[key] = check_references(
-                    process,
-                    request_id,
-                    source_uris[check.uri],
-                    check.position,
-                    check.include_declaration,
-                )
-            elif check.kind == "workspaceSymbol":
-                observed[key] = check_workspace_symbol(process, request_id, check.query)
-            else:
-                raise AssertionError(f"Unsupported differential check kind: {check.kind}")
+            try:
+                if check.kind == "completion":
+                    assert check.uri is not None and check.position is not None
+                    observed[key] = check_completion(session, request_id, source_uris[check.uri], check.position)
+                elif check.kind == "references":
+                    assert check.uri is not None and check.position is not None
+                    observed[key] = check_references(
+                        session,
+                        request_id,
+                        source_uris[check.uri],
+                        check.position,
+                        check.include_declaration,
+                    )
+                elif check.kind == "workspaceSymbol":
+                    observed[key] = check_workspace_symbol(session, request_id, check.query)
+                elif check.kind == "diagnostics":
+                    assert check.uri is not None
+                    observed[key] = check_diagnostics(session, request_id, source_uris[check.uri])
+                elif check.kind == "typeDefinition":
+                    assert check.uri is not None and check.position is not None
+                    observed[key] = check_type_definition(session, request_id, source_uris[check.uri], check.position)
+                elif check.kind == "callHierarchyOutgoing":
+                    assert check.uri is not None and check.position is not None
+                    observed[key] = check_call_hierarchy_outgoing(
+                        session, request_id, source_uris[check.uri], check.position
+                    )
+                else:
+                    raise AssertionError(f"Unsupported differential check kind: {check.kind}")
+            except UnsupportedCheck:
+                if not check.optional:
+                    raise
+                observed[key] = None
             request_id += 1
         return observed
     finally:
-        shutdown(process)
+        session.shutdown()
 
 
 def validate_observed(server_name: str, fixture: DifferentialFixture, observed: dict[str, Any]) -> None:
     for check, value in zip(fixture.checks, observed.values()):
+        if value is None:
+            continue
         if check.required:
             missing = set(check.required).difference(value)
             if missing:

@@ -1,0 +1,26 @@
+{
+  "name": "wildcard import exposes enum-like package values to completion",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/wildcard-enum-pkg.sv",
+      "text": "package defs;\n  parameter int STATE_IDLE = 0;\n  parameter int STATE_BUSY = 1;\nendpackage\n"
+    },
+    {
+      "uri": "file:///golden/semantic/wildcard-enum-user.sv",
+      "text": "module top;\n  import defs::*;\n  localparam int S = STATE_\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "completion",
+    "uri": "file:///golden/semantic/wildcard-enum-user.sv",
+    "line": 2,
+    "character": 28,
+    "prefix": "STATE_"
+  },
+  "expected": {
+    "labels": [
+      "STATE_IDLE",
+      "STATE_BUSY"
+    ]
+  }
+}

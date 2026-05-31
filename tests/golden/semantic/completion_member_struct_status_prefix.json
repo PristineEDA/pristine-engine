@@ -1,0 +1,25 @@
+{
+  "name": "member completion filters status fields in struct-like context",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/member-status.sv",
+      "text": "module top;\n  logic packet;\n  logic status_valid;\n  logic status_error;\n  logic payload;\n  initial begin\n    packet.status_\n  end\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "completion",
+    "uri": "file:///golden/semantic/member-status.sv",
+    "line": 6,
+    "character": 18,
+    "prefix": "status_"
+  },
+  "expected": {
+    "labels": [
+      "status_valid",
+      "status_error"
+    ],
+    "absentLabels": [
+      "payload"
+    ]
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "name": "diagnostics report missing typedef after package imports",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/action-type-imported.sv",
+      "text": "package defs;\nendpackage\nmodule top;\n  import defs::*;\n  missing_t value;\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "diagnostics"
+  },
+  "expected": {
+    "uri": "file:///golden/semantic/action-type-imported.sv",
+    "diagnostics": [
+      {
+        "code": "unresolvedType",
+        "severity": 1,
+        "startLine": 4
+      }
+    ]
+  }
+}

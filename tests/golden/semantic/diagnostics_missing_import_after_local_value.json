@@ -1,0 +1,26 @@
+{
+  "name": "diagnostics still suggest missing import when local value shares package type prefix",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/missing-import-local-pkg.sv",
+      "text": "package defs;\n  typedef logic request_t;\nendpackage\n"
+    },
+    {
+      "uri": "file:///golden/semantic/missing-import-local-user.sv",
+      "text": "module top;\n  logic request;\n  request_t value;\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "diagnostics"
+  },
+  "expected": {
+    "uri": "file:///golden/semantic/missing-import-local-user.sv",
+    "diagnostics": [
+      {
+        "code": "missingImport",
+        "severity": 1,
+        "startLine": 2
+      }
+    ]
+  }
+}

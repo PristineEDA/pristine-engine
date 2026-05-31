@@ -1,0 +1,26 @@
+{
+  "name": "completion resolve documents package parameter members",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/resolve-param-pkg.sv",
+      "text": "package defs;\n  parameter int WIDTH = 8;\nendpackage\n"
+    },
+    {
+      "uri": "file:///golden/semantic/resolve-param-user.sv",
+      "text": "module top;\n  localparam int W = defs::WID\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "completionResolve",
+    "uri": "file:///golden/semantic/resolve-param-user.sv",
+    "line": 1,
+    "character": 31,
+    "prefix": "WID",
+    "label": "WIDTH"
+  },
+  "expected": {
+    "detailContains": "Parameter",
+    "documentationContains": "WIDTH",
+    "insertTextContains": "WIDTH"
+  }
+}

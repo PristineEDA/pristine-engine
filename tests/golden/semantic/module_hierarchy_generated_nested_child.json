@@ -1,0 +1,28 @@
+{
+  "name": "module hierarchy includes generated nested child module",
+  "config": {
+    "topModules": [
+      "top"
+    ]
+  },
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/hierarchy-generate-nested.sv",
+      "text": "module leaf;\nendmodule\nmodule mid;\n  leaf u_leaf();\nendmodule\nmodule top;\n  genvar i;\n  generate\n    for (i = 0; i < 1; i = i + 1) begin : g\n      mid u_mid();\n    end\n  endgenerate\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "moduleHierarchy",
+    "moduleName": "top",
+    "maxDepth": 8
+  },
+  "expected": {
+    "rootModules": [
+      "top"
+    ],
+    "modules": [
+      "mid",
+      "leaf"
+    ]
+  }
+}

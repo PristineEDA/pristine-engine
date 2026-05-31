@@ -1,0 +1,33 @@
+{
+  "name": "backward cone follows three-level width-aware local chain",
+  "config": {
+    "topModules": [
+      "top"
+    ]
+  },
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/cone-three-width.sv",
+      "text": "module top;\n  logic [3:0] a;\n  logic [3:0] b;\n  logic [3:0] c;\n  logic [3:0] out;\n  assign b = a;\n  assign c = b;\n  assign out = c;\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "backwardCone",
+    "uri": "file:///golden/semantic/cone-three-width.sv",
+    "line": 4,
+    "character": 14
+  },
+  "expected": {
+    "nodes": [
+      "out",
+      "c",
+      "b",
+      "a"
+    ],
+    "expressions": [
+      "c",
+      "b",
+      "a"
+    ]
+  }
+}

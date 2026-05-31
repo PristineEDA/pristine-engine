@@ -71,6 +71,13 @@ pristine_register_notice_family(
 )
 
 pristine_register_notice_family(
+  slang-server-v0.2.5-mit
+  TITLE "slang-server v0.2.5 MIT License Text"
+  SOURCE_PATH "${PRISTINE_ROOT_DIR}/licenses/texts/slang-server-v0.2.5-MIT.txt"
+  NOTE "slang-server v0.2.5 is used as a local differential reference. This section preserves the upstream license file captured from the local v0.2.5 checkout."
+)
+
+pristine_register_notice_family(
   bsl-1.0
   TITLE "Boost Software License 1.0"
   SOURCE_PATH "${PRISTINE_ROOT_DIR}/licenses/texts/BSL-1.0.txt"
@@ -114,6 +121,19 @@ pristine_register_attribution(
   RELATIONSHIP "direct dependency"
   FAMILY_IDS mit
   NOTES "Header-only JSON library linked into pristine_core."
+)
+
+pristine_register_attribution(
+  slang_server_v0_2_5
+  NAME "slang-server"
+  VERSION "v0.2.5"
+  OWNER "Hudson River Trading LLC and slang-server contributors"
+  URL "https://github.com/hudson-trading/slang-server/tree/v0.2.5"
+  LICENSE_LABEL "MIT"
+  SCOPE "redistributed"
+  RELATIONSHIP "test/differential reference fixture source"
+  FAMILY_IDS slang-server-v0.2.5-mit
+  NOTES "Local reference checkout at C:/Users/maksy/Desktop/project/slang-server reports tag v0.2.5 and commit 0ec16ae4905ae8a5cf9bb33727a9eccbb82fba2b. Use as the attribution anchor if any differential fixture copies upstream MIT-covered material; rewritten fixtures remain preferred."
 )
 
 pristine_register_attribution(

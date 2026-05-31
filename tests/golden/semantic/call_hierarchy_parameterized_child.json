@@ -1,0 +1,28 @@
+{
+  "name": "call hierarchy outgoing calls include parameterized child instances",
+  "config": {
+    "topModules": [
+      "top"
+    ]
+  },
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/call-param-child.sv",
+      "text": "module child #(parameter int WIDTH = 8);\nendmodule\nmodule top;\n  child #(.WIDTH(4)) u_child();\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "callHierarchy",
+    "uri": "file:///golden/semantic/call-param-child.sv",
+    "line": 2,
+    "character": 8
+  },
+  "expected": {
+    "preparedNames": [
+      "top"
+    ],
+    "outgoingNames": [
+      "child"
+    ]
+  }
+}

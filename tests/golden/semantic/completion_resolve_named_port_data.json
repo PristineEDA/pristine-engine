@@ -1,0 +1,21 @@
+{
+  "name": "completion resolve documents named data port",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/resolve-port-data.sv",
+      "text": "module child(input logic clk, output logic [3:0] data);\nendmodule\nmodule top;\n  child u_child(.c);\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "completionResolve",
+    "uri": "file:///golden/semantic/resolve-port-data.sv",
+    "line": 3,
+    "character": 19,
+    "prefix": "",
+    "label": "data"
+  },
+  "expected": {
+    "documentationContains": "data",
+    "insertTextContains": "data"
+  }
+}

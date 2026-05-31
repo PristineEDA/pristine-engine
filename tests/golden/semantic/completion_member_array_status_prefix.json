@@ -1,0 +1,25 @@
+{
+  "name": "array member completion filters status fields",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/member-array-status.sv",
+      "text": "module top;\n  logic packets;\n  logic status_valid;\n  logic status_error;\n  logic payload;\n  initial begin\n    packets[1].status_\n  end\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "completion",
+    "uri": "file:///golden/semantic/member-array-status.sv",
+    "line": 6,
+    "character": 21,
+    "prefix": "status_"
+  },
+  "expected": {
+    "labels": [
+      "status_valid",
+      "status_error"
+    ],
+    "absentLabels": [
+      "payload"
+    ]
+  }
+}

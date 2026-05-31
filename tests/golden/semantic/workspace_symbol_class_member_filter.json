@@ -1,0 +1,22 @@
+{
+  "name": "workspace symbols expose class names without leaking unrelated modules",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/workspace-class-filter.sv",
+      "text": "class transaction_packet;\nendclass\nmodule top;\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "workspaceSymbol",
+    "query": "transaction",
+    "limit": 100
+  },
+  "expected": {
+    "names": [
+      "transaction_packet"
+    ],
+    "absentNames": [
+      "top"
+    ]
+  }
+}

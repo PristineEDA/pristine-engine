@@ -1,0 +1,19 @@
+{
+  "name": "selection range marks function call expressions as next-stage debt",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/selection-function-call.sv",
+      "text": "module top;\n  function automatic int add(input int lhs, input int rhs);\n    return lhs + rhs;\n  endfunction\n  initial begin\n    int value = add(1, 2);\n  end\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "selectionRange",
+    "uri": "file:///golden/semantic/selection-function-call.sv",
+    "line": 5,
+    "character": 18
+  },
+  "expected": {
+    "unresolved": true,
+    "minCount": 0
+  }
+}

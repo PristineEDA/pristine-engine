@@ -1,0 +1,19 @@
+{
+  "name": "references for parameter width avoid same-name comments",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/references-param-width.sv",
+      "text": "module top #(parameter int WIDTH = 8);\n  // WIDTH in comment should not count\n  logic [WIDTH-1:0] data;\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "references",
+    "uri": "file:///golden/semantic/references-param-width.sv",
+    "line": 0,
+    "character": 27,
+    "includeDeclaration": true
+  },
+  "expected": {
+    "count": 1
+  }
+}

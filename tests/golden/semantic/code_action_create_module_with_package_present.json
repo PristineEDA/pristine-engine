@@ -1,0 +1,30 @@
+{
+  "name": "code action creates missing module when packages are already present",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/action-module-package.sv",
+      "text": "module top;\n  import defs::*;\n  missing_child u_missing();\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "codeAction",
+    "uri": "file:///golden/semantic/action-module-package.sv",
+    "range": {
+      "startLine": 2,
+      "startCharacter": 2,
+      "endLine": 2,
+      "endCharacter": 15
+    }
+  },
+  "expected": {
+    "actions": [
+      {
+        "title": "Create stub module 'missing_child'",
+        "diagnosticCodes": [
+          "unresolvedModule"
+        ],
+        "editContains": "module missing_child;"
+      }
+    ]
+  }
+}

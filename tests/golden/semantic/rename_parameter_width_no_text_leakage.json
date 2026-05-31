@@ -1,0 +1,20 @@
+{
+  "name": "rename for parameter width avoids comments",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/rename-param-width.sv",
+      "text": "module top #(parameter int WIDTH = 8);\n  // WIDTH in comment should not rename\n  logic [WIDTH-1:0] data;\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "rename",
+    "uri": "file:///golden/semantic/rename-param-width.sv",
+    "line": 0,
+    "character": 27,
+    "newName": "DATA_WIDTH"
+  },
+  "expected": {
+    "count": 1,
+    "allNewText": "DATA_WIDTH"
+  }
+}

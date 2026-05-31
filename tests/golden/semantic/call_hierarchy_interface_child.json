@@ -1,0 +1,28 @@
+{
+  "name": "call hierarchy outgoing calls include interface instances",
+  "config": {
+    "topModules": [
+      "top"
+    ]
+  },
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/call-interface.sv",
+      "text": "interface bus_if;\nendinterface\nmodule top;\n  bus_if bus();\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "callHierarchy",
+    "uri": "file:///golden/semantic/call-interface.sv",
+    "line": 2,
+    "character": 8
+  },
+  "expected": {
+    "preparedNames": [
+      "top"
+    ],
+    "outgoingNames": [
+      "bus_if"
+    ]
+  }
+}

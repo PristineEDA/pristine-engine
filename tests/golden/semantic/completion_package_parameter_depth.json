@@ -1,0 +1,28 @@
+{
+  "name": "package qualified completion filters parameter members",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/package-depth-pkg.sv",
+      "text": "package defs;\n  parameter int DEPTH = 4;\n  parameter int WIDTH = 8;\nendpackage\n"
+    },
+    {
+      "uri": "file:///golden/semantic/package-depth-user.sv",
+      "text": "module top;\n  localparam int D = defs::DEP\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "completion",
+    "uri": "file:///golden/semantic/package-depth-user.sv",
+    "line": 1,
+    "character": 31,
+    "prefix": "DEP"
+  },
+  "expected": {
+    "labels": [
+      "DEPTH"
+    ],
+    "absentLabels": [
+      "WIDTH"
+    ]
+  }
+}

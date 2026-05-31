@@ -1,0 +1,28 @@
+{
+  "name": "module hierarchy includes interface and module children together",
+  "config": {
+    "topModules": [
+      "top"
+    ]
+  },
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/hierarchy-if-module.sv",
+      "text": "interface bus_if;\nendinterface\nmodule child;\nendmodule\nmodule top;\n  bus_if bus();\n  child u_child();\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "moduleHierarchy",
+    "moduleName": "top",
+    "maxDepth": 8
+  },
+  "expected": {
+    "rootModules": [
+      "top"
+    ],
+    "modules": [
+      "bus_if",
+      "child"
+    ]
+  }
+}

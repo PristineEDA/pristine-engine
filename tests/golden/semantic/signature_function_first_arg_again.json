@@ -1,0 +1,23 @@
+{
+  "name": "function signature help keeps first argument active",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/signature-function-first-again.sv",
+      "text": "module top;\n  function automatic int choose(input int lhs, input int rhs);\n    return lhs;\n  endfunction\n  initial begin\n    int value = choose(1, 2);\n  end\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "signatureHelp",
+    "uri": "file:///golden/semantic/signature-function-first-again.sv",
+    "line": 5,
+    "character": 24
+  },
+  "expected": {
+    "label": "function int choose(input int lhs, input int rhs)",
+    "activeParameter": 0,
+    "parameters": [
+      "input int lhs",
+      "input int rhs"
+    ]
+  }
+}

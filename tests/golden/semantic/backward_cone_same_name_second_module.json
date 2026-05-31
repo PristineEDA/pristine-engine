@@ -1,0 +1,29 @@
+{
+  "name": "backward cone on second same-name module scope avoids first scope leakage",
+  "config": {
+    "topModules": [
+      "other"
+    ]
+  },
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/cone-second-scope.sv",
+      "text": "module top;\n  logic mid;\n  logic out;\n  assign out = mid;\nendmodule\nmodule other;\n  logic mid;\n  logic out;\n  assign out = mid;\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "backwardCone",
+    "uri": "file:///golden/semantic/cone-second-scope.sv",
+    "line": 7,
+    "character": 9
+  },
+  "expected": {
+    "nodes": [
+      "out",
+      "mid"
+    ],
+    "expressions": [
+      "mid"
+    ]
+  }
+}

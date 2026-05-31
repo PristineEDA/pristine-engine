@@ -1,0 +1,30 @@
+{
+  "name": "inlay hints include three named port labels",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/inlay-three-child.sv",
+      "text": "module child(input logic clk, input logic ready, output logic data);\nendmodule\n"
+    },
+    {
+      "uri": "file:///golden/semantic/inlay-three-top.sv",
+      "text": "module top;\n  logic clk;\n  logic ready;\n  logic data;\n  child u_child(.clk(clk), .ready(ready), .data(data));\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "inlayHint",
+    "uri": "file:///golden/semantic/inlay-three-top.sv",
+    "range": {
+      "startLine": 0,
+      "startCharacter": 0,
+      "endLine": 6,
+      "endCharacter": 0
+    }
+  },
+  "expected": {
+    "labels": [
+      ".clk",
+      ".ready",
+      ".data"
+    ]
+  }
+}
