@@ -9,6 +9,7 @@ add_executable(
 	unit/GoldenSemanticTests.cpp
 	unit/MessageStreamTests.cpp
 	unit/NavigationProviderTests.cpp
+	unit/ProviderCompletenessMatrixTests.cpp
 	unit/SemanticEngineTests.cpp
 	unit/SignatureInlayProviderTests.cpp
 	unit/SnapshotBuilderTests.cpp

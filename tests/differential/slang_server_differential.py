@@ -52,6 +52,52 @@ FIXTURES: tuple[DifferentialFixture, ...] = (
         ),
     ),
     DifferentialFixture(
+        name="completion wildcard import parameter prefix",
+        sources={
+            "defs.sv": (
+                "package defs;\n"
+                "  parameter int CONFIG_WIDTH = 8;\n"
+                "  parameter int CONFIG_DEPTH = 4;\n"
+                "endpackage\n"
+            ),
+            "top.sv": (
+                "module top;\n"
+                "  import defs::*;\n"
+                "  localparam int W = CONFIG_\n"
+                "endmodule\n"
+            ),
+        },
+        checks=(
+            DifferentialCheck(
+                kind="completion",
+                uri="top.sv",
+                position={"line": 2, "character": 29},
+                required=("CONFIG_WIDTH", "CONFIG_DEPTH"),
+                optional=True,
+            ),
+        ),
+    ),
+    DifferentialFixture(
+        name="completion macro function prefix",
+        sources={
+            "macro.sv": (
+                "`define MUX(sel, lhs, rhs) ((sel) ? (lhs) : (rhs))\n"
+                "module top;\n"
+                "  logic value = `MU\n"
+                "endmodule\n"
+            )
+        },
+        checks=(
+            DifferentialCheck(
+                kind="completion",
+                uri="macro.sv",
+                position={"line": 2, "character": 19},
+                required=("MUX",),
+                optional=True,
+            ),
+        ),
+    ),
+    DifferentialFixture(
         name="references local signal identity",
         sources={
             "refs.sv": (
@@ -67,6 +113,57 @@ FIXTURES: tuple[DifferentialFixture, ...] = (
                 uri="refs.sv",
                 position={"line": 1, "character": 9},
                 min_count=3,
+            ),
+        ),
+    ),
+    DifferentialFixture(
+        name="references same-name module scope isolation",
+        sources={
+            "shadow.sv": (
+                "module first;\n"
+                "  logic ready;\n"
+                "  assign ready = ready;\n"
+                "endmodule\n"
+                "module second;\n"
+                "  logic ready;\n"
+                "  assign ready = ready;\n"
+                "endmodule\n"
+            )
+        },
+        checks=(
+            DifferentialCheck(
+                kind="references",
+                uri="shadow.sv",
+                position={"line": 1, "character": 9},
+                min_count=3,
+            ),
+            DifferentialCheck(
+                kind="references",
+                uri="shadow.sv",
+                position={"line": 5, "character": 9},
+                min_count=3,
+            ),
+        ),
+    ),
+    DifferentialFixture(
+        name="references ignore comments and strings",
+        sources={
+            "no_text.sv": (
+                "module top;\n"
+                "  logic ready;\n"
+                "  // ready in comment\n"
+                "  string label = \"ready\";\n"
+                "  assign ready = ready;\n"
+                "endmodule\n"
+            )
+        },
+        checks=(
+            DifferentialCheck(
+                kind="references",
+                uri="no_text.sv",
+                position={"line": 1, "character": 9},
+                min_count=3,
+                optional=True,
             ),
         ),
     ),
@@ -90,6 +187,54 @@ FIXTURES: tuple[DifferentialFixture, ...] = (
         ),
     ),
     DifferentialFixture(
+        name="workspace symbol package and typedef discovery",
+        sources={
+            "pkg.sv": (
+                "package defs;\n"
+                "  typedef logic [7:0] packet_t;\n"
+                "endpackage\n"
+            ),
+        },
+        checks=(
+            DifferentialCheck(
+                kind="workspaceSymbol",
+                query="defs",
+                required=("defs",),
+            ),
+            DifferentialCheck(
+                kind="workspaceSymbol",
+                query="packet",
+                required=("packet_t",),
+                optional=True,
+            ),
+        ),
+    ),
+    DifferentialFixture(
+        name="workspace symbol interface modport discovery",
+        sources={
+            "bus.sv": (
+                "interface bus_if;\n"
+                "  logic ready;\n"
+                "  modport master(input ready);\n"
+                "endinterface\n"
+            ),
+        },
+        checks=(
+            DifferentialCheck(
+                kind="workspaceSymbol",
+                query="bus",
+                required=("bus_if",),
+                optional=True,
+            ),
+            DifferentialCheck(
+                kind="workspaceSymbol",
+                query="master",
+                required=("master",),
+                optional=True,
+            ),
+        ),
+    ),
+    DifferentialFixture(
         name="diagnostics syntax error publication",
         sources={
             "bad.sv": (
@@ -102,6 +247,44 @@ FIXTURES: tuple[DifferentialFixture, ...] = (
             DifferentialCheck(
                 kind="diagnostics",
                 uri="bad.sv",
+                min_count=1,
+                optional=True,
+            ),
+        ),
+    ),
+    DifferentialFixture(
+        name="diagnostics missing package publication",
+        sources={
+            "missing_pkg.sv": (
+                "module top;\n"
+                "  import missing_pkg::*;\n"
+                "endmodule\n"
+            )
+        },
+        checks=(
+            DifferentialCheck(
+                kind="diagnostics",
+                uri="missing_pkg.sv",
+                min_count=1,
+                optional=True,
+            ),
+        ),
+    ),
+    DifferentialFixture(
+        name="diagnostics width mismatch publication",
+        sources={
+            "width.sv": (
+                "module top;\n"
+                "  logic [3:0] lhs;\n"
+                "  logic [7:0] rhs;\n"
+                "  assign lhs = rhs;\n"
+                "endmodule\n"
+            )
+        },
+        checks=(
+            DifferentialCheck(
+                kind="diagnostics",
+                uri="width.sv",
                 min_count=1,
                 optional=True,
             ),
@@ -128,6 +311,30 @@ FIXTURES: tuple[DifferentialFixture, ...] = (
         ),
     ),
     DifferentialFixture(
+        name="type definition package-qualified typedef lookup",
+        sources={
+            "defs.sv": (
+                "package defs;\n"
+                "  typedef logic [7:0] word_t;\n"
+                "endpackage\n"
+            ),
+            "top.sv": (
+                "module top;\n"
+                "  defs::word_t value;\n"
+                "endmodule\n"
+            ),
+        },
+        checks=(
+            DifferentialCheck(
+                kind="typeDefinition",
+                uri="top.sv",
+                position={"line": 1, "character": 10},
+                min_count=1,
+                optional=True,
+            ),
+        ),
+    ),
+    DifferentialFixture(
         name="call hierarchy module outgoing",
         sources={
             "call.sv": (
@@ -144,6 +351,30 @@ FIXTURES: tuple[DifferentialFixture, ...] = (
                 uri="call.sv",
                 position={"line": 2, "character": 8},
                 required=("child",),
+                optional=True,
+            ),
+        ),
+    ),
+    DifferentialFixture(
+        name="call hierarchy two outgoing children",
+        sources={
+            "call_two.sv": (
+                "module left;\n"
+                "endmodule\n"
+                "module right;\n"
+                "endmodule\n"
+                "module top;\n"
+                "  left u_left();\n"
+                "  right u_right();\n"
+                "endmodule\n"
+            )
+        },
+        checks=(
+            DifferentialCheck(
+                kind="callHierarchyOutgoing",
+                uri="call_two.sv",
+                position={"line": 4, "character": 8},
+                required=("left", "right"),
                 optional=True,
             ),
         ),

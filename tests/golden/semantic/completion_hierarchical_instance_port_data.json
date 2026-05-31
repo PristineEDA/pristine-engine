@@ -1,0 +1,29 @@
+{
+  "name": "hierarchical instance member completion exposes child ports",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/hier-child.sv",
+      "text": "module child(input logic data_i, output logic data_o, input logic clk);\nendmodule\n"
+    },
+    {
+      "uri": "file:///golden/semantic/hier-top.sv",
+      "text": "module top;\n  child u_child();\n  initial begin\n    u_child.data_\n  end\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "completion",
+    "uri": "file:///golden/semantic/hier-top.sv",
+    "line": 3,
+    "character": 17,
+    "prefix": "data_"
+  },
+  "expected": {
+    "labels": [
+      "data_i",
+      "data_o"
+    ],
+    "absentLabels": [
+      "clk"
+    ]
+  }
+}

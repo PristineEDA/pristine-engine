@@ -1,0 +1,18 @@
+{
+  "name": "signature help current debt for multi-argument task fixture",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/signature-task-second-again.sv",
+      "text": "module top;\n  task automatic emit(input logic ready, input logic valid);\n  endtask\n  initial begin\n    emit(ready, valid);\n  end\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "signatureHelp",
+    "uri": "file:///golden/semantic/signature-task-second-again.sv",
+    "line": 4,
+    "character": 21
+  },
+  "expected": {
+    "unresolved": true
+  }
+}

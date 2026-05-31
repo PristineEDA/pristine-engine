@@ -1,0 +1,28 @@
+{
+  "name": "code action imports package for second missing type",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/code-action-import-second-pkg.sv",
+      "text": "package defs;\n  typedef logic first_t;\n  typedef logic second_t;\nendpackage\n"
+    },
+    {
+      "uri": "file:///golden/semantic/code-action-import-second-user.sv",
+      "text": "module top;\n  second_t value;\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "codeAction",
+    "uri": "file:///golden/semantic/code-action-import-second-user.sv",
+    "range": {
+      "startLine": 1,
+      "startCharacter": 2,
+      "endLine": 1,
+      "endCharacter": 10
+    }
+  },
+  "expected": {
+    "actionTitles": [
+      "Import package 'defs'"
+    ]
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "name": "member completion keeps modport-adjacent status members stable",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/member-modport-status.sv",
+      "text": "interface bus_if;\n  logic status_valid;\n  logic status_ready;\n  logic payload;\n  modport master(input status_ready, output status_valid);\nendinterface\nmodule top;\n  bus_if bus();\n  initial begin\n    bus.status_\n  end\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "completion",
+    "uri": "file:///golden/semantic/member-modport-status.sv",
+    "line": 8,
+    "character": 15,
+    "prefix": "status_"
+  },
+  "expected": {
+    "labels": [
+      "status_valid",
+      "status_ready"
+    ],
+    "absentLabels": [
+      "payload"
+    ]
+  }
+}

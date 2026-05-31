@@ -1,0 +1,23 @@
+{
+  "name": "type definition follows third alias use to nearest typedef token",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/type-alias-third.sv",
+      "text": "module top;\n  typedef logic [7:0] byte_t;\n  typedef byte_t word_t;\n  typedef word_t packet_t;\n  packet_t value;\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "typeDefinition",
+    "uri": "file:///golden/semantic/type-alias-third.sv",
+    "line": 4,
+    "character": 4
+  },
+  "expected": {
+    "locations": [
+      {
+        "uri": "file:///golden/semantic/type-alias-third.sv",
+        "startLine": 3
+      }
+    ]
+  }
+}

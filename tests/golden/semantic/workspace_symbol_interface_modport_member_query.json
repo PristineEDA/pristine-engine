@@ -1,0 +1,18 @@
+{
+  "name": "workspace symbol query finds interface modport member",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/workspace-if-modport-member.sv",
+      "text": "interface bus_if;\n  logic ready;\n  modport master(input ready);\nendinterface\n"
+    }
+  ],
+  "request": {
+    "kind": "workspaceSymbol",
+    "query": "master"
+  },
+  "expected": {
+    "names": [
+      "master"
+    ]
+  }
+}

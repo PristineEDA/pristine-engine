@@ -1,0 +1,28 @@
+{
+  "name": "code action connects multiple missing required ports",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/code-action-missing-ports-child.sv",
+      "text": "module child(input logic clk, input logic rst_n, input logic data);\nendmodule\n"
+    },
+    {
+      "uri": "file:///golden/semantic/code-action-missing-ports-top.sv",
+      "text": "module top;\n  logic clk;\n  child u_child(.clk(clk));\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "codeAction",
+    "uri": "file:///golden/semantic/code-action-missing-ports-top.sv",
+    "range": {
+      "startLine": 2,
+      "startCharacter": 2,
+      "endLine": 2,
+      "endCharacter": 27
+    }
+  },
+  "expected": {
+    "actionTitles": [
+      "Add missing port connections to 'u_child'"
+    ]
+  }
+}

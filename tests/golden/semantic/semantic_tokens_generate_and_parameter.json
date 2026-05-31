@@ -1,0 +1,27 @@
+{
+  "name": "semantic tokens include generate parameter declarations",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/tokens-generate-param.sv",
+      "text": "module top #(parameter int WIDTH = 8);\n  genvar i;\n  generate\n    for (i = 0; i < WIDTH; i = i + 1) begin : g\n      logic ready;\n    end\n  endgenerate\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "semanticTokens",
+    "uri": "file:///golden/semantic/tokens-generate-param.sv"
+  },
+  "expected": {
+    "tokens": [
+      {
+        "type": "variable",
+        "modifier": "declaration",
+        "startLine": 0
+      },
+      {
+        "type": "variable",
+        "modifier": "declaration",
+        "startLine": 1
+      }
+    ]
+  }
+}

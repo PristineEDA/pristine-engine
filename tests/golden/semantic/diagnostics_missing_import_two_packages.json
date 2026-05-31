@@ -1,0 +1,33 @@
+{
+  "name": "diagnostics records current no-diagnostic shape for unimported duplicate package types",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/missing-import-two-a.sv",
+      "text": "package pkg_a;\n  typedef logic shared_t;\nendpackage\n"
+    },
+    {
+      "uri": "file:///golden/semantic/missing-import-two-b.sv",
+      "text": "package pkg_b;\n  typedef logic shared_t;\nendpackage\n"
+    },
+    {
+      "uri": "file:///golden/semantic/missing-import-two-user.sv",
+      "text": "module top;\n  shared_t value;\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "diagnostics"
+  },
+  "expected": {
+    "uri": "file:///golden/semantic/missing-import-two-user.sv",
+    "diagnostics": [
+      {
+        "code": "ambiguousReference",
+        "present": false
+      },
+      {
+        "code": "missingImport",
+        "present": false
+      }
+    ]
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "name": "diagnostics does not report width mismatch for equal widths",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/width-match.sv",
+      "text": "module top;\n  logic [7:0] lhs;\n  logic [7:0] rhs;\n  assign lhs = rhs;\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "diagnostics"
+  },
+  "expected": {
+    "uri": "file:///golden/semantic/width-match.sv",
+    "diagnostics": [
+      {
+        "code": "widthMismatch",
+        "present": false
+      }
+    ]
+  }
+}

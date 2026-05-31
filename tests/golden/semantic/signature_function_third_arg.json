@@ -1,0 +1,22 @@
+{
+  "name": "signature help tracks third function argument for simple parameter names",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/signature-third-function.sv",
+      "text": "module top;\n  function automatic int mix(input int a, input int b, input int c);\n    return a + b + c;\n  endfunction\n  initial begin\n    int value = mix(1, 2, 3);\n  end\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "signatureHelp",
+    "uri": "file:///golden/semantic/signature-third-function.sv",
+    "line": 5,
+    "character": 27
+  },
+  "expected": {
+    "label": "function int mix(input int a, input int b, input int c)",
+    "activeParameter": 2,
+    "parameters": [
+      "input int c"
+    ]
+  }
+}

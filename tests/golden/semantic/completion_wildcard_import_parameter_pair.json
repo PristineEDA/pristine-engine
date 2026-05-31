@@ -1,0 +1,29 @@
+{
+  "name": "wildcard import completion includes matching parameter pair",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/wildcard-params-pkg.sv",
+      "text": "package defs;\n  parameter int CONFIG_WIDTH = 8;\n  parameter int CONFIG_DEPTH = 4;\n  parameter int OTHER = 1;\nendpackage\n"
+    },
+    {
+      "uri": "file:///golden/semantic/wildcard-params-user.sv",
+      "text": "module top;\n  import defs::*;\n  localparam int W = CONFIG_\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "completion",
+    "uri": "file:///golden/semantic/wildcard-params-user.sv",
+    "line": 2,
+    "character": 29,
+    "prefix": "CONFIG_"
+  },
+  "expected": {
+    "labels": [
+      "CONFIG_WIDTH",
+      "CONFIG_DEPTH"
+    ],
+    "absentLabels": [
+      "OTHER"
+    ]
+  }
+}

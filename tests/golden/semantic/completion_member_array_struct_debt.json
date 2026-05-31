@@ -1,0 +1,21 @@
+{
+  "name": "array-of-struct member completion records current unresolved debt shape",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/array-struct-member.sv",
+      "text": "typedef struct packed {\n  logic status_valid;\n  logic status_ready;\n  logic payload;\n} packet_t;\nmodule top;\n  packet_t lanes [2];\n  initial begin\n    lanes[0].status_\n  end\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "completion",
+    "uri": "file:///golden/semantic/array-struct-member.sv",
+    "line": 7,
+    "character": 20,
+    "prefix": "status_"
+  },
+  "expected": {
+    "absentLabels": [
+      "payload"
+    ]
+  }
+}

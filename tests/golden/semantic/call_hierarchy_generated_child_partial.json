@@ -1,0 +1,25 @@
+{
+  "name": "call hierarchy generated child keeps prepared top stable",
+  "config": {
+    "topModules": [
+      "top"
+    ]
+  },
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/call-generated-child.sv",
+      "text": "module child;\nendmodule\nmodule top;\n  genvar i;\n  generate\n    for (i = 0; i < 2; i = i + 1) begin : g\n      child u_child();\n    end\n  endgenerate\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "callHierarchy",
+    "uri": "file:///golden/semantic/call-generated-child.sv",
+    "line": 2,
+    "character": 8
+  },
+  "expected": {
+    "preparedNames": [
+      "top"
+    ]
+  }
+}

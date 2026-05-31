@@ -1,0 +1,28 @@
+{
+  "name": "parameter override inlay records current no-label debt shape",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/inlay-param-child.sv",
+      "text": "module child #(parameter int WIDTH = 8, parameter int DEPTH = 4) (input logic clk);\nendmodule\n"
+    },
+    {
+      "uri": "file:///golden/semantic/inlay-param-top.sv",
+      "text": "module top;\n  logic clk;\n  child #(.WIDTH(16), .DEPTH(2)) u_child(.clk(clk));\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "inlayHint",
+    "uri": "file:///golden/semantic/inlay-param-top.sv",
+    "range": {
+      "startLine": 0,
+      "startCharacter": 0,
+      "endLine": 4,
+      "endCharacter": 0
+    }
+  },
+  "expected": {
+    "labels": [
+      ".clk"
+    ]
+  }
+}

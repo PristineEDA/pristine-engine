@@ -1,0 +1,25 @@
+{
+  "name": "member completion filters interface-like status fields",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/member-interface-status.sv",
+      "text": "interface bus_if;\n  logic status_ready;\n  logic status_error;\n  logic payload;\nendinterface\nmodule top;\n  bus_if bus();\n  initial begin\n    bus.status_\n  end\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "completion",
+    "uri": "file:///golden/semantic/member-interface-status.sv",
+    "line": 7,
+    "character": 15,
+    "prefix": "status_"
+  },
+  "expected": {
+    "labels": [
+      "status_ready",
+      "status_error"
+    ],
+    "absentLabels": [
+      "payload"
+    ]
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "name": "schematic large chain truncates at shallow depth",
+  "config": {
+    "topModules": [
+      "top"
+    ]
+  },
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/schematic-large-chain.sv",
+      "text": "module leaf;\nendmodule\nmodule n2; leaf u_leaf(); endmodule\nmodule n1; n2 u_n2(); endmodule\nmodule top; n1 u_n1(); endmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "schematic",
+    "moduleName": "top",
+    "maxDepth": 1
+  },
+  "expected": {
+    "partial": true,
+    "truncated": true,
+    "rootModule": "top",
+    "modules": [
+      "top"
+    ]
+  }
+}

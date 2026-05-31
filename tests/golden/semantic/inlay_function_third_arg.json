@@ -1,0 +1,26 @@
+{
+  "name": "function argument inlay hints include third argument for simple parameter names",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/inlay-third-arg.sv",
+      "text": "module top;\n  function automatic int mix(input int a, input int b, input int c);\n    return a + b + c;\n  endfunction\n  initial begin\n    int value = mix(1, 2, 3);\n  end\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "inlayHint",
+    "uri": "file:///golden/semantic/inlay-third-arg.sv",
+    "range": {
+      "startLine": 0,
+      "startCharacter": 0,
+      "endLine": 8,
+      "endCharacter": 0
+    }
+  },
+  "expected": {
+    "labels": [
+      "input int a:",
+      "input int b:",
+      "input int c:"
+    ]
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "name": "rename on modport-adjacent member avoids comments",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/rename-modport-member.sv",
+      "text": "interface bus_if;\n  logic ready;\n  modport master(input ready);\nendinterface\nmodule top;\n  bus_if bus();\n  // ready in comment should not rename\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "rename",
+    "uri": "file:///golden/semantic/rename-modport-member.sv",
+    "line": 1,
+    "character": 9,
+    "newName": "valid"
+  },
+  "expected": {
+    "count": 1,
+    "allBeforeLine": 4,
+    "allNewText": "valid"
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "name": "references on modport-adjacent member avoid text leakage",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/ref-modport-member.sv",
+      "text": "interface bus_if;\n  logic ready;\n  modport master(input ready);\nendinterface\nmodule top;\n  bus_if bus();\n  // ready in comment should not count\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "references",
+    "uri": "file:///golden/semantic/ref-modport-member.sv",
+    "line": 1,
+    "character": 9,
+    "includeDeclaration": true
+  },
+  "expected": {
+    "count": 1,
+    "allBeforeLine": 4
+  }
+}
