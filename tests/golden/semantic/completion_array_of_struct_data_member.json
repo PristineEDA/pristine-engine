@@ -1,0 +1,25 @@
+{
+  "name": "array-of-struct member completion filters indexed fields",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/completion-array-data-member.sv",
+      "text": "module top;\n  logic packets;\n  logic addr;\n  logic data;\n  logic ready;\n  initial begin\n    packets[3].da\n  end\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "completion",
+    "uri": "file:///golden/semantic/completion-array-data-member.sv",
+    "line": 6,
+    "character": 18,
+    "prefix": "da"
+  },
+  "expected": {
+    "labels": [
+      "data"
+    ],
+    "absentLabels": [
+      "addr",
+      "ready"
+    ]
+  }
+}

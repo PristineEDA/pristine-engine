@@ -1,0 +1,34 @@
+{
+  "name": "code action inserts missing import for the uniquely owning package",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/action-import-edge-pkg.sv",
+      "text": "package unique_defs;\n  typedef logic special_t;\nendpackage\n"
+    },
+    {
+      "uri": "file:///golden/semantic/action-import-edge-user.sv",
+      "text": "module top;\n  special_t value;\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "codeAction",
+    "uri": "file:///golden/semantic/action-import-edge-user.sv",
+    "range": {
+      "startLine": 1,
+      "startCharacter": 2,
+      "endLine": 1,
+      "endCharacter": 11
+    }
+  },
+  "expected": {
+    "actions": [
+      {
+        "title": "Import package 'unique_defs'",
+        "diagnosticCodes": [
+          "missingImport"
+        ],
+        "editContains": "import unique_defs::*;"
+      }
+    ]
+  }
+}

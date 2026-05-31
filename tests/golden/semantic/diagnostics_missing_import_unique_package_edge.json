@@ -1,0 +1,26 @@
+{
+  "name": "diagnostics prefer missing import when a unique package owns the type",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/missing-import-edge-pkg.sv",
+      "text": "package unique_defs;\n  typedef logic special_t;\nendpackage\n"
+    },
+    {
+      "uri": "file:///golden/semantic/missing-import-edge-user.sv",
+      "text": "module top;\n  special_t value;\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "diagnostics"
+  },
+  "expected": {
+    "uri": "file:///golden/semantic/missing-import-edge-user.sv",
+    "diagnostics": [
+      {
+        "code": "missingImport",
+        "severity": 1,
+        "startLine": 1
+      }
+    ]
+  }
+}

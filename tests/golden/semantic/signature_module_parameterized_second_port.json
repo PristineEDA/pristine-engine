@@ -1,0 +1,26 @@
+{
+  "name": "module instance signature help tracks second named port",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/signature-param-child.sv",
+      "text": "module child #(parameter int WIDTH = 8) (input logic clk, output logic [WIDTH-1:0] data, input logic ready);\nendmodule\n"
+    },
+    {
+      "uri": "file:///golden/semantic/signature-param-top.sv",
+      "text": "module top;\n  logic clk;\n  logic [3:0] data;\n  logic ready;\n  child #(.WIDTH(4)) u_child(.clk(clk), .data(data), .ready(ready));\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "signatureHelp",
+    "uri": "file:///golden/semantic/signature-param-top.sv",
+    "line": 4,
+    "character": 48
+  },
+  "expected": {
+    "labelContains": "child(",
+    "parameters": [
+      "input logic clk",
+      "input logic ready"
+    ]
+  }
+}

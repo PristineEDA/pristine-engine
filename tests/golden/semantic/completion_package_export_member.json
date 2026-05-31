@@ -1,0 +1,28 @@
+{
+  "name": "package qualified completion offers exported typedef members",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/completion-export-pkg.sv",
+      "text": "package defs;\n  typedef logic [7:0] byte_t;\n  typedef logic [15:0] word_t;\nendpackage\n"
+    },
+    {
+      "uri": "file:///golden/semantic/completion-export-user.sv",
+      "text": "module top;\n  defs::wo\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "completion",
+    "uri": "file:///golden/semantic/completion-export-user.sv",
+    "line": 1,
+    "character": 10,
+    "prefix": "wo"
+  },
+  "expected": {
+    "labels": [
+      "word_t"
+    ],
+    "absentLabels": [
+      "byte_t"
+    ]
+  }
+}

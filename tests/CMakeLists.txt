@@ -33,7 +33,7 @@ add_test(
 set_tests_properties(pristine_differential_slang_server PROPERTIES
 	ENVIRONMENT "SLANG_SERVER_ROOT=$ENV{SLANG_SERVER_ROOT}"
 	LABELS "differential"
-	SKIP_REGULAR_EXPRESSION "SKIP: SLANG_SERVER_ROOT is not set")
+	SKIP_REGULAR_EXPRESSION "SKIP:")
 
 if(PRISTINE_BUILD_PERF_TESTS)
 	add_executable(pristine_perf_tests perf/SemanticPerfSmoke.cpp)

@@ -1,0 +1,23 @@
+{
+  "name": "task signature help reports second argument as active",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/signature-task-second.sv",
+      "text": "module top;\n  task automatic send(input int addr, input int data);\n  endtask\n  initial begin\n    send(1, 2);\n  end\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "signatureHelp",
+    "uri": "file:///golden/semantic/signature-task-second.sv",
+    "line": 4,
+    "character": 13
+  },
+  "expected": {
+    "label": "task send(input int addr, input int data)",
+    "activeParameter": 1,
+    "parameters": [
+      "input int addr",
+      "input int data"
+    ]
+  }
+}

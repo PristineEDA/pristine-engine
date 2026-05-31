@@ -1,0 +1,20 @@
+{
+  "name": "references for member-like signal avoid same-name text leakage",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/member-reference-no-leak.sv",
+      "text": "module top;\n  logic ready;\n  assign ready = ready;\nendmodule\nmodule other;\n  logic ready;\n  assign ready = ready;\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "references",
+    "uri": "file:///golden/semantic/member-reference-no-leak.sv",
+    "line": 1,
+    "character": 9,
+    "includeDeclaration": true
+  },
+  "expected": {
+    "count": 3,
+    "allBeforeLine": 4
+  }
+}

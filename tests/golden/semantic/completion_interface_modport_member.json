@@ -1,0 +1,25 @@
+{
+  "name": "member completion keeps interface modport-like names in member context",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/completion-modport-member.sv",
+      "text": "interface bus_if;\nendinterface\nmodule top;\n  logic bus;\n  logic master_ready;\n  logic master_valid;\n  logic slave_ready;\n  initial begin\n    bus.master_\n  end\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "completion",
+    "uri": "file:///golden/semantic/completion-modport-member.sv",
+    "line": 8,
+    "character": 16,
+    "prefix": "master_"
+  },
+  "expected": {
+    "labels": [
+      "master_ready",
+      "master_valid"
+    ],
+    "absentLabels": [
+      "slave_ready"
+    ]
+  }
+}

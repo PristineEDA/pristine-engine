@@ -1,0 +1,27 @@
+{
+  "name": "module hierarchy includes multiple parameterized child instances",
+  "config": {
+    "topModules": [
+      "top"
+    ]
+  },
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/hierarchy-param-two.sv",
+      "text": "module child #(parameter int WIDTH = 8);\nendmodule\nmodule top;\n  child #(.WIDTH(4)) u_a();\n  child #(.WIDTH(8)) u_b();\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "moduleHierarchy",
+    "moduleName": "top",
+    "maxDepth": 8
+  },
+  "expected": {
+    "rootModules": [
+      "top"
+    ],
+    "modules": [
+      "child"
+    ]
+  }
+}

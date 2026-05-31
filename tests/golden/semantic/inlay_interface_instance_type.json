@@ -1,0 +1,24 @@
+{
+  "name": "inlay hints include interface instance type metadata",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/inlay-interface-top.sv",
+      "text": "interface bus_if(input logic clk);\nendinterface\nmodule top;\n  logic clk;\n  bus_if bus(clk);\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "inlayHint",
+    "uri": "file:///golden/semantic/inlay-interface-top.sv",
+    "range": {
+      "startLine": 0,
+      "startCharacter": 0,
+      "endLine": 6,
+      "endCharacter": 0
+    }
+  },
+  "expected": {
+    "labels": [
+      ": bus_if"
+    ]
+  }
+}

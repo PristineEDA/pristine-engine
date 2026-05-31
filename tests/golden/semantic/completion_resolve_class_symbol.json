@@ -1,0 +1,22 @@
+{
+  "name": "completion resolve documents class symbols",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/resolve-class.sv",
+      "text": "class packet;\nendclass\nmodule top;\n  pac\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "completionResolve",
+    "uri": "file:///golden/semantic/resolve-class.sv",
+    "line": 3,
+    "character": 5,
+    "prefix": "pac",
+    "label": "packet"
+  },
+  "expected": {
+    "detailContains": "Class",
+    "documentationContains": "packet",
+    "insertTextContains": "packet"
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "name": "workspace symbols expose package members used by wildcard imports",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/workspace-wildcard-members.sv",
+      "text": "package defs;\n  typedef logic [7:0] transaction_t;\n  parameter int TRANSACTION_DEPTH = 4;\nendpackage\nmodule top;\n  import defs::*;\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "workspaceSymbol",
+    "query": "transaction",
+    "limit": 100
+  },
+  "expected": {
+    "names": [
+      "transaction_t"
+    ],
+    "absentNames": [
+      "top"
+    ]
+  }
+}

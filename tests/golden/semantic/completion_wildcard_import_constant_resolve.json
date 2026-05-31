@@ -1,0 +1,26 @@
+{
+  "name": "wildcard import completion resolve documents package parameters",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/wildcard-resolve-pkg.sv",
+      "text": "package defs;\n  parameter int DEPTH = 16;\nendpackage\n"
+    },
+    {
+      "uri": "file:///golden/semantic/wildcard-resolve-top.sv",
+      "text": "module top;\n  import defs::*;\n  localparam int LOCAL = DEP\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "completionResolve",
+    "uri": "file:///golden/semantic/wildcard-resolve-top.sv",
+    "line": 2,
+    "character": 28,
+    "prefix": "DEP",
+    "label": "DEPTH"
+  },
+  "expected": {
+    "detailContains": "Parameter",
+    "documentationContains": "DEPTH",
+    "insertTextContains": "DEPTH"
+  }
+}

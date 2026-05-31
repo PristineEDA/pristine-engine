@@ -1,0 +1,20 @@
+{
+  "name": "rename at port declaration stays on AST symbol identity",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/rename-port-boundary.sv",
+      "text": "module child(input logic clk);\nendmodule\nmodule top;\n  logic clk;\n  child u_child(.clk(clk));\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "rename",
+    "uri": "file:///golden/semantic/rename-port-boundary.sv",
+    "line": 0,
+    "character": 25,
+    "newName": "clock"
+  },
+  "expected": {
+    "count": 1,
+    "allNewText": "clock"
+  }
+}

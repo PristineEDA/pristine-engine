@@ -1,0 +1,22 @@
+{
+  "name": "completion resolve documents interface definitions",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/resolve-interface.sv",
+      "text": "interface bus_if(input logic clk);\nendinterface\nmodule top;\n  bus_\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "completionResolve",
+    "uri": "file:///golden/semantic/resolve-interface.sv",
+    "line": 3,
+    "character": 6,
+    "prefix": "bus_",
+    "label": "bus_if"
+  },
+  "expected": {
+    "detailContains": "bus_if(input logic clk)",
+    "documentationContains": "bus_if",
+    "insertTextContains": "bus_if"
+  }
+}

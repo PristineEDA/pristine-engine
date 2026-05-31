@@ -1,0 +1,31 @@
+{
+  "name": "code action connects a single missing required port",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/action-one-port-child.sv",
+      "text": "module child(input logic clk, output logic ready);\nendmodule\n"
+    },
+    {
+      "uri": "file:///golden/semantic/action-one-port-top.sv",
+      "text": "module top;\n  child u_child(.clk(clk));\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "codeAction",
+    "uri": "file:///golden/semantic/action-one-port-top.sv",
+    "range": {
+      "startLine": 1,
+      "startCharacter": 2,
+      "endLine": 1,
+      "endCharacter": 25
+    }
+  },
+  "expected": {
+    "actions": [
+      {
+        "title": "Add missing port connections to 'u_child'",
+        "editContains": ".ready(ready)"
+      }
+    ]
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "name": "member completion filters struct-style data field prefixes",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/completion-struct-data-member.sv",
+      "text": "module top;\n  logic packet;\n  logic data_valid;\n  logic data_ready;\n  logic ctrl;\n  initial begin\n    packet.data_\n  end\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "completion",
+    "uri": "file:///golden/semantic/completion-struct-data-member.sv",
+    "line": 6,
+    "character": 16,
+    "prefix": "data_"
+  },
+  "expected": {
+    "labels": [
+      "data_valid",
+      "data_ready"
+    ],
+    "absentLabels": [
+      "ctrl"
+    ]
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "name": "hierarchical instance member completion remains AST-index backed",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/completion-hier-field.sv",
+      "text": "module child;\n  logic child_ready;\nendmodule\nmodule top;\n  logic u_child;\n  logic child_ready;\n  logic child_valid;\n  child inst();\n  initial begin\n    u_child.child_\n  end\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "completion",
+    "uri": "file:///golden/semantic/completion-hier-field.sv",
+    "line": 9,
+    "character": 18,
+    "prefix": "child_"
+  },
+  "expected": {
+    "labels": [
+      "child_ready",
+      "child_valid"
+    ]
+  }
+}

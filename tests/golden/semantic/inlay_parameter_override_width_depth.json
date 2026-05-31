@@ -1,0 +1,30 @@
+{
+  "name": "inlay hints keep parameter override instance metadata with multiple params",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/inlay-param2-child.sv",
+      "text": "module child #(parameter int WIDTH = 8, parameter int DEPTH = 2) (input logic clk, output logic [WIDTH-1:0] data);\nendmodule\n"
+    },
+    {
+      "uri": "file:///golden/semantic/inlay-param2-top.sv",
+      "text": "module top;\n  logic clk;\n  logic [3:0] data;\n  child #(.WIDTH(4), .DEPTH(3)) u_child(.clk(clk), .data(data));\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "inlayHint",
+    "uri": "file:///golden/semantic/inlay-param2-top.sv",
+    "range": {
+      "startLine": 0,
+      "startCharacter": 0,
+      "endLine": 5,
+      "endCharacter": 0
+    }
+  },
+  "expected": {
+    "labels": [
+      ": child",
+      ".clk",
+      ".data"
+    ]
+  }
+}

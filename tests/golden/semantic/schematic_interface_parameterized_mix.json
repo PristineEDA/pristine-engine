@@ -1,0 +1,41 @@
+{
+  "name": "schematic combines interface and parameterized module instances",
+  "config": {
+    "topModules": [
+      "top"
+    ]
+  },
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/schematic-if-param.sv",
+      "text": "interface bus_if;\nendinterface\nmodule child #(parameter int WIDTH = 8) (input logic [WIDTH-1:0] data);\nendmodule\nmodule top;\n  logic [3:0] data;\n  bus_if bus();\n  child #(.WIDTH(4)) u_child(.data(data));\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "schematic",
+    "moduleName": "top",
+    "maxDepth": 8
+  },
+  "expected": {
+    "modules": [
+      "top",
+      "bus_if",
+      "child"
+    ],
+    "cells": [
+      {
+        "module": "top",
+        "name": "bus",
+        "type": "bus_if"
+      },
+      {
+        "module": "top",
+        "name": "u_child",
+        "type": "child",
+        "connections": [
+          "data"
+        ]
+      }
+    ]
+  }
+}

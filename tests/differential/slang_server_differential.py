@@ -4,9 +4,91 @@ import pathlib
 import subprocess
 import sys
 import tempfile
+from dataclasses import dataclass
+from typing import Any
 
 
-def write_message(process: subprocess.Popen[bytes], message: dict) -> None:
+@dataclass(frozen=True)
+class DifferentialCheck:
+    kind: str
+    uri: str | None = None
+    position: dict[str, int] | None = None
+    query: str = ""
+    required: tuple[str, ...] = ()
+    min_count: int | None = None
+    include_declaration: bool = True
+
+
+@dataclass(frozen=True)
+class DifferentialFixture:
+    name: str
+    sources: dict[str, str]
+    checks: tuple[DifferentialCheck, ...]
+
+
+FIXTURES: tuple[DifferentialFixture, ...] = (
+    DifferentialFixture(
+        name="completion local signal prefix",
+        sources={
+            "top.sv": (
+                "module top;\n"
+                "  logic ready;\n"
+                "  logic valid;\n"
+                "  assign ready = val\n"
+                "endmodule\n"
+            )
+        },
+        checks=(
+            DifferentialCheck(
+                kind="completion",
+                uri="top.sv",
+                position={"line": 3, "character": 16},
+                required=("valid",),
+            ),
+        ),
+    ),
+    DifferentialFixture(
+        name="references local signal identity",
+        sources={
+            "refs.sv": (
+                "module top;\n"
+                "  logic data;\n"
+                "  assign data = data;\n"
+                "endmodule\n"
+            )
+        },
+        checks=(
+            DifferentialCheck(
+                kind="references",
+                uri="refs.sv",
+                position={"line": 1, "character": 9},
+                min_count=3,
+            ),
+        ),
+    ),
+    DifferentialFixture(
+        name="workspace symbol module discovery",
+        sources={
+            "modules.sv": (
+                "module child;\n"
+                "endmodule\n"
+                "module top;\n"
+                "  child u_child();\n"
+                "endmodule\n"
+            )
+        },
+        checks=(
+            DifferentialCheck(
+                kind="workspaceSymbol",
+                query="child",
+                required=("child",),
+            ),
+        ),
+    ),
+)
+
+
+def write_message(process: subprocess.Popen[bytes], message: dict[str, Any]) -> None:
     payload = json.dumps(message, separators=(",", ":")).encode("utf-8")
     header = f"Content-Length: {len(payload)}\r\n\r\n".encode("ascii")
     assert process.stdin is not None
@@ -14,7 +96,7 @@ def write_message(process: subprocess.Popen[bytes], message: dict) -> None:
     process.stdin.flush()
 
 
-def read_message(process: subprocess.Popen[bytes]) -> dict:
+def read_message(process: subprocess.Popen[bytes]) -> dict[str, Any]:
     assert process.stdout is not None
     content_length = None
     while True:
@@ -34,8 +116,13 @@ def read_message(process: subprocess.Popen[bytes]) -> dict:
     return json.loads(payload.decode("utf-8"))
 
 
-def request(process: subprocess.Popen[bytes], request_id: int, method: str, params: dict | None) -> dict:
-    message = {"jsonrpc": "2.0", "id": request_id, "method": method}
+def request(
+    process: subprocess.Popen[bytes],
+    request_id: int,
+    method: str,
+    params: dict[str, Any] | None,
+) -> dict[str, Any]:
+    message: dict[str, Any] = {"jsonrpc": "2.0", "id": request_id, "method": method}
     if params is not None:
         message["params"] = params
     write_message(process, message)
@@ -47,8 +134,8 @@ def request(process: subprocess.Popen[bytes], request_id: int, method: str, para
             return response
 
 
-def notify(process: subprocess.Popen[bytes], method: str, params: dict | None) -> None:
-    message = {"jsonrpc": "2.0", "method": method}
+def notify(process: subprocess.Popen[bytes], method: str, params: dict[str, Any] | None) -> None:
+    message: dict[str, Any] = {"jsonrpc": "2.0", "method": method}
     if params is not None:
         message["params"] = params
     write_message(process, message)
@@ -75,15 +162,85 @@ def initialize(process: subprocess.Popen[bytes], root_uri: str) -> None:
     notify(process, "initialized", {})
 
 
+def did_open(process: subprocess.Popen[bytes], uri: str, text: str) -> None:
+    notify(
+        process,
+        "textDocument/didOpen",
+        {
+            "textDocument": {
+                "uri": uri,
+                "languageId": "systemverilog",
+                "version": 1,
+                "text": text,
+            }
+        },
+    )
+
+
 def shutdown(process: subprocess.Popen[bytes]) -> None:
     try:
-        request(process, 99, "shutdown", None)
+        request(process, 999, "shutdown", None)
         notify(process, "exit", None)
     finally:
         process.terminate()
 
 
-def run_completion(server: pathlib.Path, root_uri: str, uri: str) -> list[str]:
+def response_items(result: Any) -> list[dict[str, Any]]:
+    items = result.get("items", result) if isinstance(result, dict) else result
+    if not isinstance(items, list):
+        return []
+    return [item for item in items if isinstance(item, dict)]
+
+
+def check_completion(process: subprocess.Popen[bytes], request_id: int, uri: str, position: dict[str, int]) -> set[str]:
+    response = request(
+        process,
+        request_id,
+        "textDocument/completion",
+        {
+            "textDocument": {"uri": uri},
+            "position": position,
+            "context": {"triggerKind": 1},
+        },
+    )
+    return {item.get("label", "") for item in response_items(response.get("result"))}
+
+
+def check_references(
+    process: subprocess.Popen[bytes],
+    request_id: int,
+    uri: str,
+    position: dict[str, int],
+    include_declaration: bool,
+) -> int:
+    response = request(
+        process,
+        request_id,
+        "textDocument/references",
+        {
+            "textDocument": {"uri": uri},
+            "position": position,
+            "context": {"includeDeclaration": include_declaration},
+        },
+    )
+    result = response.get("result")
+    return len(result) if isinstance(result, list) else 0
+
+
+def check_workspace_symbol(process: subprocess.Popen[bytes], request_id: int, query: str) -> set[str]:
+    response = request(process, request_id, "workspace/symbol", {"query": query})
+    return {item.get("name", "") for item in response_items(response.get("result"))}
+
+
+def run_fixture(server: pathlib.Path, root: pathlib.Path, fixture: DifferentialFixture) -> dict[str, Any]:
+    root_uri = root.resolve().as_uri()
+    source_uris: dict[str, str] = {}
+    for relative, text in fixture.sources.items():
+        path = root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        source_uris[relative] = path.resolve().as_uri()
+
     process = subprocess.Popen(
         [str(server)],
         stdin=subprocess.PIPE,
@@ -92,23 +249,47 @@ def run_completion(server: pathlib.Path, root_uri: str, uri: str) -> list[str]:
     )
     try:
         initialize(process, root_uri)
-        response = request(
-            process,
-            2,
-            "textDocument/completion",
-            {
-                "textDocument": {"uri": uri},
-                "position": {"line": 3, "character": 16},
-                "context": {"triggerKind": 1},
-            },
-        )
-        result = response.get("result")
-        items = result.get("items", result) if isinstance(result, dict) else result
-        if not isinstance(items, list):
-            return []
-        return sorted(item.get("label", "") for item in items if isinstance(item, dict))
+        for relative, text in fixture.sources.items():
+            did_open(process, source_uris[relative], text)
+
+        observed: dict[str, Any] = {}
+        request_id = 10
+        for check in fixture.checks:
+            key = f"{check.kind}:{check.uri or check.query}:{request_id}"
+            if check.kind == "completion":
+                assert check.uri is not None and check.position is not None
+                observed[key] = check_completion(process, request_id, source_uris[check.uri], check.position)
+            elif check.kind == "references":
+                assert check.uri is not None and check.position is not None
+                observed[key] = check_references(
+                    process,
+                    request_id,
+                    source_uris[check.uri],
+                    check.position,
+                    check.include_declaration,
+                )
+            elif check.kind == "workspaceSymbol":
+                observed[key] = check_workspace_symbol(process, request_id, check.query)
+            else:
+                raise AssertionError(f"Unsupported differential check kind: {check.kind}")
+            request_id += 1
+        return observed
     finally:
         shutdown(process)
+
+
+def validate_observed(server_name: str, fixture: DifferentialFixture, observed: dict[str, Any]) -> None:
+    for check, value in zip(fixture.checks, observed.values()):
+        if check.required:
+            missing = set(check.required).difference(value)
+            if missing:
+                raise AssertionError(
+                    f"{server_name} fixture '{fixture.name}' missing {check.kind} entries: {sorted(missing)}"
+                )
+        if check.min_count is not None and value < check.min_count:
+            raise AssertionError(
+                f"{server_name} fixture '{fixture.name}' {check.kind} count {value} < {check.min_count}"
+            )
 
 
 def main() -> int:
@@ -128,30 +309,16 @@ def main() -> int:
 
     pristine_engine = pathlib.Path(sys.argv[1]).resolve()
     with tempfile.TemporaryDirectory(prefix="pristine-diff-") as temp_dir:
-        root = pathlib.Path(temp_dir)
-        source = root / "top.sv"
-        source.write_text(
-            "module top;\n"
-            "  logic ready;\n"
-            "  logic valid;\n"
-            "  assign ready = val\n"
-            "endmodule\n",
-            encoding="utf-8",
-        )
-        root_uri = root.resolve().as_uri()
-        uri = source.resolve().as_uri()
+        base = pathlib.Path(temp_dir)
+        for fixture in FIXTURES:
+            pristine_root = base / "pristine" / fixture.name.replace(" ", "-")
+            slang_root = base / "slang" / fixture.name.replace(" ", "-")
+            pristine_observed = run_fixture(pristine_engine, pristine_root, fixture)
+            slang_observed = run_fixture(slang_server, slang_root, fixture)
+            validate_observed("pristine-engine", fixture, pristine_observed)
+            validate_observed("slang-server", fixture, slang_observed)
 
-        pristine_labels = run_completion(pristine_engine, root_uri, uri)
-        slang_labels = run_completion(slang_server, root_uri, uri)
-
-        required = {"valid"}
-        missing_pristine = required.difference(pristine_labels)
-        missing_slang = required.difference(slang_labels)
-        if missing_pristine:
-            raise AssertionError(f"pristine-engine missing completion labels: {sorted(missing_pristine)}")
-        if missing_slang:
-            raise AssertionError(f"slang-server missing completion labels: {sorted(missing_slang)}")
-
+    print(f"Compared {len(FIXTURES)} rewritten fixture(s) against slang-server")
     return 0
 
 

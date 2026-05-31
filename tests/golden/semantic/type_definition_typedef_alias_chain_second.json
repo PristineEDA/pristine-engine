@@ -1,0 +1,19 @@
+{
+  "name": "type definition marks unresolved typedef alias chains as next-stage debt",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/alias-chain.sv",
+      "text": "package defs;\n  typedef logic [7:0] base_t;\n  typedef base_t alias_t;\nendpackage\nmodule top;\n  import defs::*;\n  alias_t value;\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "typeDefinition",
+    "uri": "file:///golden/semantic/alias-chain.sv",
+    "line": 5,
+    "character": 3
+  },
+  "expected": {
+    "unresolved": true,
+    "count": 0
+  }
+}
