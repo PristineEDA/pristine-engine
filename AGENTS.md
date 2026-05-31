@@ -94,7 +94,8 @@ Use the nearest owning layer instead of patching around it from a wrapper.
 - workspace root resolution and `.slang/server.json` loading: `src/workspace/WorkspaceManager.cpp`
 - stdio transport and JSON-RPC framing: `src/transport/StdioTransport.cpp`, `src/jsonrpc/MessageStream.cpp`, `src/jsonrpc/JsonRpcServer.cpp`
 - process entry point, CLI switches, Windows stdio mode, and version output: `src/main.cpp`
-- unit coverage for framing, lifecycle, sync, workspace, diagnostics, UTF-16, symbols, hover, AST identity, navigation/completion, design hierarchy, schematic, call hierarchy, and backward cone: `tests/unit`
+- unit coverage for framing, lifecycle, sync, workspace, diagnostics, UTF-16, symbols, hover, AST identity, navigation/completion, design hierarchy, schematic, call hierarchy, backward cone, and JSON semantic golden request shapes: `tests/unit`
+- JSON semantic golden fixtures for observable provider behavior, including hover, definition/typeDefinition, references, rename, completion/resolve, signatureHelp, inlayHint, diagnostics, codeAction, workspace/symbol, moduleHierarchy, schematic, backwardCone, and callHierarchy: `tests/golden/semantic`
 - subprocess LSP smoke coverage for core LSP plus `systemverilog/*`: `tests/e2e`
 - opt-in semantic performance baselines for 100/1000/5000-file workspaces: `tests/perf`
 
@@ -134,6 +135,7 @@ Use the nearest owning layer instead of patching around it from a wrapper.
 - Provider splits must not change `SemanticEngine` public request/response contracts unless the user explicitly asks for an API break.
 - Cache keys for visible semantic queries must include snapshot generation and all user-visible inputs; mutation/configuration paths must invalidate affected cached results. This applies to diagnostics, references, rename, completion, workspace/symbol, hierarchy, schematic, backward cone, and codeAction cache entries.
 - All semantic behavior changes must update the nearest unit, golden-style, or e2e coverage.
+- Prefer adding JSON semantic golden fixtures for externally observable provider behavior after the closest unit test owns the narrow semantic rule; keep fixtures focused on stable request/result shape and no-fallback regressions.
 - Changes that scan, cache, or rebuild workspace-wide state must include or update a performance-oriented test/benchmark plan or JSON baseline before being considered complete.
 - New or modified aggregate initialization and semantic/provider C++ changes should be validated with the clang toolchain before CI when practical, because GCC/Clang and MSVC reject different warning-as-error patterns. Treat unused helpers, narrowing conversions, case-sensitive include paths, and partial designated initialization as Linux/macOS CI risks even if MSVC accepts them.
 - Avoid broad refactors unless the user asks for them or the local change cannot be made safely otherwise.
@@ -203,9 +205,12 @@ Add or update focused semantic unit tests for AST-backed diagnostics, lookup, ho
 For macOS/Linux CI-risk semantic changes, include a no-fallback regression for deterministic `AstIndex` lookup and hover/type metadata, especially same-range port/internal symbols such as `input logic [WIDTH-1:0] data`. On Windows, run the clang-oriented build and tests when the toolchain is available:
 
 ```powershell
+cmake --preset clang-cl
 cmake --build build\clang-cl
 ctest --test-dir build\clang-cl --output-on-failure
 ```
+
+If a WSL, Linux, container, or native clang++ environment is available, add an equivalent non-MSVC ABI configure/build/test pass and record the result in the handoff. Use this specifically to catch aggregate initialization, unused/static helper, narrowing conversion, case-sensitive include, filesystem path, and CRLF/LF issues that MSVC may miss.
 
 For opt-in performance baselines, configure with `PRISTINE_BUILD_PERF_TESTS=ON` and run `pristine_perf_tests`; the perf target prints JSON for 100/1000/5000-file synthetic workspaces and is not part of the default `ctest` suite.
 
@@ -329,6 +334,7 @@ The current repository state has been locally verified on Windows with:
 - keep macOS hover/type metadata stable by expanding deterministic same-range `AstIndex` lookup and port/interface type display regressions
 - mature completion, signature, and inlay providers with package `::`, hierarchical `.`, ordered/named/wildcard ports, function/task argument hints, resolved type, constant value, and interface/modport cases
 - expand diagnostics and code-action coverage for missing import/package/type/module/port, macro quickfixes, width/type mismatch, diagnostics publish/clear, and no-fallback regressions
+- keep expanding `tests/golden/semantic` beyond the current broad first-wave matrix, especially completion/inlay/diagnostics/cone/typeDefinition fixtures and cases that would fail under old syntax/text semantic paths
 - add robustness/property/differential tests for malformed JSON-RPC, illegal URIs, broken includes, recoverable syntax errors, UTF-16 incremental edits, duplicate references, and large-result truncation
 - add affected rebuild checks, cache hit/invalidation tests, and 100/1000/5000-file perf baselines for workspace-wide queries
 - expand AST-derived typeDefinition coverage for package-qualified typedefs, typedef alias chains, class/interface/modport type references, and shadowed type names

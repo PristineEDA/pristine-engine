@@ -1,0 +1,22 @@
+{
+  "name": "workspace symbols include AstIndex package typedef interface and module facts",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/workspace-symbols.sv",
+      "text": "package defs;\n  typedef logic [7:0] word_t;\nendpackage\ninterface bus;\nendinterface\nmodule top;\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "workspaceSymbol",
+    "query": "",
+    "limit": 20
+  },
+  "expected": {
+    "names": [
+      "defs",
+      "word_t",
+      "bus",
+      "top"
+    ]
+  }
+}

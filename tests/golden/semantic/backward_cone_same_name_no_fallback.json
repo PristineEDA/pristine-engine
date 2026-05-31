@@ -1,0 +1,31 @@
+{
+  "name": "backward cone stays scoped with same-name signals",
+  "config": {
+    "topModules": [
+      "top"
+    ]
+  },
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/cones.sv",
+      "text": "module top;\n  logic mid;\n  logic out;\n  assign out = mid;\nendmodule\nmodule other;\n  logic mid;\n  logic out;\n  assign out = mid;\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "backwardCone",
+    "uri": "file:///golden/semantic/cones.sv",
+    "line": 2,
+    "character": 9
+  },
+  "expected": {
+    "nodeCount": 2,
+    "edgeCount": 1,
+    "nodes": [
+      "out",
+      "mid"
+    ],
+    "expressions": [
+      "mid"
+    ]
+  }
+}

@@ -1,0 +1,44 @@
+{
+  "name": "schematic uses AST-derived module instance and net facts",
+  "config": {
+    "topModules": [
+      "top"
+    ]
+  },
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/schematic-child.sv",
+      "text": "module child(input logic clk, output logic q);\nendmodule\n"
+    },
+    {
+      "uri": "file:///golden/semantic/schematic-top.sv",
+      "text": "module top;\n  logic clk;\n  logic mid;\n  child u_child(.clk(clk), .q(mid));\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "schematic",
+    "moduleName": "top",
+    "maxDepth": 8
+  },
+  "expected": {
+    "rootModule": "top",
+    "modules": [
+      "top",
+      "child"
+    ],
+    "cells": [
+      {
+        "module": "top",
+        "name": "u_child",
+        "type": "child",
+        "connections": [
+          "clk",
+          "q"
+        ]
+      }
+    ],
+    "nets": [
+      "mid"
+    ]
+  }
+}

@@ -1,0 +1,33 @@
+{
+  "name": "module port inlay hints cover named and ordered connections",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/inlay-child.sv",
+      "text": "module child(input logic clk, output logic rst_n);\nendmodule\n"
+    },
+    {
+      "uri": "file:///golden/semantic/inlay-top.sv",
+      "text": "module top;\n  logic clk;\n  logic rst_n;\n  child u_named(.clk(clk), .rst_n(rst_n));\n  child u_ordered(clk, rst_n);\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "inlayHint",
+    "uri": "file:///golden/semantic/inlay-top.sv",
+    "range": {
+      "startLine": 0,
+      "startCharacter": 0,
+      "endLine": 6,
+      "endCharacter": 0
+    }
+  },
+  "expected": {
+    "labels": [
+      ".clk",
+      ".rst_n"
+    ],
+    "tooltips": [
+      "input logic clk",
+      "output logic rst_n"
+    ]
+  }
+}

@@ -6,8 +6,10 @@
 #include <algorithm>
 #include <filesystem>
 #include <fstream>
+#include <optional>
 #include <sstream>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace pristine::analysis {
@@ -172,6 +174,104 @@ void loadSources(SemanticEngine& engine, const nlohmann::json& fixture) {
     }
 }
 
+void configureEngine(SemanticEngine& engine, const nlohmann::json& fixture) {
+    if (!fixture.contains("config")) {
+        return;
+    }
+
+    const auto& config_json = fixture.at("config");
+    SemanticEngineConfig config;
+    if (config_json.contains("workspaceRootUri")) {
+        config.workspace_root_uri = config_json.at("workspaceRootUri").get<std::string>();
+    }
+    if (config_json.contains("build")) {
+        config.build = config_json.at("build").get<std::string>();
+    }
+    if (config_json.contains("buildPattern")) {
+        config.build_pattern = config_json.at("buildPattern").get<std::string>();
+    }
+    if (config_json.contains("buildRelativePaths")) {
+        config.build_relative_paths = config_json.at("buildRelativePaths").get<bool>();
+    }
+    if (config_json.contains("flags")) {
+        config.flags = config_json.at("flags").get<std::string>();
+    }
+    if (config_json.contains("topModules")) {
+        for (const auto& top_module : config_json.at("topModules")) {
+            config.top_modules.push_back(top_module.get<std::string>());
+        }
+    }
+    engine.configure(std::move(config));
+}
+
+ParseRange parseRangeFromJson(const nlohmann::json& range_json) {
+    return ParseRange{.start_line = range_json.at("startLine").get<int>(),
+                      .start_character = range_json.at("startCharacter").get<int>(),
+                      .end_line = range_json.at("endLine").get<int>(),
+                      .end_character = range_json.at("endCharacter").get<int>()};
+}
+
+bool locationMatchesJson(const SemanticLocation& location, const nlohmann::json& expected) {
+    if (expected.contains("uri") && location.uri != expected.at("uri").get<std::string>()) {
+        return false;
+    }
+    if (expected.contains("startLine") &&
+        location.range.start_line != expected.at("startLine").get<int>()) {
+        return false;
+    }
+    if (expected.contains("startCharacter") &&
+        location.range.start_character != expected.at("startCharacter").get<int>()) {
+        return false;
+    }
+    if (expected.contains("endLine") &&
+        location.range.end_line != expected.at("endLine").get<int>()) {
+        return false;
+    }
+    if (expected.contains("endCharacter") &&
+        location.range.end_character != expected.at("endCharacter").get<int>()) {
+        return false;
+    }
+    return true;
+}
+
+void checkLocations(const std::vector<SemanticLocation>& locations, const nlohmann::json& expected) {
+    if (expected.contains("count")) {
+        CHECK(locations.size() == expected.at("count").get<size_t>());
+    }
+    if (expected.contains("locations")) {
+        for (const auto& expected_location : expected.at("locations")) {
+            CAPTURE(expected_location.dump());
+            CHECK(std::any_of(locations.begin(),
+                              locations.end(),
+                              [&](const SemanticLocation& location) {
+                                  return locationMatchesJson(location, expected_location);
+                              }));
+        }
+    }
+}
+
+bool hierarchyContains(const SemanticHierarchyNode& node,
+                       std::string_view module_name,
+                       std::optional<std::string_view> instance_name = std::nullopt) {
+    if (node.module_name == module_name &&
+        (!instance_name.has_value() || node.instance_name == *instance_name)) {
+        return true;
+    }
+    return std::any_of(node.children.begin(),
+                       node.children.end(),
+                       [&](const SemanticHierarchyNode& child) {
+                           return hierarchyContains(child, module_name, instance_name);
+                       });
+}
+
+bool hierarchyContains(const std::vector<SemanticHierarchyNode>& roots,
+                       std::string_view module_name,
+                       std::optional<std::string_view> instance_name = std::nullopt) {
+    return std::any_of(roots.begin(), roots.end(), [&](const SemanticHierarchyNode& root) {
+        return hierarchyContains(root, module_name, instance_name);
+    });
+}
+
 void runLookupFixture(SemanticEngine& engine, const nlohmann::json& fixture) {
     const auto& request = fixture.at("request");
     const auto& expected = fixture.at("expected");
@@ -182,6 +282,49 @@ void runLookupFixture(SemanticEngine& engine, const nlohmann::json& fixture) {
     if (expected.contains("symbol")) {
         REQUIRE(result.symbol.has_value());
         CHECK(result.symbol->name == expected.at("symbol").get<std::string>());
+    }
+}
+
+void runDefinitionFixture(SemanticEngine& engine, const nlohmann::json& fixture) {
+    const auto& request = fixture.at("request");
+    const auto& expected = fixture.at("expected");
+    const auto result = engine.definitionsAt(request.at("uri").get<std::string>(),
+                                             request.at("line").get<int>(),
+                                             request.at("character").get<int>());
+    CHECK(result.unresolved == expected.value("unresolved", false));
+    checkLocations(result.locations, expected);
+}
+
+void runTypeDefinitionFixture(SemanticEngine& engine, const nlohmann::json& fixture) {
+    const auto& request = fixture.at("request");
+    const auto& expected = fixture.at("expected");
+    const auto result = engine.typeDefinitionsAt(request.at("uri").get<std::string>(),
+                                                 request.at("line").get<int>(),
+                                                 request.at("character").get<int>());
+    CHECK(result.unresolved == expected.value("unresolved", false));
+    checkLocations(result.locations, expected);
+}
+
+void runHoverFixture(SemanticEngine& engine, const nlohmann::json& fixture) {
+    const auto& request = fixture.at("request");
+    const auto& expected = fixture.at("expected");
+    const auto result = engine.hoverAt(request.at("uri").get<std::string>(),
+                                       request.at("line").get<int>(),
+                                       request.at("character").get<int>());
+    CHECK(result.unresolved == expected.value("unresolved", false));
+    if (expected.contains("contentsContains")) {
+        for (const auto& expected_fragment : expected.at("contentsContains")) {
+            const auto fragment = expected_fragment.get<std::string>();
+            CAPTURE(fragment);
+            CHECK(result.contents.find(fragment) != std::string::npos);
+        }
+    }
+    if (expected.contains("contentsAbsent")) {
+        for (const auto& absent_fragment : expected.at("contentsAbsent")) {
+            const auto fragment = absent_fragment.get<std::string>();
+            CAPTURE(fragment);
+            CHECK(result.contents.find(fragment) == std::string::npos);
+        }
     }
 }
 
@@ -292,6 +435,35 @@ void runCompletionResolveFixture(SemanticEngine& engine, const nlohmann::json& f
     }
 }
 
+void runSignatureHelpFixture(SemanticEngine& engine, const nlohmann::json& fixture) {
+    const auto& request = fixture.at("request");
+    const auto& expected = fixture.at("expected");
+    const auto result = engine.signatureHelpAt(request.at("uri").get<std::string>(),
+                                               request.at("line").get<int>(),
+                                               request.at("character").get<int>());
+    CHECK(result.unresolved == expected.value("unresolved", false));
+    if (expected.contains("label")) {
+        CHECK(result.label == expected.at("label").get<std::string>());
+    }
+    if (expected.contains("labelContains")) {
+        CHECK(result.label.find(expected.at("labelContains").get<std::string>()) != std::string::npos);
+    }
+    if (expected.contains("activeParameter")) {
+        CHECK(result.active_parameter == expected.at("activeParameter").get<int>());
+    }
+    if (expected.contains("parameters")) {
+        for (const auto& expected_parameter : expected.at("parameters")) {
+            const auto parameter = expected_parameter.get<std::string>();
+            CAPTURE(parameter);
+            CHECK(std::any_of(result.parameters.begin(),
+                              result.parameters.end(),
+                              [&](const std::string& candidate) {
+                                  return candidate == parameter;
+                              }));
+        }
+    }
+}
+
 void runDiagnosticsFixture(SemanticEngine& engine, const nlohmann::json& fixture) {
     const auto& expected = fixture.at("expected");
     const auto diagnostics = engine.diagnosticsFor(expected.at("uri").get<std::string>());
@@ -313,6 +485,37 @@ void runDiagnosticsFixture(SemanticEngine& engine, const nlohmann::json& fixture
         }
         if (item.contains("startLine")) {
             CHECK(found->range.start_line == item.at("startLine").get<int>());
+        }
+    }
+}
+
+void runWorkspaceSymbolFixture(SemanticEngine& engine, const nlohmann::json& fixture) {
+    const auto& request = fixture.at("request");
+    const auto& expected = fixture.at("expected");
+    const auto result = engine.workspaceSymbols(request.value("query", ""),
+                                                request.value("limit", static_cast<size_t>(1000)));
+    CHECK(result.unresolved == expected.value("unresolved", false));
+    CHECK(result.truncated == expected.value("truncated", false));
+    if (expected.contains("names")) {
+        for (const auto& expected_name : expected.at("names")) {
+            const auto name = expected_name.get<std::string>();
+            CAPTURE(name);
+            CHECK(std::any_of(result.symbols.begin(),
+                              result.symbols.end(),
+                              [&](const SemanticWorkspaceSymbol& symbol) {
+                                  return symbol.name == name;
+                              }));
+        }
+    }
+    if (expected.contains("absentNames")) {
+        for (const auto& absent_name : expected.at("absentNames")) {
+            const auto name = absent_name.get<std::string>();
+            CAPTURE(name);
+            CHECK(std::none_of(result.symbols.begin(),
+                               result.symbols.end(),
+                               [&](const SemanticWorkspaceSymbol& symbol) {
+                                   return symbol.name == name;
+                               }));
         }
     }
 }
@@ -348,6 +551,270 @@ void runInlayHintFixture(SemanticEngine& engine, const nlohmann::json& fixture) 
                               result.hints.end(),
                               [&](const SemanticInlayHint& hint) {
                                   return hint.tooltip == tooltip;
+                              }));
+        }
+    }
+}
+
+void runModuleHierarchyFixture(SemanticEngine& engine, const nlohmann::json& fixture) {
+    const auto& request = fixture.at("request");
+    const auto& expected = fixture.at("expected");
+    std::optional<std::string> module_name_storage;
+    std::optional<std::string_view> module_name;
+    if (request.contains("moduleName") && !request.at("moduleName").is_null()) {
+        module_name_storage = request.at("moduleName").get<std::string>();
+        module_name = *module_name_storage;
+    }
+    const auto result = engine.moduleHierarchy(module_name, request.value("maxDepth", 64));
+    CHECK(result.unresolved == expected.value("unresolved", false));
+    CHECK(result.partial == expected.value("partial", false));
+    CHECK(result.truncated == expected.value("truncated", false));
+    if (expected.contains("rootModules")) {
+        for (const auto& expected_root : expected.at("rootModules")) {
+            const auto module = expected_root.get<std::string>();
+            CAPTURE(module);
+            CHECK(std::any_of(result.roots.begin(),
+                              result.roots.end(),
+                              [&](const SemanticHierarchyNode& node) {
+                                  return node.module_name == module;
+                              }));
+        }
+    }
+    if (expected.contains("modules")) {
+        for (const auto& expected_module : expected.at("modules")) {
+            const auto module = expected_module.get<std::string>();
+            CAPTURE(module);
+            CHECK(hierarchyContains(result.roots, module));
+        }
+    }
+    if (expected.contains("messagesContain")) {
+        for (const auto& expected_message : expected.at("messagesContain")) {
+            const auto message = expected_message.get<std::string>();
+            CAPTURE(message);
+            CHECK(std::any_of(result.messages.begin(), result.messages.end(), [&](const std::string& item) {
+                return item.find(message) != std::string::npos;
+            }));
+        }
+    }
+}
+
+void runSchematicFixture(SemanticEngine& engine, const nlohmann::json& fixture) {
+    const auto& request = fixture.at("request");
+    const auto& expected = fixture.at("expected");
+    std::optional<std::string> module_name_storage;
+    std::optional<std::string_view> module_name;
+    if (request.contains("moduleName") && !request.at("moduleName").is_null()) {
+        module_name_storage = request.at("moduleName").get<std::string>();
+        module_name = *module_name_storage;
+    }
+    const auto result = engine.schematic(module_name, request.value("maxDepth", 64));
+    CHECK(result.unresolved == expected.value("unresolved", false));
+    CHECK(result.partial == expected.value("partial", false));
+    CHECK(result.truncated == expected.value("truncated", false));
+    if (expected.contains("rootModule")) {
+        REQUIRE(result.root_module_id.has_value());
+        CHECK(*result.root_module_id == expected.at("rootModule").get<std::string>());
+    }
+    if (expected.contains("modules")) {
+        for (const auto& expected_module : expected.at("modules")) {
+            const auto module = expected_module.get<std::string>();
+            CAPTURE(module);
+            CHECK(std::any_of(result.modules.begin(),
+                              result.modules.end(),
+                              [&](const SemanticSchematicModuleView& view) {
+                                  return view.module.name == module;
+                              }));
+        }
+    }
+    if (expected.contains("cells")) {
+        for (const auto& expected_cell : expected.at("cells")) {
+            const auto module = expected_cell.at("module").get<std::string>();
+            const auto name = expected_cell.at("name").get<std::string>();
+            const auto type = expected_cell.at("type").get<std::string>();
+            CAPTURE(module, name, type);
+            const auto module_it = std::find_if(result.modules.begin(),
+                                                result.modules.end(),
+                                                [&](const SemanticSchematicModuleView& view) {
+                                                    return view.module.name == module;
+                                                });
+            REQUIRE(module_it != result.modules.end());
+            const auto cell_it = std::find_if(module_it->module.cells.begin(),
+                                              module_it->module.cells.end(),
+                                              [&](const SchematicCell& cell) {
+                                                  return cell.name == name && cell.type == type;
+                                              });
+            REQUIRE(cell_it != module_it->module.cells.end());
+            if (expected_cell.contains("connections")) {
+                for (const auto& expected_port : expected_cell.at("connections")) {
+                    const auto port = expected_port.get<std::string>();
+                    CAPTURE(port);
+                    CHECK(std::any_of(cell_it->connections.begin(),
+                                      cell_it->connections.end(),
+                                      [&](const SchematicConnection& connection) {
+                                          return connection.port_name == port;
+                                      }));
+                }
+            }
+        }
+    }
+    if (expected.contains("nets")) {
+        for (const auto& expected_net : expected.at("nets")) {
+            const auto net = expected_net.get<std::string>();
+            CAPTURE(net);
+            CHECK(std::any_of(result.modules.begin(),
+                              result.modules.end(),
+                              [&](const SemanticSchematicModuleView& view) {
+                                  return std::any_of(view.nets.begin(),
+                                                     view.nets.end(),
+                                                     [&](const SemanticSchematicNet& candidate) {
+                                                         return candidate.name == net;
+                                                     });
+                              }));
+        }
+    }
+}
+
+void runBackwardConeFixture(SemanticEngine& engine, const nlohmann::json& fixture) {
+    const auto& request = fixture.at("request");
+    const auto& expected = fixture.at("expected");
+    const auto result = engine.backwardConeAt(request.at("uri").get<std::string>(),
+                                              request.at("line").get<int>(),
+                                              request.at("character").get<int>());
+    CHECK(result.unresolved == expected.value("unresolved", false));
+    CHECK(result.partial == expected.value("partial", false));
+    CHECK(result.truncated == expected.value("truncated", false));
+    if (expected.contains("nodeCount")) {
+        CHECK(result.nodes.size() == expected.at("nodeCount").get<size_t>());
+    }
+    if (expected.contains("edgeCount")) {
+        CHECK(result.edges.size() == expected.at("edgeCount").get<size_t>());
+    }
+    if (expected.contains("nodes")) {
+        for (const auto& expected_node : expected.at("nodes")) {
+            const auto node = expected_node.get<std::string>();
+            CAPTURE(node);
+            CHECK(std::any_of(result.nodes.begin(), result.nodes.end(), [&](const SemanticConeNode& candidate) {
+                return candidate.name == node;
+            }));
+        }
+    }
+    if (expected.contains("expressions")) {
+        for (const auto& expected_expression : expected.at("expressions")) {
+            const auto expression = expected_expression.get<std::string>();
+            CAPTURE(expression);
+            CHECK(std::any_of(result.edges.begin(), result.edges.end(), [&](const SemanticConeEdge& edge) {
+                return edge.expression == expression;
+            }));
+        }
+    }
+}
+
+void runCodeActionFixture(SemanticEngine& engine, const nlohmann::json& fixture) {
+    const auto& request = fixture.at("request");
+    const auto& expected = fixture.at("expected");
+    const auto result = engine.codeActionsAt(request.at("uri").get<std::string>(),
+                                             parseRangeFromJson(request.at("range")));
+    CHECK(result.unresolved == expected.value("unresolved", false));
+    CHECK(result.partial == expected.value("partial", false));
+    CHECK(result.truncated == expected.value("truncated", false));
+    if (expected.contains("actionTitles")) {
+        for (const auto& expected_title : expected.at("actionTitles")) {
+            const auto title = expected_title.get<std::string>();
+            CAPTURE(title);
+            CHECK(std::any_of(result.actions.begin(),
+                              result.actions.end(),
+                              [&](const SemanticCodeAction& action) {
+                                  return action.title == title;
+                              }));
+        }
+    }
+    if (expected.contains("actions")) {
+        for (const auto& expected_action : expected.at("actions")) {
+            const auto title = expected_action.at("title").get<std::string>();
+            CAPTURE(title);
+            const auto action_it = std::find_if(result.actions.begin(),
+                                                result.actions.end(),
+                                                [&](const SemanticCodeAction& action) {
+                                                    return action.title == title;
+                                                });
+            REQUIRE(action_it != result.actions.end());
+            if (expected_action.contains("diagnosticCodes")) {
+                for (const auto& expected_code : expected_action.at("diagnosticCodes")) {
+                    const auto code = expected_code.get<std::string>();
+                    CAPTURE(code);
+                    CHECK(std::any_of(action_it->diagnostics.begin(),
+                                      action_it->diagnostics.end(),
+                                      [&](const SemanticDiagnosticData& diagnostic) {
+                                          return diagnostic.code == code;
+                                      }));
+                }
+            }
+            if (expected_action.contains("editContains")) {
+                const auto fragment = expected_action.at("editContains").get<std::string>();
+                CHECK(std::any_of(action_it->edits.begin(),
+                                  action_it->edits.end(),
+                                  [&](const SemanticCodeActionEdit& edit) {
+                                      return edit.new_text.find(fragment) != std::string::npos;
+                                  }));
+            }
+            if (expected_action.contains("createFiles")) {
+                for (const auto& expected_uri : expected_action.at("createFiles")) {
+                    const auto uri = expected_uri.get<std::string>();
+                    CAPTURE(uri);
+                    CHECK(std::any_of(action_it->create_files.begin(),
+                                      action_it->create_files.end(),
+                                      [&](const SemanticCodeActionCreateFile& create_file) {
+                                          return create_file.uri == uri;
+                                      }));
+                }
+            }
+        }
+    }
+}
+
+void runCallHierarchyFixture(SemanticEngine& engine, const nlohmann::json& fixture) {
+    const auto& request = fixture.at("request");
+    const auto& expected = fixture.at("expected");
+    const auto prepared = engine.prepareCallHierarchy(request.at("uri").get<std::string>(),
+                                                      request.at("line").get<int>(),
+                                                      request.at("character").get<int>());
+    CHECK(prepared.unresolved == expected.value("unresolved", false));
+    if (expected.contains("preparedNames")) {
+        for (const auto& expected_name : expected.at("preparedNames")) {
+            const auto name = expected_name.get<std::string>();
+            CAPTURE(name);
+            CHECK(std::any_of(prepared.items.begin(),
+                              prepared.items.end(),
+                              [&](const SemanticCallHierarchyItem& item) {
+                                  return item.name == name;
+                              }));
+        }
+    }
+    if (expected.contains("outgoingNames")) {
+        REQUIRE_FALSE(prepared.items.empty());
+        const auto outgoing = engine.outgoingCalls(prepared.items.front());
+        REQUIRE_FALSE(outgoing.unresolved);
+        for (const auto& expected_name : expected.at("outgoingNames")) {
+            const auto name = expected_name.get<std::string>();
+            CAPTURE(name);
+            CHECK(std::any_of(outgoing.calls.begin(),
+                              outgoing.calls.end(),
+                              [&](const SemanticCallHierarchyCall& call) {
+                                  return call.item.name == name;
+                              }));
+        }
+    }
+    if (expected.contains("incomingNames")) {
+        REQUIRE_FALSE(prepared.items.empty());
+        const auto incoming = engine.incomingCalls(prepared.items.front());
+        REQUIRE_FALSE(incoming.unresolved);
+        for (const auto& expected_name : expected.at("incomingNames")) {
+            const auto name = expected_name.get<std::string>();
+            CAPTURE(name);
+            CHECK(std::any_of(incoming.calls.begin(),
+                              incoming.calls.end(),
+                              [&](const SemanticCallHierarchyCall& call) {
+                                  return call.item.name == name;
                               }));
         }
     }
@@ -427,11 +894,21 @@ TEST_CASE("JSON semantic golden fixtures exercise stable request shapes",
         CAPTURE(path.string());
         const auto fixture = nlohmann::json::parse(readTextFile(path));
         SemanticEngine engine;
+        configureEngine(engine, fixture);
         loadSources(engine, fixture);
 
         const auto kind = fixture.at("request").at("kind").get<std::string>();
         if (kind == "lookup") {
             runLookupFixture(engine, fixture);
+        }
+        else if (kind == "definition") {
+            runDefinitionFixture(engine, fixture);
+        }
+        else if (kind == "typeDefinition") {
+            runTypeDefinitionFixture(engine, fixture);
+        }
+        else if (kind == "hover") {
+            runHoverFixture(engine, fixture);
         }
         else if (kind == "references") {
             runReferencesFixture(engine, fixture);
@@ -448,8 +925,29 @@ TEST_CASE("JSON semantic golden fixtures exercise stable request shapes",
         else if (kind == "diagnostics") {
             runDiagnosticsFixture(engine, fixture);
         }
+        else if (kind == "signatureHelp") {
+            runSignatureHelpFixture(engine, fixture);
+        }
+        else if (kind == "workspaceSymbol") {
+            runWorkspaceSymbolFixture(engine, fixture);
+        }
         else if (kind == "inlayHint") {
             runInlayHintFixture(engine, fixture);
+        }
+        else if (kind == "moduleHierarchy") {
+            runModuleHierarchyFixture(engine, fixture);
+        }
+        else if (kind == "schematic") {
+            runSchematicFixture(engine, fixture);
+        }
+        else if (kind == "backwardCone") {
+            runBackwardConeFixture(engine, fixture);
+        }
+        else if (kind == "codeAction") {
+            runCodeActionFixture(engine, fixture);
+        }
+        else if (kind == "callHierarchy") {
+            runCallHierarchyFixture(engine, fixture);
         }
         else {
             FAIL("Unsupported semantic golden request kind: " << kind);

@@ -1,0 +1,32 @@
+{
+  "name": "call hierarchy outgoing calls use design graph instances",
+  "config": {
+    "topModules": [
+      "top"
+    ]
+  },
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/call-child.sv",
+      "text": "module child(input logic clk, output logic q);\nendmodule\n"
+    },
+    {
+      "uri": "file:///golden/semantic/call-top.sv",
+      "text": "module top;\n  logic clk;\n  logic mid;\n  child u_child(.clk(clk), .q(mid));\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "callHierarchy",
+    "uri": "file:///golden/semantic/call-top.sv",
+    "line": 0,
+    "character": 8
+  },
+  "expected": {
+    "preparedNames": [
+      "top"
+    ],
+    "outgoingNames": [
+      "child"
+    ]
+  }
+}

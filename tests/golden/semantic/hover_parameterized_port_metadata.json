@@ -1,0 +1,21 @@
+{
+  "name": "parameterized port hover keeps AST type metadata",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/typed-port.sv",
+      "text": "module top #(parameter int WIDTH = 8) (\n  input logic [WIDTH-1:0] data\n);\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "hover",
+    "uri": "file:///golden/semantic/typed-port.sv",
+    "line": 1,
+    "character": 28
+  },
+  "expected": {
+    "contentsContains": [
+      "data",
+      "logic"
+    ]
+  }
+}

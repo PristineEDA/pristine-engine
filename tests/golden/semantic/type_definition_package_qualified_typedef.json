@@ -1,0 +1,30 @@
+{
+  "name": "package-qualified typedef type definition narrows to typedef token",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/defs.sv",
+      "text": "package defs;\n  typedef logic [7:0] word_t;\nendpackage\n"
+    },
+    {
+      "uri": "file:///golden/semantic/type-use.sv",
+      "text": "module top;\n  defs::word_t value;\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "typeDefinition",
+    "uri": "file:///golden/semantic/type-use.sv",
+    "line": 1,
+    "character": 10
+  },
+  "expected": {
+    "count": 1,
+    "locations": [
+      {
+        "uri": "file:///golden/semantic/defs.sv",
+        "startLine": 1,
+        "startCharacter": 22,
+        "endCharacter": 28
+      }
+    ]
+  }
+}

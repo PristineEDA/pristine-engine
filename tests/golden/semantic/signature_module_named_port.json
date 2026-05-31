@@ -1,0 +1,26 @@
+{
+  "name": "module instance signature help uses AstIndex port signatures",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/signature-child.sv",
+      "text": "module child(input logic clk, output logic [3:0] data);\nendmodule\n"
+    },
+    {
+      "uri": "file:///golden/semantic/signature-top.sv",
+      "text": "module top;\n  logic clk;\n  logic [3:0] data;\n  child u_child(.clk(clk), .data(data));\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "signatureHelp",
+    "uri": "file:///golden/semantic/signature-top.sv",
+    "line": 3,
+    "character": 26
+  },
+  "expected": {
+    "labelContains": "child(",
+    "parameters": [
+      "input logic clk",
+      "output logic [3:0] data"
+    ]
+  }
+}

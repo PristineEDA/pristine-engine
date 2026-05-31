@@ -1,0 +1,31 @@
+{
+  "name": "code action connects missing required ports from indexed module signature",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/action-child.sv",
+      "text": "module child(input logic clk, output logic rst_n, input logic data);\nendmodule\n"
+    },
+    {
+      "uri": "file:///golden/semantic/action-top.sv",
+      "text": "module top;\n  child u_child(.clk(clk));\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "codeAction",
+    "uri": "file:///golden/semantic/action-top.sv",
+    "range": {
+      "startLine": 1,
+      "startCharacter": 2,
+      "endLine": 1,
+      "endCharacter": 25
+    }
+  },
+  "expected": {
+    "actions": [
+      {
+        "title": "Add missing port connections to 'u_child'",
+        "editContains": ".rst_n(rst_n), .data(data)"
+      }
+    ]
+  }
+}

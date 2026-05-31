@@ -1,0 +1,30 @@
+{
+  "name": "code action creates unresolved typedef from AstIndex diagnostic facts",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/create-type.sv",
+      "text": "module top;\n  missing_t value;\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "codeAction",
+    "uri": "file:///golden/semantic/create-type.sv",
+    "range": {
+      "startLine": 1,
+      "startCharacter": 2,
+      "endLine": 1,
+      "endCharacter": 11
+    }
+  },
+  "expected": {
+    "actions": [
+      {
+        "title": "Create typedef 'missing_t'",
+        "diagnosticCodes": [
+          "unresolvedType"
+        ],
+        "editContains": "typedef logic missing_t;"
+      }
+    ]
+  }
+}

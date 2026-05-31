@@ -1,0 +1,23 @@
+{
+  "name": "function and task signature help uses AST call views",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/signature-calls.sv",
+      "text": "module top;\n  function automatic int add(input int lhs, input int rhs);\n    return lhs + rhs;\n  endfunction\n  task automatic emit(input logic ready);\n  endtask\n  initial begin\n    int value = add(1, 2);\n    emit(1'b1);\n  end\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "signatureHelp",
+    "uri": "file:///golden/semantic/signature-calls.sv",
+    "line": 7,
+    "character": 23
+  },
+  "expected": {
+    "label": "function int add(input int lhs, input int rhs)",
+    "activeParameter": 1,
+    "parameters": [
+      "input int lhs",
+      "input int rhs"
+    ]
+  }
+}
