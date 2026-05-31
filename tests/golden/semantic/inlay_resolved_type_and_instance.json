@@ -1,0 +1,33 @@
+{
+  "name": "inlay hints include resolved variable and instance types",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/inlay-type-child.sv",
+      "text": "module child(input logic clk);\nendmodule\n"
+    },
+    {
+      "uri": "file:///golden/semantic/inlay-type-top.sv",
+      "text": "module top;\n  typedef logic [3:0] nibble_t;\n  nibble_t value;\n  child u_child();\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "inlayHint",
+    "uri": "file:///golden/semantic/inlay-type-top.sv",
+    "range": {
+      "startLine": 0,
+      "startCharacter": 0,
+      "endLine": 5,
+      "endCharacter": 0
+    }
+  },
+  "expected": {
+    "labels": [
+      ": logic [3:0]",
+      ": child"
+    ],
+    "tooltips": [
+      "Resolved type",
+      "child(input logic clk)"
+    ]
+  }
+}

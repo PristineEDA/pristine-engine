@@ -1,0 +1,22 @@
+{
+  "name": "diagnostics report unresolved package imports",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/unresolved-package.sv",
+      "text": "module top;\n  import missing_pkg::*;\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "diagnostics"
+  },
+  "expected": {
+    "uri": "file:///golden/semantic/unresolved-package.sv",
+    "diagnostics": [
+      {
+        "code": "unresolvedPackage",
+        "severity": 1,
+        "startLine": 1
+      }
+    ]
+  }
+}

@@ -1,0 +1,30 @@
+{
+  "name": "module hierarchy marks unresolved child as partial",
+  "config": {
+    "topModules": [
+      "top"
+    ]
+  },
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/hierarchy-unresolved.sv",
+      "text": "module top;\n  missing_child u_missing();\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "moduleHierarchy",
+    "maxDepth": 4
+  },
+  "expected": {
+    "rootModules": [
+      "top"
+    ],
+    "modules": [
+      "missing_child"
+    ],
+    "partial": true,
+    "messagesContain": [
+      "Unresolved module"
+    ]
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "name": "workspace symbol filtering returns matching AST symbols only",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/workspace-filter.sv",
+      "text": "package control_pkg;\n  typedef logic [3:0] ctrl_t;\nendpackage\nmodule datapath;\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "workspaceSymbol",
+    "query": "ct",
+    "limit": 100
+  },
+  "expected": {
+    "names": [
+      "control_pkg",
+      "ctrl_t"
+    ],
+    "absentNames": [
+      "datapath"
+    ]
+  }
+}

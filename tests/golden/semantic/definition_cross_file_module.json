@@ -1,0 +1,28 @@
+{
+  "name": "definition finds cross-file module declaration from instance",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/def-child.sv",
+      "text": "module child(input logic clk);\nendmodule\n"
+    },
+    {
+      "uri": "file:///golden/semantic/def-instance.sv",
+      "text": "module top;\n  child u_child();\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "definition",
+    "uri": "file:///golden/semantic/def-instance.sv",
+    "line": 1,
+    "character": 4
+  },
+  "expected": {
+    "count": 1,
+    "locations": [
+      {
+        "uri": "file:///golden/semantic/def-child.sv",
+        "startLine": 0
+      }
+    ]
+  }
+}

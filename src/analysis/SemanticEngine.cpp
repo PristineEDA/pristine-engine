@@ -919,47 +919,44 @@ SemanticCompletionResult SemanticEngine::completionsAt(std::string_view uri,
 
         if (completion_context.member_access) {
             const auto instances_it = data->module_instances_by_uri.find(document_uri);
-            if (instances_it == data->module_instances_by_uri.end()) {
-                result.unresolved = true;
-                result.messages.push_back("named member completion has no indexed module instances");
-                return finish(std::move(result));
-            }
-            for (const auto& instance : instances_it->second) {
-                if (!parseRangeContainsPosition(instance.range, line, character)) {
-                    continue;
-                }
-                const auto module_it = data->modules_by_name.find(instance.module_name);
-                if (module_it != data->modules_by_name.end()) {
-                    std::set<std::string> connected_ports;
-                    const auto position_offset = utf8OffsetAtUtf16Position(document->text, line, character);
-                    const auto search_start = utf8OffsetAtUtf16Position(document->text,
-                                                                        instance.selection_range.end_line,
-                                                                        instance.selection_range.end_character);
-                    const auto search_end = utf8OffsetAtUtf16Position(document->text,
-                                                                      instance.range.end_line,
-                                                                      instance.range.end_character);
-                    if (position_offset.has_value() && search_start.has_value() && search_end.has_value()) {
-                        const auto open_paren = openParenBeforePosition(document->text,
-                                                                        *search_start,
-                                                                        std::min(*position_offset, *search_end));
-                        if (open_paren.has_value()) {
-                            connected_ports = connectedNamedPortsBeforePosition(document->text,
-                                                                                *open_paren,
-                                                                                *position_offset);
-                        }
+            if (instances_it != data->module_instances_by_uri.end()) {
+                for (const auto& instance : instances_it->second) {
+                    if (!parseRangeContainsPosition(instance.range, line, character)) {
+                        continue;
                     }
-                    const auto module_uri_it = data->module_uris_by_name.find(instance.module_name);
-                    appendModulePortCompletions(result.items,
-                                                emitted,
-                                                *data,
-                                                module_it->second,
-                                                module_uri_it == data->module_uris_by_name.end()
-                                                    ? std::string_view{}
-                                                    : std::string_view(module_uri_it->second),
-                                                prefix,
-                                                connected_ports,
-                                                result.truncated);
-                    return finish(std::move(result));
+                    const auto module_it = data->modules_by_name.find(instance.module_name);
+                    if (module_it != data->modules_by_name.end()) {
+                        std::set<std::string> connected_ports;
+                        const auto position_offset = utf8OffsetAtUtf16Position(document->text, line, character);
+                        const auto search_start = utf8OffsetAtUtf16Position(document->text,
+                                                                            instance.selection_range.end_line,
+                                                                            instance.selection_range.end_character);
+                        const auto search_end = utf8OffsetAtUtf16Position(document->text,
+                                                                          instance.range.end_line,
+                                                                          instance.range.end_character);
+                        if (position_offset.has_value() && search_start.has_value() && search_end.has_value()) {
+                            const auto open_paren = openParenBeforePosition(document->text,
+                                                                            *search_start,
+                                                                            std::min(*position_offset, *search_end));
+                            if (open_paren.has_value()) {
+                                connected_ports = connectedNamedPortsBeforePosition(document->text,
+                                                                                    *open_paren,
+                                                                                    *position_offset);
+                            }
+                        }
+                        const auto module_uri_it = data->module_uris_by_name.find(instance.module_name);
+                        appendModulePortCompletions(result.items,
+                                                    emitted,
+                                                    *data,
+                                                    module_it->second,
+                                                    module_uri_it == data->module_uris_by_name.end()
+                                                        ? std::string_view{}
+                                                        : std::string_view(module_uri_it->second),
+                                                    prefix,
+                                                    connected_ports,
+                                                    result.truncated);
+                        return finish(std::move(result));
+                    }
                 }
             }
         }

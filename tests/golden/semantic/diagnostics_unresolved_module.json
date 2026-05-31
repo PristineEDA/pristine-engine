@@ -1,0 +1,22 @@
+{
+  "name": "diagnostics report unresolved module instances",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/unresolved-module.sv",
+      "text": "module top;\n  missing_child u_missing();\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "diagnostics"
+  },
+  "expected": {
+    "uri": "file:///golden/semantic/unresolved-module.sv",
+    "diagnostics": [
+      {
+        "code": "unresolvedModule",
+        "severity": 1,
+        "startLine": 1
+      }
+    ]
+  }
+}

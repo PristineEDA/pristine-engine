@@ -1,0 +1,22 @@
+{
+  "name": "completion resolve returns named port snippet",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/resolve-port.sv",
+      "text": "module child(input logic clk, output logic rst_n, input logic data);\nendmodule\nmodule top;\n  child u_child(.clk(clk), .r);\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "completionResolve",
+    "uri": "file:///golden/semantic/resolve-port.sv",
+    "line": 3,
+    "character": 28,
+    "prefix": "",
+    "label": "rst_n"
+  },
+  "expected": {
+    "detailContains": "output logic rst_n",
+    "documentationContains": "Port",
+    "insertTextContains": "rst_n("
+  }
+}

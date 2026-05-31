@@ -1,0 +1,21 @@
+{
+  "name": "hover shows typedef alias type metadata",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/hover-typedef.sv",
+      "text": "module top;\n  typedef logic [3:0] nibble_t;\n  nibble_t value;\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "hover",
+    "uri": "file:///golden/semantic/hover-typedef.sv",
+    "line": 2,
+    "character": 11
+  },
+  "expected": {
+    "contentsContains": [
+      "value",
+      "nibble_t"
+    ]
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "name": "member completion falls back to AstIndex member context outside port lists",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/member-context.sv",
+      "text": "module top;\n  logic pkt;\n  logic ready;\n  logic [3:0] data;\n  initial begin\n    pkt.rea\n  end\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "completion",
+    "uri": "file:///golden/semantic/member-context.sv",
+    "line": 5,
+    "character": 11,
+    "prefix": "rea"
+  },
+  "expected": {
+    "labels": [
+      "ready"
+    ],
+    "absentLabels": [
+      "data"
+    ]
+  }
+}

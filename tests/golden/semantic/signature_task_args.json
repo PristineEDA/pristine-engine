@@ -1,0 +1,22 @@
+{
+  "name": "task signature help uses AST call views",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/signature-task.sv",
+      "text": "module top;\n  task automatic emit(input logic ready);\n  endtask\n  initial begin\n    emit(1'b1);\n  end\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "signatureHelp",
+    "uri": "file:///golden/semantic/signature-task.sv",
+    "line": 4,
+    "character": 13
+  },
+  "expected": {
+    "label": "task emit(input logic ready)",
+    "activeParameter": 0,
+    "parameters": [
+      "input logic ready"
+    ]
+  }
+}

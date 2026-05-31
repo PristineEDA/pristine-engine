@@ -1,0 +1,26 @@
+{
+  "name": "local typedef type definition narrows to typedef token",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/local-typedef.sv",
+      "text": "module top;\n  typedef logic [3:0] nibble_t;\n  nibble_t value;\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "typeDefinition",
+    "uri": "file:///golden/semantic/local-typedef.sv",
+    "line": 2,
+    "character": 3
+  },
+  "expected": {
+    "count": 1,
+    "locations": [
+      {
+        "uri": "file:///golden/semantic/local-typedef.sv",
+        "startLine": 1,
+        "startCharacter": 22,
+        "endCharacter": 30
+      }
+    ]
+  }
+}

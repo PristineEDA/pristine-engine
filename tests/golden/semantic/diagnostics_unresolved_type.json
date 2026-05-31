@@ -1,0 +1,22 @@
+{
+  "name": "diagnostics report unresolved type references",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/unresolved-type.sv",
+      "text": "module top;\n  missing_t value;\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "diagnostics"
+  },
+  "expected": {
+    "uri": "file:///golden/semantic/unresolved-type.sv",
+    "diagnostics": [
+      {
+        "code": "unresolvedType",
+        "severity": 1,
+        "startLine": 1
+      }
+    ]
+  }
+}

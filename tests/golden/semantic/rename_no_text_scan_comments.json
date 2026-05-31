@@ -1,0 +1,20 @@
+{
+  "name": "rename ignores comments and strings without text-scan fallback",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/rename-no-text-scan.sv",
+      "text": "module top;\n  logic ready;\n  // ready in a comment is not renamed\n  string label = \"ready\";\n  assign ready = ready;\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "rename",
+    "uri": "file:///golden/semantic/rename-no-text-scan.sv",
+    "line": 1,
+    "character": 9,
+    "newName": "valid"
+  },
+  "expected": {
+    "count": 3,
+    "allNewText": "valid"
+  }
+}

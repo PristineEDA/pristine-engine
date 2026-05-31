@@ -1,0 +1,19 @@
+{
+  "name": "references ignore comments and strings without text-scan fallback",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/no-text-scan.sv",
+      "text": "module top;\n  logic ready;\n  // ready in a comment is not a reference\n  string label = \"ready\";\n  assign ready = ready;\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "references",
+    "uri": "file:///golden/semantic/no-text-scan.sv",
+    "line": 1,
+    "character": 9,
+    "includeDeclaration": true
+  },
+  "expected": {
+    "count": 3
+  }
+}
