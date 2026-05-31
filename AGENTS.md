@@ -9,7 +9,7 @@ This file is for coding agents working in this repository.
 
 ## Product Snapshot
 
-`pristine-engine` is a standalone design snapshot + AST symbol identity-backed SystemVerilog LSP server implemented in C++20.
+`pristine-engine` is a standalone mature split-provider design snapshot + AST symbol identity-backed SystemVerilog LSP server implemented in C++20.
 
 Current implemented LSP surface:
 
@@ -52,6 +52,7 @@ Current behavior follows a split-provider SemanticEngine single-fact-source mode
 
 - `SemanticEngine` is the public value-type facade and coordinator for document state, generation, invalidation, and query cache; split providers own snapshot construction, AST indexing, and feature-specific query assembly
 - visible semantic facts are exclusively backed by slang AST/Compilation, `AstIndex` views, and design graph provider data; syntax/text utilities must not become semantic answer sources
+- current deepening work is complex SystemVerilog provider completeness: package import/export and wildcard import resolution, typedef alias chains, struct/enum/class/interface/modport members, generate scopes, parameterized instances, port/param bindings, assignment width/type facts, differential/perf coverage, and clang/GCC-oriented non-Windows validation
 - visible semantic lookups must be deterministic across macOS, Linux, and Windows; same-range AST symbols use explicit `AstIndex` tie-breaks instead of unordered traversal, pointer, or platform-specific container order
 - hover, definition, type definition, implementation, references, document highlights, prepare rename, and rename are the first AST-backed query slice owned by `SemanticEngine`
 - completion, completion resolve, signature help, diagnostics, inlay hints, semantic tokens, selection ranges, and workspace symbols use `SemanticEngine` value-type APIs; completion context detection, item assembly, resolve docs/snippets, and completion-specific metadata are owned by `CompletionProvider`; diagnostics aggregation is owned by `DiagnosticProvider` from AstIndex diagnostic facts; code-action quickfix selection is owned by `CodeActionProvider` from diagnostics plus indexed facts; signature help plus module/type/port/function/task inlay hint assembly are owned by `SignatureInlayProvider`; semantic token and selection range assembly are owned by `NavigationProvider`; remaining context gaps belong in analysis instead of `ServerSession`
@@ -95,7 +96,7 @@ Use the nearest owning layer instead of patching around it from a wrapper.
 - stdio transport and JSON-RPC framing: `src/transport/StdioTransport.cpp`, `src/jsonrpc/MessageStream.cpp`, `src/jsonrpc/JsonRpcServer.cpp`
 - process entry point, CLI switches, Windows stdio mode, and version output: `src/main.cpp`
 - unit coverage for framing, lifecycle, sync, workspace, diagnostics, UTF-16, symbols, hover, AST identity, navigation/completion, design hierarchy, schematic, call hierarchy, backward cone, and JSON semantic golden request shapes: `tests/unit`
-- JSON semantic golden fixtures for observable provider behavior, currently 50+ fixtures covering hover, definition/typeDefinition, references, rename, completion/resolve, signatureHelp, inlayHint, semanticTokens, selectionRange, diagnostics, codeAction, workspace/symbol, moduleHierarchy, schematic, backwardCone, and callHierarchy: `tests/golden/semantic`
+- JSON semantic golden fixtures for observable provider behavior, currently 70+ fixtures covering hover, definition/typeDefinition, references, rename, completion/resolve, signatureHelp, inlayHint, semanticTokens, selectionRange, diagnostics, codeAction, workspace/symbol, moduleHierarchy, schematic, backwardCone, and callHierarchy: `tests/golden/semantic`
 - subprocess LSP smoke coverage for core LSP plus `systemverilog/*`: `tests/e2e`
 - opt-in semantic performance baselines for 100/1000/5000-file workspaces: `tests/perf`
 
@@ -137,8 +138,9 @@ Use the nearest owning layer instead of patching around it from a wrapper.
 - Cache keys for visible semantic queries must include snapshot generation and all user-visible inputs; mutation/configuration paths must invalidate affected cached results. This applies to diagnostics, references, rename, completion, workspace/symbol, hierarchy, schematic, backward cone, and codeAction cache entries.
 - All semantic behavior changes must update the nearest unit, golden-style, or e2e coverage.
 - Prefer adding JSON semantic golden fixtures for externally observable provider behavior after the closest unit test owns the narrow semantic rule; keep fixtures focused on stable request/result shape and no-fallback regressions.
+- Each new LSP-visible provider behavior should have the nearest focused unit test plus a JSON semantic golden fixture when the request/result shape is externally observable.
 - Changes that scan, cache, or rebuild workspace-wide state must include or update a performance-oriented test/benchmark plan or JSON baseline before being considered complete.
-- New or modified aggregate initialization and semantic/provider C++ changes should be validated with the clang toolchain before CI when practical, because GCC/Clang and MSVC reject different warning-as-error patterns. Treat unused helpers, narrowing conversions, case-sensitive include paths, and partial designated initialization as Linux/macOS CI risks even if MSVC accepts them.
+- New or modified aggregate initialization and semantic/provider C++ changes should be validated with the clang toolchain before CI when practical, because GCC/Clang and MSVC reject different warning-as-error patterns. Treat unused helpers, narrowing conversions, case-sensitive include paths, partial designated initialization, filesystem path separators, and CRLF/LF-sensitive fixtures as Linux/macOS CI risks even if MSVC accepts them.
 - Avoid broad refactors unless the user asks for them or the local change cannot be made safely otherwise.
 - Do not reintroduce agent process rules into `README.md` unless explicitly requested.
 
@@ -207,7 +209,7 @@ For macOS/Linux CI-risk semantic changes, include a no-fallback regression for d
 
 ```powershell
 cmake --preset clang-cl
-cmake --build build\clang-cl
+cmake --build --preset clang-cl
 ctest --test-dir build\clang-cl --output-on-failure
 ```
 
@@ -335,7 +337,7 @@ The current repository state has been locally verified on Windows with:
 - keep macOS hover/type metadata stable by expanding deterministic same-range `AstIndex` lookup and port/interface type display regressions
 - mature completion, signature, and inlay providers with package `::`, hierarchical `.`, ordered/named/wildcard ports, function/task argument hints, resolved type, constant value, and interface/modport cases
 - expand diagnostics and code-action coverage for missing import/package/type/module/port, macro quickfixes, width/type mismatch, diagnostics publish/clear, and no-fallback regressions
-- keep expanding `tests/golden/semantic` beyond the current 50+ fixture matrix, especially struct/class/interface member completion, wildcard import completion, wildcard/parameter inlay, macro quickfix, generated hierarchy, large cone truncation, diagnostics publish/clear, and cases that would fail under old syntax/text semantic paths
+- keep expanding `tests/golden/semantic` beyond the current 70+ fixture matrix, especially struct/class/interface member completion, wildcard import completion, wildcard/parameter inlay, macro quickfix, generated hierarchy, large cone truncation, diagnostics publish/clear, and cases that would fail under old syntax/text semantic paths
 - add robustness/property/differential tests for malformed JSON-RPC, illegal URIs, broken includes, recoverable syntax errors, UTF-16 incremental edits, duplicate references, and large-result truncation
 - add affected rebuild checks, cache hit/invalidation tests, and 100/1000/5000-file perf baselines for workspace-wide queries
 - expand AST-derived typeDefinition coverage for package-qualified typedefs, typedef alias chains, class/interface/modport type references, and shadowed type names

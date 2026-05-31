@@ -1,0 +1,22 @@
+{
+  "name": "package completion resolves parameter documentation",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/resolve-package.sv",
+      "text": "package defs;\n  parameter int WIDTH = 8;\nendpackage\nmodule top;\n  localparam int USE = defs::WID\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "completionResolve",
+    "uri": "file:///golden/semantic/resolve-package.sv",
+    "line": 4,
+    "character": 31,
+    "prefix": "WID",
+    "label": "WIDTH"
+  },
+  "expected": {
+    "detailContains": "Parameter",
+    "documentationContains": "WIDTH",
+    "insertTextContains": "WIDTH"
+  }
+}

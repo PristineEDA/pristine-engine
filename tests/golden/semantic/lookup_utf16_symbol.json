@@ -1,0 +1,19 @@
+{
+  "name": "lookup resolves symbols after non-BMP text without text fallback",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/lookup_utf16_symbol.sv",
+      "text": "module top;\n  // smile 😀\n  logic ready;\n  assign ready = ready;\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "lookup",
+    "uri": "file:///golden/semantic/lookup_utf16_symbol.sv",
+    "line": 2,
+    "character": 9
+  },
+  "expected": {
+    "name": "ready",
+    "kind": "variable"
+  }
+}

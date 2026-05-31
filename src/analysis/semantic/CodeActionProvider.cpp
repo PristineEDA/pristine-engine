@@ -15,6 +15,7 @@ namespace fs = std::filesystem;
 
 constexpr std::string_view kUnknownIncludeDiagnosticCode = "unknownInclude";
 constexpr std::string_view kUnresolvedModuleDiagnosticCode = "unresolvedModule";
+constexpr std::string_view kUnresolvedPackageDiagnosticCode = "unresolvedPackage";
 constexpr std::string_view kUnresolvedTypeDiagnosticCode = "unresolvedType";
 
 int comparePosition(int lhs_line, int lhs_character, int rhs_line, int rhs_character) {
@@ -95,6 +96,14 @@ std::string unknownIncludeMessage(std::string_view target) {
 
 std::string unresolvedModuleMessage(std::string_view module_name) {
     return std::string("Module '") + std::string(module_name) + "' could not be resolved.";
+}
+
+std::string packageStubInsertionText(std::string_view text, std::string_view package_name) {
+    std::string insertion = text.empty() || text.back() == '\n' ? "\n" : "\n\n";
+    insertion += "package ";
+    insertion += package_name;
+    insertion += ";\nendpackage\n";
+    return insertion;
 }
 
 std::string moduleStubInsertionText(std::string_view text, std::string_view module_name) {
@@ -373,6 +382,31 @@ SemanticCodeActionResult codeActionsAt(const CodeActionContext& context) {
                 .new_text = missingPortConnectionText(missing_ports, !cell.connections.empty())});
             result.actions.push_back(std::move(action));
         }
+    }
+
+    std::set<std::string> emitted_package_names;
+    for (const auto& diagnostic : context.diagnostics) {
+        if (diagnostic.code != kUnresolvedPackageDiagnosticCode ||
+            !rangesIntersect(diagnostic.range, context.range)) {
+            continue;
+        }
+        const auto package_name = textForParseRange(context.document.text, diagnostic.range);
+        if (!package_name.has_value() || !isValidIdentifier(*package_name) ||
+            !emitted_package_names.insert(*package_name).second) {
+            continue;
+        }
+        SemanticCodeAction action;
+        action.title = "Create package '" + *package_name + "'";
+        action.kind = "quickfix";
+        action.diagnostics.push_back(SemanticDiagnosticData{.code = diagnostic.code,
+                                                            .message = diagnostic.message,
+                                                            .range = diagnostic.range,
+                                                            .severity = diagnostic.severity});
+        action.edits.push_back(SemanticCodeActionEdit{.uri = context.document.uri,
+                                                      .range = insert_range,
+                                                      .new_text = packageStubInsertionText(context.document.text,
+                                                                                          *package_name)});
+        result.actions.push_back(std::move(action));
     }
 
     std::set<std::string> emitted_type_names;

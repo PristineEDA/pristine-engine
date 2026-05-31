@@ -1,0 +1,21 @@
+{
+  "name": "hover on parameter includes AST-backed type metadata",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/hover-parameter.sv",
+      "text": "module top #(parameter int WIDTH = 8);\n  logic [WIDTH-1:0] data;\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "hover",
+    "uri": "file:///golden/semantic/hover-parameter.sv",
+    "line": 0,
+    "character": 28
+  },
+  "expected": {
+    "contentsContains": [
+      "WIDTH",
+      "int"
+    ]
+  }
+}

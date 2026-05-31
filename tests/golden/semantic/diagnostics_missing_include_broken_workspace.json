@@ -1,0 +1,25 @@
+{
+  "name": "diagnostics report broken include using workspace-relative target",
+  "config": {
+    "workspaceRootUri": "file:///golden/semantic"
+  },
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/rtl/broken-include.sv",
+      "text": "`include \"defs/missing.svh\"\nmodule top;\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "diagnostics"
+  },
+  "expected": {
+    "uri": "file:///golden/semantic/rtl/broken-include.sv",
+    "diagnostics": [
+      {
+        "code": "unknownInclude",
+        "severity": 1,
+        "startLine": 0
+      }
+    ]
+  }
+}

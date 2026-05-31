@@ -1,0 +1,31 @@
+{
+  "name": "inlay hints keep wildcard instance type metadata",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/wildcard-child.sv",
+      "text": "module child(input logic clk, output logic ready);\nendmodule\n"
+    },
+    {
+      "uri": "file:///golden/semantic/wildcard-inst-top.sv",
+      "text": "module top;\n  logic clk;\n  logic ready;\n  child u_child(.*);\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "inlayHint",
+    "uri": "file:///golden/semantic/wildcard-inst-top.sv",
+    "range": {
+      "startLine": 0,
+      "startCharacter": 0,
+      "endLine": 5,
+      "endCharacter": 0
+    }
+  },
+  "expected": {
+    "labels": [
+      ": child"
+    ],
+    "tooltips": [
+      "child(input logic clk, output logic ready)"
+    ]
+  }
+}

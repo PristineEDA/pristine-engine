@@ -23,6 +23,7 @@ TEST_CASE("CodeActionProvider creates include, module, port, and typedef fixes",
                                "module top;\n"
                                "  child u_child(.clk(clk));\n"
                                "  missing_child u_missing();\n"
+                               "  import missing_pkg::*;\n"
                                "  missing_t value;\n"
                                "endmodule\n";
     CodeActionContext context{
@@ -32,7 +33,7 @@ TEST_CASE("CodeActionProvider creates include, module, port, and typedef fixes",
         .document = SemanticEngineDocument{.uri = std::string(uri), .text = document_text},
         .range = ParseRange{.start_line = 0,
                             .start_character = 0,
-                            .end_line = 4,
+                            .end_line = 5,
                             .end_character = 17},
         .modules_by_name = {{"child",
                              ModuleDefinition{.name = "child",
@@ -68,7 +69,12 @@ TEST_CASE("CodeActionProvider creates include, module, port, and typedef fixes",
         .diagnostics = {SemanticEngineDiagnostic{.uri = std::string(uri),
                                                  .code = "unresolvedType",
                                                  .message = "Type 'missing_t' could not be resolved.",
-                                                 .range = rangeAt(4, 2, 11),
+                                                 .range = rangeAt(5, 2, 11),
+                                                 .severity = 1},
+                        SemanticEngineDiagnostic{.uri = std::string(uri),
+                                                 .code = "unresolvedPackage",
+                                                 .message = "Package 'missing_pkg' could not be resolved.",
+                                                 .range = rangeAt(4, 9, 20),
                                                  .severity = 1}}};
 
     const auto result = codeActionsAt(context);
@@ -94,6 +100,11 @@ TEST_CASE("CodeActionProvider creates include, module, port, and typedef fixes",
         return action.title == "Create typedef 'missing_t'" &&
                action.edits.size() == 1 &&
                action.edits.front().new_text.find("typedef logic missing_t;") != std::string::npos;
+    }));
+    CHECK(std::any_of(result.actions.begin(), result.actions.end(), [](const SemanticCodeAction& action) {
+        return action.title == "Create package 'missing_pkg'" &&
+               action.edits.size() == 1 &&
+               action.edits.front().new_text.find("package missing_pkg;") != std::string::npos;
     }));
 }
 

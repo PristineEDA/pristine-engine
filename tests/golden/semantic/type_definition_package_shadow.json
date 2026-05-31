@@ -1,0 +1,30 @@
+{
+  "name": "package typedef beats local same-name value for type definition",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/shadow-defs.sv",
+      "text": "package defs;\n  typedef logic [7:0] word_t;\nendpackage\n"
+    },
+    {
+      "uri": "file:///golden/semantic/shadow-type-use.sv",
+      "text": "module top;\n  logic word_t;\n  defs::word_t value;\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "typeDefinition",
+    "uri": "file:///golden/semantic/shadow-type-use.sv",
+    "line": 2,
+    "character": 10
+  },
+  "expected": {
+    "count": 1,
+    "locations": [
+      {
+        "uri": "file:///golden/semantic/shadow-defs.sv",
+        "startLine": 1,
+        "startCharacter": 22,
+        "endCharacter": 28
+      }
+    ]
+  }
+}

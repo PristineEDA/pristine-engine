@@ -1,0 +1,20 @@
+{
+  "name": "rename stays in the queried shadowed scope",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/rename_second_scope_no_fallback.sv",
+      "text": "module top;\n  logic value;\n  assign value = value;\nendmodule\nmodule other;\n  logic value;\n  assign value = value;\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "rename",
+    "uri": "file:///golden/semantic/rename_second_scope_no_fallback.sv",
+    "line": 5,
+    "character": 9,
+    "newName": "second_value"
+  },
+  "expected": {
+    "count": 3,
+    "allNewText": "second_value"
+  }
+}

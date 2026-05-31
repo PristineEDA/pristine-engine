@@ -1,0 +1,26 @@
+{
+  "name": "selection range builds parent chain for RHS references",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/selection_range_rhs_reference_parent_chain.sv",
+      "text": "module top;\n  logic ready;\n  assign ready = ready;\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "selectionRange",
+    "uri": "file:///golden/semantic/selection_range_rhs_reference_parent_chain.sv",
+    "line": 2,
+    "character": 18
+  },
+  "expected": {
+    "minCount": 3,
+    "ranges": [
+      {
+        "startLine": 2,
+        "startCharacter": 17,
+        "endLine": 2,
+        "endCharacter": 22
+      }
+    ]
+  }
+}

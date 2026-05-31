@@ -1,0 +1,25 @@
+{
+  "name": "macro completion includes cross-file macro definitions",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/common-macros.svh",
+      "text": "`define GLOBAL_FLAG 1\n"
+    },
+    {
+      "uri": "file:///golden/semantic/use-macro.sv",
+      "text": "module top;\n  logic ready = `GLO\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "completion",
+    "uri": "file:///golden/semantic/use-macro.sv",
+    "line": 1,
+    "character": 20,
+    "prefix": "GLO"
+  },
+  "expected": {
+    "labels": [
+      "GLOBAL_FLAG"
+    ]
+  }
+}

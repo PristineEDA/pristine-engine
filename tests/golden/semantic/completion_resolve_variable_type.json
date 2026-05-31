@@ -1,0 +1,22 @@
+{
+  "name": "completion resolve returns variable type documentation",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/resolve-variable.sv",
+      "text": "module top;\n  logic [7:0] value;\n  val\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "completionResolve",
+    "uri": "file:///golden/semantic/resolve-variable.sv",
+    "line": 2,
+    "character": 5,
+    "prefix": "val",
+    "label": "value"
+  },
+  "expected": {
+    "detailContains": "Variable",
+    "documentationContains": "Type: `logic [7:0]`",
+    "insertTextContains": "value"
+  }
+}

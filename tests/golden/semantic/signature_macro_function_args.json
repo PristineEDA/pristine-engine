@@ -1,0 +1,23 @@
+{
+  "name": "macro function signature help reports active argument",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/signature-macro.sv",
+      "text": "`define ADD(lhs, rhs) ((lhs) + (rhs))\nmodule top;\n  int value = `ADD(1, 2);\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "signatureHelp",
+    "uri": "file:///golden/semantic/signature-macro.sv",
+    "line": 2,
+    "character": 22
+  },
+  "expected": {
+    "label": "ADD(lhs, rhs)",
+    "activeParameter": 1,
+    "parameters": [
+      "lhs",
+      "rhs"
+    ]
+  }
+}

@@ -1,0 +1,33 @@
+{
+  "name": "schematic includes interface instances from AstIndex graph",
+  "config": {
+    "topModules": [
+      "top"
+    ]
+  },
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/schematic-interface.sv",
+      "text": "interface bus_if;\nendinterface\nmodule top;\n  bus_if bus();\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "schematic",
+    "moduleName": "top",
+    "maxDepth": 8
+  },
+  "expected": {
+    "rootModule": "top",
+    "modules": [
+      "top",
+      "bus_if"
+    ],
+    "cells": [
+      {
+        "module": "top",
+        "name": "bus",
+        "type": "bus_if"
+      }
+    ]
+  }
+}

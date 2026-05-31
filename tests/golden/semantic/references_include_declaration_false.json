@@ -1,0 +1,19 @@
+{
+  "name": "references can omit declaration while staying scoped",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/references-no-decl.sv",
+      "text": "module top;\n  logic ready;\n  assign ready = ready;\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "references",
+    "uri": "file:///golden/semantic/references-no-decl.sv",
+    "line": 1,
+    "character": 9,
+    "includeDeclaration": false
+  },
+  "expected": {
+    "count": 2
+  }
+}

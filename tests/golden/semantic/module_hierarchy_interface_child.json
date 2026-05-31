@@ -1,0 +1,28 @@
+{
+  "name": "module hierarchy includes interface instances from AstIndex graph",
+  "config": {
+    "topModules": [
+      "top"
+    ]
+  },
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/hierarchy-iface.sv",
+      "text": "interface bus_if;\nendinterface\nmodule top;\n  bus_if bus();\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "moduleHierarchy",
+    "moduleName": "top",
+    "maxDepth": 8
+  },
+  "expected": {
+    "rootModules": [
+      "top"
+    ],
+    "modules": [
+      "top",
+      "bus_if"
+    ]
+  }
+}

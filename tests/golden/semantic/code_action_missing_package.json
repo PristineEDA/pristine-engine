@@ -1,0 +1,30 @@
+{
+  "name": "code action creates unresolved package from diagnostic facts",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/create-package.sv",
+      "text": "module top;\n  import missing_pkg::*;\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "codeAction",
+    "uri": "file:///golden/semantic/create-package.sv",
+    "range": {
+      "startLine": 1,
+      "startCharacter": 9,
+      "endLine": 1,
+      "endCharacter": 20
+    }
+  },
+  "expected": {
+    "actions": [
+      {
+        "title": "Create package 'missing_pkg'",
+        "diagnosticCodes": [
+          "unresolvedPackage"
+        ],
+        "editContains": "package missing_pkg;"
+      }
+    ]
+  }
+}

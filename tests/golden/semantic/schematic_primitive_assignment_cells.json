@@ -1,0 +1,36 @@
+{
+  "name": "schematic derives primitive and assignment expression cells from AST",
+  "config": {
+    "topModules": [
+      "top"
+    ]
+  },
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/schematic-primitives.sv",
+      "text": "module top(input logic a, input logic b, input logic sel, output logic y);\n  logic n1;\n  and u_and(n1, a, b);\n  assign y = sel ? n1 : (a | b);\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "schematic",
+    "moduleName": "top",
+    "maxDepth": 8
+  },
+  "expected": {
+    "rootModule": "top",
+    "modules": [
+      "top"
+    ],
+    "cells": [
+      {
+        "module": "top",
+        "name": "u_and",
+        "type": "and"
+      }
+    ],
+    "nets": [
+      "n1",
+      "y"
+    ]
+  }
+}

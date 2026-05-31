@@ -1,0 +1,31 @@
+{
+  "name": "module hierarchy marks cyclic child as partial",
+  "config": {
+    "topModules": [
+      "top"
+    ]
+  },
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/hierarchy-cycle.sv",
+      "text": "module top;\n  top u_self();\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "moduleHierarchy",
+    "moduleName": "top",
+    "maxDepth": 8
+  },
+  "expected": {
+    "rootModules": [
+      "top"
+    ],
+    "modules": [
+      "top"
+    ],
+    "partial": true,
+    "messagesContain": [
+      "Cycle detected"
+    ]
+  }
+}

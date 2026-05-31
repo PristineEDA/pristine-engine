@@ -1,0 +1,21 @@
+{
+  "name": "workspace symbols include interface and class facts",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/workspace-interface-class.sv",
+      "text": "interface bus_if;\nendinterface\nclass packet;\nendclass\nmodule top;\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "workspaceSymbol",
+    "query": "",
+    "limit": 100
+  },
+  "expected": {
+    "names": [
+      "bus_if",
+      "packet",
+      "top"
+    ]
+  }
+}
