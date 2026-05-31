@@ -1,0 +1,36 @@
+{
+  "name": "semantic tokens map package module and parameter symbols",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/tokens.sv",
+      "text": "package pkg;\nendpackage\nmodule child;\nendmodule\nmodule top #(parameter int WIDTH = 8);\n  import pkg::*;\n  child u_child();\n  logic [WIDTH-1:0] data;\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "semanticTokens",
+    "uri": "file:///golden/semantic/tokens.sv"
+  },
+  "expected": {
+    "tokens": [
+      {
+        "type": "namespace",
+        "startLine": 0,
+        "startCharacter": 8,
+        "endCharacter": 11
+      },
+      {
+        "type": "type",
+        "modifier": "declaration",
+        "startLine": 2,
+        "startCharacter": 7,
+        "endCharacter": 12
+      },
+      {
+        "type": "parameter",
+        "startLine": 4,
+        "startCharacter": 27,
+        "endCharacter": 32
+      }
+    ]
+  }
+}

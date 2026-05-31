@@ -234,6 +234,24 @@ bool locationMatchesJson(const SemanticLocation& location, const nlohmann::json&
     return true;
 }
 
+bool rangeMatchesJson(const ParseRange& range, const nlohmann::json& expected) {
+    if (expected.contains("startLine") && range.start_line != expected.at("startLine").get<int>()) {
+        return false;
+    }
+    if (expected.contains("startCharacter") &&
+        range.start_character != expected.at("startCharacter").get<int>()) {
+        return false;
+    }
+    if (expected.contains("endLine") && range.end_line != expected.at("endLine").get<int>()) {
+        return false;
+    }
+    if (expected.contains("endCharacter") &&
+        range.end_character != expected.at("endCharacter").get<int>()) {
+        return false;
+    }
+    return true;
+}
+
 void checkLocations(const std::vector<SemanticLocation>& locations, const nlohmann::json& expected) {
     if (expected.contains("count")) {
         CHECK(locations.size() == expected.at("count").get<size_t>());
@@ -247,6 +265,62 @@ void checkLocations(const std::vector<SemanticLocation>& locations, const nlohma
                                   return locationMatchesJson(location, expected_location);
                               }));
         }
+    }
+}
+
+void runSemanticTokensFixture(SemanticEngine& engine, const nlohmann::json& fixture) {
+    const auto& request = fixture.at("request");
+    const auto& expected = fixture.at("expected");
+    const auto result = engine.semanticTokens(request.at("uri").get<std::string>());
+    CHECK(result.unresolved == expected.value("unresolved", false));
+    CHECK(result.truncated == expected.value("truncated", false));
+    if (expected.contains("count")) {
+        CHECK(result.tokens.size() == expected.at("count").get<size_t>());
+    }
+    if (expected.contains("tokens")) {
+        for (const auto& expected_token : expected.at("tokens")) {
+            CAPTURE(expected_token.dump());
+            CHECK(std::any_of(result.tokens.begin(),
+                              result.tokens.end(),
+                              [&](const SemanticToken& token) {
+                                  if (expected_token.contains("type") &&
+                                      token.token_type != expected_token.at("type").get<std::string>()) {
+                                      return false;
+                                  }
+                                  if (expected_token.contains("modifier") &&
+                                      token.token_modifier != expected_token.at("modifier").get<std::string>()) {
+                                      return false;
+                                  }
+                                  return rangeMatchesJson(token.location.range, expected_token);
+                              }));
+        }
+    }
+}
+
+void runSelectionRangeFixture(SemanticEngine& engine, const nlohmann::json& fixture) {
+    const auto& request = fixture.at("request");
+    const auto& expected = fixture.at("expected");
+    const auto result = engine.selectionRangesAt(request.at("uri").get<std::string>(),
+                                                request.at("line").get<int>(),
+                                                request.at("character").get<int>());
+    CHECK(result.unresolved == expected.value("unresolved", false));
+    if (expected.contains("minCount")) {
+        CHECK(result.ranges.size() >= expected.at("minCount").get<size_t>());
+    }
+    if (expected.contains("ranges")) {
+        for (const auto& expected_range : expected.at("ranges")) {
+            CAPTURE(expected_range.dump());
+            CHECK(std::any_of(result.ranges.begin(),
+                              result.ranges.end(),
+                              [&](const SemanticSelectionRange& range) {
+                                  return rangeMatchesJson(range.range, expected_range);
+                              }));
+        }
+    }
+    if (expected.contains("rootRange")) {
+        REQUIRE_FALSE(result.ranges.empty());
+        CHECK(rangeMatchesJson(result.ranges.back().range, expected.at("rootRange")));
+        CHECK(result.ranges.back().parent == std::nullopt);
     }
 }
 
@@ -930,6 +1004,12 @@ TEST_CASE("JSON semantic golden fixtures exercise stable request shapes",
         }
         else if (kind == "workspaceSymbol") {
             runWorkspaceSymbolFixture(engine, fixture);
+        }
+        else if (kind == "semanticTokens") {
+            runSemanticTokensFixture(engine, fixture);
+        }
+        else if (kind == "selectionRange") {
+            runSelectionRangeFixture(engine, fixture);
         }
         else if (kind == "inlayHint") {
             runInlayHintFixture(engine, fixture);

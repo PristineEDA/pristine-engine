@@ -1,0 +1,22 @@
+{
+  "name": "completion resolve returns module port snippet",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/resolve-module.sv",
+      "text": "module child(input logic clk, output logic rst_n);\nendmodule\nmodule top;\n  child child_i();\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "completionResolve",
+    "uri": "file:///golden/semantic/resolve-module.sv",
+    "line": 2,
+    "character": 2,
+    "prefix": "",
+    "label": "child"
+  },
+  "expected": {
+    "detailContains": "child(input logic clk, output logic rst_n)",
+    "insertTextContains": ".clk",
+    "documentationContains": "child"
+  }
+}

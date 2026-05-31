@@ -1,0 +1,28 @@
+{
+  "name": "module hierarchy reports partial truncation at depth cap",
+  "config": {
+    "topModules": [
+      "top"
+    ]
+  },
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/hierarchy-depth.sv",
+      "text": "module leaf;\nendmodule\nmodule mid;\n  leaf u_leaf();\nendmodule\nmodule top;\n  mid u_mid();\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "moduleHierarchy",
+    "maxDepth": 0
+  },
+  "expected": {
+    "rootModules": [
+      "top"
+    ],
+    "partial": true,
+    "truncated": true,
+    "messagesContain": [
+      "maxDepth"
+    ]
+  }
+}

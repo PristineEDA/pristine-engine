@@ -1,0 +1,32 @@
+{
+  "name": "call hierarchy incoming calls find parent instance",
+  "config": {
+    "topModules": [
+      "top"
+    ]
+  },
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/incoming-child.sv",
+      "text": "module child(input logic clk, output logic q);\nendmodule\n"
+    },
+    {
+      "uri": "file:///golden/semantic/incoming-top.sv",
+      "text": "module top;\n  logic clk;\n  logic mid;\n  child u_child(.clk(clk), .q(mid));\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "callHierarchy",
+    "uri": "file:///golden/semantic/incoming-top.sv",
+    "line": 3,
+    "character": 4
+  },
+  "expected": {
+    "preparedNames": [
+      "child"
+    ],
+    "incomingNames": [
+      "top"
+    ]
+  }
+}

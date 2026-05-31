@@ -1,0 +1,21 @@
+{
+  "name": "completion prioritizes module names in instantiation context",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/module-completion.sv",
+      "text": "module child;\nendmodule\nmodule top;\n  chi\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "completion",
+    "uri": "file:///golden/semantic/module-completion.sv",
+    "line": 3,
+    "character": 5,
+    "prefix": "chi"
+  },
+  "expected": {
+    "labels": [
+      "child"
+    ]
+  }
+}

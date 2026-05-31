@@ -95,7 +95,7 @@ Use the nearest owning layer instead of patching around it from a wrapper.
 - stdio transport and JSON-RPC framing: `src/transport/StdioTransport.cpp`, `src/jsonrpc/MessageStream.cpp`, `src/jsonrpc/JsonRpcServer.cpp`
 - process entry point, CLI switches, Windows stdio mode, and version output: `src/main.cpp`
 - unit coverage for framing, lifecycle, sync, workspace, diagnostics, UTF-16, symbols, hover, AST identity, navigation/completion, design hierarchy, schematic, call hierarchy, backward cone, and JSON semantic golden request shapes: `tests/unit`
-- JSON semantic golden fixtures for observable provider behavior, including hover, definition/typeDefinition, references, rename, completion/resolve, signatureHelp, inlayHint, diagnostics, codeAction, workspace/symbol, moduleHierarchy, schematic, backwardCone, and callHierarchy: `tests/golden/semantic`
+- JSON semantic golden fixtures for observable provider behavior, including hover, definition/typeDefinition, references, rename, completion/resolve, signatureHelp, inlayHint, semanticTokens, selectionRange, diagnostics, codeAction, workspace/symbol, moduleHierarchy, schematic, backwardCone, and callHierarchy: `tests/golden/semantic`
 - subprocess LSP smoke coverage for core LSP plus `systemverilog/*`: `tests/e2e`
 - opt-in semantic performance baselines for 100/1000/5000-file workspaces: `tests/perf`
 
@@ -334,7 +334,7 @@ The current repository state has been locally verified on Windows with:
 - keep macOS hover/type metadata stable by expanding deterministic same-range `AstIndex` lookup and port/interface type display regressions
 - mature completion, signature, and inlay providers with package `::`, hierarchical `.`, ordered/named/wildcard ports, function/task argument hints, resolved type, constant value, and interface/modport cases
 - expand diagnostics and code-action coverage for missing import/package/type/module/port, macro quickfixes, width/type mismatch, diagnostics publish/clear, and no-fallback regressions
-- keep expanding `tests/golden/semantic` beyond the current broad first-wave matrix, especially completion/inlay/diagnostics/cone/typeDefinition fixtures and cases that would fail under old syntax/text semantic paths
+- keep expanding `tests/golden/semantic` beyond the current 35+ fixture matrix, especially completion/inlay/diagnostics/cone/typeDefinition/navigation fixtures and cases that would fail under old syntax/text semantic paths
 - add robustness/property/differential tests for malformed JSON-RPC, illegal URIs, broken includes, recoverable syntax errors, UTF-16 incremental edits, duplicate references, and large-result truncation
 - add affected rebuild checks, cache hit/invalidation tests, and 100/1000/5000-file perf baselines for workspace-wide queries
 - expand AST-derived typeDefinition coverage for package-qualified typedefs, typedef alias chains, class/interface/modport type references, and shadowed type names

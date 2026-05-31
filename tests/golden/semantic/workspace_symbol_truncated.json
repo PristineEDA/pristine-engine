@@ -1,0 +1,17 @@
+{
+  "name": "workspace symbols report truncation at requested limit",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/workspace-truncated.sv",
+      "text": "package defs;\n  typedef logic [7:0] word_t;\nendpackage\ninterface bus;\nendinterface\nmodule top;\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "workspaceSymbol",
+    "query": "",
+    "limit": 1
+  },
+  "expected": {
+    "truncated": true
+  }
+}

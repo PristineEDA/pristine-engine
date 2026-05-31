@@ -1,0 +1,31 @@
+{
+  "name": "backward cone follows multi-level assignment edges",
+  "config": {
+    "topModules": [
+      "top"
+    ]
+  },
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/cone-multi.sv",
+      "text": "module top;\n  logic in;\n  logic mid;\n  logic out;\n  assign mid = in;\n  assign out = mid;\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "backwardCone",
+    "uri": "file:///golden/semantic/cone-multi.sv",
+    "line": 3,
+    "character": 9
+  },
+  "expected": {
+    "nodes": [
+      "out",
+      "mid",
+      "in"
+    ],
+    "expressions": [
+      "mid",
+      "in"
+    ]
+  }
+}

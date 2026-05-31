@@ -1,0 +1,36 @@
+{
+  "name": "selection range returns token statement and module parent chain",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/select.sv",
+      "text": "module top;\n  logic ready;\n  assign ready = ready;\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "selectionRange",
+    "uri": "file:///golden/semantic/select.sv",
+    "line": 2,
+    "character": 10
+  },
+  "expected": {
+    "minCount": 3,
+    "ranges": [
+      {
+        "startLine": 2,
+        "startCharacter": 9,
+        "endCharacter": 14
+      },
+      {
+        "startLine": 2,
+        "startCharacter": 2,
+        "endCharacter": 23
+      }
+    ],
+    "rootRange": {
+      "startLine": 0,
+      "startCharacter": 0,
+      "endLine": 3,
+      "endCharacter": 9
+    }
+  }
+}

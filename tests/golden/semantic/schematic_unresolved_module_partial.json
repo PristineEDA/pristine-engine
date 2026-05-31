@@ -1,0 +1,25 @@
+{
+  "name": "schematic reports partial result for unresolved module",
+  "config": {
+    "topModules": [
+      "top"
+    ]
+  },
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/schematic-missing.sv",
+      "text": "module top;\n  missing_child u_missing();\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "schematic",
+    "moduleName": "missing_child",
+    "maxDepth": 8
+  },
+  "expected": {
+    "partial": true,
+    "messagesContain": [
+      "No schematic data"
+    ]
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "name": "completion returns macro definitions from AstIndex macro facts",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/macro-completion.sv",
+      "text": "`define LOCAL_FLAG 1\n`define LOCAL_ADD(a, b) ((a) + (b))\nmodule top;\n  logic ready;\n  assign ready = `LOC\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "completion",
+    "uri": "file:///golden/semantic/macro-completion.sv",
+    "line": 4,
+    "character": 21,
+    "prefix": "LOC"
+  },
+  "expected": {
+    "labels": [
+      "LOCAL_FLAG",
+      "LOCAL_ADD"
+    ]
+  }
+}

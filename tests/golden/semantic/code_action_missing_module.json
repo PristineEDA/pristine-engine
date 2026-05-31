@@ -1,0 +1,30 @@
+{
+  "name": "code action creates unresolved module stub",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/create-module.sv",
+      "text": "module top;\n  missing_child u_missing();\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "codeAction",
+    "uri": "file:///golden/semantic/create-module.sv",
+    "range": {
+      "startLine": 1,
+      "startCharacter": 2,
+      "endLine": 1,
+      "endCharacter": 15
+    }
+  },
+  "expected": {
+    "actions": [
+      {
+        "title": "Create stub module 'missing_child'",
+        "diagnosticCodes": [
+          "unresolvedModule"
+        ],
+        "editContains": "module missing_child;"
+      }
+    ]
+  }
+}

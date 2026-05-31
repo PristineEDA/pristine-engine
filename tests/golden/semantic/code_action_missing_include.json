@@ -1,0 +1,35 @@
+{
+  "name": "code action creates missing include file",
+  "config": {
+    "workspaceRootUri": "file:///golden/semantic"
+  },
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/rtl/top.sv",
+      "text": "`include \"missing.svh\"\nmodule top;\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "codeAction",
+    "uri": "file:///golden/semantic/rtl/top.sv",
+    "range": {
+      "startLine": 0,
+      "startCharacter": 10,
+      "endLine": 0,
+      "endCharacter": 21
+    }
+  },
+  "expected": {
+    "actions": [
+      {
+        "title": "Create include file 'missing.svh'",
+        "diagnosticCodes": [
+          "unknownInclude"
+        ],
+        "createFiles": [
+          "file:///golden/semantic/rtl/missing.svh"
+        ]
+      }
+    ]
+  }
+}

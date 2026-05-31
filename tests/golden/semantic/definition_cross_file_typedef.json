@@ -1,0 +1,30 @@
+{
+  "name": "type definition finds cross-file imported package typedef",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/def-pkg.sv",
+      "text": "package defs;\n  typedef logic [7:0] word_t;\nendpackage\n"
+    },
+    {
+      "uri": "file:///golden/semantic/def-top.sv",
+      "text": "module top;\n  import defs::*;\n  word_t value;\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "typeDefinition",
+    "uri": "file:///golden/semantic/def-top.sv",
+    "line": 2,
+    "character": 3
+  },
+  "expected": {
+    "count": 1,
+    "locations": [
+      {
+        "uri": "file:///golden/semantic/def-pkg.sv",
+        "startLine": 1,
+        "startCharacter": 22,
+        "endCharacter": 28
+      }
+    ]
+  }
+}
