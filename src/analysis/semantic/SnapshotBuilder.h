@@ -1,5 +1,6 @@
 #pragma once
 
+#include "SignatureInlayProvider.h"
 #include "pristine/analysis/SemanticEngine.h"
 
 #include <memory>
@@ -104,6 +105,7 @@ struct SnapshotData {
     std::unordered_map<std::string, std::vector<SnapshotTypeReference>> type_references_by_uri;
     std::unordered_map<std::string, std::vector<IncludeDirective>> include_directives_by_uri;
     std::unordered_map<std::string, std::vector<SnapshotModuleInstance>> module_instances_by_uri;
+    std::unordered_map<std::string, std::vector<SignatureInlayCall>> signature_calls_by_uri;
     std::unordered_map<std::string, std::vector<ParseRange>> selection_ranges_by_uri;
     std::unordered_map<std::string, std::vector<MacroDefinition>> macros_by_uri;
     std::unordered_map<std::string, std::vector<PackageImport>> package_imports_by_uri;

@@ -456,6 +456,52 @@ TEST_CASE("AstIndex derives declared type references from slang AST",
     CHECK(locations.front().range.end_character == 30);
 }
 
+TEST_CASE("AstIndex derives function and task signature calls from slang AST",
+          "[analysis][semantic][ast-index][signature][function][task][no-fallback]") {
+    SnapshotBuildInput input{.generation = 39,
+                             .documents = {{"file:///workspace/calls.sv",
+                                            SemanticEngineDocument{
+                                                .uri = "file:///workspace/calls.sv",
+                                                .text = "module top;\n"
+                                                        "  function automatic int add(input int lhs, input int rhs);\n"
+                                                        "    return lhs + rhs;\n"
+                                                        "  endfunction\n"
+                                                        "  task automatic emit(input logic ready);\n"
+                                                        "  endtask\n"
+                                                        "  initial begin\n"
+                                                        "    int value = add(1, 2);\n"
+                                                        "    emit(1'b1);\n"
+                                                        "  end\n"
+                                                        "endmodule\n",
+                                                .version = 1,
+                                                .is_open = true}}}};
+
+    auto output = SnapshotBuilder{}.build(std::move(input));
+    REQUIRE(output.data != nullptr);
+
+    const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
+    REQUIRE(view.signature_calls_by_uri.contains("file:///workspace/calls.sv"));
+    const auto& calls = view.signature_calls_by_uri.at("file:///workspace/calls.sv");
+
+    const auto add_call = std::find_if(calls.begin(), calls.end(), [](const SignatureInlayCall& call) {
+        return call.name == "add";
+    });
+    REQUIRE(add_call != calls.end());
+    CHECK(add_call->kind == "function");
+    CHECK(add_call->return_type == "int");
+    REQUIRE(add_call->parameters.size() == 2);
+    CHECK(add_call->parameters[0] == "input int lhs");
+    CHECK(add_call->parameters[1] == "input int rhs");
+
+    const auto emit_call = std::find_if(calls.begin(), calls.end(), [](const SignatureInlayCall& call) {
+        return call.name == "emit";
+    });
+    REQUIRE(emit_call != calls.end());
+    CHECK(emit_call->kind == "task");
+    REQUIRE(emit_call->parameters.size() == 1);
+    CHECK(emit_call->parameters[0] == "input logic ready");
+}
+
 TEST_CASE("AstIndex narrows package-qualified type references to the AST type token",
           "[analysis][semantic][ast-index][type-definition][package][no-fallback]") {
     SnapshotBuildInput input{

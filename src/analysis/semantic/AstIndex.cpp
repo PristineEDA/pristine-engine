@@ -9,10 +9,13 @@
 #include "slang/ast/SemanticFacts.h"
 #include "slang/ast/Symbol.h"
 #include "slang/ast/expressions/AssignmentExpressions.h"
+#include "slang/ast/expressions/CallExpression.h"
 #include "slang/ast/expressions/OperatorExpressions.h"
 #include "slang/ast/symbols/InstanceSymbols.h"
 #include "slang/ast/symbols/MemberSymbols.h"
 #include "slang/ast/symbols/PortSymbols.h"
+#include "slang/ast/symbols/SubroutineSymbols.h"
+#include "slang/ast/symbols/VariableSymbols.h"
 #include "slang/ast/types/DeclaredType.h"
 #include "slang/ast/types/Type.h"
 #include "slang/syntax/AllSyntax.h"
@@ -641,6 +644,78 @@ std::string typeDisplayForSymbol(const slang::ast::Symbol& symbol) {
         }
     }
     return {};
+}
+
+std::string argumentSignatureLabel(const slang::ast::FormalArgumentSymbol& argument) {
+    std::string label = directionName(argument.direction);
+    const auto type_display = normalizedTypeDisplay(argument.getType().toString());
+    if (!type_display.empty()) {
+        if (!label.empty()) {
+            label += " ";
+        }
+        label += type_display;
+    }
+    if (!argument.name.empty()) {
+        if (!label.empty()) {
+            label += " ";
+        }
+        label += std::string(argument.name);
+    }
+    return label;
+}
+
+std::optional<SignatureInlayCall> signatureCallForSubroutine(
+    const slang::SourceManager& source_manager,
+    const slang::ast::CallExpression& call,
+    const slang::ast::SubroutineSymbol& subroutine) {
+    const auto call_location = locationForSourceRange(source_manager, call.sourceRange);
+    const auto selection_location = locationForSourceRange(
+        source_manager,
+        slang::SourceRange(call.sourceRange.start(),
+                           call.sourceRange.start() + subroutine.name.size()));
+    if (!call_location.has_value() || !selection_location.has_value() ||
+        selection_location->uri != call_location->uri) {
+        return std::nullopt;
+    }
+
+    SignatureInlayCall result;
+    result.name = std::string(subroutine.name);
+    result.kind = std::string(slang::ast::SemanticFacts::getSubroutineKindStr(subroutine.subroutineKind));
+    result.return_type = normalizedTypeDisplay(subroutine.getReturnType().toString());
+    result.range = call_location->range;
+    result.selection_range = selection_location->range;
+    for (const auto* argument : subroutine.getArguments()) {
+        if (argument == nullptr) {
+            continue;
+        }
+        auto label = argumentSignatureLabel(*argument);
+        if (label.empty()) {
+            label = std::string(argument->name);
+        }
+        result.parameters.push_back(std::move(label));
+    }
+    return result;
+}
+
+void addSignatureCall(SnapshotData& data,
+                      const slang::SourceManager& source_manager,
+                      const slang::ast::CallExpression& call) {
+    if (call.isSystemCall()) {
+        return;
+    }
+    const auto* subroutine = std::get_if<const slang::ast::SubroutineSymbol*>(&call.subroutine);
+    if (subroutine == nullptr || *subroutine == nullptr || (*subroutine)->name.empty()) {
+        return;
+    }
+    auto signature_call = signatureCallForSubroutine(source_manager, call, **subroutine);
+    if (!signature_call.has_value()) {
+        return;
+    }
+    const auto call_location = locationForSourceRange(source_manager, call.sourceRange);
+    if (!call_location.has_value() || call_location->uri.empty()) {
+        return;
+    }
+    data.signature_calls_by_uri[call_location->uri].push_back(std::move(*signature_call));
 }
 
 std::optional<ModuleDefinition> moduleDefinitionForAstBody(const slang::SourceManager& source_manager,
@@ -1447,6 +1522,9 @@ struct SemanticIndexVisitor
         requires std::is_base_of_v<slang::ast::Expression, T>
     {
         indexSymbolReferences(data, source_manager, expression);
+        if constexpr (std::is_same_v<T, slang::ast::CallExpression>) {
+            addSignatureCall(data, source_manager, expression);
+        }
         this->visitDefault(expression);
     }
 };
@@ -1639,6 +1717,23 @@ void sortSnapshotIndexes(SnapshotData& data) {
                                             lhs.end_character == rhs.end_character;
                                  }),
                      ranges.end());
+    }
+    for (auto& [_, calls] : data.signature_calls_by_uri) {
+        std::sort(calls.begin(), calls.end(), [](const auto& lhs, const auto& rhs) {
+            if (lhs.range.start_line != rhs.range.start_line) {
+                return lhs.range.start_line < rhs.range.start_line;
+            }
+            if (lhs.range.start_character != rhs.range.start_character) {
+                return lhs.range.start_character < rhs.range.start_character;
+            }
+            if (lhs.range.end_line != rhs.range.end_line) {
+                return lhs.range.end_line < rhs.range.end_line;
+            }
+            if (lhs.range.end_character != rhs.range.end_character) {
+                return lhs.range.end_character < rhs.range.end_character;
+            }
+            return lhs.name < rhs.name;
+        });
     }
 }
 
@@ -1905,6 +2000,7 @@ AstIndexView buildAstIndexView(const SnapshotData* data, std::uint64_t generatio
     view.macros_by_uri = data->macros_by_uri;
     view.package_imports_by_uri = data->package_imports_by_uri;
     view.module_instances_by_uri = data->module_instances_by_uri;
+    view.signature_calls_by_uri = data->signature_calls_by_uri;
     view.design_graph_module_entries.reserve(view.module_signatures_by_name.size() +
                                              data->module_entries.size());
     std::set<std::string> emitted_graph_entries;

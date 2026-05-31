@@ -92,6 +92,44 @@ TEST_CASE("SignatureInlayProvider computes macro function active parameter",
     CHECK(result.active_parameter == 1);
 }
 
+TEST_CASE("SignatureInlayProvider computes function and task active parameters",
+          "[analysis][semantic][signature-inlay-provider][signature][function][task]") {
+    const std::string text = "module top;\n"
+                             "  function automatic int add(input int lhs, input int rhs);\n"
+                             "    return lhs + rhs;\n"
+                             "  endfunction\n"
+                             "  initial begin\n"
+                             "    int value = add(a, b);\n"
+                             "  end\n"
+                             "endmodule\n";
+    const SignatureInlayContext context{
+        .generation = 17,
+        .document_uri = "file:///workspace/top.sv",
+        .document_text = &text,
+        .calls = {SignatureInlayCall{.name = "add",
+                                     .kind = "function",
+                                     .return_type = "int",
+                                     .range = ParseRange{.start_line = 5,
+                                                         .start_character = 16,
+                                                         .end_line = 5,
+                                                         .end_character = 25},
+                                     .selection_range = ParseRange{.start_line = 5,
+                                                                   .start_character = 16,
+                                                                   .end_line = 5,
+                                                                   .end_character = 19},
+                                     .parameters = {"input int lhs", "input int rhs"}}},
+        .snapshot_available = true};
+
+    const auto result = signatureHelpAt(context, 5, 24);
+
+    REQUIRE_FALSE(result.unresolved);
+    CHECK(result.generation == 17);
+    CHECK(result.label == "function int add(input int lhs, input int rhs)");
+    REQUIRE(result.parameters.size() == 2);
+    CHECK(result.parameters[1] == "input int rhs");
+    CHECK(result.active_parameter == 1);
+}
+
 TEST_CASE("SignatureInlayProvider emits type and instance inlay hints in location order",
           "[analysis][semantic][signature-inlay-provider][inlay]") {
     const ModuleDefinition child{.name = "child",

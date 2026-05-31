@@ -533,6 +533,38 @@ TEST_CASE("SemanticEngine provides AST-backed module signature help and port com
     }));
 }
 
+TEST_CASE("SemanticEngine provides AST-backed function and task signature help",
+          "[analysis][semantic-engine][signature][function][task][no-fallback]") {
+    SemanticEngine engine;
+    engine.updateDocument("file:///workspace/calls.sv",
+                          "module top;\n"
+                          "  function automatic int add(input int lhs, input int rhs);\n"
+                          "    return lhs + rhs;\n"
+                          "  endfunction\n"
+                          "  task automatic emit(input logic ready);\n"
+                          "  endtask\n"
+                          "  initial begin\n"
+                          "    int value = add(1, 2);\n"
+                          "    emit(1'b1);\n"
+                          "  end\n"
+                          "endmodule\n",
+                          SemanticEngineDocumentState{.version = 1, .is_open = true});
+
+    const auto function_signature = engine.signatureHelpAt("file:///workspace/calls.sv", 7, 23);
+    REQUIRE_FALSE(function_signature.unresolved);
+    CHECK(function_signature.label == "function int add(input int lhs, input int rhs)");
+    REQUIRE(function_signature.parameters.size() == 2);
+    CHECK(function_signature.parameters[1] == "input int rhs");
+    CHECK(function_signature.active_parameter == 1);
+
+    const auto task_signature = engine.signatureHelpAt("file:///workspace/calls.sv", 8, 13);
+    REQUIRE_FALSE(task_signature.unresolved);
+    CHECK(task_signature.label == "task emit(input logic ready)");
+    REQUIRE(task_signature.parameters.size() == 1);
+    CHECK(task_signature.parameters[0] == "input logic ready");
+    CHECK(task_signature.active_parameter == 0);
+}
+
 TEST_CASE("SemanticEngine emits AST-backed port inlay hints for module instances",
           "[analysis][semantic-engine][inlay][ports]") {
     SemanticEngine engine;

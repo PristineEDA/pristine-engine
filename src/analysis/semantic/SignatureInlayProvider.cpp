@@ -141,6 +141,28 @@ std::optional<size_t> macroInvocationOpenParen(std::string_view text,
     return std::nullopt;
 }
 
+std::string callSignatureLabel(const SignatureInlayCall& call) {
+    std::string label;
+    if (!call.kind.empty()) {
+        label += call.kind;
+        label += " ";
+    }
+    if (!call.return_type.empty() && call.kind == "function") {
+        label += call.return_type;
+        label += " ";
+    }
+    label += call.name;
+    label += "(";
+    for (size_t index = 0; index < call.parameters.size(); ++index) {
+        if (index != 0) {
+            label += ", ";
+        }
+        label += call.parameters[index];
+    }
+    label += ")";
+    return label;
+}
+
 } // namespace
 
 SemanticSignatureHelpResult signatureHelpAt(const SignatureInlayContext& context,
@@ -175,6 +197,37 @@ SemanticSignatureHelpResult signatureHelpAt(const SignatureInlayContext& context
         }
         result.label = macroSignatureLabel(macro);
         result.parameters = macro.parameters;
+        const auto parameter_count = result.parameters.size();
+        result.active_parameter = parameter_count == 0
+                                      ? 0
+                                      : std::min(activeParameterAt(*context.document_text,
+                                                                   *open_paren,
+                                                                   *position_offset),
+                                                 static_cast<int>(parameter_count) - 1);
+        return result;
+    }
+
+    for (const auto& call : context.calls) {
+        if (!parseRangeContainsPosition(call.range, line, character)) {
+            continue;
+        }
+        const auto search_start = utf8OffsetAtUtf16Position(*context.document_text,
+                                                            call.selection_range.end_line,
+                                                            call.selection_range.end_character);
+        const auto search_end = utf8OffsetAtUtf16Position(*context.document_text,
+                                                          call.range.end_line,
+                                                          call.range.end_character);
+        if (!search_start.has_value() || !search_end.has_value()) {
+            continue;
+        }
+        const auto open_paren = openParenBeforePosition(*context.document_text,
+                                                        *search_start,
+                                                        std::min(*position_offset, *search_end));
+        if (!open_paren.has_value()) {
+            continue;
+        }
+        result.label = callSignatureLabel(call);
+        result.parameters = call.parameters;
         const auto parameter_count = result.parameters.size();
         result.active_parameter = parameter_count == 0
                                       ? 0

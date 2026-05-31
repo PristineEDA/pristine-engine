@@ -43,6 +43,7 @@ struct AstIndexView {
     std::unordered_map<std::string, std::vector<PackageImport>> package_imports_by_uri;
     std::unordered_map<std::string, std::vector<SnapshotModuleInstance>> module_instances_by_uri;
     std::unordered_map<std::string, std::vector<SignatureInlayModuleInstance>> signature_module_instances_by_uri;
+    std::unordered_map<std::string, std::vector<SignatureInlayCall>> signature_calls_by_uri;
     std::vector<NavigationReference> navigation_references;
     std::unordered_map<std::string, SemanticSymbolIdentity> navigation_symbols_by_id;
     std::unordered_map<std::string, DiagnosticSymbol> diagnostic_symbols_by_id;

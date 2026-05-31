@@ -21,6 +21,15 @@ struct SignatureInlayModuleInstance {
     std::vector<SchematicConnection> connections;
 };
 
+struct SignatureInlayCall {
+    std::string name;
+    std::string kind;
+    std::string return_type;
+    ParseRange range;
+    ParseRange selection_range;
+    std::vector<std::string> parameters;
+};
+
 struct SignatureInlayContext {
     std::uint64_t generation = 0;
     std::string document_uri;
@@ -28,6 +37,7 @@ struct SignatureInlayContext {
     const std::unordered_map<std::string, ModuleDefinition>* modules_by_name = nullptr;
     std::vector<SignatureInlaySymbol> symbols;
     std::vector<SignatureInlayModuleInstance> module_instances;
+    std::vector<SignatureInlayCall> calls;
     std::vector<MacroDefinition> macros;
     bool snapshot_available = false;
 };
