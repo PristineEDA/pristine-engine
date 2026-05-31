@@ -1,0 +1,26 @@
+{
+  "name": "code action does not re-import already imported packages",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/code-action-imported-defs.sv",
+      "text": "package defs;\n  typedef logic pkg_only_t;\nendpackage\n"
+    },
+    {
+      "uri": "file:///golden/semantic/code-action-imported-user.sv",
+      "text": "module top;\n  import defs::*;\n  pkg_only_t value;\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "codeAction",
+    "uri": "file:///golden/semantic/code-action-imported-user.sv",
+    "range": {
+      "startLine": 2,
+      "startCharacter": 2,
+      "endLine": 2,
+      "endCharacter": 12
+    }
+  },
+  "expected": {
+    "actionTitles": []
+  }
+}

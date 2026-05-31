@@ -1,0 +1,25 @@
+{
+  "name": "inlay hints include function argument labels",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/inlay-function-args.sv",
+      "text": "module top;\n  function automatic int add(input int lhs, input int rhs);\n    return lhs + rhs;\n  endfunction\n  initial begin\n    int value = add(1, 2);\n  end\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "inlayHint",
+    "uri": "file:///golden/semantic/inlay-function-args.sv",
+    "range": {
+      "startLine": 0,
+      "startCharacter": 0,
+      "endLine": 8,
+      "endCharacter": 0
+    }
+  },
+  "expected": {
+    "labels": [
+      "input int lhs:",
+      "input int rhs:"
+    ]
+  }
+}

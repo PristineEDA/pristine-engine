@@ -1,0 +1,24 @@
+{
+  "name": "array-style member completion stays in member context",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/completion-array-member.sv",
+      "text": "module top;\n  logic packets;\n  logic field;\n  logic other;\n  initial begin\n    packets[0].fie\n  end\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "completion",
+    "uri": "file:///golden/semantic/completion-array-member.sv",
+    "line": 5,
+    "character": 19,
+    "prefix": "fie"
+  },
+  "expected": {
+    "labels": [
+      "field"
+    ],
+    "absentLabels": [
+      "other"
+    ]
+  }
+}

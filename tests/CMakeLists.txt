@@ -26,6 +26,15 @@ add_test(
 	COMMAND Python3::Interpreter ${CMAKE_CURRENT_SOURCE_DIR}/e2e/lsp_core_smoke.py
 		$<TARGET_FILE:pristine-engine>)
 
+add_test(
+	NAME pristine_differential_slang_server
+	COMMAND Python3::Interpreter ${CMAKE_CURRENT_SOURCE_DIR}/differential/slang_server_differential.py
+		$<TARGET_FILE:pristine-engine>)
+set_tests_properties(pristine_differential_slang_server PROPERTIES
+	ENVIRONMENT "SLANG_SERVER_ROOT=$ENV{SLANG_SERVER_ROOT}"
+	LABELS "differential"
+	SKIP_REGULAR_EXPRESSION "SKIP: SLANG_SERVER_ROOT is not set")
+
 if(PRISTINE_BUILD_PERF_TESTS)
 	add_executable(pristine_perf_tests perf/SemanticPerfSmoke.cpp)
 	target_link_libraries(pristine_perf_tests PRIVATE pristine_core)

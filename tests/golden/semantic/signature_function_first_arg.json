@@ -1,0 +1,23 @@
+{
+  "name": "function signature help reports the first active argument",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/signature-function-first.sv",
+      "text": "module top;\n  function automatic int add(input int lhs, input int rhs);\n    return lhs + rhs;\n  endfunction\n  initial begin\n    int value = add(1, 2);\n  end\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "signatureHelp",
+    "uri": "file:///golden/semantic/signature-function-first.sv",
+    "line": 5,
+    "character": 21
+  },
+  "expected": {
+    "label": "function int add(input int lhs, input int rhs)",
+    "activeParameter": 0,
+    "parameters": [
+      "input int lhs",
+      "input int rhs"
+    ]
+  }
+}

@@ -259,6 +259,8 @@ semantic::CodeActionContext codeActionContextFor(const semantic::SnapshotData* d
             instances_it != ast_index.module_instances_by_uri.end()) {
             context.module_instances = instances_it->second;
         }
+        context.symbols_by_id = ast_index.diagnostic_symbols_by_id;
+        context.package_imports_by_uri = ast_index.package_imports_by_uri;
     }
     return context;
 }

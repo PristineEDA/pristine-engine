@@ -1,0 +1,33 @@
+{
+  "name": "backward cone follows a longer deterministic chain",
+  "config": {
+    "topModules": [
+      "top"
+    ]
+  },
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/cone-large-chain.sv",
+      "text": "module top;\n  logic a;\n  logic b;\n  logic c;\n  logic d;\n  assign b = a;\n  assign c = b;\n  assign d = c;\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "backwardCone",
+    "uri": "file:///golden/semantic/cone-large-chain.sv",
+    "line": 4,
+    "character": 8
+  },
+  "expected": {
+    "nodes": [
+      "d",
+      "c",
+      "b",
+      "a"
+    ],
+    "expressions": [
+      "c",
+      "b",
+      "a"
+    ]
+  }
+}

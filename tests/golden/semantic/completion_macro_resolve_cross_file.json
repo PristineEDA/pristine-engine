@@ -1,0 +1,26 @@
+{
+  "name": "completion resolve documents cross-file macro functions",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/cross-macro-defs.svh",
+      "text": "`define SUM(lhs, rhs) ((lhs) + (rhs))\n"
+    },
+    {
+      "uri": "file:///golden/semantic/cross-macro-use.sv",
+      "text": "module top;\n  int value = `SU\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "completionResolve",
+    "uri": "file:///golden/semantic/cross-macro-use.sv",
+    "line": 1,
+    "character": 17,
+    "prefix": "SU",
+    "label": "SUM"
+  },
+  "expected": {
+    "detailContains": "Macro function",
+    "documentationContains": "Parameters: `lhs, rhs`",
+    "insertTextContains": "${2:rhs}"
+  }
+}

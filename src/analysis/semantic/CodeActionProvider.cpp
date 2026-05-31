@@ -17,6 +17,7 @@ constexpr std::string_view kUnknownIncludeDiagnosticCode = "unknownInclude";
 constexpr std::string_view kUnresolvedModuleDiagnosticCode = "unresolvedModule";
 constexpr std::string_view kUnresolvedPackageDiagnosticCode = "unresolvedPackage";
 constexpr std::string_view kUnresolvedTypeDiagnosticCode = "unresolvedType";
+constexpr std::string_view kMissingImportDiagnosticCode = "missingImport";
 
 int comparePosition(int lhs_line, int lhs_character, int rhs_line, int rhs_character) {
     if (lhs_line != rhs_line) {
@@ -103,6 +104,17 @@ std::string packageStubInsertionText(std::string_view text, std::string_view pac
     insertion += "package ";
     insertion += package_name;
     insertion += ";\nendpackage\n";
+    return insertion;
+}
+
+std::string importInsertionText(std::string_view text, std::string_view package_name) {
+    std::string insertion;
+    if (!text.empty() && text.front() != '\n') {
+        insertion += "\n";
+    }
+    insertion += "import ";
+    insertion += package_name;
+    insertion += "::*;\n";
     return insertion;
 }
 
@@ -227,6 +239,41 @@ std::optional<ParseRange> instancePortInsertionRange(std::string_view text,
         }
     }
     return std::nullopt;
+}
+
+std::optional<std::string> packageNameFromMissingImportDiagnostic(const CodeActionContext& context,
+                                                                 const SemanticEngineDiagnostic& diagnostic) {
+    const auto type_name = textForParseRange(context.document.text, diagnostic.range);
+    if (!type_name.has_value()) {
+        return std::nullopt;
+    }
+    std::vector<std::string> packages;
+    for (const auto& [_, symbol] : context.symbols_by_id) {
+        if (symbol.identity.name != *type_name) {
+            continue;
+        }
+        for (const auto& [__, package_symbol] : context.symbols_by_id) {
+            if (package_symbol.identity.kind == "Package" &&
+                package_symbol.identity.location.uri == symbol.identity.location.uri) {
+                packages.push_back(package_symbol.identity.name);
+            }
+        }
+    }
+    std::sort(packages.begin(), packages.end());
+    packages.erase(std::unique(packages.begin(), packages.end()), packages.end());
+    if (packages.size() != 1) {
+        return std::nullopt;
+    }
+    const auto imports_it = context.package_imports_by_uri.find(context.document.uri);
+    if (imports_it != context.package_imports_by_uri.end() &&
+        std::any_of(imports_it->second.begin(),
+                    imports_it->second.end(),
+                    [&](const PackageImport& import) {
+                        return import.package_name == packages.front();
+                    })) {
+        return std::nullopt;
+    }
+    return packages.front();
 }
 
 bool hasPortListSyntax(std::string_view text, const SchematicCell& cell) {
@@ -406,6 +453,31 @@ SemanticCodeActionResult codeActionsAt(const CodeActionContext& context) {
                                                       .range = insert_range,
                                                       .new_text = packageStubInsertionText(context.document.text,
                                                                                           *package_name)});
+        result.actions.push_back(std::move(action));
+    }
+
+    std::set<std::string> emitted_imports;
+    for (const auto& diagnostic : context.diagnostics) {
+        if (diagnostic.code != kMissingImportDiagnosticCode ||
+            !rangesIntersect(diagnostic.range, context.range)) {
+            continue;
+        }
+        const auto package_name = packageNameFromMissingImportDiagnostic(context, diagnostic);
+        if (!package_name.has_value() || !isValidIdentifier(*package_name) ||
+            !emitted_imports.insert(*package_name).second) {
+            continue;
+        }
+        SemanticCodeAction action;
+        action.title = "Import package '" + *package_name + "'";
+        action.kind = "quickfix";
+        action.diagnostics.push_back(SemanticDiagnosticData{.code = diagnostic.code,
+                                                            .message = diagnostic.message,
+                                                            .range = diagnostic.range,
+                                                            .severity = diagnostic.severity});
+        action.edits.push_back(SemanticCodeActionEdit{.uri = context.document.uri,
+                                                      .range = ParseRange{},
+                                                      .new_text = importInsertionText(context.document.text,
+                                                                                      *package_name)});
         result.actions.push_back(std::move(action));
     }
 

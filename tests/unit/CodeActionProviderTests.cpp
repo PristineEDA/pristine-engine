@@ -25,6 +25,7 @@ TEST_CASE("CodeActionProvider creates include, module, port, and typedef fixes",
                                "  missing_child u_missing();\n"
                                "  import missing_pkg::*;\n"
                                "  missing_t value;\n"
+                               "  pkg_only_t imported_later;\n"
                                "endmodule\n";
     CodeActionContext context{
         .generation = 9,
@@ -33,7 +34,7 @@ TEST_CASE("CodeActionProvider creates include, module, port, and typedef fixes",
         .document = SemanticEngineDocument{.uri = std::string(uri), .text = document_text},
         .range = ParseRange{.start_line = 0,
                             .start_character = 0,
-                            .end_line = 5,
+                            .end_line = 6,
                             .end_character = 17},
         .modules_by_name = {{"child",
                              ModuleDefinition{.name = "child",
@@ -66,6 +67,20 @@ TEST_CASE("CodeActionProvider creates include, module, port, and typedef fixes",
                                                     .range = rangeAt(3, 2, 28),
                                                     .selection_range = rangeAt(3, 16, 25),
                                                     .module_selection_range = rangeAt(3, 2, 15)}},
+        .symbols_by_id = {{"pkg",
+                           DiagnosticSymbol{.identity = SemanticSymbolIdentity{.stable_id = "pkg",
+                                                                               .name = "defs",
+                                                                               .kind = "Package",
+                                                                               .location = SemanticLocation{
+                                                                                   .uri = "file:///workspace/rtl/defs.sv",
+                                                                                   .range = rangeAt(0, 8, 12)}}}},
+                          {"pkg_only",
+                           DiagnosticSymbol{.identity = SemanticSymbolIdentity{.stable_id = "pkg_only",
+                                                                               .name = "pkg_only_t",
+                                                                               .kind = "TypeAlias",
+                                                                               .location = SemanticLocation{
+                                                                                   .uri = "file:///workspace/rtl/defs.sv",
+                                                                                   .range = rangeAt(1, 22, 32)}}}}},
         .diagnostics = {SemanticEngineDiagnostic{.uri = std::string(uri),
                                                  .code = "unresolvedType",
                                                  .message = "Type 'missing_t' could not be resolved.",
@@ -75,6 +90,11 @@ TEST_CASE("CodeActionProvider creates include, module, port, and typedef fixes",
                                                  .code = "unresolvedPackage",
                                                  .message = "Package 'missing_pkg' could not be resolved.",
                                                  .range = rangeAt(4, 9, 20),
+                                                 .severity = 1},
+                        SemanticEngineDiagnostic{.uri = std::string(uri),
+                                                 .code = "missingImport",
+                                                 .message = "Type 'pkg_only_t' is available from package 'defs' but is not imported.",
+                                                 .range = rangeAt(6, 2, 12),
                                                  .severity = 1}}};
 
     const auto result = codeActionsAt(context);
@@ -105,6 +125,11 @@ TEST_CASE("CodeActionProvider creates include, module, port, and typedef fixes",
         return action.title == "Create package 'missing_pkg'" &&
                action.edits.size() == 1 &&
                action.edits.front().new_text.find("package missing_pkg;") != std::string::npos;
+    }));
+    CHECK(std::any_of(result.actions.begin(), result.actions.end(), [](const SemanticCodeAction& action) {
+        return action.title == "Import package 'defs'" &&
+               action.edits.size() == 1 &&
+               action.edits.front().new_text.find("import defs::*;") != std::string::npos;
     }));
 }
 

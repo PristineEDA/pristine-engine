@@ -1,0 +1,34 @@
+{
+  "name": "code action imports the package that defines a missing type",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/code-action-import-defs.sv",
+      "text": "package defs;\n  typedef logic pkg_only_t;\nendpackage\n"
+    },
+    {
+      "uri": "file:///golden/semantic/code-action-import-user.sv",
+      "text": "module top;\n  pkg_only_t value;\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "codeAction",
+    "uri": "file:///golden/semantic/code-action-import-user.sv",
+    "range": {
+      "startLine": 1,
+      "startCharacter": 2,
+      "endLine": 1,
+      "endCharacter": 12
+    }
+  },
+  "expected": {
+    "actions": [
+      {
+        "title": "Import package 'defs'",
+        "diagnosticCodes": [
+          "missingImport"
+        ],
+        "editContains": "import defs::*;"
+      }
+    ]
+  }
+}

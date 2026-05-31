@@ -35,6 +35,7 @@ TEST_CASE("DiagnosticProvider aggregates UX diagnostics and dedupes snapshot dia
                                                    "  import pkg_b::*;\n"
                                                    "  word_t value;\n"
                                                    "  missing_t missing;\n"
+                                                   "  pkg_only_t imported_later;\n"
                                                    "  logic [3:0] lhs;\n"
                                                    "  logic [7:0] rhs;\n"
                                                    "  assign lhs = rhs;\n"
@@ -100,18 +101,30 @@ TEST_CASE("DiagnosticProvider aggregates UX diagnostics and dedupes snapshot dia
                                                                                .name = "word_t",
                                                                                .kind = "TypeAlias",
                                                                                .location = locationAt("file:///workspace/pkg_b.sv",
-                                                                                                      rangeAt(1, 23, 29))}}}},
+                                                                                                      rangeAt(1, 23, 29))}}},
+                          {"pkg_c",
+                           DiagnosticSymbol{.identity = SemanticSymbolIdentity{.stable_id = "pkg_c",
+                                                                               .name = "pkg_c",
+                                                                               .kind = "Package",
+                                                                               .location = locationAt("file:///workspace/pkg_c.sv",
+                                                                                                      rangeAt(0, 8, 13))}}},
+                          {"pkg_only",
+                           DiagnosticSymbol{.identity = SemanticSymbolIdentity{.stable_id = "pkg_only",
+                                                                               .name = "pkg_only_t",
+                                                                               .kind = "TypeAlias",
+                                                                               .location = locationAt("file:///workspace/pkg_c.sv",
+                                                                                                      rangeAt(1, 22, 32))}}}},
         .references = {DiagnosticReference{.stable_id = "lhs",
-                                           .location = locationAt(std::string(uri), rangeAt(9, 9, 12))},
+                                           .location = locationAt(std::string(uri), rangeAt(10, 9, 12))},
                        DiagnosticReference{.stable_id = "rhs",
-                                           .location = locationAt(std::string(uri), rangeAt(9, 15, 18))}},
+                                           .location = locationAt(std::string(uri), rangeAt(10, 15, 18))}},
         .assignment_edges_by_uri = {{std::string(uri),
                                      {SnapshotAssignmentEdge{.from_symbol_id = "lhs",
                                                              .to_symbol_id = "rhs",
                                                              .location = locationAt(std::string(uri),
-                                                                                    rangeAt(9, 2, 18)),
+                                                                                    rangeAt(10, 2, 18)),
                                                              .expression_location = locationAt(std::string(uri),
-                                                                                               rangeAt(9, 15, 18)),
+                                                                                               rangeAt(10, 15, 18)),
                                                              .expression = "rhs"}}}},
         .type_references_by_uri = {{std::string(uri),
                                     {SnapshotTypeReference{.reference = locationAt(std::string(uri),
@@ -124,10 +137,14 @@ TEST_CASE("DiagnosticProvider aggregates UX diagnostics and dedupes snapshot dia
                                      SnapshotTypeReference{.reference = locationAt(std::string(uri),
                                                                                    rangeAt(6, 2, 11)),
                                                            .type_name = "missing_t",
+                                                           .definitions = {}},
+                                     SnapshotTypeReference{.reference = locationAt(std::string(uri),
+                                                                                   rangeAt(7, 2, 12)),
+                                                           .type_name = "pkg_only_t",
                                                            .definitions = {}}}}},
         .include_directives_by_uri = {{std::string(uri),
                                        {IncludeDirective{.target = "missing.svh",
-                                                         .range = rangeAt(10, 0, 22)}}}},
+                                                         .range = rangeAt(11, 0, 22)}}}},
         .package_imports_by_uri = {{std::string(uri),
                                     {PackageImport{.package_name = "pkg_a",
                                                    .package_range = rangeAt(3, 9, 14),
@@ -140,9 +157,9 @@ TEST_CASE("DiagnosticProvider aggregates UX diagnostics and dedupes snapshot dia
                                      {SnapshotModuleInstance{.module_name = "missing_child",
                                                              .instance_name = "u_missing",
                                                              .uri = std::string(uri),
-                                                             .range = rangeAt(11, 2, 28),
-                                                             .selection_range = rangeAt(11, 16, 25),
-                                                             .module_selection_range = rangeAt(11, 2, 15)}}}}};
+                                                             .range = rangeAt(12, 2, 28),
+                                                             .selection_range = rangeAt(12, 16, 25),
+                                                             .module_selection_range = rangeAt(12, 2, 15)}}}}};
 
     const auto diagnostics = diagnosticsFor(context);
 
@@ -157,6 +174,10 @@ TEST_CASE("DiagnosticProvider aggregates UX diagnostics and dedupes snapshot dia
     }));
     CHECK(std::any_of(diagnostics.begin(), diagnostics.end(), [](const SemanticEngineDiagnostic& diagnostic) {
         return diagnostic.code == "unresolvedType";
+    }));
+    CHECK(std::any_of(diagnostics.begin(), diagnostics.end(), [](const SemanticEngineDiagnostic& diagnostic) {
+        return diagnostic.code == "missingImport" &&
+               diagnostic.message.find("pkg_c") != std::string::npos;
     }));
     CHECK(std::any_of(diagnostics.begin(), diagnostics.end(), [](const SemanticEngineDiagnostic& diagnostic) {
         return diagnostic.code == "widthMismatch" && diagnostic.severity == 2;

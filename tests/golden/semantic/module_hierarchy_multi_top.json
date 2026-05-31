@@ -1,0 +1,29 @@
+{
+  "name": "module hierarchy returns multiple configured top modules",
+  "config": {
+    "topModules": [
+      "top_a",
+      "top_b"
+    ]
+  },
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/hierarchy-multi-top.sv",
+      "text": "module leaf;\nendmodule\nmodule top_a;\n  leaf u_leaf_a();\nendmodule\nmodule top_b;\n  leaf u_leaf_b();\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "moduleHierarchy",
+    "moduleName": null,
+    "maxDepth": 8
+  },
+  "expected": {
+    "rootModules": [
+      "top_a",
+      "top_b"
+    ],
+    "modules": [
+      "leaf"
+    ]
+  }
+}

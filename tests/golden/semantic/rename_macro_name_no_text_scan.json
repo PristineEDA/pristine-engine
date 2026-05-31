@@ -1,0 +1,20 @@
+{
+  "name": "rename ignores same macro text when renaming a signal",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/rename-macro-text.sv",
+      "text": "`define ready 1\nmodule top;\n  logic ready;\n  assign ready = ready;\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "rename",
+    "uri": "file:///golden/semantic/rename-macro-text.sv",
+    "line": 2,
+    "character": 9,
+    "newName": "renamed_ready"
+  },
+  "expected": {
+    "count": 3,
+    "allNewText": "renamed_ready"
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "name": "workspace symbols filter interface names",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/workspace-interface-filter.sv",
+      "text": "interface bus_if;\n  modport master(input ready);\nendinterface\nmodule top;\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "workspaceSymbol",
+    "query": "bus",
+    "limit": 10
+  },
+  "expected": {
+    "names": [
+      "bus_if"
+    ],
+    "absentNames": [
+      "top"
+    ]
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "name": "member completion offers interface-style member names",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/completion-interface-member.sv",
+      "text": "module top;\n  logic bus;\n  logic ready;\n  logic data_valid;\n  initial begin\n    bus.rea\n  end\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "completion",
+    "uri": "file:///golden/semantic/completion-interface-member.sv",
+    "line": 5,
+    "character": 11,
+    "prefix": "rea"
+  },
+  "expected": {
+    "labels": [
+      "ready"
+    ],
+    "absentLabels": [
+      "data_valid"
+    ]
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "name": "diagnostics do not suggest an import when the package is already imported",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/imported-defs.sv",
+      "text": "package defs;\n  typedef logic pkg_only_t;\nendpackage\n"
+    },
+    {
+      "uri": "file:///golden/semantic/imported-user.sv",
+      "text": "module top;\n  import defs::*;\n  pkg_only_t value;\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "diagnostics"
+  },
+  "expected": {
+    "uri": "file:///golden/semantic/imported-user.sv",
+    "diagnostics": [
+      {
+        "code": "missingImport",
+        "present": false
+      }
+    ]
+  }
+}

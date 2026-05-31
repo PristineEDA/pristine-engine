@@ -1,0 +1,23 @@
+{
+  "name": "semantic tokens include typedef and variable declarations",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/tokens-typedef-variable.sv",
+      "text": "module top;\n  typedef logic [3:0] nibble_t;\n  nibble_t value;\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "semanticTokens",
+    "uri": "file:///golden/semantic/tokens-typedef-variable.sv"
+  },
+  "expected": {
+    "tokens": [
+      {
+        "startLine": 2,
+        "startCharacter": 11,
+        "endLine": 2,
+        "endCharacter": 16
+      }
+    ]
+  }
+}

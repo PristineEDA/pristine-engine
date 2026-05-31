@@ -1,0 +1,26 @@
+{
+  "name": "diagnostics suggest importing a package that defines the missing type",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/import-defs.sv",
+      "text": "package defs;\n  typedef logic pkg_only_t;\nendpackage\n"
+    },
+    {
+      "uri": "file:///golden/semantic/import-user.sv",
+      "text": "module top;\n  pkg_only_t value;\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "diagnostics"
+  },
+  "expected": {
+    "uri": "file:///golden/semantic/import-user.sv",
+    "diagnostics": [
+      {
+        "code": "missingImport",
+        "severity": 1,
+        "startLine": 1
+      }
+    ]
+  }
+}

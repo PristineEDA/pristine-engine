@@ -1,0 +1,31 @@
+{
+  "name": "backward cone follows parameterized assignment edges",
+  "config": {
+    "topModules": [
+      "top"
+    ]
+  },
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/cone-parameterized.sv",
+      "text": "module top;\n  logic [3:0] in;\n  logic [3:0] mid;\n  logic [3:0] out;\n  assign mid = in;\n  assign out = mid;\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "backwardCone",
+    "uri": "file:///golden/semantic/cone-parameterized.sv",
+    "line": 3,
+    "character": 15
+  },
+  "expected": {
+    "nodes": [
+      "out",
+      "mid",
+      "in"
+    ],
+    "expressions": [
+      "mid",
+      "in"
+    ]
+  }
+}

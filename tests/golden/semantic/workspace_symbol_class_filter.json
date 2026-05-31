@@ -1,0 +1,22 @@
+{
+  "name": "workspace symbols filter class names",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/workspace-class-filter.sv",
+      "text": "class packet_item;\nendclass\nmodule top;\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "workspaceSymbol",
+    "query": "packet",
+    "limit": 10
+  },
+  "expected": {
+    "names": [
+      "packet_item"
+    ],
+    "absentNames": [
+      "top"
+    ]
+  }
+}

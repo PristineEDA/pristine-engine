@@ -1,0 +1,20 @@
+{
+  "name": "references ignore same macro text when querying a signal",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/references-macro-text.sv",
+      "text": "`define ready 1\nmodule top;\n  logic ready;\n  assign ready = ready;\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "references",
+    "uri": "file:///golden/semantic/references-macro-text.sv",
+    "line": 2,
+    "character": 9,
+    "includeDeclaration": true
+  },
+  "expected": {
+    "count": 3,
+    "allBeforeLine": 5
+  }
+}

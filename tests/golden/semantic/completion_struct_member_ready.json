@@ -1,0 +1,24 @@
+{
+  "name": "member completion offers struct-like field names from indexed symbols",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/completion-struct-member.sv",
+      "text": "module top;\n  logic packet;\n  logic valid;\n  logic ready;\n  initial begin\n    packet.val\n  end\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "completion",
+    "uri": "file:///golden/semantic/completion-struct-member.sv",
+    "line": 5,
+    "character": 14,
+    "prefix": "val"
+  },
+  "expected": {
+    "labels": [
+      "valid"
+    ],
+    "absentLabels": [
+      "ready"
+    ]
+  }
+}

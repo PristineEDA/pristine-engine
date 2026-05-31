@@ -1,5 +1,6 @@
 #pragma once
 
+#include "DiagnosticProvider.h"
 #include "SnapshotBuilder.h"
 #include "pristine/analysis/SemanticEngine.h"
 
@@ -20,6 +21,8 @@ struct CodeActionContext {
     std::vector<ModuleSchematic> document_schematics;
     std::vector<IncludeDirective> include_directives;
     std::vector<SnapshotModuleInstance> module_instances;
+    std::unordered_map<std::string, DiagnosticSymbol> symbols_by_id;
+    std::unordered_map<std::string, std::vector<PackageImport>> package_imports_by_uri;
     std::vector<SemanticEngineDiagnostic> diagnostics;
 };
 

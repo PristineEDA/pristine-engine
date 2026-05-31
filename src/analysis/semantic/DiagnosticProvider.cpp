@@ -21,6 +21,7 @@ namespace fs = std::filesystem;
 constexpr std::string_view kUnknownIncludeDiagnosticCode = "unknownInclude";
 constexpr std::string_view kUnresolvedModuleDiagnosticCode = "unresolvedModule";
 constexpr std::string_view kUnresolvedTypeDiagnosticCode = "unresolvedType";
+constexpr std::string_view kMissingImportDiagnosticCode = "missingImport";
 
 bool diagnosticLess(const SemanticEngineDiagnostic& lhs, const SemanticEngineDiagnostic& rhs) {
     if (lhs.range.start_line != rhs.range.start_line) {
@@ -114,6 +115,11 @@ std::string ambiguousReferenceMessage(std::string_view name, size_t definition_c
 
 std::string unresolvedPackageMessage(std::string_view name) {
     return std::string("Package '") + std::string(name) + "' could not be resolved.";
+}
+
+std::string missingImportMessage(std::string_view type_name, std::string_view package_name) {
+    return std::string("Type '") + std::string(type_name) + "' is available from package '" +
+           std::string(package_name) + "' but is not imported.";
 }
 
 std::string widthMismatchMessage(std::string_view left_name,
@@ -211,6 +217,39 @@ std::vector<SemanticLocation> typeDefinitionLocationsByName(const DiagnosticCont
         }
     }
     return locations;
+}
+
+std::vector<std::string> packageNamesDefiningMember(const DiagnosticContext& context,
+                                                    std::string_view member_name) {
+    std::vector<std::string> result;
+    for (const auto& [_, symbol] : context.symbols_by_id) {
+        const auto& identity = symbol.identity;
+        if (identity.name != member_name || !isPackageMemberDefinitionKind(identity.kind)) {
+            continue;
+        }
+        for (const auto& [__, package_symbol] : context.symbols_by_id) {
+            const auto& package_identity = package_symbol.identity;
+            if (package_identity.kind == "Package" &&
+                package_identity.location.uri == identity.location.uri) {
+                result.push_back(package_identity.name);
+            }
+        }
+    }
+    std::sort(result.begin(), result.end());
+    result.erase(std::unique(result.begin(), result.end()), result.end());
+    return result;
+}
+
+bool documentImportsPackage(const DiagnosticContext& context, std::string_view package_name) {
+    const auto imports_it = context.package_imports_by_uri.find(context.document.uri);
+    if (imports_it == context.package_imports_by_uri.end()) {
+        return false;
+    }
+    return std::any_of(imports_it->second.begin(),
+                       imports_it->second.end(),
+                       [&](const PackageImport& import) {
+                           return import.package_name == package_name;
+                       });
 }
 
 bool hasTypeDefinitionSymbol(const DiagnosticContext& context, std::string_view name) {
@@ -375,6 +414,35 @@ void appendUnresolvedTypeDiagnostics(std::vector<SemanticEngineDiagnostic>& resu
     }
 }
 
+void appendMissingImportDiagnostics(std::vector<SemanticEngineDiagnostic>& result,
+                                    const DiagnosticContext& context) {
+    std::set<std::pair<int, int>> reported_type_ranges;
+    const auto references_it = context.type_references_by_uri.find(context.document.uri);
+    if (references_it == context.type_references_by_uri.end()) {
+        return;
+    }
+    for (const auto& reference : references_it->second) {
+        if (!reference.definitions.empty() || !isUserTypeReferenceName(reference.type_name)) {
+            continue;
+        }
+        const auto packages = packageNamesDefiningMember(context, reference.type_name);
+        if (packages.size() != 1 || documentImportsPackage(context, packages.front())) {
+            continue;
+        }
+        const auto range_key = std::pair(reference.reference.range.start_line,
+                                         reference.reference.range.start_character);
+        if (!reported_type_ranges.insert(range_key).second) {
+            continue;
+        }
+        result.push_back(SemanticEngineDiagnostic{
+            .uri = context.document.uri,
+            .code = std::string(kMissingImportDiagnosticCode),
+            .message = missingImportMessage(reference.type_name, packages.front()),
+            .range = reference.reference.range,
+            .severity = 1});
+    }
+}
+
 void appendUnknownIncludeDiagnostics(std::vector<SemanticEngineDiagnostic>& result,
                                      const DiagnosticContext& context) {
     const auto includes_it = context.include_directives_by_uri.find(context.document.uri);
@@ -454,6 +522,7 @@ std::vector<SemanticEngineDiagnostic> diagnosticsFor(const DiagnosticContext& co
         appendUnresolvedPackageDiagnostics(result, context);
         appendUnknownIncludeDiagnostics(result, context);
         appendUnresolvedModuleDiagnostics(result, context);
+        appendMissingImportDiagnostics(result, context);
         appendUnresolvedTypeDiagnostics(result, context);
         appendWidthMismatchDiagnostics(result, context);
         appendAmbiguousReferenceDiagnostics(result, context);

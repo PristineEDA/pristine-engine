@@ -1,0 +1,30 @@
+{
+  "name": "inlay hints include parameterized module instance type after override",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/inlay-param-child.sv",
+      "text": "module child #(parameter int WIDTH = 8) (input logic [WIDTH-1:0] data, input logic clk);\nendmodule\n"
+    },
+    {
+      "uri": "file:///golden/semantic/inlay-param-top.sv",
+      "text": "module top;\n  logic [3:0] data;\n  logic clk;\n  child #(.WIDTH(4)) u_child(.data(data), .clk(clk));\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "inlayHint",
+    "uri": "file:///golden/semantic/inlay-param-top.sv",
+    "range": {
+      "startLine": 0,
+      "startCharacter": 0,
+      "endLine": 5,
+      "endCharacter": 0
+    }
+  },
+  "expected": {
+    "labels": [
+      ": child",
+      ".data",
+      ".clk"
+    ]
+  }
+}

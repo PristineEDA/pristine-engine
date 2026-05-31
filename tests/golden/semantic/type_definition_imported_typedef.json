@@ -1,0 +1,28 @@
+{
+  "name": "type definition resolves imported package typedef",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/type-def-imported-defs.sv",
+      "text": "package defs;\n  typedef logic pkg_only_t;\nendpackage\n"
+    },
+    {
+      "uri": "file:///golden/semantic/type-def-imported-user.sv",
+      "text": "module top;\n  import defs::*;\n  pkg_only_t value;\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "typeDefinition",
+    "uri": "file:///golden/semantic/type-def-imported-user.sv",
+    "line": 2,
+    "character": 4
+  },
+  "expected": {
+    "count": 1,
+    "locations": [
+      {
+        "uri": "file:///golden/semantic/type-def-imported-defs.sv",
+        "startLine": 1
+      }
+    ]
+  }
+}
