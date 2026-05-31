@@ -64,6 +64,40 @@ bool containsPosition(const ParseRange& range, int line, int character) {
     return true;
 }
 
+int rangeLengthScore(const ParseRange& range) {
+    return (range.end_line - range.start_line) * 100000 + (range.end_character - range.start_character);
+}
+
+bool referenceHasTypeDisplay(const SnapshotData& data, const SnapshotIndexedReference& reference) {
+    const auto symbol_it = data.symbols_by_id.find(reference.stable_id);
+    return symbol_it != data.symbols_by_id.end() && !symbol_it->second.type_display.empty();
+}
+
+bool referenceBetterForLookup(const SnapshotData& data,
+                              const SnapshotIndexedReference& candidate,
+                              const SnapshotIndexedReference& current) {
+    if (candidate.location.range.start_line != current.location.range.start_line) {
+        return candidate.location.range.start_line > current.location.range.start_line;
+    }
+    if (candidate.location.range.start_character != current.location.range.start_character) {
+        return candidate.location.range.start_character > current.location.range.start_character;
+    }
+    if (candidate.is_declaration != current.is_declaration) {
+        return candidate.is_declaration;
+    }
+    const auto candidate_has_type = referenceHasTypeDisplay(data, candidate);
+    const auto current_has_type = referenceHasTypeDisplay(data, current);
+    if (candidate_has_type != current_has_type) {
+        return candidate_has_type;
+    }
+    const auto candidate_width = rangeLengthScore(candidate.location.range);
+    const auto current_width = rangeLengthScore(current.location.range);
+    if (candidate_width != current_width) {
+        return candidate_width < current_width;
+    }
+    return candidate.stable_id < current.stable_id;
+}
+
 bool rangesOverlapOrTouch(const ParseRange& lhs, const ParseRange& rhs) {
     if (lhs.end_line < rhs.start_line || rhs.end_line < lhs.start_line) {
         return false;
@@ -1758,20 +1792,19 @@ std::optional<std::string> symbolIdAtLocation(const SnapshotData& data,
                                               std::string_view uri,
                                               int line,
                                               int character) {
-    std::optional<std::string> best_id;
-    std::optional<SemanticLocation> best_location;
+    const SnapshotIndexedReference* best_reference = nullptr;
     for (const auto& reference : data.references) {
         if (reference.location.uri != uri || !containsPosition(reference.location.range, line, character)) {
             continue;
         }
-        if (!best_location.has_value() ||
-            (reference.location.range.start_line >= best_location->range.start_line &&
-             reference.location.range.start_character >= best_location->range.start_character)) {
-            best_id = reference.stable_id;
-            best_location = reference.location;
+        if (best_reference == nullptr || referenceBetterForLookup(data, reference, *best_reference)) {
+            best_reference = &reference;
         }
     }
-    return best_id;
+    if (best_reference == nullptr) {
+        return std::nullopt;
+    }
+    return best_reference->stable_id;
 }
 
 std::vector<SemanticLocation> locationsForSymbol(const SnapshotData& data,

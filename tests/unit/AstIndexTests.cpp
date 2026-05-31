@@ -113,6 +113,43 @@ TEST_CASE("AstIndex builds provider-facing symbol and reference views",
     CHECK(view.design_graph_symbol_ranges_by_uri.at("file:///workspace/top.sv").size() == 2);
 }
 
+TEST_CASE("AstIndex prefers typed same-range symbol references deterministically",
+          "[analysis][semantic][ast-index][lookup][types]") {
+    SnapshotData data;
+    const auto location = SemanticLocation{.uri = "file:///workspace/typed.sv",
+                                           .range = rangeAt(1, 26, 30)};
+    const auto untyped_identity = SemanticSymbolIdentity{.stable_id = "symbol|data|port",
+                                                         .name = "data",
+                                                         .kind = "Port",
+                                                         .location = location};
+    const auto typed_identity = SemanticSymbolIdentity{.stable_id = "symbol|data|internal",
+                                                       .name = "data",
+                                                       .kind = "Port",
+                                                       .location = location};
+
+    data.symbols_by_id.emplace(untyped_identity.stable_id,
+                               SnapshotIndexedSymbol{.identity = untyped_identity,
+                                                     .symbol = nullptr,
+                                                     .type_display = {}});
+    data.symbols_by_id.emplace(typed_identity.stable_id,
+                               SnapshotIndexedSymbol{.identity = typed_identity,
+                                                     .symbol = nullptr,
+                                                     .type_display = "logic [WIDTH-1:0]"});
+    data.references.push_back(SnapshotIndexedReference{.stable_id = untyped_identity.stable_id,
+                                                       .name = "data",
+                                                       .location = location,
+                                                       .is_declaration = true});
+    data.references.push_back(SnapshotIndexedReference{.stable_id = typed_identity.stable_id,
+                                                       .name = "data",
+                                                       .location = location,
+                                                       .is_declaration = true});
+
+    const auto id = symbolIdAtLocation(data, "file:///workspace/typed.sv", 1, 28);
+
+    REQUIRE(id.has_value());
+    CHECK(*id == typed_identity.stable_id);
+}
+
 TEST_CASE("AstIndex builds provider-facing graph, diagnostic, and signature views",
           "[analysis][semantic][ast-index][provider-view]") {
     SnapshotData data;
