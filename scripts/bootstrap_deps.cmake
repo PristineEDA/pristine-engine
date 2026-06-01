@@ -13,7 +13,11 @@ endif()
 include("${PRISTINE_ROOT_DIR}/cmake/DepsLock.cmake")
 
 if(NOT DEFINED PRISTINE_COMPONENTS)
-  set(PRISTINE_COMPONENTS ${PRISTINE_DEPENDENCY_NAMES})
+  set(PRISTINE_COMPONENTS
+    slang
+    fmt
+    nlohmann_json
+    catch2)
 endif()
 
 file(MAKE_DIRECTORY "${PRISTINE_DEPS_DIR}/archives")

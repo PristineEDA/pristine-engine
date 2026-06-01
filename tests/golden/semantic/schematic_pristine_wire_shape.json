@@ -1,0 +1,45 @@
+{
+  "name": "Pristine schematic request shape returns modules ports cells and nets",
+  "config": {
+    "topModules": [
+      "top"
+    ]
+  },
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/pristine-schematic-child.sv",
+      "text": "module child(input logic clk, output logic out);\nendmodule\n"
+    },
+    {
+      "uri": "file:///golden/semantic/pristine-schematic-top.sv",
+      "text": "module top(input logic clk, output logic ready);\n  child u_child(.clk(clk), .out(ready));\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "schematic",
+    "moduleName": "top",
+    "maxDepth": 8
+  },
+  "expected": {
+    "rootModule": "top",
+    "modules": [
+      "top",
+      "child"
+    ],
+    "cells": [
+      {
+        "module": "top",
+        "name": "u_child",
+        "type": "child",
+        "connections": [
+          "clk",
+          "out"
+        ]
+      }
+    ],
+    "nets": [
+      "clk",
+      "ready"
+    ]
+  }
+}

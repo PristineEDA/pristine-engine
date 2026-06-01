@@ -742,8 +742,17 @@ void runSchematicFixture(SemanticEngine& engine, const nlohmann::json& fixture) 
                                                      view.nets.end(),
                                                      [&](const SemanticSchematicNet& candidate) {
                                                          return candidate.name == net;
-                                                     });
+                                                    });
                               }));
+        }
+    }
+    if (expected.contains("messagesContain")) {
+        for (const auto& expected_message : expected.at("messagesContain")) {
+            const auto message = expected_message.get<std::string>();
+            CAPTURE(message);
+            CHECK(std::any_of(result.messages.begin(), result.messages.end(), [&](const std::string& item) {
+                return item.find(message) != std::string::npos;
+            }));
         }
     }
 }

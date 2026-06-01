@@ -1,0 +1,36 @@
+{
+  "name": "Pristine moduleHierarchy request shape returns hierarchy tree roots",
+  "config": {
+    "topModules": [
+      "top"
+    ]
+  },
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/pristine-hierarchy-leaf.sv",
+      "text": "module leaf;\nendmodule\n"
+    },
+    {
+      "uri": "file:///golden/semantic/pristine-hierarchy-child.sv",
+      "text": "module child;\n  leaf u_leaf();\nendmodule\n"
+    },
+    {
+      "uri": "file:///golden/semantic/pristine-hierarchy-top.sv",
+      "text": "module top;\n  child u_a();\n  child u_b();\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "moduleHierarchy",
+    "moduleName": "top",
+    "maxDepth": 8
+  },
+  "expected": {
+    "rootModules": [
+      "top"
+    ],
+    "modules": [
+      "child",
+      "leaf"
+    ]
+  }
+}

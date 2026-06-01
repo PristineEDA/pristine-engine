@@ -1,0 +1,29 @@
+{
+  "name": "Pristine moduleHierarchy request shape exposes partial truncation metadata",
+  "config": {
+    "topModules": [
+      "top"
+    ]
+  },
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/pristine-hierarchy-truncated.sv",
+      "text": "module child;\nendmodule\nmodule top;\n  child u_child();\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "moduleHierarchy",
+    "moduleName": "top",
+    "maxDepth": 0
+  },
+  "expected": {
+    "rootModules": [
+      "top"
+    ],
+    "partial": true,
+    "truncated": true,
+    "messagesContain": [
+      "maxDepth"
+    ]
+  }
+}

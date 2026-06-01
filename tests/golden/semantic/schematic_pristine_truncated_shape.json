@@ -1,0 +1,41 @@
+{
+  "name": "Pristine schematic request shape exposes partial truncation metadata",
+  "config": {
+    "topModules": [
+      "top"
+    ]
+  },
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/pristine-schematic-truncated.sv",
+      "text": "module child(input logic clk, output logic out);\nendmodule\nmodule top(input logic clk, output logic ready);\n  child u_child(.clk(clk), .out(ready));\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "schematic",
+    "moduleName": "top",
+    "maxDepth": 0
+  },
+  "expected": {
+    "rootModule": "top",
+    "modules": [
+      "top"
+    ],
+    "partial": true,
+    "truncated": true,
+    "cells": [
+      {
+        "module": "top",
+        "name": "u_child",
+        "type": "child",
+        "connections": [
+          "clk",
+          "out"
+        ]
+      }
+    ],
+    "messagesContain": [
+      "maxDepth"
+    ]
+  }
+}

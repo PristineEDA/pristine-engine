@@ -125,6 +125,155 @@ TEST_CASE("DesignGraphProvider builds module hierarchy and schematic from design
     CHECK(ready_net->drivers.front().node_id == "u_child");
 }
 
+TEST_CASE("DesignGraphProvider module hierarchy preserves Pristine tree fields and partial messages",
+          "[analysis][semantic][design-graph-provider][hierarchy][pristine]") {
+    auto context = simpleDesignContext();
+    auto& top = context.modules_by_name.at("top");
+    const ModuleDefinition bus_if{.name = "bus_if",
+                                  .kind = "interface",
+                                  .range = rangeAt(7, 0, 30),
+                                  .selection_range = rangeAt(7, 10, 16),
+                                  .ports = {},
+                                  .port_details = {},
+                                  .instances = {}};
+    context.modules_by_name.emplace("bus_if", bus_if);
+    context.module_uris_by_name.emplace("bus_if", "file:///workspace/bus_if.sv");
+    context.module_entries.push_back(DesignGraphModuleEntry{.uri = "file:///workspace/bus_if.sv",
+                                                            .definition = bus_if});
+    top.instances.push_back(ModuleInstantiation{.module_name = "child",
+                                                .instance_name = "u_child_b",
+                                                .range = rangeAt(4, 2, 37),
+                                                .selection_range = rangeAt(4, 8, 17),
+                                                .module_selection_range = rangeAt(4, 2, 7)});
+    top.instances.push_back(ModuleInstantiation{.module_name = "bus_if",
+                                                .instance_name = "if0",
+                                                .range = rangeAt(5, 2, 20),
+                                                .selection_range = rangeAt(5, 9, 12),
+                                                .module_selection_range = rangeAt(5, 2, 8)});
+    top.instances.push_back(ModuleInstantiation{.module_name = "missing_child",
+                                                .instance_name = "u_missing",
+                                                .range = rangeAt(6, 2, 43),
+                                                .selection_range = rangeAt(6, 16, 25),
+                                                .module_selection_range = rangeAt(6, 2, 15)});
+
+    const auto hierarchy = moduleHierarchy(context, std::string_view("top"), 8);
+
+    REQUIRE_FALSE(hierarchy.unresolved);
+    CHECK(hierarchy.partial);
+    REQUIRE(hierarchy.roots.size() == 1);
+    const auto& root = hierarchy.roots.front();
+    CHECK(root.module_name == "top");
+    CHECK(root.kind == "module");
+    REQUIRE(root.children.size() == 4);
+    CHECK(root.children[0].module_name == "child");
+    CHECK(root.children[0].instance_name == "u_child");
+    CHECK(root.children[0].instance_range.has_value());
+    CHECK(root.children[1].module_name == "child");
+    CHECK(root.children[1].instance_name == "u_child_b");
+    CHECK(root.children[2].module_name == "bus_if");
+    CHECK(root.children[2].kind == "interface");
+    CHECK(root.children[2].instance_name == "if0");
+    CHECK(root.children[3].module_name == "missing_child");
+    CHECK(root.children[3].instance_name == "u_missing");
+    CHECK(root.children[3].unresolved);
+    CHECK(std::any_of(hierarchy.messages.begin(), hierarchy.messages.end(), [](const auto& message) {
+        return message.find("missing_child") != std::string::npos;
+    }));
+}
+
+TEST_CASE("DesignGraphProvider schematic emits Pristine-compatible ports cells and net endpoints",
+          "[analysis][semantic][design-graph-provider][schematic][pristine]") {
+    auto context = simpleDesignContext();
+    auto& top_signature = context.module_signatures_by_name.at("top");
+    top_signature.schematic.ports = {
+        SchematicPort{.name = "clk",
+                      .direction = "input",
+                      .width_text = "logic",
+                      .range = rangeAt(2, 11, 26),
+                      .selection_range = rangeAt(2, 23, 26)},
+        SchematicPort{.name = "ready",
+                      .direction = "output",
+                      .width_text = "logic",
+                      .range = rangeAt(2, 28, 46),
+                      .selection_range = rangeAt(2, 41, 46)}};
+    top_signature.schematic.cells.push_back(
+        SchematicCell{.id = "u_ordered",
+                      .name = "u_ordered",
+                      .type = "child",
+                      .kind = "module",
+                      .range = rangeAt(4, 2, 30),
+                      .selection_range = rangeAt(4, 8, 17),
+                      .connections = {SchematicConnection{.port_name = "",
+                                                           .port_index = 0,
+                                                           .signal = "clk",
+                                                           .range = rangeAt(4, 18, 21)},
+                                      SchematicConnection{.port_name = "",
+                                                           .port_index = 1,
+                                                           .signal = "ordered_out",
+                                                           .range = rangeAt(4, 23, 29)}}});
+
+    const auto graph = schematic(context, std::string_view("top"), 8);
+
+    REQUIRE_FALSE(graph.unresolved);
+    REQUIRE(graph.root_module_id.has_value());
+    CHECK(*graph.root_module_id == "top");
+    const auto top_view = std::find_if(graph.modules.begin(),
+                                       graph.modules.end(),
+                                       [](const SemanticSchematicModuleView& view) {
+                                           return view.module.name == "top";
+                                       });
+    REQUIRE(top_view != graph.modules.end());
+    CHECK(std::any_of(top_view->module.ports.begin(),
+                      top_view->module.ports.end(),
+                      [](const SchematicPort& port) {
+                          return port.name == "clk" && port.direction == "input";
+                      }));
+    CHECK(std::any_of(top_view->module.cells.begin(),
+                      top_view->module.cells.end(),
+                      [](const SchematicCell& cell) {
+                          return cell.id == "u_ordered" && cell.type == "child";
+                      }));
+
+    const auto clk_net = std::find_if(top_view->nets.begin(),
+                                      top_view->nets.end(),
+                                      [](const SemanticSchematicNet& net) {
+                                          return net.name == "clk";
+                                      });
+    REQUIRE(clk_net != top_view->nets.end());
+    CHECK(std::any_of(clk_net->drivers.begin(),
+                      clk_net->drivers.end(),
+                      [](const SemanticSchematicEndpoint& endpoint) {
+                          return endpoint.node_id == "$port:clk" && endpoint.port_name == "clk";
+                      }));
+    CHECK(std::any_of(clk_net->loads.begin(),
+                      clk_net->loads.end(),
+                      [](const SemanticSchematicEndpoint& endpoint) {
+                          return endpoint.node_id == "u_child" && endpoint.port_name == "clk";
+                      }));
+    CHECK(std::any_of(clk_net->loads.begin(),
+                      clk_net->loads.end(),
+                      [](const SemanticSchematicEndpoint& endpoint) {
+                          return endpoint.node_id == "u_ordered" && endpoint.port_name == "clk";
+                      }));
+
+    const auto ready_net = std::find_if(top_view->nets.begin(),
+                                        top_view->nets.end(),
+                                        [](const SemanticSchematicNet& net) {
+                                            return net.name == "ready";
+                                        });
+    REQUIRE(ready_net != top_view->nets.end());
+    CHECK(std::any_of(ready_net->loads.begin(),
+                      ready_net->loads.end(),
+                      [](const SemanticSchematicEndpoint& endpoint) {
+                          return endpoint.node_id == "$port:ready" && endpoint.port_name == "ready";
+                      }));
+    CHECK(std::any_of(ready_net->drivers.begin(),
+                      ready_net->drivers.end(),
+                      [](const SemanticSchematicEndpoint& endpoint) {
+                          return endpoint.node_id == "u_child" && endpoint.port_name == "out";
+                      }));
+}
+
 TEST_CASE("DesignGraphProvider traces backward cone through continuous assignments",
           "[analysis][semantic][design-graph-provider][cone]") {
     auto context = simpleDesignContext();

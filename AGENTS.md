@@ -53,6 +53,8 @@ Current behavior follows a split-provider SemanticEngine single-fact-source mode
 - `SemanticEngine` is the public value-type facade and coordinator for document state, generation, invalidation, and query cache; split providers own snapshot construction, AST indexing, and feature-specific query assembly
 - visible semantic facts are exclusively backed by slang AST/Compilation, `AstIndex` views, and design graph provider data; syntax/text utilities must not become semantic answer sources
 - current validation scale is 210+ focused unit `TEST_CASE`s and 260+ JSON semantic golden fixtures; the next maturity target is true complex-SV provider behavior plus fixture-driven differential, cache, affected-rebuild, and perf coverage rather than debt-only fixtures
+- Pristine integration readiness is documented in `docs/pristine-integration.md`; `systemverilog/moduleHierarchy` and `systemverilog/schematic` are Pristine-consumable custom requests for hierarchy tree and schematic canvas integration, with `roots/messages/unresolved/partial/truncated` and `rootModuleId/modules/messages/unresolved/partial/truncated` as the externally visible contract
+- retroSoC LSP stress is the real language-service closure path for Pristine hierarchy/schematic integration: it uses an opt-in lsp-framework client to drive `pristine-engine --stdio`, send `didOpen`, `systemverilog/moduleHierarchy`, and `systemverilog/schematic`, and record operation timings/logs
 - current deepening work is complex SystemVerilog provider completeness plus validation scale-out: package import/export and wildcard import resolution, typedef alias chains, struct/enum/class/interface/modport members, generate scopes, parameterized instances, port/param bindings, assignment width/type facts, fixture-driven differential coverage, query-cache/affected-rebuild baselines, slang-server v0.2.5 attribution coverage, and clang/GCC-oriented non-Windows validation
 - visible semantic lookups must be deterministic across macOS, Linux, and Windows; same-range AST symbols use explicit `AstIndex` tie-breaks instead of unordered traversal, pointer, or platform-specific container order
 - hover, definition, type definition, implementation, references, document highlights, prepare rename, and rename are the first AST-backed query slice owned by `SemanticEngine`
@@ -131,6 +133,7 @@ Use the nearest owning layer instead of patching around it from a wrapper.
 - Function/task argument inlay hints must consume `AstIndex` call signature views. Text scanning may locate argument insertion offsets within the indexed call range, but it must not determine the callee, parameter list, or semantic type.
 - Semantic token and selection range assembly belongs in `NavigationProvider`; `SemanticEngine` may prepare value-type navigation context, but should not grow new token/selection semantic branches.
 - Module hierarchy, schematic, call hierarchy, and backward cone assembly belongs in `DesignGraphProvider`; `SemanticEngine` may prepare value-type design graph context and cache results, but should not grow new HDL graph semantic branches.
+- Hierarchy and schematic behavior changes must include nearest `DesignGraphProvider` unit coverage plus a JSON semantic golden fixture that exercises the Pristine-facing request/result shape.
 - Diagnostics aggregation belongs in `DiagnosticProvider`; `SemanticEngine` may prepare value-type diagnostic context and cache results, but should not grow new UX diagnostic branches.
 - Code-action quickfix selection belongs in `CodeActionProvider`; `SemanticEngine` may prepare value-type code-action context and cache results, but should not grow new quickfix semantic branches.
 - Diagnostics behavior changes must be covered in both the nearest engine/unit test and an LSP-facing smoke or golden-style test when the published shape changes.
@@ -148,6 +151,7 @@ Use the nearest owning layer instead of patching around it from a wrapper.
 - Differential fixtures should be fixture-driven and rewritten for this repository by default. If a slang-server MIT fixture is copied instead of rewritten, update notice/attribution in the same change.
 - The local `slang-server v0.2.5` checkout is covered in the attribution/notice pipeline as a differential reference. Keep `cmake/attributions.cmake`, `licenses/texts/`, `ATTRIBUTIONS.md`, and `NOTICE` in sync whenever copied upstream fixture material changes.
 - Changes that scan, cache, or rebuild workspace-wide state must include or update a performance-oriented test/benchmark plan or JSON baseline before being considered complete.
+- Real-design stress tests such as retroSoC must stay opt-in and must not vendor RTL. The LSP stress path may download retroSoC into `.cache/retrosoc` only when perf tests are explicitly built and the retroSoC stress test is explicitly run; user-provided `RETROSOC_ROOT` must be verified but not auto-checked-out or modified. Update notice/attribution before copying any external fixture into this repository.
 - New or modified aggregate initialization and semantic/provider C++ changes should be validated with the clang toolchain before CI when practical, because GCC/Clang and MSVC reject different warning-as-error patterns. Treat unused helpers, narrowing conversions, case-sensitive include paths, partial designated initialization, filesystem path separators, and CRLF/LF-sensitive fixtures as Linux/macOS CI risks even if MSVC accepts them.
 - Avoid broad refactors unless the user asks for them or the local change cannot be made safely otherwise.
 - Do not reintroduce agent process rules into `README.md` unless explicitly requested.
@@ -231,7 +235,27 @@ ctest --test-dir build\clang-cl --output-on-failure
 
 If a WSL, Linux, container, or native clang++ environment is available, add an equivalent non-MSVC ABI configure/build/test pass and record the result in the handoff. Use this specifically to catch aggregate initialization, unused/static helper, narrowing conversion, case-sensitive include, filesystem path, and CRLF/LF issues that MSVC may miss.
 
-For opt-in performance baselines, configure with `PRISTINE_BUILD_PERF_TESTS=ON` and run `pristine_perf_tests`; the perf target prints JSON for 100/1000/5000-file synthetic workspaces and is not part of the default `ctest` suite.
+For opt-in performance baselines, configure with `PRISTINE_BUILD_PERF_TESTS=ON` and run `pristine_perf_tests`; the perf target prints JSON for 100/1000/5000-file synthetic workspaces and is not part of the default `ctest` suite. The env-gated retroSoC stress CTests can be used for real-design hierarchy/schematic timing without vendoring RTL:
+
+```powershell
+$env:RETROSOC_ROOT='C:\path\to\retroSoC'
+$env:RETROSOC_EXPECTED_COMMIT='76651fd'
+ctest --test-dir build/dev -L retrosoc --output-on-failure
+```
+
+When `RETROSOC_ROOT` is unset, the retroSoC wrappers clone/fetch into `.cache/retrosoc/retroSoC`; keep this behind explicit perf builds/runs so default CI does not depend on that network path.
+
+The direct stress output is JSON with file/byte counts, parse/index timing, hierarchy timing, schematic timing, result counts, and partial/truncated/message counters. For LSP-level retroSoC pressure, first bootstrap the opt-in test dependency:
+
+```powershell
+cmake -DPRISTINE_COMPONENTS=lsp_framework -P scripts/bootstrap_deps.cmake
+cmake --preset dev -DPRISTINE_BUILD_PERF_TESTS=ON
+cmake --build --preset dev
+ctest --test-dir build/dev -L lsp --output-on-failure
+ctest --test-dir build/dev -R pristine_retrosoc_lsp_stress --output-on-failure
+```
+
+`pristine_lsp_framework_client_smoke` uses generated mock RTL and never touches the network. `pristine_retrosoc_lsp_stress` verifies `RETROSOC_ROOT` when provided, or prepares retroSoC at commit `76651fd` under `.cache/retrosoc`; it writes `summary.json` and `operations.jsonl` under the build log directory or `RETROSOC_LSP_LOG_DIR`. LSP protocol transaction tracing is off by default; enable it with `RETROSOC_LSP_TRACE=1` or set `RETROSOC_LSP_TRACE_FILE=<path>` to write a JSONL trace of client->server and server->client messages.
 
 If `ctest` is not on `PATH` in the current Windows shell, use:
 
@@ -269,6 +293,7 @@ cmake --build --preset dev
 - `fmt` is intentionally overridden through `FETCHCONTENT_SOURCE_DIR_FMT` so that `slang` uses the locally bootstrapped copy.
 - `SLANG_USE_MIMALLOC` is forced `OFF` in `cmake/Dependencies.cmake` so a clean build tree does not trigger a remote `mimalloc` fetch during configure.
 - If `mimalloc` is ever re-enabled, convert it into a pinned local dependency first and update the redistributed notice scope in the same change.
+- `lsp-framework` is an opt-in test/perf dependency for the retroSoC LSP stress client. It is not installed or redistributed with `pristine-engine`; if that scope changes, update attribution, license text, and NOTICE in the same change.
 
 ## Notice Workflow
 
