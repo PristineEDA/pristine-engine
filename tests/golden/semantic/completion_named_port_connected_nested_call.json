@@ -1,0 +1,25 @@
+{
+  "name": "named port completion skips ports connected before current cursor",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/named-port-connected-nested.sv",
+      "text": "module child(input logic clk, input logic ready, output logic data);\nendmodule\nmodule top;\n  logic clk;\n  logic ready;\n  logic data;\n  child u_child(.clk(clk), .ready(ready), .da);\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "completion",
+    "uri": "file:///golden/semantic/named-port-connected-nested.sv",
+    "line": 6,
+    "character": 45,
+    "prefix": "da"
+  },
+  "expected": {
+    "labels": [
+      "data"
+    ],
+    "absentLabels": [
+      "clk",
+      "ready"
+    ]
+  }
+}

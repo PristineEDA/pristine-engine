@@ -1,0 +1,24 @@
+{
+  "name": "inlay hints keep parameter override metadata with three parameters",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/inlay-param-three.sv",
+      "text": "module child #(parameter int WIDTH = 8, parameter int DEPTH = 4, parameter int LANES = 2) (input logic clk);\nendmodule\nmodule top;\n  logic clk;\n  child #(.WIDTH(16), .DEPTH(8), .LANES(4)) u_child(.clk(clk));\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "inlayHint",
+    "uri": "file:///golden/semantic/inlay-param-three.sv",
+    "range": {
+      "startLine": 3,
+      "startCharacter": 0,
+      "endLine": 5,
+      "endCharacter": 0
+    }
+  },
+  "expected": {
+    "labels": [
+      ": child"
+    ]
+  }
+}

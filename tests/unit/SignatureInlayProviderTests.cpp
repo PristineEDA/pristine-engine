@@ -242,6 +242,57 @@ TEST_CASE("SignatureInlayProvider emits AST-derived named and ordered port inlay
     }));
 }
 
+TEST_CASE("SignatureInlayProvider emits wildcard port labels from indexed port names",
+          "[analysis][semantic][signature-inlay-provider][inlay][ports][wildcard]") {
+    const ModuleDefinition child{.name = "child",
+                                 .kind = "module",
+                                 .port_details = {SchematicPort{.name = "clk",
+                                                                .direction = "input",
+                                                                .width_text = "logic"},
+                                                  SchematicPort{.name = "ready",
+                                                                .direction = "output",
+                                                                .width_text = "logic"}}};
+    const std::unordered_map<std::string, ModuleDefinition> modules{{"child", child}};
+    const SignatureInlayContext context{
+        .generation = 19,
+        .document_uri = "file:///workspace/top.sv",
+        .modules_by_name = &modules,
+        .module_instances = {SignatureInlayModuleInstance{
+            .module_name = "child",
+            .range = ParseRange{.start_line = 1, .start_character = 2, .end_line = 1, .end_character = 19},
+            .selection_range = ParseRange{.start_line = 1,
+                                          .start_character = 8,
+                                          .end_line = 1,
+                                          .end_character = 15},
+            .connections = {SchematicConnection{.port_name = "clk",
+                                                .signal = "clk",
+                                                .range = ParseRange{.start_line = 1,
+                                                                    .start_character = 16,
+                                                                    .end_line = 1,
+                                                                    .end_character = 18}},
+                            SchematicConnection{.port_name = "ready",
+                                                .signal = "ready",
+                                                .range = ParseRange{.start_line = 1,
+                                                                    .start_character = 16,
+                                                                    .end_line = 1,
+                                                                    .end_character = 18}}}}},
+        .snapshot_available = true};
+
+    const auto result = inlayHints(context,
+                                  ParseRange{.start_line = 1,
+                                             .start_character = 0,
+                                             .end_line = 1,
+                                             .end_character = 24});
+
+    REQUIRE_FALSE(result.unresolved);
+    CHECK(std::any_of(result.hints.begin(), result.hints.end(), [](const SemanticInlayHint& hint) {
+        return hint.label == ".clk" && hint.tooltip == "input logic clk";
+    }));
+    CHECK(std::any_of(result.hints.begin(), result.hints.end(), [](const SemanticInlayHint& hint) {
+        return hint.label == ".ready" && hint.tooltip == "output logic ready";
+    }));
+}
+
 TEST_CASE("SignatureInlayProvider emits AST-derived function and task argument hints",
           "[analysis][semantic][signature-inlay-provider][inlay][function][task][no-fallback]") {
     const std::string text = "module top;\n"
@@ -304,6 +355,35 @@ TEST_CASE("SignatureInlayProvider emits AST-derived function and task argument h
                hint.location.range.start_character == 9 &&
                hint.tooltip == "task emit(input logic ready)";
     }));
+}
+
+TEST_CASE("SignatureInlayProvider clamps function active parameter at the indexed parameter count",
+          "[analysis][semantic][signature-inlay-provider][signature][function]") {
+    const std::string text = "module top;\n"
+                             "  int value = mix(lhs, rhs, extra);\n"
+                             "endmodule\n";
+    const SignatureInlayContext context{
+        .generation = 20,
+        .document_uri = "file:///workspace/top.sv",
+        .document_text = &text,
+        .calls = {SignatureInlayCall{.name = "mix",
+                                     .kind = "function",
+                                     .return_type = "int",
+                                     .range = ParseRange{.start_line = 1,
+                                                         .start_character = 14,
+                                                         .end_line = 1,
+                                                         .end_character = 34},
+                                     .selection_range = ParseRange{.start_line = 1,
+                                                                   .start_character = 14,
+                                                                   .end_line = 1,
+                                                                   .end_character = 17},
+                                     .parameters = {"input int lhs", "input int rhs"}}},
+        .snapshot_available = true};
+
+    const auto result = signatureHelpAt(context, 1, 33);
+
+    REQUIRE_FALSE(result.unresolved);
+    CHECK(result.active_parameter == 1);
 }
 
 TEST_CASE("SignatureInlayProvider reports unresolved snapshot and document states",

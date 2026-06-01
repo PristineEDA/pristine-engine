@@ -1,0 +1,16 @@
+{
+  "name": "backward cone records current parameterized cross-module query shape",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/cone-param-cross-debt.sv",
+      "text": "module child #(parameter int WIDTH = 8) (input logic [WIDTH-1:0] in, output logic [WIDTH-1:0] out);\n  assign out = in;\nendmodule\nmodule top;\n  logic [3:0] a;\n  logic [3:0] y;\n  child #(.WIDTH(4)) u_child(.in(a), .out(y));\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "backwardCone",
+    "uri": "file:///golden/semantic/cone-param-cross-debt.sv",
+    "line": 5,
+    "character": 14
+  },
+  "expected": {}
+}

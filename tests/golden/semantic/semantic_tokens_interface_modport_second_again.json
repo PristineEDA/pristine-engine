@@ -1,0 +1,23 @@
+{
+  "name": "semantic tokens include interface modport declarations again",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/tokens-if-modport-second.sv",
+      "text": "interface bus_if;\n  logic ready;\n  modport master(input ready);\n  modport slave(output ready);\nendinterface\n"
+    }
+  ],
+  "request": {
+    "kind": "semanticTokens",
+    "uri": "file:///golden/semantic/tokens-if-modport-second.sv"
+  },
+  "expected": {
+    "tokens": [
+      {
+        "type": "interface"
+      },
+      {
+        "type": "variable"
+      }
+    ]
+  }
+}

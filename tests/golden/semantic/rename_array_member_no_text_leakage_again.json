@@ -1,0 +1,20 @@
+{
+  "name": "rename for array member-like signal avoids comments again",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/rename-array-member-again.sv",
+      "text": "module top;\n  logic status_ready;\n  // status_ready in comment\n  assign status_ready = status_ready;\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "rename",
+    "uri": "file:///golden/semantic/rename-array-member-again.sv",
+    "line": 1,
+    "character": 9,
+    "newName": "status_done"
+  },
+  "expected": {
+    "count": 3,
+    "allNewText": "status_done"
+  }
+}

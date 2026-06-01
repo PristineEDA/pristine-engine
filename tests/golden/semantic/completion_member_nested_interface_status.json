@@ -1,0 +1,25 @@
+{
+  "name": "nested interface-like member completion filters status prefix",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/member-nested-interface.sv",
+      "text": "module top;\n  logic iface;\n  logic status_valid;\n  logic status_ready;\n  logic data_valid;\n  initial begin\n    iface.master.status_\n  end\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "completion",
+    "uri": "file:///golden/semantic/member-nested-interface.sv",
+    "line": 6,
+    "character": 25,
+    "prefix": "status_"
+  },
+  "expected": {
+    "labels": [
+      "status_valid",
+      "status_ready"
+    ],
+    "absentLabels": [
+      "data_valid"
+    ]
+  }
+}

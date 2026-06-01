@@ -1,0 +1,25 @@
+{
+  "name": "hierarchical bus member completion keeps full qualifier context",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/member-hier-bus.sv",
+      "text": "module top;\n  logic bus;\n  logic status_ready;\n  logic status_error;\n  logic payload;\n  initial begin\n    bus.master.status_\n  end\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "completion",
+    "uri": "file:///golden/semantic/member-hier-bus.sv",
+    "line": 6,
+    "character": 22,
+    "prefix": "status_"
+  },
+  "expected": {
+    "labels": [
+      "status_ready",
+      "status_error"
+    ],
+    "absentLabels": [
+      "payload"
+    ]
+  }
+}

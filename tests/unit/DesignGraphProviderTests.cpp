@@ -243,6 +243,43 @@ TEST_CASE("DesignGraphProvider reports missing cone assignments",
     CHECK(trace.messages.front().find("No AST assignment edges") != std::string::npos);
 }
 
+TEST_CASE("DesignGraphProvider reports unresolved configured hierarchy roots",
+          "[analysis][semantic][design-graph-provider][hierarchy][partial]") {
+    auto context = simpleDesignContext();
+    context.top_modules = {"top", "missing_top"};
+
+    const auto hierarchy = moduleHierarchy(context, std::nullopt, 8);
+
+    REQUIRE_FALSE(hierarchy.unresolved);
+    CHECK(hierarchy.partial);
+    REQUIRE(hierarchy.roots.size() == 2);
+    CHECK(hierarchy.roots[1].module_name == "missing_top");
+    CHECK(hierarchy.roots[1].unresolved);
+    CHECK(std::any_of(hierarchy.messages.begin(), hierarchy.messages.end(), [](const auto& message) {
+        return message.find("Unresolved module 'missing_top'") != std::string::npos;
+    }));
+}
+
+TEST_CASE("DesignGraphProvider reports missing schematic signatures without syntax fallback",
+          "[analysis][semantic][design-graph-provider][schematic][partial][no-fallback]") {
+    auto context = simpleDesignContext();
+    context.module_signatures_by_name.erase("child");
+
+    const auto graph = schematic(context, std::string_view("top"), 8);
+
+    REQUIRE_FALSE(graph.unresolved);
+    CHECK(graph.partial);
+    CHECK(std::any_of(graph.modules.begin(), graph.modules.end(), [](const auto& view) {
+        return view.module.name == "top";
+    }));
+    CHECK(std::none_of(graph.modules.begin(), graph.modules.end(), [](const auto& view) {
+        return view.module.name == "child";
+    }));
+    CHECK(std::any_of(graph.messages.begin(), graph.messages.end(), [](const auto& message) {
+        return message.find("No schematic data found for module 'child'") != std::string::npos;
+    }));
+}
+
 TEST_CASE("DesignGraphProvider prepares incoming and outgoing call hierarchy",
           "[analysis][semantic][design-graph-provider][call-hierarchy]") {
     const auto context = simpleDesignContext();

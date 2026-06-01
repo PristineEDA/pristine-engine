@@ -26,6 +26,15 @@ struct CompletionResolveSymbol {
     std::string type_display;
 };
 
+struct CompletionMemberCandidate {
+    SemanticSymbolIdentity identity;
+};
+
+struct CompletionMemberContext {
+    std::string qualifier;
+    std::vector<CompletionMemberCandidate> candidates;
+};
+
 struct CompletionResolveContext {
     const std::unordered_map<std::string, ModuleDefinition>* modules_by_name = nullptr;
     const std::unordered_map<std::string, std::string>* module_uris_by_name = nullptr;
@@ -67,6 +76,12 @@ struct CompletionResolveContext {
                                                            std::string_view label,
                                                            const CompletionResolveContext& context);
 
+[[nodiscard]] std::set<std::string> connectedNamedPortsForInstance(std::string_view text,
+                                                                    int line,
+                                                                    int character,
+                                                                    ParseRange instance_selection_range,
+                                                                    ParseRange instance_range);
+
 void appendCompletionItem(std::vector<SemanticCompletionItem>& items,
                           std::set<std::string>& emitted,
                           SemanticCompletionItem item,
@@ -78,6 +93,12 @@ void appendSymbolCompletion(std::vector<SemanticCompletionItem>& items,
                             const SemanticSymbolIdentity& symbol,
                             std::string_view prefix,
                             bool& truncated);
+
+void appendMemberCompletions(std::vector<SemanticCompletionItem>& items,
+                             std::set<std::string>& emitted,
+                             const CompletionMemberContext& context,
+                             std::string_view prefix,
+                             bool& truncated);
 
 void appendModulePortCompletions(std::vector<SemanticCompletionItem>& items,
                                  std::set<std::string>& emitted,

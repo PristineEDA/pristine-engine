@@ -1,0 +1,22 @@
+{
+  "name": "diagnostics reports second non-adjacent duplicate symbol",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/diag-dup-nonadj-second.sv",
+      "text": "module top;\n  logic ready;\n  logic valid;\n  logic ready;\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "diagnostics"
+  },
+  "expected": {
+    "uri": "file:///golden/semantic/diag-dup-nonadj-second.sv",
+    "diagnostics": [
+      {
+        "code": "duplicateSymbol",
+        "severity": 1,
+        "startLine": 3
+      }
+    ]
+  }
+}

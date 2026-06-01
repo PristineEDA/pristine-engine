@@ -1,0 +1,19 @@
+{
+  "name": "workspace symbols expose class method-like query",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/workspace-class-method.sv",
+      "text": "class packet;\n  function int status(); return 1; endfunction\nendclass\n"
+    }
+  ],
+  "request": {
+    "kind": "workspaceSymbol",
+    "query": "status",
+    "limit": 10
+  },
+  "expected": {
+    "names": [
+      "status"
+    ]
+  }
+}

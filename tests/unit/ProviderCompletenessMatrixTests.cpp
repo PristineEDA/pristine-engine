@@ -135,6 +135,33 @@ TEST_CASE("QueryCache keys inlay hints by requested range",
     CHECK(cache.inlayHints(14, "file:///workspace/top.sv", lineSpan(3, 4)) == std::nullopt);
 }
 
+TEST_CASE("QueryCache keeps inlay hints URI scoped",
+          "[analysis][semantic][query-cache][inlay]") {
+    QueryCache cache;
+    SemanticInlayHintResult result;
+    result.generation = 33;
+    result.hints.push_back(SemanticInlayHint{.location = locationAt("file:///workspace/a.sv",
+                                                                    rangeAt(1, 2, 2)),
+                                             .label = ".clk",
+                                             .kind = "parameter"});
+    cache.storeInlayHints(33, "file:///workspace/a.sv", lineSpan(1, 2), result);
+
+    REQUIRE(cache.inlayHints(33, "file:///workspace/a.sv", lineSpan(1, 2)).has_value());
+    CHECK(cache.inlayHints(33, "file:///workspace/b.sv", lineSpan(1, 2)) == std::nullopt);
+}
+
+TEST_CASE("QueryCache keeps signature help URI scoped",
+          "[analysis][semantic][query-cache][signature]") {
+    QueryCache cache;
+    SemanticSignatureHelpResult result;
+    result.generation = 34;
+    result.label = "child(clk)";
+    cache.storeSignatureHelp(34, "file:///workspace/a.sv", 1, 12, result);
+
+    REQUIRE(cache.signatureHelp(34, "file:///workspace/a.sv", 1, 12).has_value());
+    CHECK(cache.signatureHelp(34, "file:///workspace/b.sv", 1, 12) == std::nullopt);
+}
+
 TEST_CASE("QueryCache keys module hierarchy by module and depth",
           "[analysis][semantic][query-cache][hierarchy]") {
     QueryCache cache;
@@ -193,6 +220,57 @@ TEST_CASE("QueryCache keys code actions by requested range",
     CHECK(cache.codeActions(10, "file:///workspace/top.sv", rangeAt(3, 2, 12)) == std::nullopt);
 }
 
+TEST_CASE("QueryCache keeps backward cone URI and generation scoped",
+          "[analysis][semantic][query-cache][cone]") {
+    QueryCache cache;
+    SemanticConeTrace trace;
+    trace.generation = 36;
+    trace.root_symbol_id = "symbol|out";
+    cache.storeBackwardCone(36, "file:///workspace/a.sv", 4, 9, trace);
+
+    REQUIRE(cache.backwardCone(36, "file:///workspace/a.sv", 4, 9).has_value());
+    CHECK(cache.backwardCone(36, "file:///workspace/b.sv", 4, 9) == std::nullopt);
+    CHECK(cache.backwardCone(37, "file:///workspace/a.sv", 4, 9) == std::nullopt);
+}
+
+TEST_CASE("QueryCache keeps code actions URI and generation scoped",
+          "[analysis][semantic][query-cache][code-action]") {
+    QueryCache cache;
+    SemanticCodeActionResult result;
+    result.generation = 37;
+    result.actions.push_back(SemanticCodeAction{.title = "Add import for defs::type_t",
+                                                .kind = "quickfix"});
+    cache.storeCodeActions(37, "file:///workspace/a.sv", rangeAt(2, 4, 14), result);
+
+    REQUIRE(cache.codeActions(37, "file:///workspace/a.sv", rangeAt(2, 4, 14)).has_value());
+    CHECK(cache.codeActions(37, "file:///workspace/b.sv", rangeAt(2, 4, 14)) == std::nullopt);
+    CHECK(cache.codeActions(38, "file:///workspace/a.sv", rangeAt(2, 4, 14)) == std::nullopt);
+}
+
+TEST_CASE("QueryCache keeps module hierarchy generation scoped",
+          "[analysis][semantic][query-cache][hierarchy]") {
+    QueryCache cache;
+    SemanticModuleHierarchyResult result;
+    result.generation = 38;
+    result.roots.push_back(SemanticHierarchyNode{.module_name = "top"});
+    cache.storeModuleHierarchy(38, std::string_view("top"), 4, result);
+
+    REQUIRE(cache.moduleHierarchy(38, std::string_view("top"), 4).has_value());
+    CHECK(cache.moduleHierarchy(39, std::string_view("top"), 4) == std::nullopt);
+}
+
+TEST_CASE("QueryCache keeps completion generation scoped for resolved prefixes",
+          "[analysis][semantic][query-cache][completion]") {
+    QueryCache cache;
+    SemanticCompletionResult result;
+    result.generation = 39;
+    result.items.push_back(SemanticCompletionItem{.label = "status_ready"});
+    cache.storeCompletions(39, "file:///workspace/top.sv", 3, 18, "status_", result);
+
+    REQUIRE(cache.completions(39, "file:///workspace/top.sv", 3, 18, "status_").has_value());
+    CHECK(cache.completions(40, "file:///workspace/top.sv", 3, 18, "status_") == std::nullopt);
+}
+
 TEST_CASE("QueryCache clear removes all provider entries",
           "[analysis][semantic][query-cache]") {
     QueryCache cache;
@@ -219,7 +297,7 @@ TEST_CASE("CompletionProvider detects array and hierarchical member contexts",
                                                        "sta");
     REQUIRE(array_context.prefix_start.has_value());
     CHECK(array_context.member_access);
-    CHECK_FALSE(array_context.member_qualifier.has_value());
+    CHECK(array_context.member_qualifier == "lanes[0]");
 
     const auto instance_context = detectCompletionContext("module top;\n  u_child.data_\nendmodule\n",
                                                           1,
@@ -239,7 +317,7 @@ TEST_CASE("CompletionProvider treats array element member access as AST-backed m
 
     REQUIRE(context.prefix_start.has_value());
     CHECK(context.member_access);
-    CHECK_FALSE(context.member_qualifier.has_value());
+    CHECK(context.member_qualifier == "lanes[0]");
     CHECK_FALSE(context.module_instantiation_position);
 }
 
@@ -326,6 +404,19 @@ TEST_CASE("CompletionProvider builds signatures for bare port lists",
 
     CHECK(moduleSignatureLabel(module) == "leaf(clk, data)");
     CHECK(moduleInstantiationSnippet(module).find(".data(${3:data})") != std::string::npos);
+}
+
+TEST_CASE("CompletionProvider escapes snippet placeholders in module ports",
+          "[analysis][semantic][completion-provider][module]") {
+    const ModuleDefinition module{.name = "child",
+                                  .kind = "module",
+                                  .ports = {"data$value", "done}flag"},
+                                  .port_details = {}};
+
+    const auto snippet = moduleInstantiationSnippet(module);
+
+    CHECK(snippet.find(".data$value(${2:data\\$value})") != std::string::npos);
+    CHECK(snippet.find(".done}flag(${3:done\\}flag})") != std::string::npos);
 }
 
 TEST_CASE("CompletionProvider documents interface declarations with their kind",
@@ -630,6 +721,26 @@ TEST_CASE("SignatureInlayProvider reports unresolved missing module signature ta
     CHECK(result.unresolved);
     REQUIRE_FALSE(result.messages.empty());
     CHECK(result.messages.front().find("not indexed") != std::string::npos);
+}
+
+TEST_CASE("SignatureInlayProvider reports unresolved call outside indexed ranges",
+          "[analysis][semantic][signature-inlay-provider][signature][function]") {
+    const std::string text = "module top;\n  int value = mix(lhs, rhs);\nendmodule\n";
+    const SignatureInlayContext context{
+        .generation = 35,
+        .document_uri = "file:///workspace/top.sv",
+        .document_text = &text,
+        .calls = {SignatureInlayCall{.name = "mix",
+                                     .kind = "function",
+                                     .return_type = "int",
+                                     .range = rangeAt(1, 14, 27),
+                                     .selection_range = rangeAt(1, 14, 17),
+                                     .parameters = {"input int lhs", "input int rhs"}}},
+        .snapshot_available = true};
+
+    const auto result = signatureHelpAt(context, 0, 5);
+
+    CHECK(result.unresolved);
 }
 
 TEST_CASE("SignatureInlayProvider filters call argument hints outside requested range",

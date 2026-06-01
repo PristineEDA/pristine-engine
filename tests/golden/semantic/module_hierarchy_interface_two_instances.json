@@ -1,0 +1,22 @@
+{
+  "name": "module hierarchy includes two interface instances",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/hier-if-two.sv",
+      "text": "interface bus_if;\nendinterface\nmodule top;\n  bus_if a();\n  bus_if b();\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "moduleHierarchy",
+    "moduleName": "top",
+    "maxDepth": 4
+  },
+  "expected": {
+    "rootModules": [
+      "top"
+    ],
+    "modules": [
+      "bus_if"
+    ]
+  }
+}

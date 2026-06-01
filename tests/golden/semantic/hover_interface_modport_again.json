@@ -1,0 +1,18 @@
+{
+  "name": "hover on interface modport keeps AST-backed name",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/hover-if-modport-again.sv",
+      "text": "interface bus_if;\n  modport master(input ready);\nendinterface\n"
+    }
+  ],
+  "request": {
+    "kind": "hover",
+    "uri": "file:///golden/semantic/hover-if-modport-again.sv",
+    "line": 1,
+    "character": 10
+  },
+  "expected": {
+    "contains": "master"
+  }
+}

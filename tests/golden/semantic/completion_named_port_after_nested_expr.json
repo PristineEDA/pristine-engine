@@ -1,0 +1,25 @@
+{
+  "name": "named port completion handles nested expressions before cursor",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/named-port-nested-expr.sv",
+      "text": "module child(input logic clk, input logic rst_n, output logic data);\nendmodule\nmodule top;\n  logic clk;\n  logic rst_n;\n  logic data;\n  child u_child(.clk((clk)), .rst_n(rst_n), .da);\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "completion",
+    "uri": "file:///golden/semantic/named-port-nested-expr.sv",
+    "line": 6,
+    "character": 49,
+    "prefix": "da"
+  },
+  "expected": {
+    "labels": [
+      "data"
+    ],
+    "absentLabels": [
+      "clk",
+      "rst_n"
+    ]
+  }
+}

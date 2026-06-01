@@ -1,0 +1,20 @@
+{
+  "name": "workspace symbols include array member-like status query",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/workspace-array-member.sv",
+      "text": "module top;\n  logic status_ready;\n  logic status_valid;\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "workspaceSymbol",
+    "query": "status",
+    "limit": 10
+  },
+  "expected": {
+    "names": [
+      "status_ready",
+      "status_valid"
+    ]
+  }
+}

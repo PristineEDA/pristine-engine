@@ -1,0 +1,21 @@
+{
+  "name": "diagnostics does not report duplicate module body symbols",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/diag-no-module-body-dup.sv",
+      "text": "module top;\n  logic ready;\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "diagnostics"
+  },
+  "expected": {
+    "uri": "file:///golden/semantic/diag-no-module-body-dup.sv",
+    "diagnostics": [
+      {
+        "code": "duplicateSymbol",
+        "present": false
+      }
+    ]
+  }
+}

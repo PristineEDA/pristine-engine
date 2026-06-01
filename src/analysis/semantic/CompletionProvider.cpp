@@ -53,14 +53,100 @@ bool hasOnlyWhitespaceSinceLineStart(std::string_view text, size_t offset) {
 
 std::optional<std::string> qualifierBefore(std::string_view text, size_t qualifier_end) {
     size_t name_start = qualifier_end;
-    while (name_start > 0 && isIdentifierContinue(text[name_start - 1])) {
-        --name_start;
+    while (name_start > 0) {
+        const auto previous = text[name_start - 1];
+        if (isIdentifierContinue(previous)) {
+            --name_start;
+            continue;
+        }
+        if (previous == ']') {
+            int depth = 1;
+            --name_start;
+            while (name_start > 0 && depth > 0) {
+                const auto value = text[name_start - 1];
+                --name_start;
+                if (value == ']') {
+                    ++depth;
+                }
+                else if (value == '[') {
+                    --depth;
+                }
+            }
+            continue;
+        }
+        if (previous == '.') {
+            --name_start;
+            continue;
+        }
+        break;
     }
     const auto qualifier = text.substr(name_start, qualifier_end - name_start);
     if (qualifier.empty() || !isIdentifierStart(qualifier.front())) {
         return std::nullopt;
     }
     return std::string(qualifier);
+}
+
+std::optional<size_t> openParenBeforePosition(std::string_view text,
+                                              size_t search_start,
+                                              size_t search_end) {
+    if (search_start >= text.size() || search_start >= search_end) {
+        return std::nullopt;
+    }
+    const auto bounded_end = std::min(search_end, text.size());
+    for (size_t offset = search_start; offset < bounded_end; ++offset) {
+        if (text[offset] == '(') {
+            return offset;
+        }
+    }
+    return std::nullopt;
+}
+
+std::set<std::string> connectedNamedPortsBeforePosition(std::string_view text,
+                                                        size_t open_paren_offset,
+                                                        size_t position_offset) {
+    std::set<std::string> connected_ports;
+    int depth = 0;
+    for (size_t offset = open_paren_offset + 1; offset < position_offset && offset < text.size(); ++offset) {
+        const char value = text[offset];
+        if (value == '(') {
+            ++depth;
+            continue;
+        }
+        if (value == ')') {
+            if (depth == 0) {
+                break;
+            }
+            --depth;
+            continue;
+        }
+        if (value != '.' || depth != 0) {
+            continue;
+        }
+
+        const auto name_start = offset + 1;
+        if (name_start >= position_offset || !isIdentifierStart(text[name_start])) {
+            continue;
+        }
+
+        size_t name_end = name_start + 1;
+        while (name_end < position_offset && isIdentifierContinue(text[name_end])) {
+            ++name_end;
+        }
+
+        size_t cursor = name_end;
+        while (cursor < position_offset && std::isspace(static_cast<unsigned char>(text[cursor])) != 0) {
+            ++cursor;
+        }
+        if (cursor < position_offset && text[cursor] == '(') {
+            connected_ports.insert(std::string(text.substr(name_start, name_end - name_start)));
+            offset = cursor - 1;
+            continue;
+        }
+
+        offset = name_end;
+    }
+    return connected_ports;
 }
 
 std::string_view moduleUriFor(const CompletionResolveContext& context,
@@ -409,6 +495,31 @@ SemanticCompletionItem resolveCompletionItem(std::string_view stable_id,
     return item;
 }
 
+std::set<std::string> connectedNamedPortsForInstance(std::string_view text,
+                                                     int line,
+                                                     int character,
+                                                     ParseRange instance_selection_range,
+                                                     ParseRange instance_range) {
+    const auto position_offset = utf8OffsetAtUtf16Position(text, line, character);
+    const auto search_start = utf8OffsetAtUtf16Position(text,
+                                                        instance_selection_range.end_line,
+                                                        instance_selection_range.end_character);
+    const auto search_end = utf8OffsetAtUtf16Position(text,
+                                                      instance_range.end_line,
+                                                      instance_range.end_character);
+    if (!position_offset.has_value() || !search_start.has_value() || !search_end.has_value()) {
+        return {};
+    }
+
+    const auto open_paren = openParenBeforePosition(text,
+                                                    *search_start,
+                                                    std::min(*position_offset, *search_end));
+    if (!open_paren.has_value()) {
+        return {};
+    }
+    return connectedNamedPortsBeforePosition(text, *open_paren, *position_offset);
+}
+
 std::optional<size_t> completionPrefixStartOffset(std::string_view text,
                                                   int line,
                                                   int character,
@@ -477,6 +588,28 @@ void appendSymbolCompletion(std::vector<SemanticCompletionItem>& items,
                                                  .unresolved = false},
                          prefix,
                          truncated);
+}
+
+bool isMemberCompletionKind(std::string_view kind) {
+    return kind == "Field" || kind == "Member" || kind == "Net" || kind == "Variable" ||
+           kind == "Parameter" || kind == "Subroutine";
+}
+
+void appendMemberCompletions(std::vector<SemanticCompletionItem>& items,
+                             std::set<std::string>& emitted,
+                             const CompletionMemberContext& context,
+                             std::string_view prefix,
+                             bool& truncated) {
+    for (const auto& candidate : context.candidates) {
+        if (truncated) {
+            return;
+        }
+        if (candidate.identity.name == context.qualifier ||
+            !isMemberCompletionKind(candidate.identity.kind)) {
+            continue;
+        }
+        appendSymbolCompletion(items, emitted, candidate.identity, prefix, truncated);
+    }
 }
 
 void appendModulePortCompletions(std::vector<SemanticCompletionItem>& items,

@@ -1,0 +1,20 @@
+{
+  "name": "completion resolve for interface-like member keeps symbol documentation",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/resolve-if-member.sv",
+      "text": "module top;\n  logic bus;\n  logic status_ready;\n  initial begin\n    bus.master.status_\n  end\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "completionResolve",
+    "uri": "file:///golden/semantic/resolve-if-member.sv",
+    "line": 4,
+    "character": 25,
+    "prefix": "status_",
+    "label": "status_ready"
+  },
+  "expected": {
+    "documentationContains": "status_ready"
+  }
+}

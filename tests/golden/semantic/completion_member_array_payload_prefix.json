@@ -1,0 +1,25 @@
+{
+  "name": "array member completion filters payload prefix",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/member-array-payload.sv",
+      "text": "module top;\n  logic lanes;\n  logic payload_data;\n  logic payload_last;\n  logic status_ready;\n  initial begin\n    lanes[1].payload_\n  end\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "completion",
+    "uri": "file:///golden/semantic/member-array-payload.sv",
+    "line": 6,
+    "character": 21,
+    "prefix": "payload_"
+  },
+  "expected": {
+    "labels": [
+      "payload_data",
+      "payload_last"
+    ],
+    "absentLabels": [
+      "status_ready"
+    ]
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "name": "signature help records current nested function call debt explicitly",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/signature-nested-call-second.sv",
+      "text": "module top;\n  function int mix(input int lhs, input int rhs); return lhs + rhs; endfunction\n  function int pack(input int a, input int b); return a + b; endfunction\n  int value = mix(pack(a, b), rhs_value);\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "signatureHelp",
+    "uri": "file:///golden/semantic/signature-nested-call-second.sv",
+    "line": 3,
+    "character": 36
+  },
+  "expected": {
+    "unresolved": true
+  }
+}

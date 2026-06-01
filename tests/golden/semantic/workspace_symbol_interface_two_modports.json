@@ -1,0 +1,19 @@
+{
+  "name": "workspace symbols expose two interface modports",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/workspace-two-modports.sv",
+      "text": "interface bus_if;\n  logic ready;\n  modport master(input ready);\n  modport slave(output ready);\nendinterface\n"
+    }
+  ],
+  "request": {
+    "kind": "workspaceSymbol",
+    "query": "master",
+    "limit": 10
+  },
+  "expected": {
+    "names": [
+      "master"
+    ]
+  }
+}

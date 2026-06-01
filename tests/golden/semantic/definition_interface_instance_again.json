@@ -1,0 +1,21 @@
+{
+  "name": "definition on interface instance resolves interface declaration again",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/def-if-instance-again.sv",
+      "text": "interface bus_if; endinterface\nmodule top;\n  bus_if bus();\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "definition",
+    "uri": "file:///golden/semantic/def-if-instance-again.sv",
+    "line": 2,
+    "character": 3
+  },
+  "expected": {
+    "count": 1,
+    "uris": [
+      "file:///golden/semantic/def-if-instance-again.sv"
+    ]
+  }
+}

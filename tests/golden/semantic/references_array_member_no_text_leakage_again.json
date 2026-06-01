@@ -1,0 +1,19 @@
+{
+  "name": "references for array member-like signal avoid text leakage again",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/ref-array-member-again.sv",
+      "text": "module top;\n  logic status_ready;\n  // status_ready in comment\n  assign status_ready = status_ready;\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "references",
+    "uri": "file:///golden/semantic/ref-array-member-again.sv",
+    "line": 1,
+    "character": 9,
+    "includeDeclaration": true
+  },
+  "expected": {
+    "count": 3
+  }
+}

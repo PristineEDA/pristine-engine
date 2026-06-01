@@ -1,0 +1,32 @@
+{
+  "name": "schematic includes two interface instance cells",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/schematic-if-two.sv",
+      "text": "interface bus_if;\nendinterface\nmodule top;\n  bus_if a();\n  bus_if b();\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "schematic",
+    "moduleName": "top",
+    "maxDepth": 4
+  },
+  "expected": {
+    "rootModule": "top",
+    "modules": [
+      "top"
+    ],
+    "cells": [
+      {
+        "module": "top",
+        "name": "a",
+        "type": "bus_if"
+      },
+      {
+        "module": "top",
+        "name": "b",
+        "type": "bus_if"
+      }
+    ]
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "name": "signature help tracks parameterized module named third port",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/signature-param-named-third.sv",
+      "text": "module child #(parameter int WIDTH = 8) (input logic clk, input logic ready, output logic [WIDTH-1:0] data);\nendmodule\nmodule top;\n  logic clk;\n  logic ready;\n  logic [3:0] data;\n  child #(.WIDTH(4)) u_child(.clk(clk), .ready(ready), .data(data));\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "signatureHelp",
+    "uri": "file:///golden/semantic/signature-param-named-third.sv",
+    "line": 6,
+    "character": 65
+  },
+  "expected": {
+    "labelContains": "child(",
+    "parameters": [
+      "input logic clk",
+      "input logic ready"
+    ]
+  }
+}

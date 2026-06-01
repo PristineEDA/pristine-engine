@@ -144,6 +144,56 @@ FIXTURES: tuple[DifferentialFixture, ...] = (
         ),
     ),
     DifferentialFixture(
+        name="completion array element member prefix",
+        sources={
+            "array_member.sv": (
+                "module top;\n"
+                "  logic lanes;\n"
+                "  logic status_ready;\n"
+                "  logic status_valid;\n"
+                "  initial begin\n"
+                "    lanes[0].status_\n"
+                "  end\n"
+                "endmodule\n"
+            )
+        },
+        checks=(
+            DifferentialCheck(
+                kind="completion",
+                uri="array_member.sv",
+                position={"line": 5, "character": 22},
+                required=("status_ready", "status_valid"),
+                optional=True,
+            ),
+        ),
+    ),
+    DifferentialFixture(
+        name="completion interface-like member prefix",
+        sources={
+            "interface_member.sv": (
+                "interface bus_if;\n"
+                "  logic status_ready;\n"
+                "  modport master(input status_ready);\n"
+                "endinterface\n"
+                "module top;\n"
+                "  bus_if bus();\n"
+                "  initial begin\n"
+                "    bus.master.status_\n"
+                "  end\n"
+                "endmodule\n"
+            )
+        },
+        checks=(
+            DifferentialCheck(
+                kind="completion",
+                uri="interface_member.sv",
+                position={"line": 7, "character": 22},
+                required=("status_ready",),
+                optional=True,
+            ),
+        ),
+    ),
+    DifferentialFixture(
         name="references local signal identity",
         sources={
             "refs.sv": (
@@ -421,6 +471,25 @@ FIXTURES: tuple[DifferentialFixture, ...] = (
         ),
     ),
     DifferentialFixture(
+        name="diagnostics missing wildcard import package",
+        sources={
+            "missing_import_pkg.sv": (
+                "module top;\n"
+                "  import missing_defs::*;\n"
+                "  logic ready;\n"
+                "endmodule\n"
+            )
+        },
+        checks=(
+            DifferentialCheck(
+                kind="diagnostics",
+                uri="missing_import_pkg.sv",
+                min_count=1,
+                optional=True,
+            ),
+        ),
+    ),
+    DifferentialFixture(
         name="type definition typedef lookup",
         sources={
             "type.sv": (
@@ -502,6 +571,28 @@ FIXTURES: tuple[DifferentialFixture, ...] = (
             DifferentialCheck(
                 kind="backwardCone",
                 uri="cone.sv",
+                position={"line": 3, "character": 9},
+                min_count=2,
+                optional=True,
+            ),
+        ),
+    ),
+    DifferentialFixture(
+        name="backward cone branching assign inputs",
+        sources={
+            "cone_branch.sv": (
+                "module top;\n"
+                "  logic a;\n"
+                "  logic b;\n"
+                "  logic out;\n"
+                "  assign out = a & b;\n"
+                "endmodule\n"
+            )
+        },
+        checks=(
+            DifferentialCheck(
+                kind="backwardCone",
+                uri="cone_branch.sv",
                 position={"line": 3, "character": 9},
                 min_count=2,
                 optional=True,

@@ -51,6 +51,29 @@ TEST_CASE("CompletionProvider detects package, member, macro, and module context
     }
 }
 
+TEST_CASE("CompletionProvider detects array and hierarchical member qualifiers",
+          "[analysis][semantic][completion-provider][member]") {
+    {
+        const auto context = detectCompletionContext("module top;\n  lanes[0].status_\nendmodule\n",
+                                                     1,
+                                                     18,
+                                                     "status_");
+        REQUIRE(context.prefix_start.has_value());
+        CHECK(context.member_access);
+        CHECK(context.member_qualifier == "lanes[0]");
+    }
+
+    {
+        const auto context = detectCompletionContext("module top;\n  bus.master.status_\nendmodule\n",
+                                                     1,
+                                                     20,
+                                                     "status_");
+        REQUIRE(context.prefix_start.has_value());
+        CHECK(context.member_access);
+        CHECK(context.member_qualifier == "bus.master");
+    }
+}
+
 TEST_CASE("CompletionProvider maps prefix start with UTF-16 positions",
           "[analysis][semantic][completion-provider][utf16]") {
     const std::string text = "module top;\n  logic smile_😀;\n  smile_😀\nendmodule\n";
@@ -139,6 +162,190 @@ TEST_CASE("CompletionProvider builds module, port, macro, and symbol completion 
     CHECK(std::count_if(items.begin(), items.end(), [](const SemanticCompletionItem& item) {
         return item.label == "ready";
     }) == 1);
+}
+
+TEST_CASE("CompletionProvider appends member completions from provider-facing candidates",
+          "[analysis][semantic][completion-provider][member]") {
+    CompletionMemberContext context;
+    context.qualifier = "lanes[0]";
+    context.candidates = {CompletionMemberCandidate{.identity = SemanticSymbolIdentity{
+                         .stable_id = "symbol|lanes",
+                         .name = "lanes",
+                         .kind = "Variable",
+                         .location = SemanticLocation{}}},
+                          CompletionMemberCandidate{.identity = SemanticSymbolIdentity{
+                         .stable_id = "symbol|status_ready",
+                         .name = "status_ready",
+                         .kind = "Field",
+                         .location = SemanticLocation{}}},
+                          CompletionMemberCandidate{.identity = SemanticSymbolIdentity{
+                         .stable_id = "symbol|payload",
+                         .name = "payload",
+                         .kind = "Field",
+                         .location = SemanticLocation{}}},
+                          CompletionMemberCandidate{.identity = SemanticSymbolIdentity{
+                         .stable_id = "symbol|child",
+                         .name = "child",
+                         .kind = "Definition",
+                         .location = SemanticLocation{}}}};
+
+    std::vector<SemanticCompletionItem> items;
+    std::set<std::string> emitted;
+    bool truncated = false;
+
+    appendMemberCompletions(items, emitted, context, "status_", truncated);
+
+    REQUIRE_FALSE(truncated);
+    REQUIRE(items.size() == 1);
+    CHECK(items.front().label == "status_ready");
+    CHECK(items.front().detail == "Variable");
+}
+
+TEST_CASE("CompletionProvider computes connected named ports within an instance range",
+          "[analysis][semantic][completion-provider][ports]") {
+    const std::string text = "module top;\n  child u_child(.clk(clk), .ready(ready), .da);\nendmodule\n";
+
+    const auto connected = connectedNamedPortsForInstance(text,
+                                                          1,
+                                                          45,
+                                                          ParseRange{.start_line = 1,
+                                                                     .start_character = 8,
+                                                                     .end_line = 1,
+                                                                     .end_character = 15},
+                                                          ParseRange{.start_line = 1,
+                                                                     .start_character = 2,
+                                                                     .end_line = 1,
+                                                                     .end_character = 47});
+
+    CHECK(connected.contains("clk"));
+    CHECK(connected.contains("ready"));
+    CHECK_FALSE(connected.contains("da"));
+}
+
+TEST_CASE("CompletionProvider ignores nested named ports after the cursor",
+          "[analysis][semantic][completion-provider][ports]") {
+    const std::string text = "module top;\n  child u_child(.clk(clk), .ready(ready), .data(data));\nendmodule\n";
+
+    const auto connected = connectedNamedPortsForInstance(text,
+                                                          1,
+                                                          27,
+                                                          ParseRange{.start_line = 1,
+                                                                     .start_character = 8,
+                                                                     .end_line = 1,
+                                                                     .end_character = 15},
+                                                          ParseRange{.start_line = 1,
+                                                                     .start_character = 2,
+                                                                     .end_line = 1,
+                                                                     .end_character = 55});
+
+    CHECK(connected.contains("clk"));
+    CHECK_FALSE(connected.contains("ready"));
+    CHECK_FALSE(connected.contains("data"));
+}
+
+TEST_CASE("CompletionProvider returns no connected ports for invalid instance ranges",
+          "[analysis][semantic][completion-provider][ports]") {
+    const std::string text = "module top;\n  child u_child(.clk(clk));\nendmodule\n";
+
+    const auto connected = connectedNamedPortsForInstance(text,
+                                                          1,
+                                                          31,
+                                                          ParseRange{.start_line = 1,
+                                                                     .start_character = 8,
+                                                                     .end_line = 1,
+                                                                     .end_character = 15},
+                                                          ParseRange{.start_line = 1,
+                                                                     .start_character = 2,
+                                                                     .end_line = 1,
+                                                                     .end_character = 200});
+
+    CHECK(connected.empty());
+}
+
+TEST_CASE("CompletionProvider ignores nested function call named arguments in port exclusion",
+          "[analysis][semantic][completion-provider][ports]") {
+    const std::string text =
+        "module top;\n  child u_child(.clk(clk), .data(func(.inner(sig))), .re);\nendmodule\n";
+
+    const auto connected = connectedNamedPortsForInstance(text,
+                                                          1,
+                                                          53,
+                                                          ParseRange{.start_line = 1,
+                                                                     .start_character = 8,
+                                                                     .end_line = 1,
+                                                                     .end_character = 15},
+                                                          ParseRange{.start_line = 1,
+                                                                     .start_character = 2,
+                                                                     .end_line = 1,
+                                                                     .end_character = 58});
+
+    CHECK(connected.contains("clk"));
+    CHECK(connected.contains("data"));
+    CHECK_FALSE(connected.contains("inner"));
+    CHECK_FALSE(connected.contains("re"));
+}
+
+TEST_CASE("CompletionProvider member completions are case insensitive and deduped",
+          "[analysis][semantic][completion-provider][member]") {
+    CompletionMemberContext context;
+    context.qualifier = "bus.master";
+    context.candidates = {CompletionMemberCandidate{.identity = SemanticSymbolIdentity{
+                         .stable_id = "symbol|status_ready",
+                         .name = "status_ready",
+                         .kind = "Field"}},
+                          CompletionMemberCandidate{.identity = SemanticSymbolIdentity{
+                         .stable_id = "symbol|status_ready_duplicate",
+                         .name = "status_ready",
+                         .kind = "Field"}},
+                          CompletionMemberCandidate{.identity = SemanticSymbolIdentity{
+                         .stable_id = "symbol|STATUS_ERROR",
+                         .name = "STATUS_ERROR",
+                         .kind = "Field"}}};
+    std::vector<SemanticCompletionItem> items;
+    std::set<std::string> emitted;
+    bool truncated = false;
+
+    appendMemberCompletions(items, emitted, context, "status_", truncated);
+
+    REQUIRE_FALSE(truncated);
+    CHECK(items.size() == 2);
+    CHECK(std::count_if(items.begin(), items.end(), [](const auto& item) {
+        return item.label == "status_ready";
+    }) == 1);
+    CHECK(std::any_of(items.begin(), items.end(), [](const auto& item) {
+        return item.label == "STATUS_ERROR";
+    }));
+}
+
+TEST_CASE("CompletionProvider stops member completions at the provider cap",
+          "[analysis][semantic][completion-provider][member][truncated]") {
+    CompletionMemberContext context;
+    context.qualifier = "bus";
+    for (int index = 0; index < 2010; ++index) {
+        context.candidates.push_back(CompletionMemberCandidate{.identity = SemanticSymbolIdentity{
+                                      .stable_id = "symbol|field" + std::to_string(index),
+                                      .name = "field" + std::to_string(index),
+                                      .kind = "Field"}});
+    }
+    std::vector<SemanticCompletionItem> items;
+    std::set<std::string> emitted;
+    bool truncated = false;
+
+    appendMemberCompletions(items, emitted, context, "field", truncated);
+
+    CHECK(truncated);
+    CHECK(items.size() == 2000);
+}
+
+TEST_CASE("CompletionProvider preserves unresolved resolve result for missing symbols",
+          "[analysis][semantic][completion-provider][resolve]") {
+    const CompletionResolveContext context;
+
+    const auto resolved = resolveCompletionItem("symbol|missing", "missing", context);
+
+    CHECK(resolved.unresolved);
+    CHECK(resolved.label == "missing");
+    CHECK(resolved.insert_text == "missing");
 }
 
 TEST_CASE("CompletionProvider resolves completion documentation and snippets",

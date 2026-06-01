@@ -1,0 +1,22 @@
+{
+  "name": "code action reports unresolved missing import without syntax fallback",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/action-missing-import-again.sv",
+      "text": "module top;\n  import missing_defs::*;\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "codeAction",
+    "uri": "file:///golden/semantic/action-missing-import-again.sv",
+    "range": {
+      "startLine": 1,
+      "startCharacter": 9,
+      "endLine": 1,
+      "endCharacter": 21
+    }
+  },
+  "expected": {
+    "actions": []
+  }
+}

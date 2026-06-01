@@ -1,0 +1,22 @@
+{
+  "name": "module hierarchy keeps generated child module reachable",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/hier-generated-more.sv",
+      "text": "module child; endmodule\nmodule top;\n  genvar i;\n  generate for (i = 0; i < 2; i = i + 1) begin : g\n    child u_child();\n  end endgenerate\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "moduleHierarchy",
+    "moduleName": "top",
+    "maxDepth": 8
+  },
+  "expected": {
+    "rootModules": [
+      "top"
+    ],
+    "modules": [
+      "child"
+    ]
+  }
+}

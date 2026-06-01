@@ -16,7 +16,6 @@
 #include "slang/ast/types/Type.h"
 
 #include <algorithm>
-#include <cctype>
 #include <memory>
 #include <set>
 #include <sstream>
@@ -58,76 +57,6 @@ bool sameLocation(const SemanticLocation& lhs, const SemanticLocation& rhs) {
     return lhs.uri == rhs.uri && lhs.range.start_line == rhs.range.start_line &&
            lhs.range.start_character == rhs.range.start_character &&
            lhs.range.end_line == rhs.range.end_line && lhs.range.end_character == rhs.range.end_character;
-}
-
-bool isIdentifierStart(char value) {
-    const auto ch = static_cast<unsigned char>(value);
-    return std::isalpha(ch) != 0 || value == '_' || value == '$';
-}
-
-bool isIdentifierContinue(char value) {
-    const auto ch = static_cast<unsigned char>(value);
-    return std::isalnum(ch) != 0 || value == '_' || value == '$';
-}
-
-std::optional<size_t> openParenBeforePosition(std::string_view text,
-                                              size_t search_start,
-                                              size_t search_end) {
-    if (search_start >= text.size() || search_start >= search_end) {
-        return std::nullopt;
-    }
-    const auto bounded_end = std::min(search_end, text.size());
-    for (size_t offset = search_start; offset < bounded_end; ++offset) {
-        if (text[offset] == '(') {
-            return offset;
-        }
-    }
-    return std::nullopt;
-}
-
-std::set<std::string> connectedNamedPortsBeforePosition(std::string_view text,
-                                                        size_t open_paren_offset,
-                                                        size_t position_offset) {
-    std::set<std::string> connected_ports;
-    int depth = 0;
-    for (size_t offset = open_paren_offset + 1; offset < position_offset && offset < text.size(); ++offset) {
-        const char value = text[offset];
-        if (value == '(') {
-            ++depth;
-            continue;
-        }
-        if (value == ')') {
-            if (depth == 0) {
-                break;
-            }
-            --depth;
-            continue;
-        }
-        if (value != '.' || depth != 0) {
-            continue;
-        }
-
-        const auto name_start = offset + 1;
-        if (name_start >= position_offset || !isIdentifierStart(text[name_start])) {
-            continue;
-        }
-
-        size_t name_end = name_start + 1;
-        while (name_end < position_offset && isIdentifierContinue(text[name_end])) {
-            ++name_end;
-        }
-
-        size_t cursor = name_end;
-        while (cursor < position_offset && std::isspace(static_cast<unsigned char>(text[cursor])) != 0) {
-            ++cursor;
-        }
-        if (cursor < position_offset && text[cursor] == '(') {
-            connected_ports.insert(std::string(text.substr(name_start, name_end - name_start)));
-        }
-
-        offset = name_end;
-    }
-    return connected_ports;
 }
 
 constexpr size_t kMaxSemanticLocations = 2000;
@@ -929,23 +858,12 @@ SemanticCompletionResult SemanticEngine::completionsAt(std::string_view uri,
                     const auto module_it = data->modules_by_name.find(instance.module_name);
                     if (module_it != data->modules_by_name.end()) {
                         std::set<std::string> connected_ports;
-                        const auto position_offset = utf8OffsetAtUtf16Position(document->text, line, character);
-                        const auto search_start = utf8OffsetAtUtf16Position(document->text,
-                                                                            instance.selection_range.end_line,
-                                                                            instance.selection_range.end_character);
-                        const auto search_end = utf8OffsetAtUtf16Position(document->text,
-                                                                          instance.range.end_line,
-                                                                          instance.range.end_character);
-                        if (position_offset.has_value() && search_start.has_value() && search_end.has_value()) {
-                            const auto open_paren = openParenBeforePosition(document->text,
-                                                                            *search_start,
-                                                                            std::min(*position_offset, *search_end));
-                            if (open_paren.has_value()) {
-                                connected_ports = connectedNamedPortsBeforePosition(document->text,
-                                                                                    *open_paren,
-                                                                                    *position_offset);
-                            }
-                        }
+                        connected_ports = semantic::connectedNamedPortsForInstance(
+                            document->text,
+                            line,
+                            character,
+                            instance.selection_range,
+                            instance.range);
                         const auto module_uri_it = data->module_uris_by_name.find(instance.module_name);
                         appendModulePortCompletions(result.items,
                                                     emitted,
@@ -964,23 +882,18 @@ SemanticCompletionResult SemanticEngine::completionsAt(std::string_view uri,
         }
 
         if (const auto member_name = completion_context.member_qualifier) {
+            semantic::CompletionMemberContext member_context;
+            member_context.qualifier = *member_name;
+            member_context.candidates.reserve(data->symbols_by_id.size());
             for (const auto& [_, indexed_symbol] : data->symbols_by_id) {
-                if (indexed_symbol.identity.name == *member_name) {
-                    continue;
-                }
-                if (indexed_symbol.identity.kind == "Field" || indexed_symbol.identity.kind == "Member" ||
-                    indexed_symbol.identity.kind == "Net" || indexed_symbol.identity.kind == "Variable" ||
-                    indexed_symbol.identity.kind == "Parameter" || indexed_symbol.identity.kind == "Subroutine") {
-                    semantic::appendSymbolCompletion(result.items,
-                                                     emitted,
-                                                     indexed_symbol.identity,
-                                                     prefix,
-                                                     result.truncated);
-                }
-                if (result.truncated) {
-                    return finish(std::move(result));
-                }
+                member_context.candidates.push_back(
+                    semantic::CompletionMemberCandidate{.identity = indexed_symbol.identity});
             }
+            semantic::appendMemberCompletions(result.items,
+                                              emitted,
+                                              member_context,
+                                              prefix,
+                                              result.truncated);
             result.messages.push_back("member completion used AST-backed member context provider");
             return finish(std::move(result));
         }
