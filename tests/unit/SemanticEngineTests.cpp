@@ -102,6 +102,31 @@ TEST_CASE("SemanticEngine owns UX diagnostics formerly produced by workspace met
     CHECK(width_mismatch->severity == 2);
 }
 
+TEST_CASE("SemanticEngine diagnoses non-adjacent duplicate symbols without module-body leakage",
+          "[analysis][semantic-engine][diagnostics][no-fallback]") {
+    SemanticEngine engine;
+    engine.updateDocument("file:///workspace/non-adjacent-duplicate.sv",
+                          "module top;\n"
+                          "  logic ready;\n"
+                          "  logic valid;\n"
+                          "  logic ready;\n"
+                          "endmodule\n",
+                          SemanticEngineDocumentState{.version = 1, .is_open = true});
+
+    const auto diagnostics = engine.diagnosticsFor("file:///workspace/non-adjacent-duplicate.sv");
+
+    CHECK(std::count_if(diagnostics.begin(),
+                        diagnostics.end(),
+                        [](const SemanticEngineDiagnostic& diagnostic) {
+                            return diagnostic.code == "duplicateSymbol" &&
+                                   diagnostic.message == "Duplicate symbol 'ready' in the same scope." &&
+                                   diagnostic.range.start_line == 3;
+                        }) == 1);
+    CHECK(std::none_of(diagnostics.begin(), diagnostics.end(), [](const SemanticEngineDiagnostic& diagnostic) {
+        return diagnostic.code == "duplicateSymbol" && diagnostic.message.find("'top'") != std::string::npos;
+    }));
+}
+
 TEST_CASE("SemanticEngine resolves packages and local shadowing without legacy workspace diagnostics",
           "[analysis][semantic-engine][diagnostics][no-fallback]") {
     SemanticEngine engine;

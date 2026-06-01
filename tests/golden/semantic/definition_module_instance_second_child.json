@@ -1,0 +1,23 @@
+{
+  "name": "definition on second module instance resolves child declaration",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/definition-second-child.sv",
+      "text": "module child;\nendmodule\nmodule top;\n  child u_a();\n  child u_b();\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "definition",
+    "uri": "file:///golden/semantic/definition-second-child.sv",
+    "line": 4,
+    "character": 4
+  },
+  "expected": {
+    "locations": [
+      {
+        "uri": "file:///golden/semantic/definition-second-child.sv",
+        "startLine": 0
+      }
+    ]
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "name": "array member completion filters valid prefix",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/completion-array-valid.sv",
+      "text": "module top;\n  logic lanes;\n  logic valid_data;\n  logic valid_mask;\n  logic ready_data;\n  initial begin\n    lanes[1].valid_\n  end\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "completion",
+    "uri": "file:///golden/semantic/completion-array-valid.sv",
+    "line": 6,
+    "character": 19,
+    "prefix": "valid_"
+  },
+  "expected": {
+    "labels": [
+      "valid_data",
+      "valid_mask"
+    ],
+    "absentLabels": [
+      "ready_data"
+    ]
+  }
+}

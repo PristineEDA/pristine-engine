@@ -1,0 +1,28 @@
+{
+  "name": "wildcard import exposes depth constant to completion",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/wildcard-depth-pkg.sv",
+      "text": "package defs;\n  parameter int DEPTH_LIMIT = 16;\n  parameter int WIDTH_LIMIT = 8;\nendpackage\n"
+    },
+    {
+      "uri": "file:///golden/semantic/wildcard-depth-top.sv",
+      "text": "module top;\n  import defs::*;\n  localparam int D = DEPTH_\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "completion",
+    "uri": "file:///golden/semantic/wildcard-depth-top.sv",
+    "line": 2,
+    "character": 29,
+    "prefix": "DEPTH_"
+  },
+  "expected": {
+    "labels": [
+      "DEPTH_LIMIT"
+    ],
+    "absentLabels": [
+      "WIDTH_LIMIT"
+    ]
+  }
+}

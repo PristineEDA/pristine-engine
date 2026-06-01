@@ -1,0 +1,19 @@
+{
+  "name": "references for typedef shadow avoid same text in second module",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/references-typedef-shadow.sv",
+      "text": "module first;\n  typedef logic shared_t;\n  shared_t value;\nendmodule\nmodule second;\n  typedef logic shared_t;\n  shared_t value;\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "references",
+    "uri": "file:///golden/semantic/references-typedef-shadow.sv",
+    "line": 1,
+    "character": 16,
+    "includeDeclaration": true
+  },
+  "expected": {
+    "allBeforeLine": 4
+  }
+}

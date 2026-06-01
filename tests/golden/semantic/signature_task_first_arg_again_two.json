@@ -1,0 +1,18 @@
+{
+  "name": "task signature help records unresolved undeclared argument fixture",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/signature-task-first-second.sv",
+      "text": "module top;\n  task automatic emit(input logic valid, input int data);\n  endtask\n  initial begin\n    emit(ready, value);\n  end\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "signatureHelp",
+    "uri": "file:///golden/semantic/signature-task-first-second.sv",
+    "line": 4,
+    "character": 10
+  },
+  "expected": {
+    "unresolved": true
+  }
+}

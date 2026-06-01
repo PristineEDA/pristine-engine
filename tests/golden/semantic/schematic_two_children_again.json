@@ -1,0 +1,34 @@
+{
+  "name": "schematic includes two child cells in second fixture",
+  "config": {
+    "topModules": [
+      "top"
+    ]
+  },
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/schematic-two-children-again.sv",
+      "text": "module left;\nendmodule\nmodule right;\nendmodule\nmodule top;\n  left u_left();\n  right u_right();\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "schematic",
+    "moduleName": "top",
+    "maxDepth": 8
+  },
+  "expected": {
+    "rootModule": "top",
+    "cells": [
+      {
+        "module": "top",
+        "name": "u_left",
+        "type": "left"
+      },
+      {
+        "module": "top",
+        "name": "u_right",
+        "type": "right"
+      }
+    ]
+  }
+}

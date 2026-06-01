@@ -1,0 +1,20 @@
+{
+  "name": "code action records current second-instance missing port debt shape",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/code-action-missing-ports-second.sv",
+      "text": "module child(input logic clk, input logic rst_n, input logic data);\nendmodule\nmodule top;\n  logic clk;\n  child u_a(.clk(clk));\n  child u_b(.clk(clk));\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "codeAction",
+    "uri": "file:///golden/semantic/code-action-missing-ports-second.sv",
+    "range": {
+      "startLine": 4,
+      "startCharacter": 2,
+      "endLine": 4,
+      "endCharacter": 22
+    }
+  },
+  "expected": {}
+}

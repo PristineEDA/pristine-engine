@@ -1,0 +1,21 @@
+{
+  "name": "completion resolve module includes two-port instantiation snippet",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/completion-resolve-module2.sv",
+      "text": "module child(input logic clk, output logic data);\nendmodule\nmodule top;\n  chi\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "completionResolve",
+    "uri": "file:///golden/semantic/completion-resolve-module2.sv",
+    "line": 3,
+    "character": 5,
+    "prefix": "chi",
+    "label": "child"
+  },
+  "expected": {
+    "documentationContains": "Ports:",
+    "insertTextContains": ".data(${3:data})"
+  }
+}

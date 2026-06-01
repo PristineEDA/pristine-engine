@@ -92,6 +92,12 @@ bool isPackageMemberDefinitionKind(std::string_view kind) {
            kind == "Variable" || kind == "Net";
 }
 
+bool isDuplicateSymbolDiagnosticKind(std::string_view kind) {
+    return kind == "Net" || kind == "Variable" || kind == "Parameter" || kind == "TypeAlias" ||
+           kind == "Type" || kind == "ClassType" || kind == "EnumType" || kind == "EnumValue" ||
+           kind == "Field" || kind == "Member" || kind == "Subroutine";
+}
+
 std::string unknownIncludeMessage(std::string_view target) {
     return std::string("Include file '") + std::string(target) + "' could not be resolved.";
 }
@@ -129,6 +135,39 @@ std::string widthMismatchMessage(std::string_view left_name,
     return std::string("Width mismatch: assigning ") + std::to_string(right_width) + "-bit '" +
            std::string(right_name) + "' to " + std::to_string(left_width) + "-bit '" +
            std::string(left_name) + "'.";
+}
+
+std::string duplicateScopeKey(const SemanticSymbolIdentity& identity) {
+    const auto first_delimiter = identity.stable_id.find('|');
+    const auto second_delimiter = first_delimiter == std::string::npos
+                                      ? std::string::npos
+                                      : identity.stable_id.find('|', first_delimiter + 1);
+    if (first_delimiter != std::string::npos && second_delimiter != std::string::npos) {
+        const auto path = identity.stable_id.substr(first_delimiter + 1,
+                                                    second_delimiter - first_delimiter - 1);
+        if (!path.empty()) {
+            const auto path_scope_delimiter = path.rfind('.');
+            const auto package_scope_delimiter = path.rfind("::");
+            size_t scope_delimiter = std::string::npos;
+            size_t scope_delimiter_width = 1;
+            if (package_scope_delimiter != std::string::npos &&
+                (path_scope_delimiter == std::string::npos ||
+                 package_scope_delimiter > path_scope_delimiter)) {
+                scope_delimiter = package_scope_delimiter;
+                scope_delimiter_width = 2;
+            }
+            else {
+                scope_delimiter = path_scope_delimiter;
+            }
+
+            std::string scope;
+            if (scope_delimiter != std::string::npos) {
+                scope = path.substr(0, scope_delimiter + scope_delimiter_width);
+            }
+            return identity.stable_id.substr(0, first_delimiter + 1) + scope;
+        }
+    }
+    return identity.location.uri + "|";
 }
 
 std::optional<fs::path> resolveIncludeTarget(std::string_view workspace_root_uri,
@@ -258,14 +297,15 @@ bool hasTypeDefinitionSymbol(const DiagnosticContext& context, std::string_view 
 
 void appendDuplicateSymbolDiagnostics(std::vector<SemanticEngineDiagnostic>& result,
                                       const DiagnosticContext& context) {
-    std::map<std::string, std::vector<SemanticSymbolIdentity>> by_name;
+    std::map<std::string, std::vector<SemanticSymbolIdentity>> by_scope_and_name;
     for (const auto& [_, symbol] : context.symbols_by_id) {
         const auto& identity = symbol.identity;
-        if (identity.location.uri == context.document.uri && !identity.name.empty()) {
-            by_name[identity.name].push_back(identity);
+        if (identity.location.uri == context.document.uri && !identity.name.empty() &&
+            isDuplicateSymbolDiagnosticKind(identity.kind)) {
+            by_scope_and_name[duplicateScopeKey(identity) + identity.name].push_back(identity);
         }
     }
-    for (auto& [_, symbols] : by_name) {
+    for (auto& [_, symbols] : by_scope_and_name) {
         if (symbols.size() < 2) {
             continue;
         }
@@ -276,10 +316,6 @@ void appendDuplicateSymbolDiagnostics(std::vector<SemanticEngineDiagnostic>& res
             return lhs.location.range.start_character < rhs.location.range.start_character;
         });
         for (size_t index = 1; index < symbols.size(); ++index) {
-            if (symbols[index].location.range.start_line !=
-                symbols[index - 1].location.range.start_line + 1) {
-                continue;
-            }
             result.push_back(SemanticEngineDiagnostic{.uri = context.document.uri,
                                                       .code = "duplicateSymbol",
                                                       .message = duplicateSymbolMessage(symbols[index].name),

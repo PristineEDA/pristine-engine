@@ -1,0 +1,19 @@
+{
+  "name": "selection range records nested function call expression debt",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/selection-nested-call-again.sv",
+      "text": "module top;\n  function automatic int mix(input int a, input int b);\n    return a + b;\n  endfunction\n  initial begin\n    int value = mix(mix(1, 2), 3);\n  end\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "selectionRange",
+    "uri": "file:///golden/semantic/selection-nested-call-again.sv",
+    "line": 5,
+    "character": 22
+  },
+  "expected": {
+    "unresolved": true,
+    "minCount": 0
+  }
+}

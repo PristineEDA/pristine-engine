@@ -1,0 +1,25 @@
+{
+  "name": "backward cone records branching expression with two inputs",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/cone-branch-two-again.sv",
+      "text": "module top;\n  logic a;\n  logic b;\n  logic out;\n  assign out = a & b;\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "backwardCone",
+    "uri": "file:///golden/semantic/cone-branch-two-again.sv",
+    "line": 3,
+    "character": 9
+  },
+  "expected": {
+    "nodes": [
+      "out",
+      "a",
+      "b"
+    ],
+    "expressions": [
+      "a & b"
+    ]
+  }
+}

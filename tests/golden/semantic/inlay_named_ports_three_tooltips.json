@@ -1,0 +1,31 @@
+{
+  "name": "named port inlay hints include three tooltips",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/inlay-named-tooltips.sv",
+      "text": "module child(input logic clk, input logic ready, output logic data);\nendmodule\nmodule top;\n  child u_child(.clk(clk), .ready(ready), .data(data));\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "inlayHint",
+    "uri": "file:///golden/semantic/inlay-named-tooltips.sv",
+    "range": {
+      "startLine": 0,
+      "startCharacter": 0,
+      "endLine": 5,
+      "endCharacter": 0
+    }
+  },
+  "expected": {
+    "labels": [
+      ".clk",
+      ".ready",
+      ".data"
+    ],
+    "tooltips": [
+      "input logic clk",
+      "input logic ready",
+      "output logic data"
+    ]
+  }
+}

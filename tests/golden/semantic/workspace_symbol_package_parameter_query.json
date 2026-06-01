@@ -1,0 +1,22 @@
+{
+  "name": "workspace symbols include package parameter query",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/workspace-package-param.sv",
+      "text": "package defs;\n  parameter int CONFIG_WIDTH = 8;\nendpackage\nmodule top;\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "workspaceSymbol",
+    "query": "CONFIG",
+    "limit": 100
+  },
+  "expected": {
+    "names": [
+      "CONFIG_WIDTH"
+    ],
+    "absentNames": [
+      "top"
+    ]
+  }
+}

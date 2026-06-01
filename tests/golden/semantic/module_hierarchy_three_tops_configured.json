@@ -1,0 +1,31 @@
+{
+  "name": "module hierarchy returns three configured roots",
+  "config": {
+    "topModules": [
+      "top_a",
+      "top_b",
+      "top_c"
+    ]
+  },
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/hierarchy-three-top.sv",
+      "text": "module leaf;\nendmodule\nmodule top_a;\n  leaf u_a();\nendmodule\nmodule top_b;\n  leaf u_b();\nendmodule\nmodule top_c;\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "moduleHierarchy",
+    "moduleName": null,
+    "maxDepth": 8
+  },
+  "expected": {
+    "rootModules": [
+      "top_a",
+      "top_b",
+      "top_c"
+    ],
+    "modules": [
+      "leaf"
+    ]
+  }
+}

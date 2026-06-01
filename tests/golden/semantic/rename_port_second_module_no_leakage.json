@@ -1,0 +1,19 @@
+{
+  "name": "rename same port name stays in selected module",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/rename-port-second-module.sv",
+      "text": "module first(input logic data);\nendmodule\nmodule second(input logic data);\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "rename",
+    "uri": "file:///golden/semantic/rename-port-second-module.sv",
+    "line": 2,
+    "character": 26,
+    "newName": "payload"
+  },
+  "expected": {
+    "allNewText": "payload"
+  }
+}

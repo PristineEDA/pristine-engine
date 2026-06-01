@@ -1063,6 +1063,20 @@ SemanticSignatureHelpResult SemanticEngine::signatureHelpAt(std::string_view uri
                                                             int character) const {
     const auto& current_snapshot = snapshot();
     const auto document_uri = withoutTrailingSlash(normalizeFileUri(uri));
+    if (const auto cached = query_cache_->signatureHelp(current_snapshot.generation,
+                                                        document_uri,
+                                                        line,
+                                                        character)) {
+        return *cached;
+    }
+    const auto finish = [&](SemanticSignatureHelpResult value) {
+        query_cache_->storeSignatureHelp(current_snapshot.generation,
+                                         document_uri,
+                                         line,
+                                         character,
+                                         value);
+        return value;
+    };
     const auto* data = snapshotData();
     const auto ast_index = semantic::buildAstIndexView(data, current_snapshot.generation);
     const auto document_it = documents_.find(document_uri);
@@ -1087,12 +1101,24 @@ SemanticSignatureHelpResult SemanticEngine::signatureHelpAt(std::string_view uri
             context.calls = calls_it->second;
         }
     }
-    return semantic::signatureHelpAt(context, line, character);
+    return finish(semantic::signatureHelpAt(context, line, character));
 }
 
 SemanticInlayHintResult SemanticEngine::inlayHints(std::string_view uri, ParseRange range) const {
     const auto& current_snapshot = snapshot();
     const auto document_uri = withoutTrailingSlash(normalizeFileUri(uri));
+    if (const auto cached = query_cache_->inlayHints(current_snapshot.generation,
+                                                    document_uri,
+                                                    range)) {
+        return *cached;
+    }
+    const auto finish = [&](SemanticInlayHintResult value) {
+        query_cache_->storeInlayHints(current_snapshot.generation,
+                                      document_uri,
+                                      range,
+                                      value);
+        return value;
+    };
     const auto* data = snapshotData();
     const auto ast_index = semantic::buildAstIndexView(data, current_snapshot.generation);
 
@@ -1121,7 +1147,7 @@ SemanticInlayHintResult SemanticEngine::inlayHints(std::string_view uri, ParseRa
             context.calls = calls_it->second;
         }
     }
-    return semantic::inlayHints(context, range);
+    return finish(semantic::inlayHints(context, range));
 }
 
 SemanticTokenResult SemanticEngine::semanticTokens(std::string_view uri) const {

@@ -70,6 +70,26 @@ public:
                           std::string_view prefix,
                           SemanticCompletionResult result);
 
+    [[nodiscard]] std::optional<SemanticSignatureHelpResult> signatureHelp(
+        std::uint64_t generation,
+        std::string_view uri,
+        int line,
+        int character) const;
+    void storeSignatureHelp(std::uint64_t generation,
+                            std::string_view uri,
+                            int line,
+                            int character,
+                            SemanticSignatureHelpResult result);
+
+    [[nodiscard]] std::optional<SemanticInlayHintResult> inlayHints(
+        std::uint64_t generation,
+        std::string_view uri,
+        ParseRange range) const;
+    void storeInlayHints(std::uint64_t generation,
+                         std::string_view uri,
+                         ParseRange range,
+                         SemanticInlayHintResult result);
+
     [[nodiscard]] std::optional<SemanticModuleHierarchyResult> moduleHierarchy(
         std::uint64_t generation,
         std::optional<std::string_view> module_name,
@@ -134,6 +154,16 @@ private:
         SemanticCompletionResult result;
     };
 
+    struct SignatureHelpEntry {
+        std::uint64_t generation = 0;
+        SemanticSignatureHelpResult result;
+    };
+
+    struct InlayHintsEntry {
+        std::uint64_t generation = 0;
+        SemanticInlayHintResult result;
+    };
+
     struct ModuleHierarchyEntry {
         std::uint64_t generation = 0;
         SemanticModuleHierarchyResult result;
@@ -177,6 +207,8 @@ private:
     std::unordered_map<std::string, ReferencesEntry> references_by_key_;
     std::unordered_map<std::string, RenameEntry> rename_by_key_;
     std::unordered_map<std::string, CompletionEntry> completions_by_key_;
+    std::unordered_map<std::string, SignatureHelpEntry> signature_help_by_key_;
+    std::unordered_map<std::string, InlayHintsEntry> inlay_hints_by_key_;
     std::unordered_map<std::string, ModuleHierarchyEntry> module_hierarchy_by_key_;
     std::unordered_map<std::string, SchematicEntry> schematic_by_key_;
     std::unordered_map<std::string, BackwardConeEntry> backward_cone_by_key_;

@@ -104,6 +104,37 @@ TEST_CASE("QueryCache keys completion by prefix and position",
     CHECK(cache.completions(6, "file:///workspace/top.sv", 2, 11, "rea") == std::nullopt);
 }
 
+TEST_CASE("QueryCache keys signature help by cursor position",
+          "[analysis][semantic][query-cache][signature]") {
+    QueryCache cache;
+    SemanticSignatureHelpResult result;
+    result.generation = 12;
+    result.label = "function int mix(input int lhs, input int rhs)";
+    result.active_parameter = 1;
+    cache.storeSignatureHelp(12, "file:///workspace/top.sv", 4, 22, result);
+
+    REQUIRE(cache.signatureHelp(12, "file:///workspace/top.sv", 4, 22).has_value());
+    CHECK(cache.signatureHelp(12, "file:///workspace/top.sv", 4, 21) == std::nullopt);
+    CHECK(cache.signatureHelp(13, "file:///workspace/top.sv", 4, 22) == std::nullopt);
+}
+
+TEST_CASE("QueryCache keys inlay hints by requested range",
+          "[analysis][semantic][query-cache][inlay]") {
+    QueryCache cache;
+    SemanticInlayHintResult result;
+    result.generation = 13;
+    result.hints.push_back(SemanticInlayHint{.location = locationAt("file:///workspace/top.sv",
+                                                                    rangeAt(3, 8, 8)),
+                                             .label = ".data",
+                                             .kind = "parameter",
+                                             .tooltip = "output logic data"});
+    cache.storeInlayHints(13, "file:///workspace/top.sv", lineSpan(3, 4), result);
+
+    REQUIRE(cache.inlayHints(13, "file:///workspace/top.sv", lineSpan(3, 4)).has_value());
+    CHECK(cache.inlayHints(13, "file:///workspace/top.sv", lineSpan(2, 4)) == std::nullopt);
+    CHECK(cache.inlayHints(14, "file:///workspace/top.sv", lineSpan(3, 4)) == std::nullopt);
+}
+
 TEST_CASE("QueryCache keys module hierarchy by module and depth",
           "[analysis][semantic][query-cache][hierarchy]") {
     QueryCache cache;
@@ -168,12 +199,16 @@ TEST_CASE("QueryCache clear removes all provider entries",
     cache.storeDiagnostics(1, "file:///workspace/top.sv", {});
     cache.storeWorkspaceSymbols(1, "", 10, SemanticWorkspaceSymbolResult{});
     cache.storeCompletions(1, "file:///workspace/top.sv", 1, 2, "", SemanticCompletionResult{});
+    cache.storeSignatureHelp(1, "file:///workspace/top.sv", 1, 2, SemanticSignatureHelpResult{});
+    cache.storeInlayHints(1, "file:///workspace/top.sv", lineSpan(1, 2), SemanticInlayHintResult{});
 
     cache.clear();
 
     CHECK(cache.diagnostics(1, "file:///workspace/top.sv") == std::nullopt);
     CHECK(cache.workspaceSymbols(1, "", 10) == std::nullopt);
     CHECK(cache.completions(1, "file:///workspace/top.sv", 1, 2, "") == std::nullopt);
+    CHECK(cache.signatureHelp(1, "file:///workspace/top.sv", 1, 2) == std::nullopt);
+    CHECK(cache.inlayHints(1, "file:///workspace/top.sv", lineSpan(1, 2)) == std::nullopt);
 }
 
 TEST_CASE("CompletionProvider detects array and hierarchical member contexts",
@@ -195,6 +230,31 @@ TEST_CASE("CompletionProvider detects array and hierarchical member contexts",
     CHECK(instance_context.member_qualifier == "u_child");
 }
 
+TEST_CASE("CompletionProvider treats array element member access as AST-backed member context",
+          "[analysis][semantic][completion-provider][member][array]") {
+    const auto context = detectCompletionContext("module top;\n  lanes[0].status_\nendmodule\n",
+                                                 1,
+                                                 18,
+                                                 "status_");
+
+    REQUIRE(context.prefix_start.has_value());
+    CHECK(context.member_access);
+    CHECK_FALSE(context.member_qualifier.has_value());
+    CHECK_FALSE(context.module_instantiation_position);
+}
+
+TEST_CASE("CompletionProvider does not mark expression prefixes as module instantiations",
+          "[analysis][semantic][completion-provider][module]") {
+    const auto context = detectCompletionContext("module top;\n  assign out = chi\nendmodule\n",
+                                                 1,
+                                                 18,
+                                                 "chi");
+
+    REQUIRE(context.prefix_start.has_value());
+    CHECK_FALSE(context.module_instantiation_position);
+    CHECK_FALSE(context.member_access);
+}
+
 TEST_CASE("CompletionProvider detects package-qualified enum prefixes",
           "[analysis][semantic][completion-provider][package]") {
     const auto context = detectCompletionContext("module top;\n  defs::STATE_\nendmodule\n",
@@ -207,6 +267,15 @@ TEST_CASE("CompletionProvider detects package-qualified enum prefixes",
     CHECK_FALSE(context.member_access);
 }
 
+TEST_CASE("CompletionProvider maps complex semantic kinds to stable completion details",
+          "[analysis][semantic][completion-provider][kind]") {
+    CHECK(completionDetailForSemanticKind("Package") == "Package");
+    CHECK(completionDetailForSemanticKind("Modport") == "Interface / Modport");
+    CHECK(completionDetailForSemanticKind("EnumValue") == "Enum Member");
+    CHECK(completionKindForSemanticKind("TypeAlias") == 25);
+    CHECK(completionPriorityForDetail("Interface / Modport") == 2);
+}
+
 TEST_CASE("CompletionProvider builds three-argument macro snippets",
           "[analysis][semantic][completion-provider][macro]") {
     const MacroDefinition macro{.name = "MUX",
@@ -217,6 +286,17 @@ TEST_CASE("CompletionProvider builds three-argument macro snippets",
     CHECK(macroSignatureLabel(macro) == "MUX(sel, lhs, rhs)");
     CHECK(macroInsertText(macro).find("${3:rhs}") != std::string::npos);
     CHECK(macroDocumentation(macro).find("Parameters: `sel, lhs, rhs`") != std::string::npos);
+}
+
+TEST_CASE("CompletionProvider escapes snippet-sensitive port and macro parameter names",
+          "[analysis][semantic][completion-provider][snippets]") {
+    const MacroDefinition macro{.name = "KEEP",
+                                .parameters = {"lhs$value", "rhs"},
+                                .body = "lhs$value",
+                                .function_like = true};
+
+    CHECK(macroInsertText(macro).find("${1:lhs\\$value}") != std::string::npos);
+    CHECK(portConnectionSnippet("data$").find("${1:data\\$}") != std::string::npos);
 }
 
 TEST_CASE("CompletionProvider builds parameterized module port snippets",
@@ -235,6 +315,82 @@ TEST_CASE("CompletionProvider builds parameterized module port snippets",
 
     CHECK(moduleSignatureLabel(module).find("input logic [WIDTH-1:0] data") != std::string::npos);
     CHECK(moduleInstantiationSnippet(module).find(".valid(${4:valid})") != std::string::npos);
+}
+
+TEST_CASE("CompletionProvider builds signatures for bare port lists",
+          "[analysis][semantic][completion-provider][module]") {
+    const ModuleDefinition module{.name = "leaf",
+                                  .kind = "module",
+                                  .ports = {"clk", "data"},
+                                  .port_details = {}};
+
+    CHECK(moduleSignatureLabel(module) == "leaf(clk, data)");
+    CHECK(moduleInstantiationSnippet(module).find(".data(${3:data})") != std::string::npos);
+}
+
+TEST_CASE("CompletionProvider documents interface declarations with their kind",
+          "[analysis][semantic][completion-provider][module]") {
+    const ModuleDefinition interface_def{.name = "bus_if",
+                                         .kind = "interface",
+                                         .range = ParseRange{},
+                                         .selection_range = rangeAt(0, 10, 16),
+                                         .ports = {"ready"},
+                                         .port_details = {}};
+
+    const auto documentation = moduleDocumentation(interface_def,
+                                                   "file:///workspace/bus_if.sv");
+
+    CHECK(documentation.find("**interface**") != std::string::npos);
+    CHECK(documentation.find("bus_if(ready)") != std::string::npos);
+}
+
+TEST_CASE("CompletionProvider builds member completions for interface and struct-like symbols",
+          "[analysis][semantic][completion-provider][member]") {
+    std::vector<SemanticCompletionItem> items;
+    std::set<std::string> emitted;
+    bool truncated = false;
+
+    appendSymbolCompletion(items,
+                           emitted,
+                           SemanticSymbolIdentity{.stable_id = "interface|bus_if|field|status_ready",
+                                                  .name = "status_ready",
+                                                  .kind = "Field",
+                                                  .location = SemanticLocation{}},
+                           "status_",
+                           truncated);
+    appendSymbolCompletion(items,
+                           emitted,
+                           SemanticSymbolIdentity{.stable_id = "interface|bus_if|field|payload",
+                                                  .name = "payload",
+                                                  .kind = "Field",
+                                                  .location = SemanticLocation{}},
+                           "status_",
+                           truncated);
+    appendSymbolCompletion(items,
+                           emitted,
+                           SemanticSymbolIdentity{.stable_id = "struct|lane_t|field|status_ready",
+                                                  .name = "status_ready",
+                                                  .kind = "Field",
+                                                  .location = SemanticLocation{}},
+                           "status_",
+                           truncated);
+
+    REQUIRE_FALSE(truncated);
+    REQUIRE(items.size() == 1);
+    CHECK(items.front().label == "status_ready");
+    CHECK(items.front().detail == "Variable");
+}
+
+TEST_CASE("CompletionProvider resolves missing macro definitions as unresolved",
+          "[analysis][semantic][completion-provider][resolve][macro]") {
+    const CompletionResolveContext context;
+
+    const auto item = resolveCompletionItem("file:///workspace/top.sv|macro|MISSING",
+                                            "MISSING",
+                                            context);
+
+    CHECK(item.unresolved);
+    CHECK(item.label == "MISSING");
 }
 
 TEST_CASE("CompletionProvider excludes already-connected ports",
@@ -263,6 +419,262 @@ TEST_CASE("CompletionProvider excludes already-connected ports",
     REQUIRE_FALSE(truncated);
     REQUIRE(items.size() == 1);
     CHECK(items.front().label == "data");
+}
+
+TEST_CASE("CompletionProvider omits exact-prefix duplicate completions",
+          "[analysis][semantic][completion-provider][dedupe]") {
+    std::vector<SemanticCompletionItem> items;
+    std::set<std::string> emitted;
+    bool truncated = false;
+
+    appendCompletionItem(items,
+                         emitted,
+                         SemanticCompletionItem{.stable_id = "symbol|ready",
+                                                 .label = "ready",
+                                                 .detail = "Variable",
+                                                 .insert_text = "ready"},
+                         "ready",
+                         truncated);
+    appendCompletionItem(items,
+                         emitted,
+                         SemanticCompletionItem{.stable_id = "symbol|ready2",
+                                                 .label = "ready_valid",
+                                                 .detail = "Variable",
+                                                 .insert_text = "ready_valid"},
+                         "ready",
+                         truncated);
+
+    REQUIRE_FALSE(truncated);
+    REQUIRE(items.size() == 1);
+    CHECK(items.front().label == "ready_valid");
+}
+
+TEST_CASE("SignatureInlayProvider omits duplicate named and ordered port labels",
+          "[analysis][semantic][signature-inlay-provider][inlay][ports]") {
+    const ModuleDefinition child{.name = "child",
+                                 .kind = "module",
+                                 .port_details = {SchematicPort{.name = "clk",
+                                                                .direction = "input",
+                                                                .width_text = "logic",
+                                                                .range = ParseRange{},
+                                                                .selection_range = ParseRange{}}}};
+    const std::unordered_map<std::string, ModuleDefinition> modules{{"child", child}};
+    const SignatureInlayContext context{
+        .generation = 31,
+        .document_uri = "file:///workspace/top.sv",
+        .modules_by_name = &modules,
+        .module_instances = {SignatureInlayModuleInstance{
+            .module_name = "child",
+            .range = rangeAt(1, 2, 28),
+            .selection_range = rangeAt(1, 8, 15),
+            .connections = {SchematicConnection{.port_name = "clk",
+                                                .port_index = 0,
+                                                .signal = "clk",
+                                                .range = rangeAt(1, 17, 20)},
+                            SchematicConnection{.port_index = 0,
+                                                .signal = "clk",
+                                                .range = rangeAt(1, 17, 20)}}}},
+        .snapshot_available = true};
+
+    const auto result = inlayHints(context, lineSpan(1, 2));
+
+    CHECK(std::count_if(result.hints.begin(), result.hints.end(), [](const SemanticInlayHint& hint) {
+        return hint.kind == "parameter" && hint.label == ".clk";
+    }) == 1);
+}
+
+TEST_CASE("SignatureInlayProvider suppresses instance type hints outside requested range",
+          "[analysis][semantic][signature-inlay-provider][inlay]") {
+    const ModuleDefinition child{.name = "child", .kind = "module", .ports = {"clk"}};
+    const std::unordered_map<std::string, ModuleDefinition> modules{{"child", child}};
+    const SignatureInlayContext context{
+        .generation = 32,
+        .document_uri = "file:///workspace/top.sv",
+        .modules_by_name = &modules,
+        .module_instances = {SignatureInlayModuleInstance{.module_name = "child",
+                                                          .range = rangeAt(1, 2, 18),
+                                                          .selection_range = rangeAt(1, 8, 15)}},
+        .snapshot_available = true};
+
+    const auto result = inlayHints(context, lineSpan(2, 3));
+
+    REQUIRE_FALSE(result.unresolved);
+    CHECK(result.hints.empty());
+}
+
+TEST_CASE("SignatureInlayProvider handles object-like macros without signature help",
+          "[analysis][semantic][signature-inlay-provider][signature][macro]") {
+    const std::string text = "`define WIDTH 8\nmodule top;\n  int value = `WIDTH;\nendmodule\n";
+    const SignatureInlayContext context{
+        .generation = 33,
+        .document_uri = "file:///workspace/top.sv",
+        .document_text = &text,
+        .macros = {MacroDefinition{.name = "WIDTH",
+                                   .body = "8",
+                                   .function_like = false}},
+        .snapshot_available = true};
+
+    const auto result = signatureHelpAt(context, 2, 21);
+
+    CHECK(result.unresolved);
+}
+
+TEST_CASE("SignatureInlayProvider emits parameter override labels",
+          "[analysis][semantic][signature-inlay-provider][inlay][parameters]") {
+    const ModuleDefinition child{.name = "child",
+                                 .kind = "module",
+                                 .port_details = {SchematicPort{.name = "WIDTH",
+                                                                .direction = "parameter",
+                                                                .width_text = "int",
+                                                                .range = ParseRange{},
+                                                                .selection_range = ParseRange{}},
+                                                  SchematicPort{.name = "DEPTH",
+                                                                .direction = "parameter",
+                                                                .width_text = "int",
+                                                                .range = ParseRange{},
+                                                                .selection_range = ParseRange{}}}};
+    const std::unordered_map<std::string, ModuleDefinition> modules{{"child", child}};
+    const SignatureInlayContext context{
+        .generation = 25,
+        .document_uri = "file:///workspace/top.sv",
+        .modules_by_name = &modules,
+        .module_instances = {SignatureInlayModuleInstance{
+            .module_name = "child",
+            .range = rangeAt(1, 2, 32),
+            .selection_range = rangeAt(1, 8, 15),
+            .connections = {SchematicConnection{.port_index = 0,
+                                                .signal = "8",
+                                                .range = rangeAt(1, 16, 17)},
+                            SchematicConnection{.port_index = 1,
+                                                .signal = "4",
+                                                .range = rangeAt(1, 19, 20)}}}},
+        .snapshot_available = true};
+
+    const auto result = inlayHints(context, lineSpan(1, 2));
+
+    REQUIRE_FALSE(result.unresolved);
+    CHECK(std::any_of(result.hints.begin(), result.hints.end(), [](const SemanticInlayHint& hint) {
+        return hint.kind == "parameter" && hint.label == ".WIDTH" &&
+               hint.tooltip == "parameter int WIDTH";
+    }));
+    CHECK(std::any_of(result.hints.begin(), result.hints.end(), [](const SemanticInlayHint& hint) {
+        return hint.kind == "parameter" && hint.label == ".DEPTH" &&
+               hint.tooltip == "parameter int DEPTH";
+    }));
+}
+
+TEST_CASE("SignatureInlayProvider computes first macro argument",
+          "[analysis][semantic][signature-inlay-provider][signature][macro]") {
+    const std::string text = "`define MUX(sel, lhs, rhs) ((sel) ? (lhs) : (rhs))\n"
+                             "module top;\n"
+                             "  assign value = `MUX(sel_value, a, b);\n"
+                             "endmodule\n";
+    const SignatureInlayContext context{
+        .generation = 26,
+        .document_uri = "file:///workspace/top.sv",
+        .document_text = &text,
+        .macros = {MacroDefinition{.name = "MUX",
+                                   .parameters = {"sel", "lhs", "rhs"},
+                                   .body = "((sel) ? (lhs) : (rhs))",
+                                   .range = rangeAt(0, 0, 52),
+                                   .selection_range = rangeAt(0, 8, 11),
+                                   .function_like = true}},
+        .snapshot_available = true};
+
+    const auto result = signatureHelpAt(context, 2, 24);
+
+    REQUIRE_FALSE(result.unresolved);
+    CHECK(result.active_parameter == 0);
+    CHECK(result.label == "MUX(sel, lhs, rhs)");
+}
+
+TEST_CASE("SignatureInlayProvider ignores nested commas for function active parameter",
+          "[analysis][semantic][signature-inlay-provider][signature][function]") {
+    const std::string text = "module top;\n"
+                             "  int value = mix(pack(a, b), rhs_value);\n"
+                             "endmodule\n";
+    const SignatureInlayContext context{
+        .generation = 27,
+        .document_uri = "file:///workspace/top.sv",
+        .document_text = &text,
+        .calls = {SignatureInlayCall{.name = "mix",
+                                     .kind = "function",
+                                     .return_type = "int",
+                                     .range = rangeAt(1, 14, 39),
+                                     .selection_range = rangeAt(1, 14, 17),
+                                     .parameters = {"input int lhs", "input int rhs"}}},
+        .snapshot_available = true};
+
+    const auto result = signatureHelpAt(context, 1, 36);
+
+    REQUIRE_FALSE(result.unresolved);
+    CHECK(result.active_parameter == 1);
+}
+
+TEST_CASE("SignatureInlayProvider reports unresolved missing module signature target",
+          "[analysis][semantic][signature-inlay-provider][signature][module]") {
+    const std::string text = "module top;\n  child u_child(clk);\nendmodule\n";
+    const std::unordered_map<std::string, ModuleDefinition> modules;
+    const SignatureInlayContext context{
+        .generation = 28,
+        .document_uri = "file:///workspace/top.sv",
+        .document_text = &text,
+        .modules_by_name = &modules,
+        .module_instances = {SignatureInlayModuleInstance{.module_name = "child",
+                                                          .range = rangeAt(1, 2, 21),
+                                                          .selection_range = rangeAt(1, 8, 15)}},
+        .snapshot_available = true};
+
+    const auto result = signatureHelpAt(context, 1, 18);
+
+    CHECK(result.unresolved);
+    REQUIRE_FALSE(result.messages.empty());
+    CHECK(result.messages.front().find("not indexed") != std::string::npos);
+}
+
+TEST_CASE("SignatureInlayProvider filters call argument hints outside requested range",
+          "[analysis][semantic][signature-inlay-provider][inlay][function]") {
+    const std::string text = "module top;\n"
+                             "  int a = mix(lhs_value, rhs_value);\n"
+                             "endmodule\n";
+    const SignatureInlayContext context{
+        .generation = 29,
+        .document_uri = "file:///workspace/top.sv",
+        .document_text = &text,
+        .calls = {SignatureInlayCall{.name = "mix",
+                                     .kind = "function",
+                                     .return_type = "int",
+                                     .range = rangeAt(1, 10, 35),
+                                     .selection_range = rangeAt(1, 10, 13),
+                                     .parameters = {"input int lhs", "input int rhs"}}},
+        .snapshot_available = true};
+
+    const auto result = inlayHints(context, lineSpan(2, 3));
+
+    REQUIRE_FALSE(result.unresolved);
+    CHECK(result.hints.empty());
+}
+
+TEST_CASE("SignatureInlayProvider emits interface instance type hints",
+          "[analysis][semantic][signature-inlay-provider][inlay][interface]") {
+    const ModuleDefinition bus{.name = "bus_if", .kind = "interface", .ports = {"ready"}};
+    const std::unordered_map<std::string, ModuleDefinition> modules{{"bus_if", bus}};
+    const SignatureInlayContext context{
+        .generation = 30,
+        .document_uri = "file:///workspace/top.sv",
+        .modules_by_name = &modules,
+        .module_instances = {SignatureInlayModuleInstance{.module_name = "bus_if",
+                                                          .range = rangeAt(1, 2, 16),
+                                                          .selection_range = rangeAt(1, 9, 12)}},
+        .snapshot_available = true};
+
+    const auto result = inlayHints(context, lineSpan(1, 2));
+
+    REQUIRE_FALSE(result.unresolved);
+    CHECK(std::any_of(result.hints.begin(), result.hints.end(), [](const SemanticInlayHint& hint) {
+        return hint.kind == "type" && hint.label == ": bus_if" &&
+               hint.tooltip == "bus_if(ready)";
+    }));
 }
 
 TEST_CASE("SignatureInlayProvider computes first function argument",

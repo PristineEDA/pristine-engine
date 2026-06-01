@@ -1,0 +1,21 @@
+{
+  "name": "diagnostics does not use local value as package fallback",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/diagnostic-package-shadow-again.sv",
+      "text": "module top;\n  logic defs;\n  import defs::*;\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "diagnostics"
+  },
+  "expected": {
+    "uri": "file:///golden/semantic/diagnostic-package-shadow-again.sv",
+    "diagnostics": [
+      {
+        "code": "unresolvedPackage",
+        "present": true
+      }
+    ]
+  }
+}

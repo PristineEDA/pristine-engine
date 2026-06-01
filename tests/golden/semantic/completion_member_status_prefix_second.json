@@ -1,0 +1,25 @@
+{
+  "name": "member completion filters second status prefix set",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/completion-member-status-second.sv",
+      "text": "module top;\n  logic pkt;\n  logic status_empty;\n  logic status_full;\n  logic payload;\n  initial begin\n    pkt.status_\n  end\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "completion",
+    "uri": "file:///golden/semantic/completion-member-status-second.sv",
+    "line": 6,
+    "character": 15,
+    "prefix": "status_"
+  },
+  "expected": {
+    "labels": [
+      "status_empty",
+      "status_full"
+    ],
+    "absentLabels": [
+      "payload"
+    ]
+  }
+}

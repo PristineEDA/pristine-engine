@@ -8,6 +8,8 @@ void QueryCache::clear() {
     references_by_key_.clear();
     rename_by_key_.clear();
     completions_by_key_.clear();
+    signature_help_by_key_.clear();
+    inlay_hints_by_key_.clear();
     module_hierarchy_by_key_.clear();
     schematic_by_key_.clear();
     backward_cone_by_key_.clear();
@@ -126,6 +128,49 @@ void QueryCache::storeCompletions(std::uint64_t generation,
     entry.result = std::move(result);
     completions_by_key_.insert_or_assign(completionKey(uri, line, character, prefix),
                                          std::move(entry));
+}
+
+std::optional<SemanticSignatureHelpResult> QueryCache::signatureHelp(
+    std::uint64_t generation,
+    std::string_view uri,
+    int line,
+    int character) const {
+    const auto found = signature_help_by_key_.find(positionKey(uri, line, character));
+    if (found == signature_help_by_key_.end() || found->second.generation != generation) {
+        return std::nullopt;
+    }
+    return found->second.result;
+}
+
+void QueryCache::storeSignatureHelp(std::uint64_t generation,
+                                    std::string_view uri,
+                                    int line,
+                                    int character,
+                                    SemanticSignatureHelpResult result) {
+    SignatureHelpEntry entry;
+    entry.generation = generation;
+    entry.result = std::move(result);
+    signature_help_by_key_.insert_or_assign(positionKey(uri, line, character), std::move(entry));
+}
+
+std::optional<SemanticInlayHintResult> QueryCache::inlayHints(std::uint64_t generation,
+                                                              std::string_view uri,
+                                                              ParseRange range) const {
+    const auto found = inlay_hints_by_key_.find(rangeKey(uri, range));
+    if (found == inlay_hints_by_key_.end() || found->second.generation != generation) {
+        return std::nullopt;
+    }
+    return found->second.result;
+}
+
+void QueryCache::storeInlayHints(std::uint64_t generation,
+                                 std::string_view uri,
+                                 ParseRange range,
+                                 SemanticInlayHintResult result) {
+    InlayHintsEntry entry;
+    entry.generation = generation;
+    entry.result = std::move(result);
+    inlay_hints_by_key_.insert_or_assign(rangeKey(uri, range), std::move(entry));
 }
 
 std::optional<SemanticModuleHierarchyResult> QueryCache::moduleHierarchy(

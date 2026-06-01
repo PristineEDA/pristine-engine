@@ -1,0 +1,28 @@
+{
+  "name": "backward cone follows three assignment chain in second fixture",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/cone-three-chain-again.sv",
+      "text": "module top;\n  logic a;\n  logic b;\n  logic c;\n  logic out;\n  assign b = a;\n  assign c = b;\n  assign out = c;\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "backwardCone",
+    "uri": "file:///golden/semantic/cone-three-chain-again.sv",
+    "line": 4,
+    "character": 9
+  },
+  "expected": {
+    "nodes": [
+      "out",
+      "c",
+      "b",
+      "a"
+    ],
+    "expressions": [
+      "c",
+      "b",
+      "a"
+    ]
+  }
+}

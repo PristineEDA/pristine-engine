@@ -1,0 +1,22 @@
+{
+  "name": "signature help tracks fourth function argument",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/signature-fourth-function.sv",
+      "text": "module top;\n  function automatic int blend(input int a, input int b, input int c, input int d);\n    return a + b + c + d;\n  endfunction\n  initial begin\n    int value = blend(1, 2, 3, 4);\n  end\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "signatureHelp",
+    "uri": "file:///golden/semantic/signature-fourth-function.sv",
+    "line": 5,
+    "character": 32
+  },
+  "expected": {
+    "label": "function int blend(input int a, input int b, input int c, input int d)",
+    "activeParameter": 3,
+    "parameters": [
+      "input int d"
+    ]
+  }
+}

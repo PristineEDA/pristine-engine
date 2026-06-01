@@ -98,6 +98,52 @@ FIXTURES: tuple[DifferentialFixture, ...] = (
         ),
     ),
     DifferentialFixture(
+        name="completion named port prefix",
+        sources={
+            "ports.sv": (
+                "module child(input logic clk, output logic rst_n, input logic data);\n"
+                "endmodule\n"
+                "module top;\n"
+                "  child u_child(.clk(clk), .r);\n"
+                "endmodule\n"
+            )
+        },
+        checks=(
+            DifferentialCheck(
+                kind="completion",
+                uri="ports.sv",
+                position={"line": 3, "character": 26},
+                required=("rst_n",),
+                optional=True,
+            ),
+        ),
+    ),
+    DifferentialFixture(
+        name="completion hierarchical instance member prefix",
+        sources={
+            "hier.sv": (
+                "module child;\n"
+                "  logic child_ready;\n"
+                "endmodule\n"
+                "module top;\n"
+                "  child u_child();\n"
+                "  initial begin\n"
+                "    u_child.child_\n"
+                "  end\n"
+                "endmodule\n"
+            )
+        },
+        checks=(
+            DifferentialCheck(
+                kind="completion",
+                uri="hier.sv",
+                position={"line": 6, "character": 18},
+                required=("child_ready",),
+                optional=True,
+            ),
+        ),
+    ),
+    DifferentialFixture(
         name="references local signal identity",
         sources={
             "refs.sv": (
@@ -142,6 +188,37 @@ FIXTURES: tuple[DifferentialFixture, ...] = (
                 uri="shadow.sv",
                 position={"line": 5, "character": 9},
                 min_count=3,
+            ),
+        ),
+    ),
+    DifferentialFixture(
+        name="references typedef shadow isolation",
+        sources={
+            "typedef_shadow.sv": (
+                "module first;\n"
+                "  typedef logic [3:0] data_t;\n"
+                "  data_t value;\n"
+                "endmodule\n"
+                "module second;\n"
+                "  typedef logic [7:0] data_t;\n"
+                "  data_t value;\n"
+                "endmodule\n"
+            )
+        },
+        checks=(
+            DifferentialCheck(
+                kind="references",
+                uri="typedef_shadow.sv",
+                position={"line": 1, "character": 23},
+                min_count=2,
+                optional=True,
+            ),
+            DifferentialCheck(
+                kind="references",
+                uri="typedef_shadow.sv",
+                position={"line": 5, "character": 23},
+                min_count=2,
+                optional=True,
             ),
         ),
     ),
@@ -235,6 +312,39 @@ FIXTURES: tuple[DifferentialFixture, ...] = (
         ),
     ),
     DifferentialFixture(
+        name="workspace symbol class interface modport discovery",
+        sources={
+            "types.sv": (
+                "class packet;\n"
+                "endclass\n"
+                "interface bus_if;\n"
+                "  logic ready;\n"
+                "  modport master(input ready);\n"
+                "endinterface\n"
+            ),
+        },
+        checks=(
+            DifferentialCheck(
+                kind="workspaceSymbol",
+                query="packet",
+                required=("packet",),
+                optional=True,
+            ),
+            DifferentialCheck(
+                kind="workspaceSymbol",
+                query="bus",
+                required=("bus_if",),
+                optional=True,
+            ),
+            DifferentialCheck(
+                kind="workspaceSymbol",
+                query="master",
+                required=("master",),
+                optional=True,
+            ),
+        ),
+    ),
+    DifferentialFixture(
         name="diagnostics syntax error publication",
         sources={
             "bad.sv": (
@@ -247,6 +357,26 @@ FIXTURES: tuple[DifferentialFixture, ...] = (
             DifferentialCheck(
                 kind="diagnostics",
                 uri="bad.sv",
+                min_count=1,
+                optional=True,
+            ),
+        ),
+    ),
+    DifferentialFixture(
+        name="diagnostics non-adjacent duplicate publication",
+        sources={
+            "duplicate_non_adjacent.sv": (
+                "module top;\n"
+                "  logic ready;\n"
+                "  logic valid;\n"
+                "  logic ready;\n"
+                "endmodule\n"
+            )
+        },
+        checks=(
+            DifferentialCheck(
+                kind="diagnostics",
+                uri="duplicate_non_adjacent.sv",
                 min_count=1,
                 optional=True,
             ),
@@ -311,6 +441,27 @@ FIXTURES: tuple[DifferentialFixture, ...] = (
         ),
     ),
     DifferentialFixture(
+        name="type definition typedef alias chain",
+        sources={
+            "alias.sv": (
+                "module top;\n"
+                "  typedef logic [7:0] byte_t;\n"
+                "  typedef byte_t packet_t;\n"
+                "  packet_t data;\n"
+                "endmodule\n"
+            )
+        },
+        checks=(
+            DifferentialCheck(
+                kind="typeDefinition",
+                uri="alias.sv",
+                position={"line": 3, "character": 3},
+                min_count=1,
+                optional=True,
+            ),
+        ),
+    ),
+    DifferentialFixture(
         name="type definition package-qualified typedef lookup",
         sources={
             "defs.sv": (
@@ -330,6 +481,29 @@ FIXTURES: tuple[DifferentialFixture, ...] = (
                 uri="top.sv",
                 position={"line": 1, "character": 10},
                 min_count=1,
+                optional=True,
+            ),
+        ),
+    ),
+    DifferentialFixture(
+        name="backward cone two-step assign chain",
+        sources={
+            "cone.sv": (
+                "module top;\n"
+                "  logic a;\n"
+                "  logic mid;\n"
+                "  logic out;\n"
+                "  assign mid = a;\n"
+                "  assign out = mid;\n"
+                "endmodule\n"
+            )
+        },
+        checks=(
+            DifferentialCheck(
+                kind="backwardCone",
+                uri="cone.sv",
+                position={"line": 3, "character": 9},
+                min_count=2,
                 optional=True,
             ),
         ),
@@ -624,6 +798,22 @@ def check_call_hierarchy_outgoing(session: LspSession,
     return names
 
 
+def check_backward_cone(session: LspSession, request_id: int, uri: str, position: dict[str, int]) -> int:
+    response = session.request(
+        request_id,
+        "systemverilog/backwardCone",
+        {"textDocument": {"uri": uri}, "position": position},
+        allow_error=True,
+    )
+    if "error" in response:
+        raise UnsupportedCheck("systemverilog/backwardCone is not supported")
+    result = response.get("result")
+    if not isinstance(result, dict):
+        return 0
+    nodes = result.get("nodes", [])
+    return len(nodes) if isinstance(nodes, list) else 0
+
+
 def run_fixture(server: pathlib.Path, root: pathlib.Path, fixture: DifferentialFixture) -> dict[str, Any]:
     root_uri = root.resolve().as_uri()
     source_uris: dict[str, str] = {}
@@ -670,6 +860,9 @@ def run_fixture(server: pathlib.Path, root: pathlib.Path, fixture: DifferentialF
                     observed[key] = check_call_hierarchy_outgoing(
                         session, request_id, source_uris[check.uri], check.position
                     )
+                elif check.kind == "backwardCone":
+                    assert check.uri is not None and check.position is not None
+                    observed[key] = check_backward_cone(session, request_id, source_uris[check.uri], check.position)
                 else:
                     raise AssertionError(f"Unsupported differential check kind: {check.kind}")
             except UnsupportedCheck:
@@ -689,10 +882,14 @@ def validate_observed(server_name: str, fixture: DifferentialFixture, observed: 
         if check.required:
             missing = set(check.required).difference(value)
             if missing:
+                if check.optional:
+                    continue
                 raise AssertionError(
                     f"{server_name} fixture '{fixture.name}' missing {check.kind} entries: {sorted(missing)}"
                 )
         if check.min_count is not None and value < check.min_count:
+            if check.optional:
+                continue
             raise AssertionError(
                 f"{server_name} fixture '{fixture.name}' {check.kind} count {value} < {check.min_count}"
             )

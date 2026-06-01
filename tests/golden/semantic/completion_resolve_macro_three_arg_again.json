@@ -1,0 +1,22 @@
+{
+  "name": "completion resolve keeps three-argument macro snippet",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/completion-resolve-macro3.sv",
+      "text": "`define MUX(sel, lhs, rhs) ((sel) ? (lhs) : (rhs))\nmodule top;\n  logic value = `MU\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "completionResolve",
+    "uri": "file:///golden/semantic/completion-resolve-macro3.sv",
+    "line": 2,
+    "character": 19,
+    "prefix": "MU",
+    "label": "MUX"
+  },
+  "expected": {
+    "detailContains": "Macro function",
+    "documentationContains": "Parameters: `sel, lhs, rhs`",
+    "insertTextContains": "${3:rhs}"
+  }
+}

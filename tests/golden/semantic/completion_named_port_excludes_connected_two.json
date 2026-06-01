@@ -1,0 +1,25 @@
+{
+  "name": "named port completion excludes two connected ports",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/ports-two-connected.sv",
+      "text": "module child(input logic clk, input logic rst_n, input logic data, output logic valid);\nendmodule\nmodule top;\n  child u_child(.clk(clk), .rst_n(rst_n), .va);\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "completion",
+    "uri": "file:///golden/semantic/ports-two-connected.sv",
+    "line": 3,
+    "character": 45,
+    "prefix": "va"
+  },
+  "expected": {
+    "labels": [
+      "valid"
+    ],
+    "absentLabels": [
+      "clk",
+      "rst_n"
+    ]
+  }
+}

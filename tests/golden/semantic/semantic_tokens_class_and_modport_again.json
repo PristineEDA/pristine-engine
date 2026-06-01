@@ -1,0 +1,16 @@
+{
+  "name": "semantic tokens include class and modport declarations",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/tokens-class-modport-again.sv",
+      "text": "class packet;\nendclass\ninterface bus_if;\n  modport master(input ready);\nendinterface\n"
+    }
+  ],
+  "request": {
+    "kind": "semanticTokens",
+    "uri": "file:///golden/semantic/tokens-class-modport-again.sv"
+  },
+  "expected": {
+    "count": 5
+  }
+}

@@ -1,0 +1,29 @@
+{
+  "name": "call hierarchy reports two outgoing children in second fixture",
+  "config": {
+    "topModules": [
+      "top"
+    ]
+  },
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/call-two-outgoing-again.sv",
+      "text": "module left;\nendmodule\nmodule right;\nendmodule\nmodule top;\n  left u_left();\n  right u_right();\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "callHierarchy",
+    "uri": "file:///golden/semantic/call-two-outgoing-again.sv",
+    "line": 4,
+    "character": 8
+  },
+  "expected": {
+    "preparedNames": [
+      "top"
+    ],
+    "outgoingNames": [
+      "left",
+      "right"
+    ]
+  }
+}

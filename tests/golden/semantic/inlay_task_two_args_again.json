@@ -1,0 +1,25 @@
+{
+  "name": "inlay hints include task argument labels in second fixture",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/inlay-task-two-second.sv",
+      "text": "module top;\n  task automatic emit(input logic valid, input int data);\n  endtask\n  initial begin\n    emit(1'b1, 4);\n  end\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "inlayHint",
+    "uri": "file:///golden/semantic/inlay-task-two-second.sv",
+    "range": {
+      "startLine": 0,
+      "startCharacter": 0,
+      "endLine": 7,
+      "endCharacter": 0
+    }
+  },
+  "expected": {
+    "labels": [
+      "input logic valid:",
+      "input int data:"
+    ]
+  }
+}

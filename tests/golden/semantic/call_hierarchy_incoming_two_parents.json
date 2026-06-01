@@ -1,0 +1,30 @@
+{
+  "name": "call hierarchy reports incoming calls from two parents",
+  "config": {
+    "topModules": [
+      "top_a",
+      "top_b"
+    ]
+  },
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/call-incoming-two.sv",
+      "text": "module child;\nendmodule\nmodule top_a;\n  child u_child_a();\nendmodule\nmodule top_b;\n  child u_child_b();\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "callHierarchy",
+    "uri": "file:///golden/semantic/call-incoming-two.sv",
+    "line": 0,
+    "character": 8
+  },
+  "expected": {
+    "preparedNames": [
+      "child"
+    ],
+    "incomingNames": [
+      "top_a",
+      "top_b"
+    ]
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "name": "workspace symbols include second modport query",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/workspace-modport-second.sv",
+      "text": "interface bus_if;\n  modport monitor(input ready);\nendinterface\nmodule top;\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "workspaceSymbol",
+    "query": "monitor",
+    "limit": 100
+  },
+  "expected": {
+    "names": [
+      "monitor"
+    ],
+    "absentNames": [
+      "top"
+    ]
+  }
+}

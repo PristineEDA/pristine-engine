@@ -1,0 +1,24 @@
+{
+  "name": "module instantiation completion includes leaf module",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/module-completion-leaf.sv",
+      "text": "module leaf(input logic clk);\nendmodule\nmodule top;\n  lea\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "completion",
+    "uri": "file:///golden/semantic/module-completion-leaf.sv",
+    "line": 3,
+    "character": 5,
+    "prefix": "lea"
+  },
+  "expected": {
+    "labels": [
+      "leaf"
+    ],
+    "absentLabels": [
+      "top"
+    ]
+  }
+}

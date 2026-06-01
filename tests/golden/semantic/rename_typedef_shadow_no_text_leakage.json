@@ -1,0 +1,20 @@
+{
+  "name": "rename for typedef shadow stays in first module",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/rename-typedef-shadow.sv",
+      "text": "module first;\n  typedef logic shared_t;\n  shared_t value;\nendmodule\nmodule second;\n  typedef logic shared_t;\n  shared_t value;\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "rename",
+    "uri": "file:///golden/semantic/rename-typedef-shadow.sv",
+    "line": 1,
+    "character": 16,
+    "newName": "first_t"
+  },
+  "expected": {
+    "allBeforeLine": 4,
+    "allNewText": "first_t"
+  }
+}

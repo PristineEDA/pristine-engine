@@ -1,0 +1,27 @@
+{
+  "name": "inlay hints include four function argument labels",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/inlay-function-four.sv",
+      "text": "module top;\n  function automatic int blend(input int a, input int b, input int c, input int d);\n    return a + b + c + d;\n  endfunction\n  initial begin\n    int value = blend(1, 2, 3, 4);\n  end\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "inlayHint",
+    "uri": "file:///golden/semantic/inlay-function-four.sv",
+    "range": {
+      "startLine": 0,
+      "startCharacter": 0,
+      "endLine": 8,
+      "endCharacter": 0
+    }
+  },
+  "expected": {
+    "labels": [
+      "input int a:",
+      "input int b:",
+      "input int c:",
+      "input int d:"
+    ]
+  }
+}

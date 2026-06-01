@@ -1,0 +1,21 @@
+{
+  "name": "module instance signature help includes third named port",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/signature-third-port.sv",
+      "text": "module child(input logic clk, input logic ready, output logic data);\nendmodule\nmodule top;\n  child u_child(.clk(clk), .ready(ready), .data(data));\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "signatureHelp",
+    "uri": "file:///golden/semantic/signature-third-port.sv",
+    "line": 3,
+    "character": 48
+  },
+  "expected": {
+    "label": "child(input logic clk, input logic ready, output logic data)",
+    "parameters": [
+      "output logic data"
+    ]
+  }
+}

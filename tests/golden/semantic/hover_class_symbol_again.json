@@ -1,0 +1,20 @@
+{
+  "name": "hover resolves class declaration symbol",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/hover-class-again.sv",
+      "text": "class packet;\nendclass\nmodule top;\n  packet pkt;\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "hover",
+    "uri": "file:///golden/semantic/hover-class-again.sv",
+    "line": 0,
+    "character": 8
+  },
+  "expected": {
+    "contentsContains": [
+      "packet"
+    ]
+  }
+}

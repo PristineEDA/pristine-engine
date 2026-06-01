@@ -1,0 +1,22 @@
+{
+  "name": "diagnostics records width mismatch with parameterized declaration",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/diagnostic-width-param.sv",
+      "text": "module top #(parameter int WIDTH = 8);\n  logic [3:0] lhs;\n  logic [WIDTH-1:0] rhs;\n  assign lhs = rhs;\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "diagnostics"
+  },
+  "expected": {
+    "uri": "file:///golden/semantic/diagnostic-width-param.sv",
+    "diagnostics": [
+      {
+        "code": "widthMismatch",
+        "severity": 2,
+        "startLine": 3
+      }
+    ]
+  }
+}

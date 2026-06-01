@@ -1,0 +1,22 @@
+{
+  "name": "diagnostics reports duplicate third symbol",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/diagnostic-duplicate-third.sv",
+      "text": "module top;\n  logic ready;\n  logic valid;\n  logic ready;\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "diagnostics"
+  },
+  "expected": {
+    "uri": "file:///golden/semantic/diagnostic-duplicate-third.sv",
+    "diagnostics": [
+      {
+        "code": "duplicateSymbol",
+        "severity": 1,
+        "startLine": 3
+      }
+    ]
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "name": "ordered module signature help tracks second port",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/signature-ordered-second.sv",
+      "text": "module child(input logic clk, input logic ready, output logic data);\nendmodule\nmodule top;\n  child u_child(clk, ready, data);\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "signatureHelp",
+    "uri": "file:///golden/semantic/signature-ordered-second.sv",
+    "line": 3,
+    "character": 21
+  },
+  "expected": {
+    "label": "child(input logic clk, input logic ready, output logic data)",
+    "activeParameter": 1,
+    "parameters": [
+      "input logic ready"
+    ]
+  }
+}

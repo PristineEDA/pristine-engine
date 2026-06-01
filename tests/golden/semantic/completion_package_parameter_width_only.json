@@ -1,0 +1,28 @@
+{
+  "name": "package qualified completion filters width parameter",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/package-width-pkg.sv",
+      "text": "package defs;\n  parameter int WIDTH = 8;\n  parameter int DEPTH = 4;\nendpackage\n"
+    },
+    {
+      "uri": "file:///golden/semantic/package-width-user.sv",
+      "text": "module top;\n  localparam int W = defs::WID\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "completion",
+    "uri": "file:///golden/semantic/package-width-user.sv",
+    "line": 1,
+    "character": 31,
+    "prefix": "WID"
+  },
+  "expected": {
+    "labels": [
+      "WIDTH"
+    ],
+    "absentLabels": [
+      "DEPTH"
+    ]
+  }
+}

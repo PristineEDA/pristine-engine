@@ -1,0 +1,22 @@
+{
+  "name": "macro signature help reports first argument as active",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/signature-macro-first.sv",
+      "text": "`define MUX(sel, lhs, rhs) ((sel) ? (lhs) : (rhs))\nmodule top;\n  assign value = `MUX(select, a, b);\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "signatureHelp",
+    "uri": "file:///golden/semantic/signature-macro-first.sv",
+    "line": 2,
+    "character": 24
+  },
+  "expected": {
+    "label": "MUX(sel, lhs, rhs)",
+    "activeParameter": 0,
+    "parameters": [
+      "sel"
+    ]
+  }
+}

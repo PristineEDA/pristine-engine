@@ -1,0 +1,24 @@
+{
+  "name": "inlay hints include interface instance type in second fixture",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/inlay-interface-second.sv",
+      "text": "interface bus_if;\n  logic ready;\nendinterface\nmodule top;\n  bus_if bus();\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "inlayHint",
+    "uri": "file:///golden/semantic/inlay-interface-second.sv",
+    "range": {
+      "startLine": 0,
+      "startCharacter": 0,
+      "endLine": 7,
+      "endCharacter": 0
+    }
+  },
+  "expected": {
+    "labels": [
+      ": bus_if"
+    ]
+  }
+}

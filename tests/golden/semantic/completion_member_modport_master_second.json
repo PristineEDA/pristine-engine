@@ -1,0 +1,25 @@
+{
+  "name": "modport-like member completion filters master prefix again",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/completion-modport-master-second.sv",
+      "text": "interface bus_if;\nendinterface\nmodule top;\n  logic bus;\n  logic master_valid;\n  logic master_ready;\n  logic slave_valid;\n  initial begin\n    bus.master_\n  end\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "completion",
+    "uri": "file:///golden/semantic/completion-modport-master-second.sv",
+    "line": 8,
+    "character": 16,
+    "prefix": "master_"
+  },
+  "expected": {
+    "labels": [
+      "master_valid",
+      "master_ready"
+    ],
+    "absentLabels": [
+      "slave_valid"
+    ]
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "name": "workspace symbols include enum and class query results",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/workspace-enum-class.sv",
+      "text": "typedef enum logic [1:0] {IDLE, BUSY} state_t;\nclass state_holder;\nendclass\nmodule top;\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "workspaceSymbol",
+    "query": "state",
+    "limit": 100
+  },
+  "expected": {
+    "names": [
+      "state_t",
+      "state_holder"
+    ],
+    "absentNames": [
+      "top"
+    ]
+  }
+}

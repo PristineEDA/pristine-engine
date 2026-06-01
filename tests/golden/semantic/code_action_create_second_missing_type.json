@@ -1,0 +1,30 @@
+{
+  "name": "code action creates second unresolved typedef",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/create-type-second.sv",
+      "text": "module top;\n  another_missing_t value;\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "codeAction",
+    "uri": "file:///golden/semantic/create-type-second.sv",
+    "range": {
+      "startLine": 1,
+      "startCharacter": 2,
+      "endLine": 1,
+      "endCharacter": 19
+    }
+  },
+  "expected": {
+    "actions": [
+      {
+        "title": "Create typedef 'another_missing_t'",
+        "diagnosticCodes": [
+          "unresolvedType"
+        ],
+        "editContains": "typedef logic another_missing_t;"
+      }
+    ]
+  }
+}

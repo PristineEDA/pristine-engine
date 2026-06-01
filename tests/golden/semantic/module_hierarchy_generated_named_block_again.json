@@ -1,0 +1,24 @@
+{
+  "name": "module hierarchy keeps generated named block child",
+  "config": {
+    "topModules": [
+      "top"
+    ]
+  },
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/hierarchy-gen-again.sv",
+      "text": "module child;\nendmodule\nmodule top;\n  genvar i;\n  generate\n    for (i = 0; i < 1; i++) begin : gen_child\n      child u_child();\n    end\n  endgenerate\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "moduleHierarchy",
+    "moduleName": "top",
+    "maxDepth": 8
+  },
+  "expected": {
+    "modules": [
+      "child"
+    ]
+  }
+}

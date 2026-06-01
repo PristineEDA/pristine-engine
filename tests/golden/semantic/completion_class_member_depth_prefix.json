@@ -1,0 +1,25 @@
+{
+  "name": "class-like member completion filters depth prefix",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/completion-class-depth.sv",
+      "text": "class cfg;\nendclass\nmodule top;\n  logic cfg_i;\n  logic depth_value;\n  logic depth_limit;\n  logic width_value;\n  initial begin\n    cfg_i.depth_\n  end\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "completion",
+    "uri": "file:///golden/semantic/completion-class-depth.sv",
+    "line": 8,
+    "character": 16,
+    "prefix": "depth_"
+  },
+  "expected": {
+    "labels": [
+      "depth_value",
+      "depth_limit"
+    ],
+    "absentLabels": [
+      "width_value"
+    ]
+  }
+}

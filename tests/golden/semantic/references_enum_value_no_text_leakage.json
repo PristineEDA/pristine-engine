@@ -1,0 +1,19 @@
+{
+  "name": "references for enum value avoid comment text",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/references-enum-no-text.sv",
+      "text": "module top;\n  typedef enum logic [1:0] {IDLE, BUSY} state_t;\n  state_t state;\n  // BUSY in comment\n  assign state = BUSY;\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "references",
+    "uri": "file:///golden/semantic/references-enum-no-text.sv",
+    "line": 1,
+    "character": 34,
+    "includeDeclaration": true
+  },
+  "expected": {
+    "count": 1
+  }
+}
