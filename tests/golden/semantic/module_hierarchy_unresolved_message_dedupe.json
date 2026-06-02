@@ -1,0 +1,31 @@
+{
+  "name": "module hierarchy deduplicates repeated unresolved module messages",
+  "config": {
+    "topModules": [
+      "top"
+    ]
+  },
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/hierarchy-dedupe.sv",
+      "text": "module top;\n  missing_child u_missing_a();\n  missing_child u_missing_b();\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "moduleHierarchy",
+    "moduleName": "top",
+    "maxDepth": 8
+  },
+  "expected": {
+    "partial": true,
+    "rootModules": [
+      "top"
+    ],
+    "modules": [
+      "missing_child"
+    ],
+    "messagesContain": [
+      "Unresolved module 'missing_child'"
+    ]
+  }
+}

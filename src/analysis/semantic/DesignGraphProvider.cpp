@@ -175,6 +175,12 @@ std::vector<SemanticSchematicNet> buildSchematicNets(const ModuleSchematic& sche
     return result;
 }
 
+void appendUniqueMessage(std::vector<std::string>& messages, std::string message) {
+    if (std::find(messages.begin(), messages.end(), message) == messages.end()) {
+        messages.push_back(std::move(message));
+    }
+}
+
 SemanticCallHierarchyItem callHierarchyItemFor(const ModuleDefinition& definition,
                                                const std::string& uri) {
     return SemanticCallHierarchyItem{.name = definition.name,
@@ -234,8 +240,9 @@ SemanticModuleHierarchyResult moduleHierarchy(const DesignGraphContext& context,
                 node.instance_selection_range = instance->selection_range;
                 node.module_selection_range = instance->module_selection_range;
             }
-            result.messages.push_back("Unresolved module '" + std::string(current_name) +
-                                      "' in design hierarchy.");
+            appendUniqueMessage(result.messages,
+                                "Unresolved module '" + std::string(current_name) +
+                                    "' in design hierarchy.");
             return node;
         }
 
@@ -263,14 +270,15 @@ SemanticModuleHierarchyResult moduleHierarchy(const DesignGraphContext& context,
 
         if (is_cycle) {
             result.partial = true;
-            result.messages.push_back("Cycle detected while expanding module '" + definition.name + "'.");
+            appendUniqueMessage(result.messages,
+                                "Cycle detected while expanding module '" + definition.name + "'.");
             return node;
         }
         if (depth >= max_depth) {
             node.truncated = true;
             result.truncated = true;
             result.partial = true;
-            result.messages.push_back("Module hierarchy expansion reached maxDepth.");
+            appendUniqueMessage(result.messages, "Module hierarchy expansion reached maxDepth.");
             return node;
         }
 
@@ -337,7 +345,8 @@ SemanticSchematicResult schematic(const DesignGraphContext& context,
         const auto signature_it = context.module_signatures_by_name.find(current);
         if (signature_it == context.module_signatures_by_name.end()) {
             result.partial = true;
-            result.messages.push_back("No schematic data found for module '" + current + "'.");
+            appendUniqueMessage(result.messages,
+                                "No schematic data found for module '" + current + "'.");
             return;
         }
         const auto& schematic = signature_it->second.schematic;
@@ -356,12 +365,13 @@ SemanticSchematicResult schematic(const DesignGraphContext& context,
         if (depth >= max_depth) {
             result.truncated = true;
             result.partial = true;
-            result.messages.push_back("Schematic expansion reached maxDepth.");
+            appendUniqueMessage(result.messages, "Schematic expansion reached maxDepth.");
             return;
         }
         if (std::find(stack.begin(), stack.end(), current) != stack.end()) {
             result.partial = true;
-            result.messages.push_back("Cycle detected while expanding schematic module '" + current + "'.");
+            appendUniqueMessage(result.messages,
+                                "Cycle detected while expanding schematic module '" + current + "'.");
             return;
         }
 

@@ -181,6 +181,54 @@ TEST_CASE("DesignGraphProvider module hierarchy preserves Pristine tree fields a
     }));
 }
 
+TEST_CASE("DesignGraphProvider deduplicates repeated unresolved hierarchy and schematic messages",
+          "[analysis][semantic][design-graph-provider][hierarchy][schematic][messages]") {
+    auto context = simpleDesignContext();
+    context.modules_by_name.at("top").instances = {
+        ModuleInstantiation{.module_name = "missing_child",
+                            .instance_name = "u_missing_a",
+                            .range = rangeAt(8, 2, 32),
+                            .selection_range = rangeAt(8, 16, 27),
+                            .module_selection_range = rangeAt(8, 2, 15)},
+        ModuleInstantiation{.module_name = "missing_child",
+                            .instance_name = "u_missing_b",
+                            .range = rangeAt(9, 2, 32),
+                            .selection_range = rangeAt(9, 16, 27),
+                            .module_selection_range = rangeAt(9, 2, 15)}};
+    context.module_signatures_by_name.at("top").definition.instances = context.modules_by_name.at("top").instances;
+    context.module_signatures_by_name.at("top").schematic.cells = {
+        SchematicCell{.id = "u_missing_a",
+                      .name = "u_missing_a",
+                      .type = "missing_child",
+                      .kind = "module",
+                      .range = rangeAt(8, 2, 32),
+                      .selection_range = rangeAt(8, 16, 27)},
+        SchematicCell{.id = "u_missing_b",
+                      .name = "u_missing_b",
+                      .type = "missing_child",
+                      .kind = "module",
+                      .range = rangeAt(9, 2, 32),
+                      .selection_range = rangeAt(9, 16, 27)}};
+
+    const auto hierarchy = moduleHierarchy(context, std::string_view("top"), 8);
+    REQUIRE_FALSE(hierarchy.unresolved);
+    CHECK(hierarchy.partial);
+    REQUIRE(hierarchy.roots.size() == 1);
+    REQUIRE(hierarchy.roots.front().children.size() == 2);
+    CHECK(hierarchy.roots.front().children[0].unresolved);
+    CHECK(hierarchy.roots.front().children[1].unresolved);
+    CHECK(std::count_if(hierarchy.messages.begin(), hierarchy.messages.end(), [](const auto& message) {
+              return message.find("Unresolved module 'missing_child'") != std::string::npos;
+          }) == 1);
+
+    const auto graph = schematic(context, std::string_view("top"), 8);
+    REQUIRE_FALSE(graph.unresolved);
+    CHECK(graph.partial);
+    CHECK(std::count_if(graph.messages.begin(), graph.messages.end(), [](const auto& message) {
+              return message.find("No schematic data found for module 'missing_child'") != std::string::npos;
+          }) == 1);
+}
+
 TEST_CASE("DesignGraphProvider schematic emits Pristine-compatible ports cells and net endpoints",
           "[analysis][semantic][design-graph-provider][schematic][pristine]") {
     auto context = simpleDesignContext();

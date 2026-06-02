@@ -87,6 +87,34 @@ endmodule
                                               "file:///workspace/top.sv"});
 }
 
+TEST_CASE("WorkspaceDiscoveryIndex follows nested include files in dependency closure",
+          "[analysis][semantic][discovery][include]") {
+    auto index = semantic::buildWorkspaceDiscoveryIndex(
+        10,
+        {semantic::DiscoveryDocumentInput{.uri = "file:///workspace/a.svh",
+                                          .text = R"(
+`include "inc/b.svh"
+)"},
+         semantic::DiscoveryDocumentInput{.uri = "file:///workspace/inc/b.svh",
+                                          .text = R"(
+`include "../c.svh"
+)"},
+         semantic::DiscoveryDocumentInput{.uri = "file:///workspace/c.svh",
+                                          .text = "`define DEPTH 4\n"},
+         semantic::DiscoveryDocumentInput{.uri = "file:///workspace/top.sv",
+                                          .text = R"(
+`include "a.svh"
+module top;
+endmodule
+)"}});
+
+    const auto closure = semantic::discoveryDependencyClosure(index, std::string_view("top"));
+    CHECK(closure == std::vector<std::string>{"file:///workspace/a.svh",
+                                              "file:///workspace/c.svh",
+                                              "file:///workspace/inc/b.svh",
+                                              "file:///workspace/top.sv"});
+}
+
 TEST_CASE("SemanticEngine maintains a lightweight workspace discovery snapshot",
           "[analysis][semantic-engine][discovery]") {
     SemanticEngine engine;

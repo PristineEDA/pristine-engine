@@ -241,7 +241,25 @@ std::vector<std::string> discoveryDependencyClosure(const WorkspaceDiscoveryInde
                                                     size_t max_files) {
     std::set<std::string> result;
     std::set<std::string> seen_names;
+    std::set<std::string> seen_files;
     std::deque<std::string> pending_names;
+    std::deque<std::string> pending_files;
+
+    const auto find_file = [&](std::string_view uri) -> const DiscoveryFile* {
+        const auto file_it = std::find_if(index.files.begin(), index.files.end(), [&](const DiscoveryFile& file) {
+            return file.uri == uri;
+        });
+        return file_it == index.files.end() ? nullptr : &*file_it;
+    };
+    const auto enqueue_file = [&](std::string file_uri) {
+        if (max_files != 0 && result.size() >= max_files && !result.contains(file_uri)) {
+            return;
+        }
+        result.insert(file_uri);
+        if (seen_files.insert(file_uri).second) {
+            pending_files.push_back(std::move(file_uri));
+        }
+    };
 
     if (top_name.has_value() && !top_name->empty()) {
         pending_names.emplace_back(*top_name);
@@ -255,32 +273,31 @@ std::vector<std::string> discoveryDependencyClosure(const WorkspaceDiscoveryInde
     }
 
     while (!pending_names.empty()) {
-        const auto name = std::move(pending_names.front());
-        pending_names.pop_front();
-        if (!seen_names.insert(name).second) {
-            continue;
+        while (!pending_names.empty()) {
+            const auto name = std::move(pending_names.front());
+            pending_names.pop_front();
+            if (!seen_names.insert(name).second) {
+                continue;
+            }
+            for (const auto& file_uri : filesForTop(index, name)) {
+                enqueue_file(file_uri);
+            }
         }
-        for (const auto& file_uri : filesForTop(index, name)) {
-            if (max_files != 0 && result.size() >= max_files && !result.contains(file_uri)) {
+
+        while (!pending_files.empty()) {
+            const auto file_uri = std::move(pending_files.front());
+            pending_files.pop_front();
+            const auto* file = find_file(file_uri);
+            if (file == nullptr) {
                 continue;
             }
-            result.insert(file_uri);
-            const auto file_it = std::find_if(index.files.begin(), index.files.end(), [&](const DiscoveryFile& file) {
-                return file.uri == file_uri;
-            });
-            if (file_it == index.files.end()) {
-                continue;
-            }
-            for (const auto& reference : file_it->referenced_top_level_names) {
+            for (const auto& reference : file->referenced_top_level_names) {
                 if (!seen_names.contains(reference)) {
                     pending_names.push_back(reference);
                 }
             }
-            for (const auto& included_uri : file_it->included_uris) {
-                if (max_files != 0 && result.size() >= max_files && !result.contains(included_uri)) {
-                    continue;
-                }
-                result.insert(included_uri);
+            for (const auto& included_uri : file->included_uris) {
+                enqueue_file(included_uri);
             }
         }
     }
