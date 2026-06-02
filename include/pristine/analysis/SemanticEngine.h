@@ -380,6 +380,16 @@ struct SemanticDiscoverySymbol {
     SemanticLocation location;
 };
 
+struct SemanticDiscoveryClosureMetric {
+    std::string root_name;
+    size_t candidate_document_count = 0;
+    size_t selected_document_count = 0;
+    size_t missing_candidate_count = 0;
+    size_t deduped_document_count = 0;
+    std::vector<std::string> selected_document_uris;
+    std::vector<std::string> missing_candidate_uris;
+};
+
 struct SemanticWorkspaceDiscoverySnapshot {
     std::uint64_t generation = 0;
     std::uint64_t cache_key = 0;
@@ -393,6 +403,7 @@ struct SemanticWorkspaceDiscoverySnapshot {
     std::vector<SemanticDiscoverySymbol> declarations;
     std::vector<std::string> top_candidates;
     std::unordered_map<std::string, std::vector<std::string>> closure_uris_by_name;
+    std::vector<SemanticDiscoveryClosureMetric> closure_metrics;
     std::vector<std::string> messages;
 };
 

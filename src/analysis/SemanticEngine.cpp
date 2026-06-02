@@ -582,9 +582,41 @@ SemanticWorkspaceDiscoverySnapshot SemanticEngine::workspaceDiscovery() const {
     for (const auto& design_name : all_design_names) {
         auto closure = semantic::discoveryDependencyClosure(discovery_index, std::string_view(design_name));
         if (!closure.empty()) {
+            SemanticDiscoveryClosureMetric metric;
+            metric.root_name = design_name;
+            metric.candidate_document_count = closure.size();
+            for (const auto& uri : closure) {
+                if (documents_.contains(uri)) {
+                    metric.selected_document_uris.push_back(uri);
+                }
+                else {
+                    metric.missing_candidate_uris.push_back(uri);
+                }
+            }
+            std::sort(metric.selected_document_uris.begin(), metric.selected_document_uris.end());
+            metric.selected_document_uris.erase(std::unique(metric.selected_document_uris.begin(),
+                                                            metric.selected_document_uris.end()),
+                                                metric.selected_document_uris.end());
+            std::sort(metric.missing_candidate_uris.begin(), metric.missing_candidate_uris.end());
+            metric.missing_candidate_uris.erase(std::unique(metric.missing_candidate_uris.begin(),
+                                                           metric.missing_candidate_uris.end()),
+                                               metric.missing_candidate_uris.end());
+            metric.selected_document_count = metric.selected_document_uris.size();
+            metric.missing_candidate_count = metric.missing_candidate_uris.size();
+            metric.deduped_document_count =
+                metric.candidate_document_count > metric.selected_document_count + metric.missing_candidate_count
+                    ? metric.candidate_document_count - metric.selected_document_count -
+                          metric.missing_candidate_count
+                    : 0;
+            result.closure_metrics.push_back(std::move(metric));
             result.closure_uris_by_name.emplace(design_name, std::move(closure));
         }
     }
+    std::sort(result.closure_metrics.begin(),
+              result.closure_metrics.end(),
+              [](const SemanticDiscoveryClosureMetric& lhs, const SemanticDiscoveryClosureMetric& rhs) {
+                  return lhs.root_name < rhs.root_name;
+              });
     result.build_micros = std::chrono::duration_cast<std::chrono::microseconds>(
                               std::chrono::steady_clock::now() - build_start)
                               .count();

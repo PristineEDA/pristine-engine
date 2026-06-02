@@ -21,6 +21,16 @@ bool hasDeclaration(const SemanticWorkspaceDiscoverySnapshot& discovery,
                        });
 }
 
+const SemanticDiscoveryClosureMetric* closureMetricFor(const SemanticWorkspaceDiscoverySnapshot& discovery,
+                                                       std::string_view root_name) {
+    const auto found = std::find_if(discovery.closure_metrics.begin(),
+                                    discovery.closure_metrics.end(),
+                                    [&](const SemanticDiscoveryClosureMetric& metric) {
+                                        return metric.root_name == root_name;
+                                    });
+    return found == discovery.closure_metrics.end() ? nullptr : &*found;
+}
+
 } // namespace
 
 TEST_CASE("WorkspaceDiscoveryIndex discovers top-level design candidates deterministically",
@@ -173,6 +183,13 @@ endmodule
     CHECK(hasDeclaration(discovery, "child", "module"));
     CHECK(discovery.reference_count >= 1);
     CHECK(discovery.top_candidates == std::vector<std::string>{"top"});
+    const auto* top_metric = closureMetricFor(discovery, "top");
+    REQUIRE(top_metric != nullptr);
+    CHECK(top_metric->candidate_document_count == 1);
+    CHECK(top_metric->selected_document_count == 1);
+    CHECK(top_metric->missing_candidate_count == 0);
+    CHECK(top_metric->deduped_document_count == 0);
+    CHECK(top_metric->selected_document_uris == std::vector<std::string>{"file:///workspace/top.sv"});
 
     const auto cached = engine.workspaceDiscovery();
     CHECK(cached.generation == discovery.generation);
@@ -180,6 +197,9 @@ endmodule
     CHECK(cached.cache_hit);
     CHECK(cached.build_micros == 0);
     CHECK(cached.top_candidates == discovery.top_candidates);
+    const auto* cached_metric = closureMetricFor(cached, "top");
+    REQUIRE(cached_metric != nullptr);
+    CHECK(cached_metric->selected_document_uris == top_metric->selected_document_uris);
 
     engine.updateDocument("file:///workspace/pkg.sv",
                           R"(
@@ -202,4 +222,48 @@ endpackage
     CHECK_FALSE(removed.cache_hit);
     CHECK(removed.file_count == 1);
     CHECK_FALSE(hasDeclaration(removed, "top", "module"));
+}
+
+TEST_CASE("SemanticEngine discovery closure metrics describe package export closure",
+          "[analysis][semantic-engine][discovery][closure][metrics]") {
+    SemanticEngine engine;
+    engine.updateDocument("file:///workspace/defs.sv",
+                          R"(
+package defs;
+  typedef logic [7:0] word_t;
+endpackage
+)",
+                          SemanticEngineDocumentState{.version = 1});
+    engine.updateDocument("file:///workspace/api.sv",
+                          R"(
+package api;
+  export defs::*;
+endpackage
+)",
+                          SemanticEngineDocumentState{.version = 1});
+    engine.updateDocument("file:///workspace/child.sv",
+                          "module child; endmodule\n",
+                          SemanticEngineDocumentState{.version = 1});
+    engine.updateDocument("file:///workspace/top.sv",
+                          R"(
+module top;
+  import api::*;
+  child u_child();
+endmodule
+)",
+                          SemanticEngineDocumentState{.version = 1});
+    engine.updateDocument("file:///workspace/unrelated.sv",
+                          "module unrelated; endmodule\n",
+                          SemanticEngineDocumentState{.version = 1});
+
+    const auto discovery = engine.workspaceDiscovery();
+    const auto* top_metric = closureMetricFor(discovery, "top");
+    REQUIRE(top_metric != nullptr);
+    CHECK(top_metric->candidate_document_count == 4);
+    CHECK(top_metric->selected_document_count == 4);
+    CHECK(top_metric->missing_candidate_count == 0);
+    CHECK(top_metric->selected_document_uris == std::vector<std::string>{"file:///workspace/api.sv",
+                                                                         "file:///workspace/child.sv",
+                                                                         "file:///workspace/defs.sv",
+                                                                         "file:///workspace/top.sv"});
 }
