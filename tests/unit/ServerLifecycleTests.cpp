@@ -330,6 +330,136 @@ TEST_CASE("ServerSession refreshes indexes from watched file changes", "[server]
     CHECK(deleted_response->at("result").empty());
 }
 
+TEST_CASE("ServerSession refreshes SystemVerilog hierarchy and schematic from watched file changes",
+          "[server][workspace][hierarchy][schematic]") {
+    jsonrpc::JsonRpcServer rpc_server;
+    ServerSession session{"pristine-engine", kTestServerVersion};
+    session.bind(rpc_server);
+
+    TempWorkspace workspace;
+    workspace.writeFile("rtl/top.sv",
+                        "module top;\n"
+                        "  child u_child();\n"
+                        "endmodule\n");
+    workspace.writeFile("rtl/unrelated.sv", "module unrelated; endmodule\n");
+    const auto child_path = workspace.root() / "rtl" / "child.sv";
+    const auto grandchild_path = workspace.root() / "rtl" / "grandchild.sv";
+    const auto child_uri = toFileUri(child_path);
+    const auto grandchild_uri = toFileUri(grandchild_path);
+
+    ScriptedTransport initialize_transport{
+        std::string(R"({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"rootUri":")") +
+            toFileUri(workspace.root()) + R"("}})"};
+
+    CHECK(rpc_server.run(initialize_transport) == 0);
+    REQUIRE(findResponse(initialize_transport, 1).has_value());
+
+    auto hierarchy_root = [](const jsonrpc::Json& response) -> const jsonrpc::Json& {
+        const auto& roots = response.at("result").at("roots");
+        REQUIRE(roots.size() == 1);
+        return roots.at(0);
+    };
+    auto schematic_has_module = [](const jsonrpc::Json& response, std::string_view module_name) {
+        const auto& modules = response.at("result").at("modules");
+        return std::any_of(modules.begin(), modules.end(), [&](const jsonrpc::Json& module) {
+            return module.at("id") == std::string(module_name) ||
+                   module.at("name") == std::string(module_name);
+        });
+    };
+
+    ScriptedTransport initial_query_transport{
+        R"({"jsonrpc":"2.0","id":2,"method":"systemverilog/moduleHierarchy","params":{"moduleName":"top","maxDepth":8}})",
+        R"({"jsonrpc":"2.0","id":3,"method":"systemverilog/schematic","params":{"moduleName":"top","maxDepth":8}})"};
+
+    CHECK(rpc_server.run(initial_query_transport) == 0);
+    const auto initial_hierarchy_response = findResponse(initial_query_transport, 2);
+    REQUIRE(initial_hierarchy_response.has_value());
+    const auto& initial_top = hierarchy_root(*initial_hierarchy_response);
+    REQUIRE(initial_top.at("children").size() == 1);
+    CHECK(initial_top.at("children").at(0).at("moduleName") == "child");
+    CHECK(initial_top.at("children").at(0).at("unresolved") == true);
+    CHECK(initial_hierarchy_response->at("result").at("discoveryClosureDocumentCount") == 1);
+
+    const auto initial_schematic_response = findResponse(initial_query_transport, 3);
+    REQUIRE(initial_schematic_response.has_value());
+    CHECK(schematic_has_module(*initial_schematic_response, "top"));
+    CHECK_FALSE(schematic_has_module(*initial_schematic_response, "child"));
+
+    workspace.writeFile("rtl/child.sv", "module child; endmodule\n");
+    ScriptedTransport created_transport{
+        std::string(R"({"jsonrpc":"2.0","method":"workspace/didChangeWatchedFiles","params":{"changes":[{"uri":")") +
+            child_uri + R"(","type":1}]}})" ,
+        R"({"jsonrpc":"2.0","id":4,"method":"systemverilog/moduleHierarchy","params":{"moduleName":"top","maxDepth":8}})",
+        R"({"jsonrpc":"2.0","id":5,"method":"systemverilog/schematic","params":{"moduleName":"top","maxDepth":8}})",
+        R"({"jsonrpc":"2.0","id":6,"method":"systemverilog/moduleHierarchy","params":{"moduleName":"top","maxDepth":8}})"};
+
+    CHECK(rpc_server.run(created_transport) == 0);
+    const auto created_hierarchy_response = findResponse(created_transport, 4);
+    REQUIRE(created_hierarchy_response.has_value());
+    const auto& created_top = hierarchy_root(*created_hierarchy_response);
+    REQUIRE(created_top.at("children").size() == 1);
+    CHECK(created_top.at("children").at(0).at("moduleName") == "child");
+    CHECK(created_top.at("children").at(0).at("unresolved") == false);
+    CHECK(created_top.at("children").at(0).at("uri") == child_uri);
+    CHECK(created_hierarchy_response->at("result").at("discoveryClosureCacheHit") == false);
+
+    const auto created_schematic_response = findResponse(created_transport, 5);
+    REQUIRE(created_schematic_response.has_value());
+    CHECK(schematic_has_module(*created_schematic_response, "child"));
+    CHECK(created_schematic_response->at("result").at("discoveryClosureCacheHit") == false);
+
+    const auto cached_created_hierarchy_response = findResponse(created_transport, 6);
+    REQUIRE(cached_created_hierarchy_response.has_value());
+    CHECK(cached_created_hierarchy_response->at("result").at("discoveryClosureCacheHit") == true);
+
+    workspace.writeFile("rtl/child.sv",
+                        "module child;\n"
+                        "  grandchild u_grandchild();\n"
+                        "endmodule\n");
+    workspace.writeFile("rtl/grandchild.sv", "module grandchild; endmodule\n");
+    ScriptedTransport changed_transport{
+        std::string(R"({"jsonrpc":"2.0","method":"workspace/didChangeWatchedFiles","params":{"changes":[{"uri":")") +
+            child_uri + R"(","type":2},{"uri":")" + grandchild_uri + R"(","type":1}]}})" ,
+        R"({"jsonrpc":"2.0","id":7,"method":"systemverilog/moduleHierarchy","params":{"moduleName":"top","maxDepth":8}})",
+        R"({"jsonrpc":"2.0","id":8,"method":"systemverilog/schematic","params":{"moduleName":"top","maxDepth":8}})"};
+
+    CHECK(rpc_server.run(changed_transport) == 0);
+    const auto changed_hierarchy_response = findResponse(changed_transport, 7);
+    REQUIRE(changed_hierarchy_response.has_value());
+    const auto& changed_top = hierarchy_root(*changed_hierarchy_response);
+    REQUIRE(changed_top.at("children").size() == 1);
+    const auto& changed_child = changed_top.at("children").at(0);
+    REQUIRE(changed_child.at("children").size() == 1);
+    CHECK(changed_child.at("children").at(0).at("moduleName") == "grandchild");
+    CHECK(changed_child.at("children").at(0).at("uri") == grandchild_uri);
+    CHECK(changed_hierarchy_response->at("result").at("discoveryClosureCacheHit") == false);
+
+    const auto changed_schematic_response = findResponse(changed_transport, 8);
+    REQUIRE(changed_schematic_response.has_value());
+    CHECK(schematic_has_module(*changed_schematic_response, "grandchild"));
+
+    fs::remove(child_path);
+    ScriptedTransport deleted_transport{
+        std::string(R"({"jsonrpc":"2.0","method":"workspace/didChangeWatchedFiles","params":{"changes":[{"uri":")") +
+            child_uri + R"(","type":3}]}})" ,
+        R"({"jsonrpc":"2.0","id":9,"method":"systemverilog/moduleHierarchy","params":{"moduleName":"top","maxDepth":8}})",
+        R"({"jsonrpc":"2.0","id":10,"method":"systemverilog/schematic","params":{"moduleName":"top","maxDepth":8}})"};
+
+    CHECK(rpc_server.run(deleted_transport) == 0);
+    const auto deleted_hierarchy_response = findResponse(deleted_transport, 9);
+    REQUIRE(deleted_hierarchy_response.has_value());
+    const auto& deleted_top = hierarchy_root(*deleted_hierarchy_response);
+    REQUIRE(deleted_top.at("children").size() == 1);
+    CHECK(deleted_top.at("children").at(0).at("moduleName") == "child");
+    CHECK(deleted_top.at("children").at(0).at("unresolved") == true);
+    CHECK(deleted_hierarchy_response->at("result").at("discoveryClosureCacheHit") == false);
+
+    const auto deleted_schematic_response = findResponse(deleted_transport, 10);
+    REQUIRE(deleted_schematic_response.has_value());
+    CHECK_FALSE(schematic_has_module(*deleted_schematic_response, "child"));
+    CHECK_FALSE(schematic_has_module(*deleted_schematic_response, "grandchild"));
+}
+
 TEST_CASE("ServerSession applies incremental UTF-16 text edits", "[server][sync]") {
     jsonrpc::JsonRpcServer rpc_server;
     ServerSession session{"pristine-engine", kTestServerVersion};
