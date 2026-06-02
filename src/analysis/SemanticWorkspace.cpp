@@ -106,6 +106,10 @@ std::vector<std::string> SemanticWorkspace::staleDocumentUris() const {
     return result;
 }
 
+SemanticWorkspaceDiscoverySnapshot SemanticWorkspace::engineWorkspaceDiscovery() const {
+    return semantic_engine_.workspaceDiscovery();
+}
+
 SemanticLookupResult SemanticWorkspace::lookupAt(std::string_view uri, int line, int character) const {
     return semantic_engine_.lookupAt(uri, line, character);
 }

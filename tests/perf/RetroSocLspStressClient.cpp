@@ -13,6 +13,7 @@
 #include <iomanip>
 #include <iostream>
 #include <optional>
+#include <regex>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -47,6 +48,7 @@ struct WorkspaceStats {
 };
 
 struct Metrics {
+    std::string mode = "probe";
     std::string retro_soc_root;
     std::string commit;
     std::string server_path;
@@ -142,6 +144,16 @@ bool shouldSkipDirectory(const fs::path& path) {
            name == "obj" || name == "node_modules";
 }
 
+std::string readFileText(const fs::path& path) {
+    std::ifstream stream(path, std::ios::binary);
+    if (!stream.good()) {
+        throw std::runtime_error("Unable to read source file: " + path.string());
+    }
+    std::ostringstream out;
+    out << stream.rdbuf();
+    return out.str();
+}
+
 std::string fileUriFor(const fs::path& path) {
     auto normalized = fs::absolute(path).lexically_normal().generic_string();
     if (normalized.empty() || normalized.front() != '/') {
@@ -171,6 +183,29 @@ WorkspaceStats collectWorkspaceStats(const fs::path& root) {
         }
         it.increment(ec);
     }
+    return result;
+}
+
+std::vector<fs::path> collectSourceFiles(const fs::path& root) {
+    std::vector<fs::path> result;
+    std::error_code ec;
+    fs::recursive_directory_iterator it(root, fs::directory_options::skip_permission_denied, ec);
+    const fs::recursive_directory_iterator end;
+    while (it != end) {
+        const auto path = it->path();
+        if (it->is_directory(ec)) {
+            if (shouldSkipDirectory(path)) {
+                it.disable_recursion_pending();
+            }
+        }
+        else if (it->is_regular_file(ec) && isSourceFile(path)) {
+            result.push_back(fs::absolute(path).lexically_normal());
+        }
+        it.increment(ec);
+    }
+    std::sort(result.begin(), result.end(), [](const fs::path& lhs, const fs::path& rhs) {
+        return lhs.generic_string() < rhs.generic_string();
+    });
     return result;
 }
 
@@ -206,6 +241,65 @@ SourceFile makeProbeSource(const fs::path& root, const std::string& requested_to
          << "endmodule\n";
     const auto path = root / "__pristine_lsp_probe.sv";
     return SourceFile{.path = path, .uri = fileUriFor(path), .text = text.str()};
+}
+
+std::optional<std::string> firstModuleName(std::string_view text) {
+    if (text.empty()) {
+        return std::nullopt;
+    }
+    static const std::regex module_regex(R"(\b(?:module|interface)\s+([A-Za-z_][A-Za-z0-9_$]*))");
+    const auto begin = std::cregex_iterator(text.data(), text.data() + text.size(), module_regex);
+    const auto end = std::cregex_iterator();
+    if (begin == end) {
+        return std::nullopt;
+    }
+    return (*begin)[1].str();
+}
+
+bool containsTopDeclaration(std::string_view text, std::string_view top) {
+    if (text.empty() || top.empty()) {
+        return false;
+    }
+    static const std::regex module_regex(R"(\b(?:module|interface)\s+([A-Za-z_][A-Za-z0-9_$]*))");
+    const auto begin = std::cregex_iterator(text.data(), text.data() + text.size(), module_regex);
+    const auto end = std::cregex_iterator();
+    return std::any_of(begin, end, [&](const std::cmatch& match) {
+        return match[1].str() == top;
+    });
+}
+
+SourceFile selectRealSource(const fs::path& root, std::string& top_module) {
+    const auto files = collectSourceFiles(root);
+    if (files.empty()) {
+        throw std::runtime_error("No SystemVerilog or Verilog sources found under " + root.string());
+    }
+
+    std::optional<SourceFile> first_with_module;
+    for (const auto& path : files) {
+        auto text = readFileText(path);
+        if (!top_module.empty() && containsTopDeclaration(text, top_module)) {
+            return SourceFile{.path = path, .uri = fileUriFor(path), .text = std::move(text)};
+        }
+        if (!first_with_module.has_value()) {
+            if (const auto module_name = firstModuleName(text)) {
+                if (top_module.empty()) {
+                    top_module = *module_name;
+                }
+                first_with_module = SourceFile{.path = path, .uri = fileUriFor(path), .text = std::move(text)};
+            }
+        }
+    }
+
+    if (!top_module.empty()) {
+        throw std::runtime_error("No RTL file declares requested top module/interface '" + top_module + "'");
+    }
+    if (first_with_module.has_value()) {
+        return std::move(*first_with_module);
+    }
+
+    auto text = readFileText(files.front());
+    top_module = sanitizedIdentifier(files.front().stem().string(), "retro_real_top");
+    return SourceFile{.path = files.front(), .uri = fileUriFor(files.front()), .text = std::move(text)};
 }
 
 std::string commandQuote(std::string_view value) {
@@ -609,6 +703,7 @@ void writeStage(std::ofstream& log, std::string_view stage, std::string_view det
 std::string summaryJson(const Metrics& metrics) {
     std::ostringstream out;
     out << "{"
+        << "\"mode\":" << jsonString(metrics.mode) << ","
         << "\"retroSocRoot\":" << jsonString(metrics.retro_soc_root) << ","
         << "\"commit\":" << jsonString(metrics.commit) << ","
         << "\"serverPath\":" << jsonString(metrics.server_path) << ","
@@ -644,6 +739,7 @@ struct Args {
     fs::path log_dir;
     fs::path trace_file;
     std::string top_module;
+    std::string mode = "probe";
     int max_depth = 64;
     bool trace = false;
 };
@@ -679,6 +775,9 @@ Args parseArgs(int argc, char** argv) {
         else if (auto value = read_value("--top"); !value.empty()) {
             args.top_module = value;
         }
+        else if (auto value = read_value("--mode"); !value.empty()) {
+            args.mode = lowerAscii(value);
+        }
         else if (auto value = read_value("--max-depth"); !value.empty()) {
             args.max_depth = std::max(0, std::stoi(value));
         }
@@ -695,7 +794,10 @@ Args parseArgs(int argc, char** argv) {
     }
 
     if (args.server.empty() || args.root.empty() || args.log_dir.empty()) {
-        throw std::runtime_error("Usage: pristine_retrosoc_lsp_stress --server <path> --root <path> --log-dir <path> [--top <module>] [--max-depth <n>] [--trace] [--trace-file <path>] [--no-trace]");
+        throw std::runtime_error("Usage: pristine_retrosoc_lsp_stress --server <path> --root <path> --log-dir <path> [--mode probe|real] [--top <module>] [--max-depth <n>] [--trace] [--trace-file <path>] [--no-trace]");
+    }
+    if (args.mode != "probe" && args.mode != "real") {
+        throw std::runtime_error("--mode must be 'probe' or 'real'");
     }
     if (args.trace && args.trace_file.empty()) {
         args.trace_file = args.log_dir / "lsp-trace.jsonl";
@@ -727,24 +829,31 @@ int main(int argc, char** argv) {
         if (workspace_stats.file_count == 0) {
             throw std::runtime_error("No SystemVerilog or Verilog sources found under " + args.root.string());
         }
-        auto probe = makeProbeSource(args.root, args.top_module);
+        auto selected_top = args.top_module;
+        auto opened_source = args.mode == "real" ? selectRealSource(args.root, selected_top)
+                                                 : makeProbeSource(args.root, args.top_module);
 
         Metrics metrics;
+        metrics.mode = args.mode;
         metrics.retro_soc_root = fs::absolute(args.root).lexically_normal().string();
         metrics.commit = gitHeadFor(args.root);
         metrics.server_path = fs::absolute(args.server).lexically_normal().string();
         metrics.file_count = workspace_stats.file_count;
         metrics.byte_count = workspace_stats.byte_count;
         metrics.opened_file_count = 1;
-        metrics.opened_byte_count = probe.text.size();
-        metrics.top_module = args.top_module.empty() ? "retro_probe_top" : sanitizedIdentifier(args.top_module, "retro_probe_top");
+        metrics.opened_byte_count = opened_source.text.size();
+        metrics.top_module = args.mode == "real"
+                                 ? selected_top
+                                 : (args.top_module.empty() ? "retro_probe_top"
+                                                            : sanitizedIdentifier(args.top_module, "retro_probe_top"));
         metrics.trace_enabled = args.trace;
         metrics.trace_path = args.trace ? fs::absolute(args.trace_file).lexically_normal().string() : std::string{};
 
         const auto total_start = Clock::now();
         writeStage(operation_log,
                    "start",
-                   "files=" + std::to_string(metrics.file_count) +
+                   "mode=" + metrics.mode +
+                       " files=" + std::to_string(metrics.file_count) +
                        " bytes=" + std::to_string(metrics.byte_count));
 
         writeStage(operation_log, "start-server", metrics.server_path);
@@ -758,14 +867,16 @@ int main(int argc, char** argv) {
         writeStage(operation_log, "initialize:end", std::to_string(metrics.initialize_micros) + "us");
         client.notify("initialized", lsp::json::Object{});
 
-        writeStage(operation_log, "didOpen:begin", probe.uri);
+        writeStage(operation_log, "didOpen:begin", opened_source.uri);
         start = Clock::now();
         lsp::json::Object open_params;
-        open_params["textDocument"] = textDocumentIdentifier(probe.uri, probe.text);
+        open_params["textDocument"] = textDocumentIdentifier(opened_source.uri, opened_source.text);
         client.notify("textDocument/didOpen", std::move(open_params));
         metrics.did_open_probe_micros = elapsedMicros(start, Clock::now());
         metrics.did_open_all_micros = metrics.did_open_probe_micros;
-        writeOperation(operation_log, "textDocument/didOpen:probe", metrics.did_open_probe_micros);
+        writeOperation(operation_log,
+                       metrics.mode == "real" ? "textDocument/didOpen:real" : "textDocument/didOpen:probe",
+                       metrics.did_open_probe_micros);
         writeStage(operation_log, "didOpen:end", std::to_string(metrics.did_open_probe_micros) + "us");
 
         writeStage(operation_log, "moduleHierarchy:cold:begin", metrics.top_module);

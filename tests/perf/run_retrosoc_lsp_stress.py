@@ -48,6 +48,8 @@ def main() -> int:
         root,
         "--log-dir",
         str(log_dir),
+        "--mode",
+        os.environ.get("RETROSOC_LSP_MODE", "probe"),
         "--max-depth",
         os.environ.get("RETROSOC_MAX_DEPTH", "64"),
     ]

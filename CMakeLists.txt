@@ -81,6 +81,7 @@ add_library(
   src/analysis/semantic/QueryCache.cpp
   src/analysis/semantic/SignatureInlayProvider.cpp
   src/analysis/semantic/SnapshotBuilder.cpp
+  src/analysis/semantic/WorkspaceDiscoveryIndex.cpp
   src/document/DocumentStore.cpp
   src/jsonrpc/JsonRpcServer.cpp
   src/jsonrpc/MessageStream.cpp

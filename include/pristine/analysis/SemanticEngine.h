@@ -2,6 +2,7 @@
 
 #include "pristine/analysis/CompilationService.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -367,6 +368,23 @@ struct SemanticEngineSnapshot {
     bool has_design_ast = false;
 };
 
+struct SemanticDiscoverySymbol {
+    std::string name;
+    std::string kind;
+    SemanticLocation location;
+};
+
+struct SemanticWorkspaceDiscoverySnapshot {
+    std::uint64_t generation = 0;
+    size_t file_count = 0;
+    size_t byte_count = 0;
+    size_t declaration_count = 0;
+    size_t macro_count = 0;
+    size_t reference_count = 0;
+    std::vector<SemanticDiscoverySymbol> declarations;
+    std::vector<std::string> messages;
+};
+
 class SemanticEngine {
 public:
     SemanticEngine();
@@ -390,6 +408,7 @@ public:
     [[nodiscard]] std::vector<std::string> affectedDocumentUris(std::string_view uri) const;
 
     [[nodiscard]] const SemanticEngineSnapshot& snapshot() const;
+    [[nodiscard]] SemanticWorkspaceDiscoverySnapshot workspaceDiscovery() const;
     [[nodiscard]] std::vector<SemanticEngineDiagnostic> diagnosticsFor(std::string_view uri) const;
     [[nodiscard]] SemanticLookupResult lookupAt(std::string_view uri, int line, int character) const;
     [[nodiscard]] SemanticReferenceResult definitionsAt(std::string_view uri,

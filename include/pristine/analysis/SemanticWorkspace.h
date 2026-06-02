@@ -46,6 +46,7 @@ public:
     [[nodiscard]] std::vector<std::string> includedUris(std::string_view uri) const;
     [[nodiscard]] std::vector<std::string> includingUris(std::string_view uri) const;
     [[nodiscard]] std::vector<std::string> staleDocumentUris() const;
+    [[nodiscard]] SemanticWorkspaceDiscoverySnapshot engineWorkspaceDiscovery() const;
     [[nodiscard]] SemanticLookupResult lookupAt(std::string_view uri, int line, int character) const;
     [[nodiscard]] SemanticReferenceResult engineDefinitionsAt(std::string_view uri,
                                                               int line,

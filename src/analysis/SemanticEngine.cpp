@@ -9,6 +9,7 @@
 #include "semantic/QueryCache.h"
 #include "semantic/SignatureInlayProvider.h"
 #include "semantic/SnapshotBuilder.h"
+#include "semantic/WorkspaceDiscoveryIndex.h"
 #include "pristine/analysis/SourceUtil.h"
 
 #include "slang/ast/Symbol.h"
@@ -384,6 +385,33 @@ const SemanticEngineSnapshot& SemanticEngine::snapshot() const {
         rebuildSnapshot();
     }
     return *snapshot_;
+}
+
+SemanticWorkspaceDiscoverySnapshot SemanticEngine::workspaceDiscovery() const {
+    std::vector<semantic::DiscoveryDocumentInput> documents;
+    documents.reserve(documents_.size());
+    for (const auto& [uri, document] : documents_) {
+        documents.push_back(semantic::DiscoveryDocumentInput{.uri = uri, .text = document.text});
+    }
+    const auto discovery_index = semantic::buildWorkspaceDiscoveryIndex(generation_, std::move(documents));
+
+    SemanticWorkspaceDiscoverySnapshot result;
+    result.generation = discovery_index.generation;
+    result.file_count = discovery_index.file_count;
+    result.byte_count = discovery_index.byte_count;
+    result.declaration_count = discovery_index.declaration_count;
+    result.macro_count = discovery_index.macro_count;
+    result.reference_count = discovery_index.reference_count;
+    result.messages = discovery_index.messages;
+    result.declarations.reserve(discovery_index.declarations.size());
+    for (const auto& declaration : discovery_index.declarations) {
+        result.declarations.push_back(SemanticDiscoverySymbol{.name = declaration.name,
+                                                              .kind = declaration.kind,
+                                                              .location = SemanticLocation{
+                                                                  .uri = declaration.location.uri,
+                                                                  .range = declaration.location.range}});
+    }
+    return result;
 }
 
 std::vector<SemanticEngineDiagnostic> SemanticEngine::diagnosticsFor(std::string_view uri) const {
@@ -1090,6 +1118,7 @@ SemanticSelectionRangeResult SemanticEngine::selectionRangesAt(std::string_view 
 
 SemanticModuleHierarchyResult SemanticEngine::moduleHierarchy(std::optional<std::string_view> module_name,
                                                               int max_depth) const {
+    (void)workspaceDiscovery();
     const auto& current_snapshot = snapshot();
     if (const auto cached = query_cache_->moduleHierarchy(current_snapshot.generation,
                                                           module_name,
@@ -1115,6 +1144,7 @@ SemanticModuleHierarchyResult SemanticEngine::moduleHierarchy(std::optional<std:
 
 SemanticSchematicResult SemanticEngine::schematic(std::optional<std::string_view> module_name,
                                                   int max_depth) const {
+    (void)workspaceDiscovery();
     const auto& current_snapshot = snapshot();
     if (const auto cached = query_cache_->schematic(current_snapshot.generation, module_name, max_depth)) {
         return *cached;
