@@ -307,6 +307,49 @@ std::optional<std::string_view> inferredDiscoveryTop(
     return std::nullopt;
 }
 
+const SemanticDiscoveryClosureMetric* discoveryClosureMetricFor(
+    std::optional<std::string_view> requested_module_name,
+    const SemanticWorkspaceDiscoverySnapshot& discovery) {
+    const auto selected_top = inferredDiscoveryTop(requested_module_name, discovery);
+    if (!selected_top.has_value() || selected_top->empty()) {
+        return nullptr;
+    }
+
+    const auto metric_it = std::find_if(discovery.closure_metrics.begin(),
+                                        discovery.closure_metrics.end(),
+                                        [&](const SemanticDiscoveryClosureMetric& metric) {
+                                            return metric.root_name == *selected_top;
+                                        });
+    if (metric_it == discovery.closure_metrics.end()) {
+        return nullptr;
+    }
+    return &*metric_it;
+}
+
+void applyDiscoveryClosureMetric(SemanticModuleHierarchyResult& result,
+                                 const SemanticDiscoveryClosureMetric* metric) {
+    if (metric == nullptr) {
+        return;
+    }
+    result.discovery_closure_root_name = metric->root_name;
+    result.discovery_closure_candidate_document_count = metric->candidate_document_count;
+    result.discovery_closure_document_count = metric->selected_document_count;
+    result.discovery_closure_missing_candidate_count = metric->missing_candidate_count;
+    result.discovery_closure_deduped_document_count = metric->deduped_document_count;
+}
+
+void applyDiscoveryClosureMetric(SemanticSchematicResult& result,
+                                 const SemanticDiscoveryClosureMetric* metric) {
+    if (metric == nullptr) {
+        return;
+    }
+    result.discovery_closure_root_name = metric->root_name;
+    result.discovery_closure_candidate_document_count = metric->candidate_document_count;
+    result.discovery_closure_document_count = metric->selected_document_count;
+    result.discovery_closure_missing_candidate_count = metric->missing_candidate_count;
+    result.discovery_closure_deduped_document_count = metric->deduped_document_count;
+}
+
 struct ClosureDesignGraphSnapshot {
     SemanticEngineSnapshot snapshot;
     std::unique_ptr<semantic::SnapshotData> data;
@@ -1362,6 +1405,7 @@ SemanticModuleHierarchyResult SemanticEngine::moduleHierarchy(std::optional<std:
         return *cached;
     }
     const auto closure_uris = closureDocumentUrisFor(module_name, discovery);
+    const auto* closure_metric = discoveryClosureMetricFor(module_name, discovery);
     auto closure_snapshot = buildClosureDesignGraphSnapshot(generation_,
                                                             config_,
                                                             documents_,
@@ -1380,6 +1424,7 @@ SemanticModuleHierarchyResult SemanticEngine::moduleHierarchy(std::optional<std:
         result.discovery_closure_used = true;
         result.discovery_closure_document_count = closure_snapshot.document_count;
         result.discovery_closure_build_micros = closure_snapshot.build_micros;
+        applyDiscoveryClosureMetric(result, closure_metric);
         auto cached_result = result;
         cached_result.discovery_closure_build_micros = 0;
         query_cache_->storeModuleHierarchy(generation_, module_name, max_depth, std::move(cached_result));
@@ -1416,6 +1461,7 @@ SemanticSchematicResult SemanticEngine::schematic(std::optional<std::string_view
         return *cached;
     }
     const auto closure_uris = closureDocumentUrisFor(module_name, discovery);
+    const auto* closure_metric = discoveryClosureMetricFor(module_name, discovery);
     auto closure_snapshot = buildClosureDesignGraphSnapshot(generation_,
                                                             config_,
                                                             documents_,
@@ -1434,6 +1480,7 @@ SemanticSchematicResult SemanticEngine::schematic(std::optional<std::string_view
         result.discovery_closure_used = true;
         result.discovery_closure_document_count = closure_snapshot.document_count;
         result.discovery_closure_build_micros = closure_snapshot.build_micros;
+        applyDiscoveryClosureMetric(result, closure_metric);
         auto cached_result = result;
         cached_result.discovery_closure_build_micros = 0;
         query_cache_->storeSchematic(generation_, module_name, max_depth, std::move(cached_result));

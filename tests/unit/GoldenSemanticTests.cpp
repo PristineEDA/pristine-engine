@@ -646,9 +646,24 @@ void runModuleHierarchyFixture(SemanticEngine& engine, const nlohmann::json& fix
     if (expected.contains("discoveryClosureUsed")) {
         CHECK(result.discovery_closure_used == expected.at("discoveryClosureUsed").get<bool>());
     }
+    if (expected.contains("discoveryClosureRoot")) {
+        CHECK(result.discovery_closure_root_name == expected.at("discoveryClosureRoot").get<std::string>());
+    }
+    if (expected.contains("discoveryClosureCandidateDocumentCount")) {
+        CHECK(result.discovery_closure_candidate_document_count ==
+              expected.at("discoveryClosureCandidateDocumentCount").get<size_t>());
+    }
     if (expected.contains("discoveryClosureDocumentCount")) {
         CHECK(result.discovery_closure_document_count ==
               expected.at("discoveryClosureDocumentCount").get<size_t>());
+    }
+    if (expected.contains("discoveryClosureMissingCandidateCount")) {
+        CHECK(result.discovery_closure_missing_candidate_count ==
+              expected.at("discoveryClosureMissingCandidateCount").get<size_t>());
+    }
+    if (expected.contains("discoveryClosureDedupedDocumentCount")) {
+        CHECK(result.discovery_closure_deduped_document_count ==
+              expected.at("discoveryClosureDedupedDocumentCount").get<size_t>());
     }
     if (expected.contains("rootModules")) {
         for (const auto& expected_root : expected.at("rootModules")) {
@@ -695,9 +710,24 @@ void runSchematicFixture(SemanticEngine& engine, const nlohmann::json& fixture) 
     if (expected.contains("discoveryClosureUsed")) {
         CHECK(result.discovery_closure_used == expected.at("discoveryClosureUsed").get<bool>());
     }
+    if (expected.contains("discoveryClosureRoot")) {
+        CHECK(result.discovery_closure_root_name == expected.at("discoveryClosureRoot").get<std::string>());
+    }
+    if (expected.contains("discoveryClosureCandidateDocumentCount")) {
+        CHECK(result.discovery_closure_candidate_document_count ==
+              expected.at("discoveryClosureCandidateDocumentCount").get<size_t>());
+    }
     if (expected.contains("discoveryClosureDocumentCount")) {
         CHECK(result.discovery_closure_document_count ==
               expected.at("discoveryClosureDocumentCount").get<size_t>());
+    }
+    if (expected.contains("discoveryClosureMissingCandidateCount")) {
+        CHECK(result.discovery_closure_missing_candidate_count ==
+              expected.at("discoveryClosureMissingCandidateCount").get<size_t>());
+    }
+    if (expected.contains("discoveryClosureDedupedDocumentCount")) {
+        CHECK(result.discovery_closure_deduped_document_count ==
+              expected.at("discoveryClosureDedupedDocumentCount").get<size_t>());
     }
     if (expected.contains("rootModule")) {
         REQUIRE(result.root_module_id.has_value());

@@ -34,7 +34,11 @@
   },
   "expected": {
     "discoveryClosureUsed": true,
+    "discoveryClosureRoot": "top",
+    "discoveryClosureCandidateDocumentCount": 4,
     "discoveryClosureDocumentCount": 4,
+    "discoveryClosureMissingCandidateCount": 0,
+    "discoveryClosureDedupedDocumentCount": 0,
     "rootModules": [
       "top"
     ],

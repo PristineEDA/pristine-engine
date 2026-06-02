@@ -69,9 +69,21 @@ struct Metrics {
     long long hierarchy_cold_closure_build_micros = 0;
     long long hierarchy_warm_closure_build_micros = 0;
     long long schematic_closure_build_micros = 0;
+    std::string hierarchy_cold_closure_root;
+    std::string hierarchy_warm_closure_root;
+    std::string schematic_closure_root;
+    size_t hierarchy_cold_closure_candidate_document_count = 0;
+    size_t hierarchy_warm_closure_candidate_document_count = 0;
+    size_t schematic_closure_candidate_document_count = 0;
     size_t hierarchy_cold_closure_document_count = 0;
     size_t hierarchy_warm_closure_document_count = 0;
     size_t schematic_closure_document_count = 0;
+    size_t hierarchy_cold_closure_missing_candidate_count = 0;
+    size_t hierarchy_warm_closure_missing_candidate_count = 0;
+    size_t schematic_closure_missing_candidate_count = 0;
+    size_t hierarchy_cold_closure_deduped_document_count = 0;
+    size_t hierarchy_warm_closure_deduped_document_count = 0;
+    size_t schematic_closure_deduped_document_count = 0;
     bool hierarchy_cold_closure_used = false;
     bool hierarchy_warm_closure_used = false;
     bool schematic_closure_used = false;
@@ -581,15 +593,29 @@ void collectHierarchyMetrics(const lsp::json::Value& result, Metrics& metrics, b
     }
     if (warm) {
         metrics.hierarchy_warm_closure_used = boolValue(response, "discoveryClosureUsed");
+        metrics.hierarchy_warm_closure_root = stringValue(response, "discoveryClosureRoot");
+        metrics.hierarchy_warm_closure_candidate_document_count =
+            static_cast<size_t>(integerValue(response, "discoveryClosureCandidateDocumentCount"));
         metrics.hierarchy_warm_closure_document_count =
             static_cast<size_t>(integerValue(response, "discoveryClosureDocumentCount"));
+        metrics.hierarchy_warm_closure_missing_candidate_count =
+            static_cast<size_t>(integerValue(response, "discoveryClosureMissingCandidateCount"));
+        metrics.hierarchy_warm_closure_deduped_document_count =
+            static_cast<size_t>(integerValue(response, "discoveryClosureDedupedDocumentCount"));
         metrics.hierarchy_warm_closure_build_micros =
             integerValue(response, "discoveryClosureBuildMicros");
     }
     else {
         metrics.hierarchy_cold_closure_used = boolValue(response, "discoveryClosureUsed");
+        metrics.hierarchy_cold_closure_root = stringValue(response, "discoveryClosureRoot");
+        metrics.hierarchy_cold_closure_candidate_document_count =
+            static_cast<size_t>(integerValue(response, "discoveryClosureCandidateDocumentCount"));
         metrics.hierarchy_cold_closure_document_count =
             static_cast<size_t>(integerValue(response, "discoveryClosureDocumentCount"));
+        metrics.hierarchy_cold_closure_missing_candidate_count =
+            static_cast<size_t>(integerValue(response, "discoveryClosureMissingCandidateCount"));
+        metrics.hierarchy_cold_closure_deduped_document_count =
+            static_cast<size_t>(integerValue(response, "discoveryClosureDedupedDocumentCount"));
         metrics.hierarchy_cold_closure_build_micros =
             integerValue(response, "discoveryClosureBuildMicros");
     }
@@ -605,8 +631,15 @@ void collectSchematicMetrics(const lsp::json::Value& result, Metrics& metrics) {
     metrics.truncated = metrics.truncated || boolValue(response, "truncated");
     metrics.messages_count += arraySize(response, "messages");
     metrics.schematic_closure_used = boolValue(response, "discoveryClosureUsed");
+    metrics.schematic_closure_root = stringValue(response, "discoveryClosureRoot");
+    metrics.schematic_closure_candidate_document_count =
+        static_cast<size_t>(integerValue(response, "discoveryClosureCandidateDocumentCount"));
     metrics.schematic_closure_document_count =
         static_cast<size_t>(integerValue(response, "discoveryClosureDocumentCount"));
+    metrics.schematic_closure_missing_candidate_count =
+        static_cast<size_t>(integerValue(response, "discoveryClosureMissingCandidateCount"));
+    metrics.schematic_closure_deduped_document_count =
+        static_cast<size_t>(integerValue(response, "discoveryClosureDedupedDocumentCount"));
     metrics.schematic_closure_build_micros = integerValue(response, "discoveryClosureBuildMicros");
 
     const auto* modules = response.find("modules");
@@ -760,17 +793,40 @@ std::string summaryJson(const Metrics& metrics) {
         << "\"moduleHierarchyWarmMicros\":" << metrics.hierarchy_warm_micros << ","
         << "\"schematicMicros\":" << metrics.schematic_micros << ","
         << "\"moduleHierarchyColdClosureUsed\":" << boolJson(metrics.hierarchy_cold_closure_used) << ","
+        << "\"moduleHierarchyColdClosureRoot\":"
+        << jsonString(metrics.hierarchy_cold_closure_root) << ","
+        << "\"moduleHierarchyColdClosureCandidateDocumentCount\":"
+        << metrics.hierarchy_cold_closure_candidate_document_count << ","
         << "\"moduleHierarchyColdClosureDocumentCount\":"
         << metrics.hierarchy_cold_closure_document_count << ","
+        << "\"moduleHierarchyColdClosureMissingCandidateCount\":"
+        << metrics.hierarchy_cold_closure_missing_candidate_count << ","
+        << "\"moduleHierarchyColdClosureDedupedDocumentCount\":"
+        << metrics.hierarchy_cold_closure_deduped_document_count << ","
         << "\"moduleHierarchyColdClosureBuildMicros\":"
         << metrics.hierarchy_cold_closure_build_micros << ","
         << "\"moduleHierarchyWarmClosureUsed\":" << boolJson(metrics.hierarchy_warm_closure_used) << ","
+        << "\"moduleHierarchyWarmClosureRoot\":"
+        << jsonString(metrics.hierarchy_warm_closure_root) << ","
+        << "\"moduleHierarchyWarmClosureCandidateDocumentCount\":"
+        << metrics.hierarchy_warm_closure_candidate_document_count << ","
         << "\"moduleHierarchyWarmClosureDocumentCount\":"
         << metrics.hierarchy_warm_closure_document_count << ","
+        << "\"moduleHierarchyWarmClosureMissingCandidateCount\":"
+        << metrics.hierarchy_warm_closure_missing_candidate_count << ","
+        << "\"moduleHierarchyWarmClosureDedupedDocumentCount\":"
+        << metrics.hierarchy_warm_closure_deduped_document_count << ","
         << "\"moduleHierarchyWarmClosureBuildMicros\":"
         << metrics.hierarchy_warm_closure_build_micros << ","
         << "\"schematicClosureUsed\":" << boolJson(metrics.schematic_closure_used) << ","
+        << "\"schematicClosureRoot\":" << jsonString(metrics.schematic_closure_root) << ","
+        << "\"schematicClosureCandidateDocumentCount\":"
+        << metrics.schematic_closure_candidate_document_count << ","
         << "\"schematicClosureDocumentCount\":" << metrics.schematic_closure_document_count << ","
+        << "\"schematicClosureMissingCandidateCount\":"
+        << metrics.schematic_closure_missing_candidate_count << ","
+        << "\"schematicClosureDedupedDocumentCount\":"
+        << metrics.schematic_closure_deduped_document_count << ","
         << "\"schematicClosureBuildMicros\":" << metrics.schematic_closure_build_micros << ","
         << "\"shutdownMicros\":" << metrics.shutdown_micros << ","
         << "\"totalMicros\":" << metrics.total_micros << ","

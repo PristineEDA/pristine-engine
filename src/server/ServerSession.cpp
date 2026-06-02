@@ -843,7 +843,14 @@ jsonrpc::Json ServerSession::handleModuleHierarchy(const jsonrpc::Json& params) 
     }
     if (hierarchy.discovery_closure_used) {
         result["discoveryClosureUsed"] = true;
+        result["discoveryClosureRoot"] = hierarchy.discovery_closure_root_name;
+        result["discoveryClosureCandidateDocumentCount"] =
+            hierarchy.discovery_closure_candidate_document_count;
         result["discoveryClosureDocumentCount"] = hierarchy.discovery_closure_document_count;
+        result["discoveryClosureMissingCandidateCount"] =
+            hierarchy.discovery_closure_missing_candidate_count;
+        result["discoveryClosureDedupedDocumentCount"] =
+            hierarchy.discovery_closure_deduped_document_count;
         result["discoveryClosureBuildMicros"] = hierarchy.discovery_closure_build_micros;
     }
     return result;
@@ -887,7 +894,14 @@ jsonrpc::Json ServerSession::handleSchematic(const jsonrpc::Json& params) {
     }
     if (schematic.discovery_closure_used) {
         result["discoveryClosureUsed"] = true;
+        result["discoveryClosureRoot"] = schematic.discovery_closure_root_name;
+        result["discoveryClosureCandidateDocumentCount"] =
+            schematic.discovery_closure_candidate_document_count;
         result["discoveryClosureDocumentCount"] = schematic.discovery_closure_document_count;
+        result["discoveryClosureMissingCandidateCount"] =
+            schematic.discovery_closure_missing_candidate_count;
+        result["discoveryClosureDedupedDocumentCount"] =
+            schematic.discovery_closure_deduped_document_count;
         result["discoveryClosureBuildMicros"] = schematic.discovery_closure_build_micros;
     }
     return result;

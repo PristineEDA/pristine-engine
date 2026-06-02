@@ -189,7 +189,11 @@ struct SemanticModuleHierarchyResult {
     std::uint64_t generation = 0;
     std::vector<SemanticHierarchyNode> roots;
     std::vector<std::string> messages;
+    std::string discovery_closure_root_name;
+    size_t discovery_closure_candidate_document_count = 0;
     size_t discovery_closure_document_count = 0;
+    size_t discovery_closure_missing_candidate_count = 0;
+    size_t discovery_closure_deduped_document_count = 0;
     std::int64_t discovery_closure_build_micros = 0;
     bool discovery_closure_used = false;
     bool unresolved = false;
@@ -228,7 +232,11 @@ struct SemanticSchematicResult {
     std::optional<std::string> root_module_id;
     std::vector<SemanticSchematicModuleView> modules;
     std::vector<std::string> messages;
+    std::string discovery_closure_root_name;
+    size_t discovery_closure_candidate_document_count = 0;
     size_t discovery_closure_document_count = 0;
+    size_t discovery_closure_missing_candidate_count = 0;
+    size_t discovery_closure_deduped_document_count = 0;
     std::int64_t discovery_closure_build_micros = 0;
     bool discovery_closure_used = false;
     bool unresolved = false;

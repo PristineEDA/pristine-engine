@@ -816,7 +816,11 @@ TEST_CASE("SemanticEngine uses discovery closure for hierarchy and schematic col
     const auto hierarchy = engine.moduleHierarchy(std::string_view("top"), 4);
     REQUIRE_FALSE(hierarchy.unresolved);
     CHECK(hierarchy.discovery_closure_used);
+    CHECK(hierarchy.discovery_closure_root_name == "top");
+    CHECK(hierarchy.discovery_closure_candidate_document_count == 2);
     CHECK(hierarchy.discovery_closure_document_count == 2);
+    CHECK(hierarchy.discovery_closure_missing_candidate_count == 0);
+    CHECK(hierarchy.discovery_closure_deduped_document_count == 0);
     CHECK(hierarchy.discovery_closure_build_micros >= 0);
     REQUIRE(hierarchy.roots.size() == 1);
     REQUIRE(hierarchy.roots.front().children.size() == 1);
@@ -824,13 +828,24 @@ TEST_CASE("SemanticEngine uses discovery closure for hierarchy and schematic col
 
     const auto cached_hierarchy = engine.moduleHierarchy(std::string_view("top"), 4);
     CHECK(cached_hierarchy.discovery_closure_used);
+    CHECK(cached_hierarchy.discovery_closure_root_name == hierarchy.discovery_closure_root_name);
+    CHECK(cached_hierarchy.discovery_closure_candidate_document_count ==
+          hierarchy.discovery_closure_candidate_document_count);
     CHECK(cached_hierarchy.discovery_closure_document_count == hierarchy.discovery_closure_document_count);
+    CHECK(cached_hierarchy.discovery_closure_missing_candidate_count ==
+          hierarchy.discovery_closure_missing_candidate_count);
+    CHECK(cached_hierarchy.discovery_closure_deduped_document_count ==
+          hierarchy.discovery_closure_deduped_document_count);
     CHECK(cached_hierarchy.discovery_closure_build_micros == 0);
 
     const auto schematic = engine.schematic(std::string_view("top"), 4);
     REQUIRE_FALSE(schematic.unresolved);
     CHECK(schematic.discovery_closure_used);
+    CHECK(schematic.discovery_closure_root_name == "top");
+    CHECK(schematic.discovery_closure_candidate_document_count == 2);
     CHECK(schematic.discovery_closure_document_count == 2);
+    CHECK(schematic.discovery_closure_missing_candidate_count == 0);
+    CHECK(schematic.discovery_closure_deduped_document_count == 0);
     CHECK(schematic.discovery_closure_build_micros >= 0);
     CHECK(std::any_of(schematic.modules.begin(),
                       schematic.modules.end(),
