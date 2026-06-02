@@ -65,6 +65,28 @@ endmodule
     CHECK(closure == std::vector<std::string>{"file:///workspace/a.sv", "file:///workspace/b.sv"});
 }
 
+TEST_CASE("WorkspaceDiscoveryIndex includes direct include files in dependency closure",
+          "[analysis][semantic][discovery]") {
+    auto index = semantic::buildWorkspaceDiscoveryIndex(
+        9,
+        {semantic::DiscoveryDocumentInput{.uri = "file:///workspace/defs.svh",
+                                          .text = "`define WIDTH 8\n"},
+         semantic::DiscoveryDocumentInput{.uri = "file:///workspace/child.sv",
+                                          .text = "module child; endmodule\n"},
+         semantic::DiscoveryDocumentInput{.uri = "file:///workspace/top.sv",
+                                          .text = R"(
+`include "defs.svh"
+module top;
+  child u_child();
+endmodule
+)"}});
+
+    const auto closure = semantic::discoveryDependencyClosure(index, std::string_view("top"));
+    CHECK(closure == std::vector<std::string>{"file:///workspace/child.sv",
+                                              "file:///workspace/defs.svh",
+                                              "file:///workspace/top.sv"});
+}
+
 TEST_CASE("SemanticEngine maintains a lightweight workspace discovery snapshot",
           "[analysis][semantic-engine][discovery]") {
     SemanticEngine engine;

@@ -1,6 +1,7 @@
 #include "WorkspaceDiscoveryIndex.h"
 
 #include "pristine/analysis/CompilationService.h"
+#include "pristine/analysis/SourceUtil.h"
 
 #include <algorithm>
 #include <deque>
@@ -186,8 +187,23 @@ WorkspaceDiscoveryIndex buildWorkspaceDiscoveryIndex(std::uint64_t generation,
             index.messages.push_back("Discovery package import scan failed for " + document.uri);
         }
 
+        try {
+            for (const auto& include : compilation_service.includeDirectives(document.text)) {
+                if (!include.target.empty()) {
+                    file.included_uris.push_back(joinFileUri(uriDirectory(document.uri), include.target));
+                }
+            }
+        }
+        catch (const std::exception& error) {
+            index.messages.push_back("Discovery include scan failed for " + document.uri + ": " + error.what());
+        }
+        catch (...) {
+            index.messages.push_back("Discovery include scan failed for " + document.uri);
+        }
+
         sortUniqueSymbols(file.declarations);
         sortUniqueStrings(file.referenced_top_level_names);
+        sortUniqueStrings(file.included_uris);
         index.declarations.insert(index.declarations.end(), file.declarations.begin(), file.declarations.end());
         for (const auto& declaration : file.declarations) {
             index.files_by_declaration[declaration.name].push_back(file.uri);
@@ -259,6 +275,12 @@ std::vector<std::string> discoveryDependencyClosure(const WorkspaceDiscoveryInde
                 if (!seen_names.contains(reference)) {
                     pending_names.push_back(reference);
                 }
+            }
+            for (const auto& included_uri : file_it->included_uris) {
+                if (max_files != 0 && result.size() >= max_files && !result.contains(included_uri)) {
+                    continue;
+                }
+                result.insert(included_uri);
             }
         }
     }

@@ -841,6 +841,11 @@ jsonrpc::Json ServerSession::handleModuleHierarchy(const jsonrpc::Json& params) 
     if (hierarchy.truncated) {
         result["truncated"] = true;
     }
+    if (hierarchy.discovery_closure_used) {
+        result["discoveryClosureUsed"] = true;
+        result["discoveryClosureDocumentCount"] = hierarchy.discovery_closure_document_count;
+        result["discoveryClosureBuildMicros"] = hierarchy.discovery_closure_build_micros;
+    }
     return result;
 }
 
@@ -879,6 +884,11 @@ jsonrpc::Json ServerSession::handleSchematic(const jsonrpc::Json& params) {
     }
     if (schematic.truncated) {
         result["truncated"] = true;
+    }
+    if (schematic.discovery_closure_used) {
+        result["discoveryClosureUsed"] = true;
+        result["discoveryClosureDocumentCount"] = schematic.discovery_closure_document_count;
+        result["discoveryClosureBuildMicros"] = schematic.discovery_closure_build_micros;
     }
     return result;
 }

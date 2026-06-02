@@ -793,6 +793,52 @@ TEST_CASE("SemanticEngine builds design snapshot hierarchy, schematic, call hier
     }));
 }
 
+TEST_CASE("SemanticEngine uses discovery closure for hierarchy and schematic cold graph builds",
+          "[analysis][semantic-engine][discovery][hierarchy][schematic][cache]") {
+    SemanticEngine engine;
+    engine.configure(SemanticEngineConfig{.top_modules = {"top"}});
+    engine.updateDocument("file:///workspace/child.sv",
+                          "module child(output logic q);\n"
+                          "  assign q = 1'b1;\n"
+                          "endmodule\n",
+                          SemanticEngineDocumentState{.version = 1});
+    engine.updateDocument("file:///workspace/top.sv",
+                          "module top;\n"
+                          "  logic q;\n"
+                          "  child u_child(.q(q));\n"
+                          "endmodule\n",
+                          SemanticEngineDocumentState{.version = 1});
+    engine.updateDocument("file:///workspace/unrelated.sv",
+                          "module unrelated;\n"
+                          "endmodule\n",
+                          SemanticEngineDocumentState{.version = 1});
+
+    const auto hierarchy = engine.moduleHierarchy(std::string_view("top"), 4);
+    REQUIRE_FALSE(hierarchy.unresolved);
+    CHECK(hierarchy.discovery_closure_used);
+    CHECK(hierarchy.discovery_closure_document_count == 2);
+    CHECK(hierarchy.discovery_closure_build_micros >= 0);
+    REQUIRE(hierarchy.roots.size() == 1);
+    REQUIRE(hierarchy.roots.front().children.size() == 1);
+    CHECK(hierarchy.roots.front().children.front().module_name == "child");
+
+    const auto cached_hierarchy = engine.moduleHierarchy(std::string_view("top"), 4);
+    CHECK(cached_hierarchy.discovery_closure_used);
+    CHECK(cached_hierarchy.discovery_closure_document_count == hierarchy.discovery_closure_document_count);
+    CHECK(cached_hierarchy.discovery_closure_build_micros == 0);
+
+    const auto schematic = engine.schematic(std::string_view("top"), 4);
+    REQUIRE_FALSE(schematic.unresolved);
+    CHECK(schematic.discovery_closure_used);
+    CHECK(schematic.discovery_closure_document_count == 2);
+    CHECK(schematic.discovery_closure_build_micros >= 0);
+    CHECK(std::any_of(schematic.modules.begin(),
+                      schematic.modules.end(),
+                      [](const SemanticSchematicModuleView& view) {
+                          return view.module.name == "top";
+                      }));
+}
+
 TEST_CASE("SemanticEngine routes module signatures and schematic cells through AstIndex views",
           "[analysis][semantic-engine][ast-index][schematic][signature]") {
     SemanticEngine engine;

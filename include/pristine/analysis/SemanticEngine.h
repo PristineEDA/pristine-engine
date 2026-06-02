@@ -189,6 +189,9 @@ struct SemanticModuleHierarchyResult {
     std::uint64_t generation = 0;
     std::vector<SemanticHierarchyNode> roots;
     std::vector<std::string> messages;
+    size_t discovery_closure_document_count = 0;
+    std::int64_t discovery_closure_build_micros = 0;
+    bool discovery_closure_used = false;
     bool unresolved = false;
     bool partial = false;
     bool truncated = false;
@@ -225,6 +228,9 @@ struct SemanticSchematicResult {
     std::optional<std::string> root_module_id;
     std::vector<SemanticSchematicModuleView> modules;
     std::vector<std::string> messages;
+    size_t discovery_closure_document_count = 0;
+    std::int64_t discovery_closure_build_micros = 0;
+    bool discovery_closure_used = false;
     bool unresolved = false;
     bool partial = false;
     bool truncated = false;
@@ -386,6 +392,7 @@ struct SemanticWorkspaceDiscoverySnapshot {
     bool cache_hit = false;
     std::vector<SemanticDiscoverySymbol> declarations;
     std::vector<std::string> top_candidates;
+    std::unordered_map<std::string, std::vector<std::string>> closure_uris_by_name;
     std::vector<std::string> messages;
 };
 
@@ -472,6 +479,9 @@ public:
 private:
     void rebuildDependenciesFor(std::string_view document_uri, std::string_view text);
     void rebuildSnapshot() const;
+    [[nodiscard]] std::vector<std::string> closureDocumentUrisFor(
+        std::optional<std::string_view> module_name,
+        const SemanticWorkspaceDiscoverySnapshot& discovery) const;
     [[nodiscard]] const semantic::SnapshotData* snapshotData() const;
 
     std::string workspace_root_uri_;

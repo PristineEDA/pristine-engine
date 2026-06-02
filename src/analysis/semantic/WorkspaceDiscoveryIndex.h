@@ -33,6 +33,7 @@ struct DiscoveryFile {
     size_t byte_count = 0;
     std::vector<DiscoverySymbol> declarations;
     std::vector<std::string> referenced_top_level_names;
+    std::vector<std::string> included_uris;
 };
 
 struct WorkspaceDiscoveryIndex {

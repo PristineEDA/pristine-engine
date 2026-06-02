@@ -295,6 +295,78 @@ std::optional<std::string> firstUninstantiatedModuleName(const Map& modules_by_n
     return std::nullopt;
 }
 
+std::optional<std::string_view> inferredDiscoveryTop(
+    std::optional<std::string_view> requested_module_name,
+    const SemanticWorkspaceDiscoverySnapshot& discovery) {
+    if (requested_module_name.has_value() && !requested_module_name->empty()) {
+        return requested_module_name;
+    }
+    if (discovery.top_candidates.size() == 1) {
+        return std::string_view(discovery.top_candidates.front());
+    }
+    return std::nullopt;
+}
+
+struct ClosureDesignGraphSnapshot {
+    SemanticEngineSnapshot snapshot;
+    std::unique_ptr<semantic::SnapshotData> data;
+    SemanticEngineConfig context_config;
+    size_t document_count = 0;
+    std::int64_t build_micros = 0;
+    bool used = false;
+};
+
+ClosureDesignGraphSnapshot buildClosureDesignGraphSnapshot(
+    std::uint64_t generation,
+    const SemanticEngineConfig& config,
+    const std::unordered_map<std::string, SemanticEngineDocument>& documents,
+    const std::vector<std::string>& dirty_document_uris,
+    std::optional<std::string_view> module_name,
+    const SemanticWorkspaceDiscoverySnapshot& discovery,
+    const std::vector<std::string>& closure_uris) {
+    ClosureDesignGraphSnapshot result;
+    result.context_config = config;
+    if (closure_uris.empty() || closure_uris.size() >= documents.size()) {
+        return result;
+    }
+
+    const auto build_start = std::chrono::steady_clock::now();
+    semantic::SnapshotBuildInput input;
+    input.generation = generation;
+    input.config = config;
+    input.config.top_modules.clear();
+    if (const auto selected_top = inferredDiscoveryTop(module_name, discovery);
+        selected_top.has_value() && !selected_top->empty()) {
+        input.config.top_modules.push_back(std::string(*selected_top));
+    }
+    result.context_config = input.config;
+
+    std::set<std::string> closure_set(closure_uris.begin(), closure_uris.end());
+    for (const auto& dirty_uri : dirty_document_uris) {
+        if (closure_set.contains(dirty_uri)) {
+            input.dirty_document_uris.push_back(dirty_uri);
+        }
+    }
+    for (const auto& uri : closure_uris) {
+        if (const auto document_it = documents.find(uri); document_it != documents.end()) {
+            input.documents.emplace(uri, document_it->second);
+        }
+    }
+    if (input.documents.empty()) {
+        return result;
+    }
+
+    auto output = semantic::SnapshotBuilder{}.build(std::move(input));
+    result.snapshot = std::move(output.snapshot);
+    result.data = std::move(output.data);
+    result.document_count = closure_uris.size();
+    result.build_micros = std::chrono::duration_cast<std::chrono::microseconds>(
+                              std::chrono::steady_clock::now() - build_start)
+                              .count();
+    result.used = true;
+    return result;
+}
+
 } // namespace
 
 SemanticEngine::SemanticEngine() : query_cache_(std::make_unique<semantic::QueryCache>()) {}
@@ -507,6 +579,12 @@ SemanticWorkspaceDiscoverySnapshot SemanticEngine::workspaceDiscovery() const {
     std::sort(result.top_candidates.begin(), result.top_candidates.end());
     result.top_candidates.erase(std::unique(result.top_candidates.begin(), result.top_candidates.end()),
                                 result.top_candidates.end());
+    for (const auto& design_name : all_design_names) {
+        auto closure = semantic::discoveryDependencyClosure(discovery_index, std::string_view(design_name));
+        if (!closure.empty()) {
+            result.closure_uris_by_name.emplace(design_name, std::move(closure));
+        }
+    }
     result.build_micros = std::chrono::duration_cast<std::chrono::microseconds>(
                               std::chrono::steady_clock::now() - build_start)
                               .count();
@@ -539,6 +617,31 @@ std::vector<SemanticEngineDiagnostic> SemanticEngine::diagnosticsFor(std::string
 const semantic::SnapshotData* SemanticEngine::snapshotData() const {
     (void)snapshot();
     return snapshot_data_.get();
+}
+
+std::vector<std::string> SemanticEngine::closureDocumentUrisFor(
+    std::optional<std::string_view> module_name,
+    const SemanticWorkspaceDiscoverySnapshot& discovery) const {
+    const auto selected_top = inferredDiscoveryTop(module_name, discovery);
+    if (!selected_top.has_value() || selected_top->empty()) {
+        return {};
+    }
+
+    const auto closure_it = discovery.closure_uris_by_name.find(std::string(*selected_top));
+    if (closure_it == discovery.closure_uris_by_name.end()) {
+        return {};
+    }
+
+    std::vector<std::string> result;
+    result.reserve(closure_it->second.size());
+    for (const auto& uri : closure_it->second) {
+        if (documents_.contains(uri)) {
+            result.push_back(uri);
+        }
+    }
+    std::sort(result.begin(), result.end());
+    result.erase(std::unique(result.begin(), result.end()), result.end());
+    return result;
 }
 
 SemanticLookupResult SemanticEngine::lookupAt(std::string_view uri, int line, int character) const {
@@ -1220,7 +1323,37 @@ SemanticSelectionRangeResult SemanticEngine::selectionRangesAt(std::string_view 
 
 SemanticModuleHierarchyResult SemanticEngine::moduleHierarchy(std::optional<std::string_view> module_name,
                                                               int max_depth) const {
-    (void)workspaceDiscovery();
+    const auto discovery = workspaceDiscovery();
+    if (const auto cached = query_cache_->moduleHierarchy(generation_,
+                                                          module_name,
+                                                          max_depth)) {
+        return *cached;
+    }
+    const auto closure_uris = closureDocumentUrisFor(module_name, discovery);
+    auto closure_snapshot = buildClosureDesignGraphSnapshot(generation_,
+                                                            config_,
+                                                            documents_,
+                                                            dirtyDocumentUris(),
+                                                            module_name,
+                                                            discovery,
+                                                            closure_uris);
+    if (closure_snapshot.used) {
+        const auto ast_index = semantic::buildAstIndexView(closure_snapshot.data.get(),
+                                                           closure_snapshot.snapshot.generation);
+        auto context = designGraphContextFor(closure_snapshot.data.get(),
+                                             closure_snapshot.snapshot,
+                                             closure_snapshot.context_config,
+                                             ast_index);
+        auto result = semantic::moduleHierarchy(context, module_name, max_depth);
+        result.discovery_closure_used = true;
+        result.discovery_closure_document_count = closure_snapshot.document_count;
+        result.discovery_closure_build_micros = closure_snapshot.build_micros;
+        auto cached_result = result;
+        cached_result.discovery_closure_build_micros = 0;
+        query_cache_->storeModuleHierarchy(generation_, module_name, max_depth, std::move(cached_result));
+        return result;
+    }
+
     const auto& current_snapshot = snapshot();
     if (const auto cached = query_cache_->moduleHierarchy(current_snapshot.generation,
                                                           module_name,
@@ -1246,7 +1379,35 @@ SemanticModuleHierarchyResult SemanticEngine::moduleHierarchy(std::optional<std:
 
 SemanticSchematicResult SemanticEngine::schematic(std::optional<std::string_view> module_name,
                                                   int max_depth) const {
-    (void)workspaceDiscovery();
+    const auto discovery = workspaceDiscovery();
+    if (const auto cached = query_cache_->schematic(generation_, module_name, max_depth)) {
+        return *cached;
+    }
+    const auto closure_uris = closureDocumentUrisFor(module_name, discovery);
+    auto closure_snapshot = buildClosureDesignGraphSnapshot(generation_,
+                                                            config_,
+                                                            documents_,
+                                                            dirtyDocumentUris(),
+                                                            module_name,
+                                                            discovery,
+                                                            closure_uris);
+    if (closure_snapshot.used) {
+        const auto ast_index = semantic::buildAstIndexView(closure_snapshot.data.get(),
+                                                           closure_snapshot.snapshot.generation);
+        auto context = designGraphContextFor(closure_snapshot.data.get(),
+                                             closure_snapshot.snapshot,
+                                             closure_snapshot.context_config,
+                                             ast_index);
+        auto result = semantic::schematic(context, module_name, max_depth);
+        result.discovery_closure_used = true;
+        result.discovery_closure_document_count = closure_snapshot.document_count;
+        result.discovery_closure_build_micros = closure_snapshot.build_micros;
+        auto cached_result = result;
+        cached_result.discovery_closure_build_micros = 0;
+        query_cache_->storeSchematic(generation_, module_name, max_depth, std::move(cached_result));
+        return result;
+    }
+
     const auto& current_snapshot = snapshot();
     if (const auto cached = query_cache_->schematic(current_snapshot.generation, module_name, max_depth)) {
         return *cached;

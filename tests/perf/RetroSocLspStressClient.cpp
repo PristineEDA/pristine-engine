@@ -66,6 +66,15 @@ struct Metrics {
     long long hierarchy_cold_micros = 0;
     long long hierarchy_warm_micros = 0;
     long long schematic_micros = 0;
+    long long hierarchy_cold_closure_build_micros = 0;
+    long long hierarchy_warm_closure_build_micros = 0;
+    long long schematic_closure_build_micros = 0;
+    size_t hierarchy_cold_closure_document_count = 0;
+    size_t hierarchy_warm_closure_document_count = 0;
+    size_t schematic_closure_document_count = 0;
+    bool hierarchy_cold_closure_used = false;
+    bool hierarchy_warm_closure_used = false;
+    bool schematic_closure_used = false;
     long long shutdown_micros = 0;
     long long total_micros = 0;
     size_t hierarchy_root_count = 0;
@@ -390,6 +399,14 @@ bool boolValue(const lsp::json::Object& object_value, std::string_view key) {
     return value != nullptr && value->isBoolean() && value->boolean();
 }
 
+long long integerValue(const lsp::json::Object& object_value, std::string_view key) {
+    const auto* value = object_value.find(key);
+    if (value == nullptr || !value->isInteger()) {
+        return 0;
+    }
+    return static_cast<long long>(value->integer());
+}
+
 std::string stringValue(const lsp::json::Object& object_value, std::string_view key) {
     const auto* value = object_value.find(key);
     if (value == nullptr || !value->isString()) {
@@ -546,7 +563,7 @@ private:
 };
 
 
-void collectHierarchyMetrics(const lsp::json::Value& result, Metrics& metrics) {
+void collectHierarchyMetrics(const lsp::json::Value& result, Metrics& metrics, bool warm) {
     if (!result.isObject()) {
         throw std::runtime_error("moduleHierarchy response result is not an object");
     }
@@ -562,6 +579,20 @@ void collectHierarchyMetrics(const lsp::json::Value& result, Metrics& metrics) {
             metrics.top_module = stringValue(roots->array().front().object(), "moduleName");
         }
     }
+    if (warm) {
+        metrics.hierarchy_warm_closure_used = boolValue(response, "discoveryClosureUsed");
+        metrics.hierarchy_warm_closure_document_count =
+            static_cast<size_t>(integerValue(response, "discoveryClosureDocumentCount"));
+        metrics.hierarchy_warm_closure_build_micros =
+            integerValue(response, "discoveryClosureBuildMicros");
+    }
+    else {
+        metrics.hierarchy_cold_closure_used = boolValue(response, "discoveryClosureUsed");
+        metrics.hierarchy_cold_closure_document_count =
+            static_cast<size_t>(integerValue(response, "discoveryClosureDocumentCount"));
+        metrics.hierarchy_cold_closure_build_micros =
+            integerValue(response, "discoveryClosureBuildMicros");
+    }
 }
 
 void collectSchematicMetrics(const lsp::json::Value& result, Metrics& metrics) {
@@ -573,6 +604,10 @@ void collectSchematicMetrics(const lsp::json::Value& result, Metrics& metrics) {
     metrics.partial = metrics.partial || boolValue(response, "partial");
     metrics.truncated = metrics.truncated || boolValue(response, "truncated");
     metrics.messages_count += arraySize(response, "messages");
+    metrics.schematic_closure_used = boolValue(response, "discoveryClosureUsed");
+    metrics.schematic_closure_document_count =
+        static_cast<size_t>(integerValue(response, "discoveryClosureDocumentCount"));
+    metrics.schematic_closure_build_micros = integerValue(response, "discoveryClosureBuildMicros");
 
     const auto* modules = response.find("modules");
     if (modules == nullptr || !modules->isArray()) {
@@ -724,6 +759,19 @@ std::string summaryJson(const Metrics& metrics) {
         << "\"moduleHierarchyColdMicros\":" << metrics.hierarchy_cold_micros << ","
         << "\"moduleHierarchyWarmMicros\":" << metrics.hierarchy_warm_micros << ","
         << "\"schematicMicros\":" << metrics.schematic_micros << ","
+        << "\"moduleHierarchyColdClosureUsed\":" << boolJson(metrics.hierarchy_cold_closure_used) << ","
+        << "\"moduleHierarchyColdClosureDocumentCount\":"
+        << metrics.hierarchy_cold_closure_document_count << ","
+        << "\"moduleHierarchyColdClosureBuildMicros\":"
+        << metrics.hierarchy_cold_closure_build_micros << ","
+        << "\"moduleHierarchyWarmClosureUsed\":" << boolJson(metrics.hierarchy_warm_closure_used) << ","
+        << "\"moduleHierarchyWarmClosureDocumentCount\":"
+        << metrics.hierarchy_warm_closure_document_count << ","
+        << "\"moduleHierarchyWarmClosureBuildMicros\":"
+        << metrics.hierarchy_warm_closure_build_micros << ","
+        << "\"schematicClosureUsed\":" << boolJson(metrics.schematic_closure_used) << ","
+        << "\"schematicClosureDocumentCount\":" << metrics.schematic_closure_document_count << ","
+        << "\"schematicClosureBuildMicros\":" << metrics.schematic_closure_build_micros << ","
         << "\"shutdownMicros\":" << metrics.shutdown_micros << ","
         << "\"totalMicros\":" << metrics.total_micros << ","
         << "\"hierarchyRootCount\":" << metrics.hierarchy_root_count << ","
@@ -907,7 +955,7 @@ int main(int argc, char** argv) {
         auto hierarchy_cold = client.request("systemverilog/moduleHierarchy",
                                              hierarchyParams(metrics.top_module, args.max_depth));
         metrics.hierarchy_cold_micros = elapsedMicros(start, Clock::now());
-        collectHierarchyMetrics(hierarchy_cold, metrics);
+        collectHierarchyMetrics(hierarchy_cold, metrics, false);
         writeOperation(operation_log,
                        "systemverilog/moduleHierarchy:cold",
                        metrics.hierarchy_cold_micros,
@@ -919,6 +967,7 @@ int main(int argc, char** argv) {
         auto hierarchy_warm = client.request("systemverilog/moduleHierarchy",
                                              hierarchyParams(metrics.top_module, args.max_depth));
         metrics.hierarchy_warm_micros = elapsedMicros(start, Clock::now());
+        collectHierarchyMetrics(hierarchy_warm, metrics, true);
         writeOperation(operation_log,
                        "systemverilog/moduleHierarchy:warm",
                        metrics.hierarchy_warm_micros,
