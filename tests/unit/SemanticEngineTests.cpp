@@ -966,6 +966,82 @@ TEST_CASE("SemanticEngine invalidates discovery closure caches for affected hier
     CHECK(deleted_schematic.discovery_closure_document_count < changed_schematic.discovery_closure_document_count);
 }
 
+TEST_CASE("SemanticEngine invalidates discovery-backed graph caches after index config changes",
+          "[analysis][semantic-engine][discovery][hierarchy][schematic][cache][config]") {
+    SemanticEngine engine;
+    engine.configure(SemanticEngineConfig{.workspace_root_uri = std::string("file:///workspace"),
+                                          .top_modules = {"top"},
+                                          .index = {SemanticEngineConfig::IndexConfig{
+                                              .dirs = {"rtl"},
+                                              .exclude_dirs = {"rtl/ip"}}}});
+    engine.updateDocument("file:///workspace/rtl/top.sv",
+                          "module top;\n"
+                          "  child u_child();\n"
+                          "endmodule\n",
+                          SemanticEngineDocumentState{.version = 1});
+    engine.updateDocument("file:///workspace/rtl/ip/child.sv",
+                          "module child;\n"
+                          "endmodule\n",
+                          SemanticEngineDocumentState{.version = 1});
+    engine.updateDocument("file:///workspace/tb/tb_top.sv",
+                          "module tb_top;\n"
+                          "endmodule\n",
+                          SemanticEngineDocumentState{.version = 1});
+
+    const auto filtered_hierarchy = engine.moduleHierarchy(std::string_view("top"), 8);
+    CHECK(filtered_hierarchy.discovery_closure_used);
+    CHECK_FALSE(filtered_hierarchy.discovery_closure_cache_hit);
+    CHECK(filtered_hierarchy.discovery_closure_document_count == 1);
+    CHECK(filtered_hierarchy.discovery_closure_candidate_document_count == 1);
+    CHECK(filtered_hierarchy.discovery_closure_missing_candidate_count == 0);
+
+    const auto cached_filtered_hierarchy = engine.moduleHierarchy(std::string_view("top"), 8);
+    CHECK(cached_filtered_hierarchy.discovery_closure_cache_hit);
+
+    const auto filtered_schematic = engine.schematic(std::string_view("top"), 8);
+    CHECK(filtered_schematic.discovery_closure_used);
+    CHECK_FALSE(filtered_schematic.discovery_closure_cache_hit);
+    CHECK(filtered_schematic.discovery_closure_document_count == 1);
+    CHECK(filtered_schematic.discovery_closure_candidate_document_count == 1);
+    CHECK(filtered_schematic.discovery_closure_missing_candidate_count == 0);
+    CHECK(std::none_of(filtered_schematic.modules.begin(),
+                       filtered_schematic.modules.end(),
+                       [](const SemanticSchematicModuleView& view) {
+                           return view.module.name == "child";
+                       }));
+
+    engine.configure(SemanticEngineConfig{.workspace_root_uri = std::string("file:///workspace"),
+                                          .top_modules = {"top"},
+                                          .index = {SemanticEngineConfig::IndexConfig{.dirs = {"rtl"}}}});
+
+    const auto included_hierarchy = engine.moduleHierarchy(std::string_view("top"), 8);
+    REQUIRE_FALSE(included_hierarchy.unresolved);
+    CHECK(included_hierarchy.discovery_closure_used);
+    CHECK_FALSE(included_hierarchy.discovery_closure_cache_hit);
+    CHECK(included_hierarchy.discovery_closure_document_count == 2);
+    CHECK(included_hierarchy.discovery_closure_missing_candidate_count == 0);
+    REQUIRE(included_hierarchy.roots.size() == 1);
+    REQUIRE(included_hierarchy.roots.front().children.size() == 1);
+    CHECK(included_hierarchy.roots.front().children.front().module_name == "child");
+
+    const auto included_schematic = engine.schematic(std::string_view("top"), 8);
+    REQUIRE_FALSE(included_schematic.unresolved);
+    CHECK(included_schematic.discovery_closure_used);
+    CHECK_FALSE(included_schematic.discovery_closure_cache_hit);
+    CHECK(included_schematic.discovery_closure_document_count == 2);
+    CHECK(included_schematic.discovery_closure_missing_candidate_count == 0);
+    CHECK(std::any_of(included_schematic.modules.begin(),
+                      included_schematic.modules.end(),
+                      [](const SemanticSchematicModuleView& view) {
+                          return view.module.name == "child";
+                      }));
+
+    const auto cached_included_hierarchy = engine.moduleHierarchy(std::string_view("top"), 8);
+    CHECK(cached_included_hierarchy.discovery_closure_cache_hit);
+    const auto cached_included_schematic = engine.schematic(std::string_view("top"), 8);
+    CHECK(cached_included_schematic.discovery_closure_cache_hit);
+}
+
 TEST_CASE("SemanticEngine routes module signatures and schematic cells through AstIndex views",
           "[analysis][semantic-engine][ast-index][schematic][signature]") {
     SemanticEngine engine;
