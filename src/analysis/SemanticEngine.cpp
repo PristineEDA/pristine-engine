@@ -17,6 +17,8 @@
 #include "slang/ast/types/Type.h"
 
 #include <algorithm>
+#include <chrono>
+#include <functional>
 #include <memory>
 #include <set>
 #include <sstream>
@@ -61,6 +63,60 @@ bool sameLocation(const SemanticLocation& lhs, const SemanticLocation& rhs) {
 }
 
 constexpr size_t kMaxSemanticLocations = 2000;
+
+void hashCombine(std::uint64_t& seed, std::uint64_t value) {
+    seed ^= value + 0x9e3779b97f4a7c15ULL + (seed << 6U) + (seed >> 2U);
+}
+
+std::uint64_t hashString(std::string_view value) {
+    return static_cast<std::uint64_t>(std::hash<std::string_view>{}(value));
+}
+
+void hashOptionalString(std::uint64_t& seed, const std::optional<std::string>& value) {
+    hashCombine(seed, value.has_value() ? 1U : 0U);
+    if (value.has_value()) {
+        hashCombine(seed, hashString(*value));
+    }
+}
+
+std::uint64_t discoveryCacheKeyFor(
+    std::uint64_t generation,
+    std::string_view workspace_root_uri,
+    const SemanticEngineConfig& config,
+    const std::unordered_map<std::string, SemanticEngineDocument>& documents) {
+    std::uint64_t seed = 1469598103934665603ULL;
+    hashCombine(seed, generation);
+    hashCombine(seed, hashString(workspace_root_uri));
+    hashOptionalString(seed, config.build);
+    hashOptionalString(seed, config.build_pattern);
+    hashCombine(seed, config.build_relative_paths ? 1U : 0U);
+    hashOptionalString(seed, config.flags);
+    hashOptionalString(seed, config.workspace_root_uri);
+    for (const auto& top_module : config.top_modules) {
+        hashCombine(seed, hashString(top_module));
+    }
+
+    std::vector<std::string> document_uris;
+    document_uris.reserve(documents.size());
+    for (const auto& [uri, _] : documents) {
+        document_uris.push_back(uri);
+    }
+    std::sort(document_uris.begin(), document_uris.end());
+    for (const auto& uri : document_uris) {
+        const auto& document = documents.at(uri);
+        hashCombine(seed, hashString(uri));
+        hashCombine(seed, static_cast<std::uint64_t>(document.version));
+        hashCombine(seed, document.is_open ? 1U : 0U);
+        hashCombine(seed, document.dirty ? 1U : 0U);
+        hashCombine(seed, static_cast<std::uint64_t>(document.text.size()));
+        hashCombine(seed, hashString(document.text));
+    }
+    return seed;
+}
+
+bool isDiscoveryDesignDeclaration(std::string_view kind) {
+    return kind == "module" || kind == "interface";
+}
 
 } // namespace
 
@@ -253,6 +309,8 @@ void SemanticEngine::clear() {
     reverse_includes_.clear();
     snapshot_.reset();
     snapshot_data_.reset();
+    discovery_snapshot_cache_.reset();
+    discovery_cache_key_ = 0;
     query_cache_->clear();
     snapshot_dirty_ = true;
     ++generation_;
@@ -263,6 +321,8 @@ void SemanticEngine::setWorkspaceRoot(std::string_view root_uri) {
     config_.workspace_root_uri = workspace_root_uri_.empty()
                                      ? std::optional<std::string>{}
                                      : std::optional<std::string>{workspace_root_uri_};
+    discovery_snapshot_cache_.reset();
+    discovery_cache_key_ = 0;
     query_cache_->clear();
     snapshot_dirty_ = true;
     ++generation_;
@@ -277,6 +337,8 @@ void SemanticEngine::configure(SemanticEngineConfig config) {
     std::sort(config_.top_modules.begin(), config_.top_modules.end());
     config_.top_modules.erase(std::unique(config_.top_modules.begin(), config_.top_modules.end()),
                               config_.top_modules.end());
+    discovery_snapshot_cache_.reset();
+    discovery_cache_key_ = 0;
     query_cache_->clear();
     snapshot_dirty_ = true;
     ++generation_;
@@ -302,6 +364,8 @@ void SemanticEngine::updateDocument(std::string_view uri,
                                  including_uris.end());
         }
     }
+    discovery_snapshot_cache_.reset();
+    discovery_cache_key_ = 0;
     query_cache_->clear();
     snapshot_dirty_ = true;
     ++generation_;
@@ -316,6 +380,8 @@ void SemanticEngine::removeDocument(std::string_view uri) {
                              including_uris.end());
     }
     reverse_includes_.erase(document_uri);
+    discovery_snapshot_cache_.reset();
+    discovery_cache_key_ = 0;
     query_cache_->clear();
     snapshot_dirty_ = true;
     ++generation_;
@@ -388,6 +454,15 @@ const SemanticEngineSnapshot& SemanticEngine::snapshot() const {
 }
 
 SemanticWorkspaceDiscoverySnapshot SemanticEngine::workspaceDiscovery() const {
+    const auto cache_key = discoveryCacheKeyFor(generation_, workspace_root_uri_, config_, documents_);
+    if (discovery_snapshot_cache_.has_value() && discovery_cache_key_ == cache_key) {
+        auto cached = *discovery_snapshot_cache_;
+        cached.cache_hit = true;
+        cached.build_micros = 0;
+        return cached;
+    }
+
+    const auto build_start = std::chrono::steady_clock::now();
     std::vector<semantic::DiscoveryDocumentInput> documents;
     documents.reserve(documents_.size());
     for (const auto& [uri, document] : documents_) {
@@ -397,6 +472,7 @@ SemanticWorkspaceDiscoverySnapshot SemanticEngine::workspaceDiscovery() const {
 
     SemanticWorkspaceDiscoverySnapshot result;
     result.generation = discovery_index.generation;
+    result.cache_key = cache_key;
     result.file_count = discovery_index.file_count;
     result.byte_count = discovery_index.byte_count;
     result.declaration_count = discovery_index.declaration_count;
@@ -411,6 +487,32 @@ SemanticWorkspaceDiscoverySnapshot SemanticEngine::workspaceDiscovery() const {
                                                                   .uri = declaration.location.uri,
                                                                   .range = declaration.location.range}});
     }
+    std::set<std::string> referenced_design_names;
+    for (const auto& [name, _] : discovery_index.referenced_files_by_name) {
+        referenced_design_names.insert(name);
+    }
+    std::set<std::string> all_design_names;
+    for (const auto& declaration : discovery_index.declarations) {
+        if (!isDiscoveryDesignDeclaration(declaration.kind)) {
+            continue;
+        }
+        all_design_names.insert(declaration.name);
+        if (!referenced_design_names.contains(declaration.name)) {
+            result.top_candidates.push_back(declaration.name);
+        }
+    }
+    if (result.top_candidates.empty()) {
+        result.top_candidates.assign(all_design_names.begin(), all_design_names.end());
+    }
+    std::sort(result.top_candidates.begin(), result.top_candidates.end());
+    result.top_candidates.erase(std::unique(result.top_candidates.begin(), result.top_candidates.end()),
+                                result.top_candidates.end());
+    result.build_micros = std::chrono::duration_cast<std::chrono::microseconds>(
+                              std::chrono::steady_clock::now() - build_start)
+                              .count();
+    result.cache_hit = false;
+    discovery_snapshot_cache_ = result;
+    discovery_cache_key_ = cache_key;
     return result;
 }
 

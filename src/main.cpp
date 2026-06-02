@@ -17,9 +17,9 @@ constexpr std::string_view kServerName = "pristine-engine";
 
 int runStdioServer() {
     pristine::transport::StdioTransport transport(std::cin, std::cout);
-    pristine::jsonrpc::JsonRpcServer rpc_server;
     pristine::server::ServerSession session{std::string(kServerName),
                                             std::string(pristine::kVersion)};
+    pristine::jsonrpc::JsonRpcServer rpc_server;
     session.bind(rpc_server);
     return rpc_server.run(transport);
 }

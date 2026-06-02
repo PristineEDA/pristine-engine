@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <optional>
+#include <vector>
 
 using namespace pristine::analysis;
 
@@ -80,10 +81,21 @@ endmodule
 
     auto discovery = engine.workspaceDiscovery();
     CHECK(discovery.generation == engine.generation());
+    CHECK(discovery.cache_key != 0);
+    CHECK_FALSE(discovery.cache_hit);
+    CHECK(discovery.build_micros >= 0);
     CHECK(discovery.file_count == 1);
     CHECK(hasDeclaration(discovery, "top", "module"));
     CHECK(hasDeclaration(discovery, "child", "module"));
     CHECK(discovery.reference_count >= 1);
+    CHECK(discovery.top_candidates == std::vector<std::string>{"top"});
+
+    const auto cached = engine.workspaceDiscovery();
+    CHECK(cached.generation == discovery.generation);
+    CHECK(cached.cache_key == discovery.cache_key);
+    CHECK(cached.cache_hit);
+    CHECK(cached.build_micros == 0);
+    CHECK(cached.top_candidates == discovery.top_candidates);
 
     engine.updateDocument("file:///workspace/pkg.sv",
                           R"(
@@ -94,12 +106,16 @@ endpackage
                           SemanticEngineDocumentState{.version = 1, .is_open = false, .dirty = false});
     auto updated = engine.workspaceDiscovery();
     CHECK(updated.generation == engine.generation());
+    CHECK(updated.cache_key != discovery.cache_key);
+    CHECK_FALSE(updated.cache_hit);
     CHECK(updated.file_count == 2);
     CHECK(hasDeclaration(updated, "defs", "package"));
 
     engine.removeDocument("file:///workspace/top.sv");
     auto removed = engine.workspaceDiscovery();
     CHECK(removed.generation == engine.generation());
+    CHECK(removed.cache_key != updated.cache_key);
+    CHECK_FALSE(removed.cache_hit);
     CHECK(removed.file_count == 1);
     CHECK_FALSE(hasDeclaration(removed, "top", "module"));
 }

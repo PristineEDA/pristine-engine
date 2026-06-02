@@ -56,7 +56,10 @@ struct Metrics {
     size_t byte_count = 0;
     size_t opened_file_count = 0;
     size_t opened_byte_count = 0;
+    std::string opened_source_path;
     std::string top_module;
+    long long client_workspace_discovery_micros = 0;
+    long long client_open_file_select_micros = 0;
     long long initialize_micros = 0;
     long long did_open_all_micros = 0;
     long long did_open_probe_micros = 0;
@@ -711,7 +714,10 @@ std::string summaryJson(const Metrics& metrics) {
         << "\"byteCount\":" << metrics.byte_count << ","
         << "\"openedFileCount\":" << metrics.opened_file_count << ","
         << "\"openedByteCount\":" << metrics.opened_byte_count << ","
+        << "\"openedSourcePath\":" << jsonString(metrics.opened_source_path) << ","
         << "\"topModule\":" << jsonString(metrics.top_module) << ","
+        << "\"clientWorkspaceDiscoveryMicros\":" << metrics.client_workspace_discovery_micros << ","
+        << "\"clientOpenFileSelectMicros\":" << metrics.client_open_file_select_micros << ","
         << "\"initializeMicros\":" << metrics.initialize_micros << ","
         << "\"didOpenAllMicros\":" << metrics.did_open_all_micros << ","
         << "\"didOpenProbeMicros\":" << metrics.did_open_probe_micros << ","
@@ -825,13 +831,27 @@ int main(int argc, char** argv) {
                        fs::absolute(args.trace_file).lexically_normal().string());
         }
 
+        writeStage(operation_log, "source-discovery:begin", args.root.string());
+        auto start = Clock::now();
         auto workspace_stats = collectWorkspaceStats(args.root);
+        const auto client_workspace_discovery_micros = elapsedMicros(start, Clock::now());
+        writeOperation(operation_log, "client/sourceDiscovery", client_workspace_discovery_micros);
+        writeStage(operation_log,
+                   "source-discovery:end",
+                   std::to_string(client_workspace_discovery_micros) + "us");
         if (workspace_stats.file_count == 0) {
             throw std::runtime_error("No SystemVerilog or Verilog sources found under " + args.root.string());
         }
         auto selected_top = args.top_module;
+        writeStage(operation_log, "open-source-select:begin", args.mode);
+        start = Clock::now();
         auto opened_source = args.mode == "real" ? selectRealSource(args.root, selected_top)
                                                  : makeProbeSource(args.root, args.top_module);
+        const auto client_open_file_select_micros = elapsedMicros(start, Clock::now());
+        writeOperation(operation_log, "client/openFileSelect", client_open_file_select_micros);
+        writeStage(operation_log,
+                   "open-source-select:end",
+                   std::to_string(client_open_file_select_micros) + "us " + opened_source.path.string());
 
         Metrics metrics;
         metrics.mode = args.mode;
@@ -842,10 +862,13 @@ int main(int argc, char** argv) {
         metrics.byte_count = workspace_stats.byte_count;
         metrics.opened_file_count = 1;
         metrics.opened_byte_count = opened_source.text.size();
+        metrics.opened_source_path = fs::absolute(opened_source.path).lexically_normal().string();
         metrics.top_module = args.mode == "real"
                                  ? selected_top
                                  : (args.top_module.empty() ? "retro_probe_top"
                                                             : sanitizedIdentifier(args.top_module, "retro_probe_top"));
+        metrics.client_workspace_discovery_micros = client_workspace_discovery_micros;
+        metrics.client_open_file_select_micros = client_open_file_select_micros;
         metrics.trace_enabled = args.trace;
         metrics.trace_path = args.trace ? fs::absolute(args.trace_file).lexically_normal().string() : std::string{};
 
@@ -860,7 +883,7 @@ int main(int argc, char** argv) {
         LspClient client(args.server.string(), tracer.has_value() ? &*tracer : nullptr);
 
         writeStage(operation_log, "initialize:begin");
-        auto start = Clock::now();
+        start = Clock::now();
         auto initialize_result = client.request("initialize", initializeParams(args.root));
         metrics.initialize_micros = elapsedMicros(start, Clock::now());
         writeOperation(operation_log, "initialize", metrics.initialize_micros, &initialize_result);

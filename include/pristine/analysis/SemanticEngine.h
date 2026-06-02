@@ -376,12 +376,16 @@ struct SemanticDiscoverySymbol {
 
 struct SemanticWorkspaceDiscoverySnapshot {
     std::uint64_t generation = 0;
+    std::uint64_t cache_key = 0;
     size_t file_count = 0;
     size_t byte_count = 0;
     size_t declaration_count = 0;
     size_t macro_count = 0;
     size_t reference_count = 0;
+    std::int64_t build_micros = 0;
+    bool cache_hit = false;
     std::vector<SemanticDiscoverySymbol> declarations;
+    std::vector<std::string> top_candidates;
     std::vector<std::string> messages;
 };
 
@@ -478,6 +482,8 @@ private:
     mutable std::optional<SemanticEngineSnapshot> snapshot_;
     mutable std::unique_ptr<semantic::SnapshotData> snapshot_data_;
     mutable std::unique_ptr<semantic::QueryCache> query_cache_;
+    mutable std::optional<SemanticWorkspaceDiscoverySnapshot> discovery_snapshot_cache_;
+    mutable std::uint64_t discovery_cache_key_ = 0;
     mutable bool snapshot_dirty_ = true;
     std::uint64_t generation_ = 0;
 };
