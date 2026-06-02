@@ -1837,6 +1837,53 @@ TEST_CASE("ServerSession loads workspace config from .slang server json", "[serv
     CHECK(state.config.index[0].exclude_dirs == std::vector<std::string>{"third_party"});
 }
 
+TEST_CASE("ServerSession applies workspace index config to discovery-backed hierarchy",
+          "[server][workspace][discovery][hierarchy]") {
+    jsonrpc::JsonRpcServer rpc_server;
+    ServerSession session{"pristine-engine", kTestServerVersion};
+    session.bind(rpc_server);
+
+    TempWorkspace workspace;
+    workspace.writeConfig(R"({
+        "topModules": ["top"],
+        "index": [
+            {
+                "dirs": ["rtl"],
+                "excludeDirs": ["rtl/vendor"]
+            }
+        ]
+    })");
+    workspace.writeFile("rtl/top.sv",
+                        "module top;\n"
+                        "  child u_child();\n"
+                        "endmodule\n");
+    workspace.writeFile("rtl/child.sv", "module child; endmodule\n");
+    workspace.writeFile("rtl/vendor/hidden.sv", "module hidden; endmodule\n");
+    workspace.writeFile("tb/tb_top.sv", "module tb_top; endmodule\n");
+
+    const auto initialize_message =
+        std::string(R"({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"rootUri":")") +
+        toFileUri(workspace.root()) + R"("}})";
+    ScriptedTransport transport{
+        initialize_message,
+        R"({"jsonrpc":"2.0","id":2,"method":"systemverilog/moduleHierarchy","params":{"moduleName":"top","maxDepth":4}})"};
+
+    const int exit_code = rpc_server.run(transport);
+
+    CHECK(exit_code == 0);
+    CHECK(session.workspace().state().config_loaded);
+    REQUIRE(session.workspace().state().config.index.size() == 1);
+    const auto hierarchy_response = findResponse(transport, 2);
+    REQUIRE(hierarchy_response.has_value());
+    const auto& result = hierarchy_response->at("result");
+    REQUIRE(result.at("roots").is_array());
+    REQUIRE(result.at("roots").size() == 1);
+    CHECK(result.at("roots").at(0).at("moduleName") == "top");
+    REQUIRE(result.at("roots").at(0).at("children").is_array());
+    REQUIRE(result.at("roots").at(0).at("children").size() == 1);
+    CHECK(result.at("roots").at(0).at("children").at(0).at("moduleName") == "child");
+}
+
 TEST_CASE("ServerSession survives invalid workspace config", "[server][workspace]") {
     jsonrpc::JsonRpcServer rpc_server;
     ServerSession session{"pristine-engine", kTestServerVersion};

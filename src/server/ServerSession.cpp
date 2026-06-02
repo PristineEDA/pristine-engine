@@ -767,6 +767,13 @@ jsonrpc::Json ServerSession::handleInitialize(const jsonrpc::Json& params) {
     workspace_manager_.initialize(lsp::parseInitializeParams(params));
     semantic_workspace_.clear();
     const auto& workspace_config = workspace_manager_.state().config;
+    std::vector<analysis::SemanticEngineConfig::IndexConfig> semantic_index_config;
+    semantic_index_config.reserve(workspace_config.index.size());
+    for (const auto& index_config : workspace_config.index) {
+        semantic_index_config.push_back(
+            analysis::SemanticEngineConfig::IndexConfig{.dirs = index_config.dirs,
+                                                        .exclude_dirs = index_config.exclude_dirs});
+    }
     semantic_workspace_.configureSemanticEngine(
         analysis::SemanticEngineConfig{.build = workspace_config.build,
                                        .build_pattern = workspace_config.build_pattern,
@@ -777,7 +784,8 @@ jsonrpc::Json ServerSession::handleInitialize(const jsonrpc::Json& params) {
                                                ? std::optional<std::string>{toFileUri(
                                                      *workspace_manager_.state().root_path)}
                                                : std::optional<std::string>{},
-                                       .top_modules = workspace_config.top_modules});
+                                       .top_modules = workspace_config.top_modules,
+                                       .index = std::move(semantic_index_config)});
     if (const auto& root_path = workspace_manager_.state().root_path) {
         semantic_workspace_.setWorkspaceRoot(toFileUri(*root_path));
     }

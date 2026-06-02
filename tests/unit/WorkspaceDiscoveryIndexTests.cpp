@@ -267,3 +267,50 @@ endmodule
                                                                          "file:///workspace/defs.sv",
                                                                          "file:///workspace/top.sv"});
 }
+
+TEST_CASE("SemanticEngine workspace discovery respects configured index dirs and excludes",
+          "[analysis][semantic-engine][discovery][config][cache]") {
+    SemanticEngine engine;
+    engine.configure(SemanticEngineConfig{.workspace_root_uri = std::string("file:///workspace"),
+                                          .index = {SemanticEngineConfig::IndexConfig{
+                                              .dirs = {"rtl"},
+                                              .exclude_dirs = {"rtl/vendor"}}}});
+    engine.updateDocument("file:///workspace/rtl/top.sv",
+                          "module top; child u_child(); endmodule\n",
+                          SemanticEngineDocumentState{.version = 1});
+    engine.updateDocument("file:///workspace/rtl/child.sv",
+                          "module child; endmodule\n",
+                          SemanticEngineDocumentState{.version = 1});
+    engine.updateDocument("file:///workspace/rtl/vendor/hidden.sv",
+                          "module hidden; endmodule\n",
+                          SemanticEngineDocumentState{.version = 1});
+    engine.updateDocument("file:///workspace/tb/tb_top.sv",
+                          "module tb_top; endmodule\n",
+                          SemanticEngineDocumentState{.version = 1});
+
+    const auto discovery = engine.workspaceDiscovery();
+    CHECK_FALSE(discovery.cache_hit);
+    CHECK(discovery.file_count == 2);
+    CHECK(hasDeclaration(discovery, "top", "module"));
+    CHECK(hasDeclaration(discovery, "child", "module"));
+    CHECK_FALSE(hasDeclaration(discovery, "hidden", "module"));
+    CHECK_FALSE(hasDeclaration(discovery, "tb_top", "module"));
+    const auto* top_metric = closureMetricFor(discovery, "top");
+    REQUIRE(top_metric != nullptr);
+    CHECK(top_metric->selected_document_uris == std::vector<std::string>{"file:///workspace/rtl/child.sv",
+                                                                         "file:///workspace/rtl/top.sv"});
+
+    const auto cached = engine.workspaceDiscovery();
+    CHECK(cached.cache_hit);
+    CHECK(cached.file_count == discovery.file_count);
+
+    engine.configure(SemanticEngineConfig{.workspace_root_uri = std::string("file:///workspace"),
+                                          .index = {SemanticEngineConfig::IndexConfig{
+                                              .dirs = {"rtl", "tb"},
+                                              .exclude_dirs = {"rtl/vendor"}}}});
+    const auto reconfigured = engine.workspaceDiscovery();
+    CHECK_FALSE(reconfigured.cache_hit);
+    CHECK(reconfigured.file_count == 3);
+    CHECK(hasDeclaration(reconfigured, "tb_top", "module"));
+    CHECK_FALSE(hasDeclaration(reconfigured, "hidden", "module"));
+}

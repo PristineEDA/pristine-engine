@@ -36,12 +36,18 @@ enum class SemanticEngineMode {
 };
 
 struct SemanticEngineConfig {
+    struct IndexConfig {
+        std::vector<std::string> dirs;
+        std::vector<std::string> exclude_dirs;
+    };
+
     std::optional<std::string> build;
     std::optional<std::string> build_pattern;
     bool build_relative_paths = false;
     std::optional<std::string> flags;
     std::optional<std::string> workspace_root_uri;
     std::vector<std::string> top_modules;
+    std::vector<IndexConfig> index;
 };
 
 struct SemanticLocation {

@@ -95,6 +95,16 @@ std::uint64_t discoveryCacheKeyFor(
     for (const auto& top_module : config.top_modules) {
         hashCombine(seed, hashString(top_module));
     }
+    for (const auto& index_config : config.index) {
+        for (const auto& dir : index_config.dirs) {
+            hashCombine(seed, hashString(dir));
+        }
+        hashCombine(seed, 0xfeedfaceULL);
+        for (const auto& exclude_dir : index_config.exclude_dirs) {
+            hashCombine(seed, hashString(exclude_dir));
+        }
+        hashCombine(seed, 0xdecafbadULL);
+    }
 
     std::vector<std::string> document_uris;
     document_uris.reserve(documents.size());
@@ -116,6 +126,58 @@ std::uint64_t discoveryCacheKeyFor(
 
 bool isDiscoveryDesignDeclaration(std::string_view kind) {
     return kind == "module" || kind == "interface";
+}
+
+std::string normalizeConfigDirectoryUri(std::string_view workspace_root_uri, std::string_view directory) {
+    if (directory.empty()) {
+        return {};
+    }
+    if (isFileUri(directory) || isWindowsAbsolutePath(directory)) {
+        return withoutTrailingSlash(normalizeFileUri(directory));
+    }
+    const auto root = workspace_root_uri.empty() ? std::string("file:///") : std::string(workspace_root_uri);
+    return joinFileUri(root, directory);
+}
+
+bool uriIsWithinDirectory(std::string_view uri, std::string_view directory_uri) {
+    if (directory_uri.empty()) {
+        return false;
+    }
+    const auto normalized_uri = withoutTrailingSlash(normalizeFileUri(uri));
+    const auto normalized_directory = withoutTrailingSlash(normalizeFileUri(directory_uri));
+    return normalized_uri == normalized_directory || normalized_uri.starts_with(normalized_directory + "/");
+}
+
+bool documentMatchesDiscoveryConfig(std::string_view uri,
+                                    std::string_view workspace_root_uri,
+                                    const SemanticEngineConfig& config) {
+    if (config.index.empty()) {
+        return true;
+    }
+
+    for (const auto& index_config : config.index) {
+        const bool in_index_dir = std::any_of(index_config.dirs.begin(),
+                                             index_config.dirs.end(),
+                                             [&](const std::string& dir) {
+                                                 return uriIsWithinDirectory(
+                                                     uri,
+                                                     normalizeConfigDirectoryUri(workspace_root_uri, dir));
+                                             });
+        if (!in_index_dir) {
+            continue;
+        }
+        const bool excluded = std::any_of(index_config.exclude_dirs.begin(),
+                                          index_config.exclude_dirs.end(),
+                                          [&](const std::string& exclude_dir) {
+                                              return uriIsWithinDirectory(
+                                                  uri,
+                                                  normalizeConfigDirectoryUri(workspace_root_uri, exclude_dir));
+                                          });
+        if (!excluded) {
+            return true;
+        }
+    }
+    return false;
 }
 
 } // namespace
@@ -452,6 +514,27 @@ void SemanticEngine::configure(SemanticEngineConfig config) {
     std::sort(config_.top_modules.begin(), config_.top_modules.end());
     config_.top_modules.erase(std::unique(config_.top_modules.begin(), config_.top_modules.end()),
                               config_.top_modules.end());
+    for (auto& index_config : config_.index) {
+        for (auto& dir : index_config.dirs) {
+            dir = normalizeConfigDirectoryUri(workspace_root_uri_, dir);
+        }
+        std::sort(index_config.dirs.begin(), index_config.dirs.end());
+        index_config.dirs.erase(std::unique(index_config.dirs.begin(), index_config.dirs.end()),
+                                index_config.dirs.end());
+        for (auto& exclude_dir : index_config.exclude_dirs) {
+            exclude_dir = normalizeConfigDirectoryUri(workspace_root_uri_, exclude_dir);
+        }
+        std::sort(index_config.exclude_dirs.begin(), index_config.exclude_dirs.end());
+        index_config.exclude_dirs.erase(std::unique(index_config.exclude_dirs.begin(),
+                                                    index_config.exclude_dirs.end()),
+                                        index_config.exclude_dirs.end());
+    }
+    config_.index.erase(std::remove_if(config_.index.begin(),
+                                       config_.index.end(),
+                                       [](const SemanticEngineConfig::IndexConfig& index_config) {
+                                           return index_config.dirs.empty();
+                                       }),
+                        config_.index.end());
     discovery_snapshot_cache_.reset();
     discovery_cache_key_ = 0;
     query_cache_->clear();
@@ -581,6 +664,9 @@ SemanticWorkspaceDiscoverySnapshot SemanticEngine::workspaceDiscovery() const {
     std::vector<semantic::DiscoveryDocumentInput> documents;
     documents.reserve(documents_.size());
     for (const auto& [uri, document] : documents_) {
+        if (!documentMatchesDiscoveryConfig(uri, workspace_root_uri_, config_)) {
+            continue;
+        }
         documents.push_back(semantic::DiscoveryDocumentInput{.uri = uri, .text = document.text});
     }
     const auto discovery_index = semantic::buildWorkspaceDiscoveryIndex(generation_, std::move(documents));
