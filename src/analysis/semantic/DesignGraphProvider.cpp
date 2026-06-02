@@ -5,6 +5,9 @@
 #include <algorithm>
 #include <map>
 #include <set>
+#include <string>
+#include <unordered_map>
+#include <vector>
 
 namespace pristine::analysis::semantic {
 namespace {
@@ -191,6 +194,35 @@ SemanticCallHierarchyItem callHierarchyItemFor(const ModuleDefinition& definitio
                                      .selection_range = definition.selection_range};
 }
 
+std::string hierarchyMemoKey(std::string_view module_name,
+                             int depth,
+                             int max_depth,
+                             const std::vector<std::string>& stack) {
+    std::string key;
+    key.reserve(module_name.size() + stack.size() * 16 + 32);
+    key.append(module_name);
+    key.push_back('\n');
+    key.append(std::to_string(depth));
+    key.push_back('/');
+    key.append(std::to_string(max_depth));
+    for (const auto& entry : stack) {
+        key.push_back('\n');
+        key.append(entry);
+    }
+    return key;
+}
+
+SemanticHierarchyNode instantiateHierarchyTemplate(SemanticHierarchyNode node,
+                                                   const ModuleInstantiation* instance) {
+    if (instance != nullptr) {
+        node.instance_name = instance->instance_name;
+        node.instance_range = instance->range;
+        node.instance_selection_range = instance->selection_range;
+        node.module_selection_range = instance->module_selection_range;
+    }
+    return node;
+}
+
 } // namespace
 
 SemanticModuleHierarchyResult moduleHierarchy(const DesignGraphContext& context,
@@ -221,12 +253,19 @@ SemanticModuleHierarchyResult moduleHierarchy(const DesignGraphContext& context,
         return result;
     }
 
+    std::unordered_map<std::string, SemanticHierarchyNode> hierarchy_memo;
+
     const auto build_node = [&](const auto& self,
                                 std::string_view current_name,
                                 const ModuleInstantiation* instance,
                                 std::string_view instance_uri,
                                 std::vector<std::string>& stack,
                                 int depth) -> SemanticHierarchyNode {
+        const auto memo_key = hierarchyMemoKey(current_name, depth, max_depth, stack);
+        if (const auto memo_it = hierarchy_memo.find(memo_key); memo_it != hierarchy_memo.end()) {
+            return instantiateHierarchyTemplate(memo_it->second, instance);
+        }
+
         const auto definition_it = context.modules_by_name.find(std::string(current_name));
         if (definition_it == context.modules_by_name.end()) {
             result.partial = true;
@@ -243,6 +282,7 @@ SemanticModuleHierarchyResult moduleHierarchy(const DesignGraphContext& context,
             appendUniqueMessage(result.messages,
                                 "Unresolved module '" + std::string(current_name) +
                                     "' in design hierarchy.");
+            hierarchy_memo.emplace(memo_key, instantiateHierarchyTemplate(node, nullptr));
             return node;
         }
 
@@ -272,6 +312,7 @@ SemanticModuleHierarchyResult moduleHierarchy(const DesignGraphContext& context,
             result.partial = true;
             appendUniqueMessage(result.messages,
                                 "Cycle detected while expanding module '" + definition.name + "'.");
+            hierarchy_memo.emplace(memo_key, instantiateHierarchyTemplate(node, nullptr));
             return node;
         }
         if (depth >= max_depth) {
@@ -279,6 +320,7 @@ SemanticModuleHierarchyResult moduleHierarchy(const DesignGraphContext& context,
             result.truncated = true;
             result.partial = true;
             appendUniqueMessage(result.messages, "Module hierarchy expansion reached maxDepth.");
+            hierarchy_memo.emplace(memo_key, instantiateHierarchyTemplate(node, nullptr));
             return node;
         }
 
@@ -292,6 +334,7 @@ SemanticModuleHierarchyResult moduleHierarchy(const DesignGraphContext& context,
                                          depth + 1));
         }
         stack.pop_back();
+        hierarchy_memo.emplace(memo_key, instantiateHierarchyTemplate(node, nullptr));
         return node;
     };
 

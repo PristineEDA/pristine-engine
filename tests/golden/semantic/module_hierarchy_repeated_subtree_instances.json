@@ -1,0 +1,28 @@
+{
+  "name": "module hierarchy keeps repeated subtree instances when provider memoizes expansion",
+  "config": {
+    "topModules": [
+      "top"
+    ]
+  },
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/repeated-subtree.sv",
+      "text": "module leaf;\nendmodule\n\nmodule wrapper;\n  leaf u_leaf();\nendmodule\n\nmodule top;\n  wrapper u_wrap_a();\n  wrapper u_wrap_b();\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "moduleHierarchy",
+    "moduleName": "top",
+    "maxDepth": 8
+  },
+  "expected": {
+    "rootModules": [
+      "top"
+    ],
+    "modules": [
+      "wrapper",
+      "leaf"
+    ]
+  }
+}

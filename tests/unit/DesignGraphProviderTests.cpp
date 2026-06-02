@@ -229,6 +229,66 @@ TEST_CASE("DesignGraphProvider deduplicates repeated unresolved hierarchy and sc
           }) == 1);
 }
 
+TEST_CASE("DesignGraphProvider memoizes repeated hierarchy subtrees without merging instances",
+          "[analysis][semantic][design-graph-provider][hierarchy][cache]") {
+    auto context = simpleDesignContext();
+    ModuleDefinition leaf{.name = "leaf",
+                          .kind = "module",
+                          .range = rangeAt(10, 0, 20),
+                          .selection_range = rangeAt(10, 7, 11),
+                          .ports = {},
+                          .port_details = {},
+                          .instances = {}};
+    ModuleDefinition wrapper{.name = "wrapper",
+                             .kind = "module",
+                             .range = rangeAt(12, 0, 40),
+                             .selection_range = rangeAt(12, 7, 14),
+                             .ports = {},
+                             .port_details = {},
+                             .instances = {ModuleInstantiation{.module_name = "leaf",
+                                                               .instance_name = "u_leaf",
+                                                               .range = rangeAt(13, 2, 18),
+                                                               .selection_range = rangeAt(13, 7, 13),
+                                                               .module_selection_range = rangeAt(13, 2, 6)}}};
+    auto& top = context.modules_by_name.at("top");
+    top.instances = {ModuleInstantiation{.module_name = "wrapper",
+                                         .instance_name = "u_wrap_a",
+                                         .range = rangeAt(20, 2, 24),
+                                         .selection_range = rangeAt(20, 10, 18),
+                                         .module_selection_range = rangeAt(20, 2, 9)},
+                     ModuleInstantiation{.module_name = "wrapper",
+                                         .instance_name = "u_wrap_b",
+                                         .range = rangeAt(21, 2, 24),
+                                         .selection_range = rangeAt(21, 10, 18),
+                                         .module_selection_range = rangeAt(21, 2, 9)}};
+    context.modules_by_name.emplace("leaf", leaf);
+    context.modules_by_name.emplace("wrapper", wrapper);
+    context.module_uris_by_name.emplace("leaf", "file:///workspace/leaf.sv");
+    context.module_uris_by_name.emplace("wrapper", "file:///workspace/wrapper.sv");
+
+    const auto hierarchy = moduleHierarchy(context, std::string_view("top"), 8);
+
+    REQUIRE_FALSE(hierarchy.unresolved);
+    REQUIRE_FALSE(hierarchy.partial);
+    REQUIRE(hierarchy.roots.size() == 1);
+    const auto& children = hierarchy.roots.front().children;
+    REQUIRE(children.size() == 2);
+    CHECK(children[0].module_name == "wrapper");
+    CHECK(children[0].instance_name == "u_wrap_a");
+    CHECK(children[0].instance_range.has_value());
+    CHECK(children[0].instance_range->start_line == 20);
+    CHECK(children[1].module_name == "wrapper");
+    CHECK(children[1].instance_name == "u_wrap_b");
+    CHECK(children[1].instance_range.has_value());
+    CHECK(children[1].instance_range->start_line == 21);
+    REQUIRE(children[0].children.size() == 1);
+    REQUIRE(children[1].children.size() == 1);
+    CHECK(children[0].children.front().module_name == "leaf");
+    CHECK(children[1].children.front().module_name == "leaf");
+    CHECK(children[0].children.front().instance_name == "u_leaf");
+    CHECK(children[1].children.front().instance_name == "u_leaf");
+}
+
 TEST_CASE("DesignGraphProvider schematic emits Pristine-compatible ports cells and net endpoints",
           "[analysis][semantic][design-graph-provider][schematic][pristine]") {
     auto context = simpleDesignContext();
