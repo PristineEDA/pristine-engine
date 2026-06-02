@@ -822,6 +822,8 @@ TEST_CASE("SemanticEngine uses discovery closure for hierarchy and schematic col
     CHECK(hierarchy.discovery_closure_missing_candidate_count == 0);
     CHECK(hierarchy.discovery_closure_deduped_document_count == 0);
     CHECK(hierarchy.discovery_closure_build_micros >= 0);
+    CHECK(hierarchy.discovery_closure_query_micros >= 0);
+    CHECK_FALSE(hierarchy.discovery_closure_cache_hit);
     REQUIRE(hierarchy.roots.size() == 1);
     REQUIRE(hierarchy.roots.front().children.size() == 1);
     CHECK(hierarchy.roots.front().children.front().module_name == "child");
@@ -837,6 +839,8 @@ TEST_CASE("SemanticEngine uses discovery closure for hierarchy and schematic col
     CHECK(cached_hierarchy.discovery_closure_deduped_document_count ==
           hierarchy.discovery_closure_deduped_document_count);
     CHECK(cached_hierarchy.discovery_closure_build_micros == 0);
+    CHECK(cached_hierarchy.discovery_closure_query_micros == 0);
+    CHECK(cached_hierarchy.discovery_closure_cache_hit);
 
     const auto schematic = engine.schematic(std::string_view("top"), 4);
     REQUIRE_FALSE(schematic.unresolved);
@@ -847,6 +851,8 @@ TEST_CASE("SemanticEngine uses discovery closure for hierarchy and schematic col
     CHECK(schematic.discovery_closure_missing_candidate_count == 0);
     CHECK(schematic.discovery_closure_deduped_document_count == 0);
     CHECK(schematic.discovery_closure_build_micros >= 0);
+    CHECK(schematic.discovery_closure_query_micros >= 0);
+    CHECK_FALSE(schematic.discovery_closure_cache_hit);
     CHECK(std::any_of(schematic.modules.begin(),
                       schematic.modules.end(),
                       [](const SemanticSchematicModuleView& view) {

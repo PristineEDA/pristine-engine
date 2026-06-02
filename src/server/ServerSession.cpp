@@ -852,6 +852,8 @@ jsonrpc::Json ServerSession::handleModuleHierarchy(const jsonrpc::Json& params) 
         result["discoveryClosureDedupedDocumentCount"] =
             hierarchy.discovery_closure_deduped_document_count;
         result["discoveryClosureBuildMicros"] = hierarchy.discovery_closure_build_micros;
+        result["discoveryClosureQueryMicros"] = hierarchy.discovery_closure_query_micros;
+        result["discoveryClosureCacheHit"] = hierarchy.discovery_closure_cache_hit;
     }
     return result;
 }
@@ -903,6 +905,8 @@ jsonrpc::Json ServerSession::handleSchematic(const jsonrpc::Json& params) {
         result["discoveryClosureDedupedDocumentCount"] =
             schematic.discovery_closure_deduped_document_count;
         result["discoveryClosureBuildMicros"] = schematic.discovery_closure_build_micros;
+        result["discoveryClosureQueryMicros"] = schematic.discovery_closure_query_micros;
+        result["discoveryClosureCacheHit"] = schematic.discovery_closure_cache_hit;
     }
     return result;
 }

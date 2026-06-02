@@ -39,6 +39,7 @@
     "discoveryClosureDocumentCount": 4,
     "discoveryClosureMissingCandidateCount": 0,
     "discoveryClosureDedupedDocumentCount": 0,
+    "discoveryClosureCacheHit": false,
     "rootModules": [
       "top"
     ],

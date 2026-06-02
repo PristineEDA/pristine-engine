@@ -1402,7 +1402,11 @@ SemanticModuleHierarchyResult SemanticEngine::moduleHierarchy(std::optional<std:
     if (const auto cached = query_cache_->moduleHierarchy(generation_,
                                                           module_name,
                                                           max_depth)) {
-        return *cached;
+        auto result = *cached;
+        if (result.discovery_closure_used) {
+            result.discovery_closure_cache_hit = true;
+        }
+        return result;
     }
     const auto closure_uris = closureDocumentUrisFor(module_name, discovery);
     const auto* closure_metric = discoveryClosureMetricFor(module_name, discovery);
@@ -1420,13 +1424,19 @@ SemanticModuleHierarchyResult SemanticEngine::moduleHierarchy(std::optional<std:
                                              closure_snapshot.snapshot,
                                              closure_snapshot.context_config,
                                              ast_index);
+        const auto query_start = std::chrono::steady_clock::now();
         auto result = semantic::moduleHierarchy(context, module_name, max_depth);
+        result.discovery_closure_query_micros =
+            std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() -
+                                                                  query_start)
+                .count();
         result.discovery_closure_used = true;
         result.discovery_closure_document_count = closure_snapshot.document_count;
         result.discovery_closure_build_micros = closure_snapshot.build_micros;
         applyDiscoveryClosureMetric(result, closure_metric);
         auto cached_result = result;
         cached_result.discovery_closure_build_micros = 0;
+        cached_result.discovery_closure_query_micros = 0;
         query_cache_->storeModuleHierarchy(generation_, module_name, max_depth, std::move(cached_result));
         return result;
     }
@@ -1458,7 +1468,11 @@ SemanticSchematicResult SemanticEngine::schematic(std::optional<std::string_view
                                                   int max_depth) const {
     const auto discovery = workspaceDiscovery();
     if (const auto cached = query_cache_->schematic(generation_, module_name, max_depth)) {
-        return *cached;
+        auto result = *cached;
+        if (result.discovery_closure_used) {
+            result.discovery_closure_cache_hit = true;
+        }
+        return result;
     }
     const auto closure_uris = closureDocumentUrisFor(module_name, discovery);
     const auto* closure_metric = discoveryClosureMetricFor(module_name, discovery);
@@ -1476,13 +1490,19 @@ SemanticSchematicResult SemanticEngine::schematic(std::optional<std::string_view
                                              closure_snapshot.snapshot,
                                              closure_snapshot.context_config,
                                              ast_index);
+        const auto query_start = std::chrono::steady_clock::now();
         auto result = semantic::schematic(context, module_name, max_depth);
+        result.discovery_closure_query_micros =
+            std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() -
+                                                                  query_start)
+                .count();
         result.discovery_closure_used = true;
         result.discovery_closure_document_count = closure_snapshot.document_count;
         result.discovery_closure_build_micros = closure_snapshot.build_micros;
         applyDiscoveryClosureMetric(result, closure_metric);
         auto cached_result = result;
         cached_result.discovery_closure_build_micros = 0;
+        cached_result.discovery_closure_query_micros = 0;
         query_cache_->storeSchematic(generation_, module_name, max_depth, std::move(cached_result));
         return result;
     }

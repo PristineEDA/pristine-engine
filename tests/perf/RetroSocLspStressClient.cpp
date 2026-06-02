@@ -69,6 +69,9 @@ struct Metrics {
     long long hierarchy_cold_closure_build_micros = 0;
     long long hierarchy_warm_closure_build_micros = 0;
     long long schematic_closure_build_micros = 0;
+    long long hierarchy_cold_closure_query_micros = 0;
+    long long hierarchy_warm_closure_query_micros = 0;
+    long long schematic_closure_query_micros = 0;
     std::string hierarchy_cold_closure_root;
     std::string hierarchy_warm_closure_root;
     std::string schematic_closure_root;
@@ -87,6 +90,9 @@ struct Metrics {
     bool hierarchy_cold_closure_used = false;
     bool hierarchy_warm_closure_used = false;
     bool schematic_closure_used = false;
+    bool hierarchy_cold_closure_cache_hit = false;
+    bool hierarchy_warm_closure_cache_hit = false;
+    bool schematic_closure_cache_hit = false;
     long long shutdown_micros = 0;
     long long total_micros = 0;
     size_t hierarchy_root_count = 0;
@@ -604,6 +610,9 @@ void collectHierarchyMetrics(const lsp::json::Value& result, Metrics& metrics, b
             static_cast<size_t>(integerValue(response, "discoveryClosureDedupedDocumentCount"));
         metrics.hierarchy_warm_closure_build_micros =
             integerValue(response, "discoveryClosureBuildMicros");
+        metrics.hierarchy_warm_closure_query_micros =
+            integerValue(response, "discoveryClosureQueryMicros");
+        metrics.hierarchy_warm_closure_cache_hit = boolValue(response, "discoveryClosureCacheHit");
     }
     else {
         metrics.hierarchy_cold_closure_used = boolValue(response, "discoveryClosureUsed");
@@ -618,6 +627,9 @@ void collectHierarchyMetrics(const lsp::json::Value& result, Metrics& metrics, b
             static_cast<size_t>(integerValue(response, "discoveryClosureDedupedDocumentCount"));
         metrics.hierarchy_cold_closure_build_micros =
             integerValue(response, "discoveryClosureBuildMicros");
+        metrics.hierarchy_cold_closure_query_micros =
+            integerValue(response, "discoveryClosureQueryMicros");
+        metrics.hierarchy_cold_closure_cache_hit = boolValue(response, "discoveryClosureCacheHit");
     }
 }
 
@@ -641,6 +653,8 @@ void collectSchematicMetrics(const lsp::json::Value& result, Metrics& metrics) {
     metrics.schematic_closure_deduped_document_count =
         static_cast<size_t>(integerValue(response, "discoveryClosureDedupedDocumentCount"));
     metrics.schematic_closure_build_micros = integerValue(response, "discoveryClosureBuildMicros");
+    metrics.schematic_closure_query_micros = integerValue(response, "discoveryClosureQueryMicros");
+    metrics.schematic_closure_cache_hit = boolValue(response, "discoveryClosureCacheHit");
 
     const auto* modules = response.find("modules");
     if (modules == nullptr || !modules->isArray()) {
@@ -805,6 +819,10 @@ std::string summaryJson(const Metrics& metrics) {
         << metrics.hierarchy_cold_closure_deduped_document_count << ","
         << "\"moduleHierarchyColdClosureBuildMicros\":"
         << metrics.hierarchy_cold_closure_build_micros << ","
+        << "\"moduleHierarchyColdClosureQueryMicros\":"
+        << metrics.hierarchy_cold_closure_query_micros << ","
+        << "\"moduleHierarchyColdClosureCacheHit\":"
+        << boolJson(metrics.hierarchy_cold_closure_cache_hit) << ","
         << "\"moduleHierarchyWarmClosureUsed\":" << boolJson(metrics.hierarchy_warm_closure_used) << ","
         << "\"moduleHierarchyWarmClosureRoot\":"
         << jsonString(metrics.hierarchy_warm_closure_root) << ","
@@ -818,6 +836,10 @@ std::string summaryJson(const Metrics& metrics) {
         << metrics.hierarchy_warm_closure_deduped_document_count << ","
         << "\"moduleHierarchyWarmClosureBuildMicros\":"
         << metrics.hierarchy_warm_closure_build_micros << ","
+        << "\"moduleHierarchyWarmClosureQueryMicros\":"
+        << metrics.hierarchy_warm_closure_query_micros << ","
+        << "\"moduleHierarchyWarmClosureCacheHit\":"
+        << boolJson(metrics.hierarchy_warm_closure_cache_hit) << ","
         << "\"schematicClosureUsed\":" << boolJson(metrics.schematic_closure_used) << ","
         << "\"schematicClosureRoot\":" << jsonString(metrics.schematic_closure_root) << ","
         << "\"schematicClosureCandidateDocumentCount\":"
@@ -828,6 +850,8 @@ std::string summaryJson(const Metrics& metrics) {
         << "\"schematicClosureDedupedDocumentCount\":"
         << metrics.schematic_closure_deduped_document_count << ","
         << "\"schematicClosureBuildMicros\":" << metrics.schematic_closure_build_micros << ","
+        << "\"schematicClosureQueryMicros\":" << metrics.schematic_closure_query_micros << ","
+        << "\"schematicClosureCacheHit\":" << boolJson(metrics.schematic_closure_cache_hit) << ","
         << "\"shutdownMicros\":" << metrics.shutdown_micros << ","
         << "\"totalMicros\":" << metrics.total_micros << ","
         << "\"hierarchyRootCount\":" << metrics.hierarchy_root_count << ","

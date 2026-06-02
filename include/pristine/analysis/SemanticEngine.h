@@ -195,7 +195,9 @@ struct SemanticModuleHierarchyResult {
     size_t discovery_closure_missing_candidate_count = 0;
     size_t discovery_closure_deduped_document_count = 0;
     std::int64_t discovery_closure_build_micros = 0;
+    std::int64_t discovery_closure_query_micros = 0;
     bool discovery_closure_used = false;
+    bool discovery_closure_cache_hit = false;
     bool unresolved = false;
     bool partial = false;
     bool truncated = false;
@@ -238,7 +240,9 @@ struct SemanticSchematicResult {
     size_t discovery_closure_missing_candidate_count = 0;
     size_t discovery_closure_deduped_document_count = 0;
     std::int64_t discovery_closure_build_micros = 0;
+    std::int64_t discovery_closure_query_micros = 0;
     bool discovery_closure_used = false;
+    bool discovery_closure_cache_hit = false;
     bool unresolved = false;
     bool partial = false;
     bool truncated = false;

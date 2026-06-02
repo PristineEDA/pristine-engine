@@ -665,6 +665,9 @@ void runModuleHierarchyFixture(SemanticEngine& engine, const nlohmann::json& fix
         CHECK(result.discovery_closure_deduped_document_count ==
               expected.at("discoveryClosureDedupedDocumentCount").get<size_t>());
     }
+    if (expected.contains("discoveryClosureCacheHit")) {
+        CHECK(result.discovery_closure_cache_hit == expected.at("discoveryClosureCacheHit").get<bool>());
+    }
     if (expected.contains("rootModules")) {
         for (const auto& expected_root : expected.at("rootModules")) {
             const auto module = expected_root.get<std::string>();
@@ -728,6 +731,9 @@ void runSchematicFixture(SemanticEngine& engine, const nlohmann::json& fixture) 
     if (expected.contains("discoveryClosureDedupedDocumentCount")) {
         CHECK(result.discovery_closure_deduped_document_count ==
               expected.at("discoveryClosureDedupedDocumentCount").get<size_t>());
+    }
+    if (expected.contains("discoveryClosureCacheHit")) {
+        CHECK(result.discovery_closure_cache_hit == expected.at("discoveryClosureCacheHit").get<bool>());
     }
     if (expected.contains("rootModule")) {
         REQUIRE(result.root_module_id.has_value());
