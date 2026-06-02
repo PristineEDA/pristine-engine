@@ -1,0 +1,45 @@
+{
+  "name": "module hierarchy discovery closure follows package exports before AST graph assembly",
+  "config": {
+    "topModules": [
+      "top"
+    ]
+  },
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/export-closure-defs.sv",
+      "text": "package defs;\n  typedef logic [7:0] word_t;\nendpackage\n"
+    },
+    {
+      "uri": "file:///golden/semantic/export-closure-api.sv",
+      "text": "package api;\n  export defs::*;\nendpackage\n"
+    },
+    {
+      "uri": "file:///golden/semantic/export-closure-child.sv",
+      "text": "module child;\nendmodule\n"
+    },
+    {
+      "uri": "file:///golden/semantic/export-closure-top.sv",
+      "text": "module top;\n  import api::*;\n  child u_child();\nendmodule\n"
+    },
+    {
+      "uri": "file:///golden/semantic/export-closure-unrelated.sv",
+      "text": "module unrelated;\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "moduleHierarchy",
+    "moduleName": "top",
+    "maxDepth": 8
+  },
+  "expected": {
+    "discoveryClosureUsed": true,
+    "discoveryClosureDocumentCount": 4,
+    "rootModules": [
+      "top"
+    ],
+    "modules": [
+      "child"
+    ]
+  }
+}

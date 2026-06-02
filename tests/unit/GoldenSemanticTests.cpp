@@ -643,6 +643,13 @@ void runModuleHierarchyFixture(SemanticEngine& engine, const nlohmann::json& fix
     CHECK(result.unresolved == expected.value("unresolved", false));
     CHECK(result.partial == expected.value("partial", false));
     CHECK(result.truncated == expected.value("truncated", false));
+    if (expected.contains("discoveryClosureUsed")) {
+        CHECK(result.discovery_closure_used == expected.at("discoveryClosureUsed").get<bool>());
+    }
+    if (expected.contains("discoveryClosureDocumentCount")) {
+        CHECK(result.discovery_closure_document_count ==
+              expected.at("discoveryClosureDocumentCount").get<size_t>());
+    }
     if (expected.contains("rootModules")) {
         for (const auto& expected_root : expected.at("rootModules")) {
             const auto module = expected_root.get<std::string>();
@@ -685,6 +692,13 @@ void runSchematicFixture(SemanticEngine& engine, const nlohmann::json& fixture) 
     CHECK(result.unresolved == expected.value("unresolved", false));
     CHECK(result.partial == expected.value("partial", false));
     CHECK(result.truncated == expected.value("truncated", false));
+    if (expected.contains("discoveryClosureUsed")) {
+        CHECK(result.discovery_closure_used == expected.at("discoveryClosureUsed").get<bool>());
+    }
+    if (expected.contains("discoveryClosureDocumentCount")) {
+        CHECK(result.discovery_closure_document_count ==
+              expected.at("discoveryClosureDocumentCount").get<size_t>());
+    }
     if (expected.contains("rootModule")) {
         REQUIRE(result.root_module_id.has_value());
         CHECK(*result.root_module_id == expected.at("rootModule").get<std::string>());

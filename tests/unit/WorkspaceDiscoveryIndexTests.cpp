@@ -115,6 +115,40 @@ endmodule
                                               "file:///workspace/top.sv"});
 }
 
+TEST_CASE("WorkspaceDiscoveryIndex follows package export references in dependency closure",
+          "[analysis][semantic][discovery][package]") {
+    auto index = semantic::buildWorkspaceDiscoveryIndex(
+        11,
+        {semantic::DiscoveryDocumentInput{.uri = "file:///workspace/defs.sv",
+                                          .text = R"(
+package defs;
+  typedef logic [7:0] word_t;
+endpackage
+)"},
+         semantic::DiscoveryDocumentInput{.uri = "file:///workspace/api.sv",
+                                          .text = R"(
+package api;
+  export defs::*;
+endpackage
+)"},
+         semantic::DiscoveryDocumentInput{.uri = "file:///workspace/top.sv",
+                                          .text = R"(
+module top;
+  import api::*;
+endmodule
+)"}});
+
+    REQUIRE(index.referenced_files_by_name.contains("api"));
+    CHECK(index.referenced_files_by_name.at("api") == std::vector<std::string>{"file:///workspace/top.sv"});
+    REQUIRE(index.referenced_files_by_name.contains("defs"));
+    CHECK(index.referenced_files_by_name.at("defs") == std::vector<std::string>{"file:///workspace/api.sv"});
+
+    const auto closure = semantic::discoveryDependencyClosure(index, std::string_view("top"));
+    CHECK(closure == std::vector<std::string>{"file:///workspace/api.sv",
+                                              "file:///workspace/defs.sv",
+                                              "file:///workspace/top.sv"});
+}
+
 TEST_CASE("SemanticEngine maintains a lightweight workspace discovery snapshot",
           "[analysis][semantic-engine][discovery]") {
     SemanticEngine engine;

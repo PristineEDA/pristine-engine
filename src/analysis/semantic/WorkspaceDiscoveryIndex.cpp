@@ -188,6 +188,18 @@ WorkspaceDiscoveryIndex buildWorkspaceDiscoveryIndex(std::uint64_t generation,
         }
 
         try {
+            for (const auto& export_reference : compilation_service.packageExports(document.text)) {
+                appendReference(file.referenced_top_level_names, export_reference.package_name);
+            }
+        }
+        catch (const std::exception& error) {
+            index.messages.push_back("Discovery package export scan failed for " + document.uri + ": " + error.what());
+        }
+        catch (...) {
+            index.messages.push_back("Discovery package export scan failed for " + document.uri);
+        }
+
+        try {
             for (const auto& include : compilation_service.includeDirectives(document.text)) {
                 if (!include.target.empty()) {
                     file.included_uris.push_back(joinFileUri(uriDirectory(document.uri), include.target));

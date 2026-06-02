@@ -134,6 +134,36 @@ TEST_CASE("CompilationService extracts package imports", "[analysis][imports]") 
     CHECK(*imports[2].item_name == "flag_t");
 }
 
+TEST_CASE("CompilationService extracts package exports separately from imports", "[analysis][imports][exports]") {
+    CompilationService service;
+
+    const auto imports = service.packageImports(
+        "export ignored::*;\n"
+        "import defs::*;\n");
+    REQUIRE(imports.size() == 1);
+    CHECK(imports[0].package_name == "defs");
+
+    const auto exports = service.packageExports(
+        "// export ignored::*;\n"
+        "export defs::*;\n"
+        "string text = \"export fake::*;\";\n"
+        "package api; export defs::word_t, util::flag_t; endpackage\n");
+
+    REQUIRE(exports.size() == 3);
+    CHECK(exports[0].package_name == "defs");
+    CHECK_FALSE(exports[0].item_name.has_value());
+    CHECK(exports[0].package_range.start_line == 1);
+    CHECK(exports[0].package_range.start_character == 7);
+    CHECK(exports[1].package_name == "defs");
+    REQUIRE(exports[1].item_name.has_value());
+    CHECK(*exports[1].item_name == "word_t");
+    CHECK(exports[1].package_range.start_line == 3);
+    CHECK(exports[1].package_range.start_character == 20);
+    CHECK(exports[2].package_name == "util");
+    REQUIRE(exports[2].item_name.has_value());
+    CHECK(*exports[2].item_name == "flag_t");
+}
+
 TEST_CASE("CompilationService extracts top-level document symbols", "[analysis][symbols]") {
     CompilationService service;
 

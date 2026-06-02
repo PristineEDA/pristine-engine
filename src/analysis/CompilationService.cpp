@@ -527,25 +527,33 @@ std::optional<LexicalIdentifier> tryReadIdentifier(std::string_view text, ScanSt
                                                  .end_character = state.character}};
 }
 
-std::vector<PackageImport> tryCollectPackageImports(std::string_view text, ScanState& state) {
-    constexpr std::string_view import_keyword = "import";
-    if (!startsWith(text, state.offset, import_keyword)) {
+struct PackageReferenceToken {
+    std::string package_name;
+    std::optional<std::string> item_name;
+    ParseRange package_range;
+    ParseRange range;
+};
+
+std::vector<PackageReferenceToken> tryCollectPackageReferences(std::string_view text,
+                                                               ScanState& state,
+                                                               std::string_view keyword) {
+    if (!startsWith(text, state.offset, keyword)) {
         return {};
     }
     if (state.offset > 0 && isIdentifierContinue(text[state.offset - 1])) {
         return {};
     }
-    if (state.offset + import_keyword.size() < text.size() &&
-        isIdentifierContinue(text[state.offset + import_keyword.size()])) {
+    if (state.offset + keyword.size() < text.size() &&
+        isIdentifierContinue(text[state.offset + keyword.size()])) {
         return {};
     }
 
     ScanState cursor = state;
-    for (size_t index = 0; index < import_keyword.size(); ++index) {
+    for (size_t index = 0; index < keyword.size(); ++index) {
         advanceAscii(text, cursor);
     }
 
-    std::vector<PackageImport> result;
+    std::vector<PackageReferenceToken> result;
     while (cursor.offset < text.size()) {
         skipHorizontalWhitespace(text, cursor);
         const auto package = tryReadIdentifier(text, cursor);
@@ -574,11 +582,11 @@ std::vector<PackageImport> tryCollectPackageImports(std::string_view text, ScanS
             }
         }
 
-        result.push_back(PackageImport{.package_name = package->name,
-                                       .item_name = wildcard ? std::nullopt
-                                                             : std::optional<std::string>(item->name),
-                                       .package_range = package->range,
-                                       .range = item.has_value() ? item->range : package->range});
+        result.push_back(PackageReferenceToken{.package_name = package->name,
+                                               .item_name = wildcard ? std::nullopt
+                                                                     : std::optional<std::string>(item->name),
+                                               .package_range = package->range,
+                                               .range = item.has_value() ? item->range : package->range});
 
         skipHorizontalWhitespace(text, cursor);
         if (cursor.offset >= text.size()) {
@@ -596,6 +604,32 @@ std::vector<PackageImport> tryCollectPackageImports(std::string_view text, ScanS
     }
 
     return {};
+}
+
+std::vector<PackageImport> tryCollectPackageImports(std::string_view text, ScanState& state) {
+    auto references = tryCollectPackageReferences(text, state, "import");
+    std::vector<PackageImport> result;
+    result.reserve(references.size());
+    for (auto& reference : references) {
+        result.push_back(PackageImport{.package_name = std::move(reference.package_name),
+                                       .item_name = std::move(reference.item_name),
+                                       .package_range = reference.package_range,
+                                       .range = reference.range});
+    }
+    return result;
+}
+
+std::vector<PackageExport> tryCollectPackageExports(std::string_view text, ScanState& state) {
+    auto references = tryCollectPackageReferences(text, state, "export");
+    std::vector<PackageExport> result;
+    result.reserve(references.size());
+    for (auto& reference : references) {
+        result.push_back(PackageExport{.package_name = std::move(reference.package_name),
+                                       .item_name = std::move(reference.item_name),
+                                       .package_range = reference.package_range,
+                                       .range = reference.range});
+    }
+    return result;
 }
 
 std::vector<PackageImport> collectPackageImports(std::string_view text) {
@@ -619,6 +653,36 @@ std::vector<PackageImport> collectPackageImports(std::string_view text) {
         if (!imports.empty()) {
             result.insert(result.end(), std::make_move_iterator(imports.begin()),
                           std::make_move_iterator(imports.end()));
+            continue;
+        }
+
+        advanceOne(text, state);
+    }
+
+    return result;
+}
+
+std::vector<PackageExport> collectPackageExports(std::string_view text) {
+    std::vector<PackageExport> result;
+    ScanState state{};
+    while (state.offset < text.size()) {
+        if (startsWith(text, state.offset, "//")) {
+            skipLineComment(text, state);
+            continue;
+        }
+        if (startsWith(text, state.offset, "/*")) {
+            skipBlockComment(text, state);
+            continue;
+        }
+        if (text[state.offset] == '"') {
+            skipStringLiteral(text, state);
+            continue;
+        }
+
+        auto exports = tryCollectPackageExports(text, state);
+        if (!exports.empty()) {
+            result.insert(result.end(), std::make_move_iterator(exports.begin()),
+                          std::make_move_iterator(exports.end()));
             continue;
         }
 
@@ -1524,6 +1588,10 @@ std::vector<MacroDefinition> CompilationService::macroDefinitions(std::string_vi
 
 std::vector<PackageImport> CompilationService::packageImports(std::string_view text) const {
     return collectPackageImports(text);
+}
+
+std::vector<PackageExport> CompilationService::packageExports(std::string_view text) const {
+    return collectPackageExports(text);
 }
 
 } // namespace pristine::analysis

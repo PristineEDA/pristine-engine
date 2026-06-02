@@ -120,6 +120,13 @@ struct PackageImport {
     ParseRange range;
 };
 
+struct PackageExport {
+    std::string package_name;
+    std::optional<std::string> item_name;
+    ParseRange package_range;
+    ParseRange range;
+};
+
 struct ParseResult {
     std::shared_ptr<slang::syntax::SyntaxTree> syntax_tree;
     std::vector<ParseDiagnostic> diagnostics;
@@ -143,6 +150,7 @@ public:
     [[nodiscard]] std::vector<IncludeDirective> includeDirectives(std::string_view text) const;
     [[nodiscard]] std::vector<MacroDefinition> macroDefinitions(std::string_view text) const;
     [[nodiscard]] std::vector<PackageImport> packageImports(std::string_view text) const;
+    [[nodiscard]] std::vector<PackageExport> packageExports(std::string_view text) const;
 };
 
 } // namespace pristine::analysis
