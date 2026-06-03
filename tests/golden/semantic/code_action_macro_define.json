@@ -1,0 +1,30 @@
+{
+  "name": "code action defines missing macro from slang diagnostic facts",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/action-macro.sv",
+      "text": "module top;\n  assign value = `MISSING(ready);\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "codeAction",
+    "uri": "file:///golden/semantic/action-macro.sv",
+    "range": {
+      "startLine": 1,
+      "startCharacter": 17,
+      "endLine": 1,
+      "endCharacter": 25
+    }
+  },
+  "expected": {
+    "actions": [
+      {
+        "title": "Define macro 'MISSING'",
+        "diagnosticCodes": [
+          "slang:UnknownDirective"
+        ],
+        "editContains": "`define MISSING(arg0) arg0"
+      }
+    ]
+  }
+}

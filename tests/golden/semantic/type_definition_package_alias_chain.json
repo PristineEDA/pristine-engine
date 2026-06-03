@@ -2,13 +2,13 @@
   "name": "type definition resolves package-qualified alias chain",
   "sources": [
     {
-      "uri": "file:///golden/semantic/package-alias-debt.sv",
+      "uri": "file:///golden/semantic/package-alias.sv",
       "text": "package defs;\n  typedef logic [7:0] base_t;\n  typedef base_t alias_t;\nendpackage\nmodule top;\n  defs::alias_t value;\nendmodule\n"
     }
   ],
   "request": {
     "kind": "typeDefinition",
-    "uri": "file:///golden/semantic/package-alias-debt.sv",
+    "uri": "file:///golden/semantic/package-alias.sv",
     "line": 5,
     "character": 10
   },
@@ -16,7 +16,7 @@
     "unresolved": false,
     "locations": [
       {
-        "uri": "file:///golden/semantic/package-alias-debt.sv",
+        "uri": "file:///golden/semantic/package-alias.sv",
         "range": {
           "start": {
             "line": 2,

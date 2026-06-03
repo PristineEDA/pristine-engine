@@ -133,6 +133,38 @@ TEST_CASE("CodeActionProvider creates include, module, port, and typedef fixes",
     }));
 }
 
+TEST_CASE("CodeActionProvider creates macro definitions from slang macro diagnostics",
+          "[analysis][semantic][code-action-provider][macro]") {
+    constexpr std::string_view uri = "file:///workspace/rtl/top.sv";
+    const auto document_text = "module top;\n"
+                               "  assign value = `MISSING(ready, valid);\n"
+                               "endmodule\n";
+    CodeActionContext context{.generation = 10,
+                              .snapshot_available = true,
+                              .document = SemanticEngineDocument{.uri = std::string(uri),
+                                                                 .text = document_text},
+                              .range = rangeAt(1, 17, 25),
+                              .diagnostics = {SemanticEngineDiagnostic{
+                                  .uri = std::string(uri),
+                                  .code = "slang:UnknownDirective",
+                                  .message = "unknown macro or compiler directive '`MISSING'",
+                                  .range = rangeAt(1, 18, 25),
+                                  .severity = 1}}};
+
+    const auto result = codeActionsAt(context);
+
+    REQUIRE_FALSE(result.unresolved);
+    REQUIRE(result.actions.size() == 1);
+    const auto& action = result.actions.front();
+    CHECK(action.title == "Define macro 'MISSING'");
+    REQUIRE(action.diagnostics.size() == 1);
+    CHECK(action.diagnostics.front().code == "slang:UnknownDirective");
+    REQUIRE(action.edits.size() == 1);
+    CHECK(action.edits.front().range.start_line == 0);
+    CHECK(action.edits.front().new_text.find("`define MISSING(arg0, arg1) arg0") !=
+          std::string::npos);
+}
+
 TEST_CASE("CodeActionProvider reports unavailable snapshot",
           "[analysis][semantic][code-action-provider]") {
     const CodeActionContext context{.generation = 5, .snapshot_available = false};

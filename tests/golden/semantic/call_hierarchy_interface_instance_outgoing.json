@@ -1,14 +1,14 @@
 {
-  "name": "call hierarchy records interface instance outgoing partial debt",
+  "name": "call hierarchy records interface instance outgoing call",
   "sources": [
     {
-      "uri": "file:///golden/semantic/call-if-outgoing-debt.sv",
+      "uri": "file:///golden/semantic/call-if-outgoing.sv",
       "text": "interface bus_if; endinterface\nmodule top;\n  bus_if bus();\nendmodule\n"
     }
   ],
   "request": {
     "kind": "callHierarchy",
-    "uri": "file:///golden/semantic/call-if-outgoing-debt.sv",
+    "uri": "file:///golden/semantic/call-if-outgoing.sv",
     "line": 1,
     "character": 8
   },

@@ -19,6 +19,12 @@ constexpr std::string_view kUnresolvedPackageDiagnosticCode = "unresolvedPackage
 constexpr std::string_view kUnresolvedTypeDiagnosticCode = "unresolvedType";
 constexpr std::string_view kMissingImportDiagnosticCode = "missingImport";
 
+struct MacroInvocation {
+    std::string name;
+    bool function_like = false;
+    size_t argument_count = 0;
+};
+
 int comparePosition(int lhs_line, int lhs_character, int rhs_line, int rhs_character) {
     if (lhs_line != rhs_line) {
         return lhs_line < rhs_line ? -1 : 1;
@@ -91,6 +97,106 @@ bool isValidIdentifier(std::string_view value) {
     return std::all_of(value.begin() + 1, value.end(), isIdentifierContinue);
 }
 
+std::string lowercase(std::string_view value) {
+    std::string lowered;
+    lowered.reserve(value.size());
+    for (const char ch : value) {
+        lowered.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(ch))));
+    }
+    return lowered;
+}
+
+bool looksLikeUndefinedMacroDiagnostic(const SemanticEngineDiagnostic& diagnostic) {
+    if (!diagnostic.code.starts_with("slang:")) {
+        return false;
+    }
+    const auto code = lowercase(diagnostic.code);
+    const auto message = lowercase(diagnostic.message);
+    return code.find("macro") != std::string::npos ||
+           (message.find("macro") != std::string::npos &&
+            (message.find("undefined") != std::string::npos ||
+             message.find("not defined") != std::string::npos ||
+             message.find("unknown") != std::string::npos));
+}
+
+bool offsetsIntersect(size_t lhs_start, size_t lhs_end, size_t rhs_start, size_t rhs_end) {
+    return lhs_end > rhs_start && rhs_end > lhs_start;
+}
+
+size_t countMacroArguments(std::string_view text, size_t open_paren_offset) {
+    size_t depth = 0;
+    size_t argument_count = 0;
+    bool saw_argument_token = false;
+    for (size_t offset = open_paren_offset; offset < text.size(); ++offset) {
+        const char ch = text[offset];
+        if (ch == '(') {
+            ++depth;
+            continue;
+        }
+        if (ch == ')') {
+            if (depth == 0) {
+                return argument_count;
+            }
+            --depth;
+            if (depth == 0) {
+                return saw_argument_token ? argument_count + 1 : 0;
+            }
+            continue;
+        }
+        if (depth != 1) {
+            continue;
+        }
+        if (ch == ',') {
+            ++argument_count;
+            saw_argument_token = false;
+            continue;
+        }
+        if (!std::isspace(static_cast<unsigned char>(ch))) {
+            saw_argument_token = true;
+        }
+    }
+    return saw_argument_token ? argument_count + 1 : argument_count;
+}
+
+std::optional<MacroInvocation> macroInvocationFromDiagnostic(std::string_view text,
+                                                             const ParseRange& range) {
+    const auto start_offset = utf8OffsetAtUtf16Position(text,
+                                                        range.start_line,
+                                                        range.start_character);
+    const auto end_offset = utf8OffsetAtUtf16Position(text,
+                                                      range.end_line,
+                                                      range.end_character);
+    if (!start_offset.has_value() || !end_offset.has_value()) {
+        return std::nullopt;
+    }
+
+    const auto line_start = text.rfind('\n', *start_offset);
+    const size_t search_begin = line_start == std::string_view::npos ? 0 : line_start + 1;
+    const auto line_end = text.find('\n', *start_offset);
+    const size_t search_end = line_end == std::string_view::npos ? text.size() : line_end;
+    auto tick = text.find('`', search_begin);
+    while (tick != std::string_view::npos && tick < search_end) {
+        const size_t name_start = tick + 1;
+        if (name_start < text.size() && isIdentifierStart(text[name_start])) {
+            size_t name_end = name_start + 1;
+            while (name_end < text.size() && isIdentifierContinue(text[name_end])) {
+                ++name_end;
+            }
+            if (offsetsIntersect(name_start, name_end, *start_offset, *end_offset) ||
+                offsetsIntersect(tick, name_end, *start_offset, *end_offset)) {
+                MacroInvocation invocation;
+                invocation.name = std::string(text.substr(name_start, name_end - name_start));
+                invocation.function_like = name_end < text.size() && text[name_end] == '(';
+                invocation.argument_count =
+                    invocation.function_like ? countMacroArguments(text, name_end) : 0;
+                return invocation;
+            }
+        }
+        tick = text.find('`', tick + 1);
+    }
+    return std::nullopt;
+}
+
 std::string unknownIncludeMessage(std::string_view target) {
     return std::string("Include file '") + std::string(target) + "' could not be resolved.";
 }
@@ -131,6 +237,30 @@ std::string typedefSkeletonInsertionText(std::string_view text, std::string_view
     insertion += "typedef logic ";
     insertion += type_name;
     insertion += ";\n";
+    return insertion;
+}
+
+std::string macroDefinitionInsertionText(const MacroInvocation& invocation) {
+    std::string insertion = "`define ";
+    insertion += invocation.name;
+    if (invocation.function_like) {
+        insertion += "(";
+        for (size_t index = 0; index < invocation.argument_count; ++index) {
+            if (index != 0) {
+                insertion += ", ";
+            }
+            insertion += "arg";
+            insertion += std::to_string(index);
+        }
+        insertion += ")";
+        if (invocation.argument_count > 0) {
+            insertion += " arg0";
+        }
+    }
+    else {
+        insertion += " 1";
+    }
+    insertion += "\n\n";
     return insertion;
 }
 
@@ -429,6 +559,30 @@ SemanticCodeActionResult codeActionsAt(const CodeActionContext& context) {
                 .new_text = missingPortConnectionText(missing_ports, !cell.connections.empty())});
             result.actions.push_back(std::move(action));
         }
+    }
+
+    std::set<std::string> emitted_macro_names;
+    for (const auto& diagnostic : context.diagnostics) {
+        if (!looksLikeUndefinedMacroDiagnostic(diagnostic) ||
+            !rangesIntersect(diagnostic.range, context.range)) {
+            continue;
+        }
+        const auto invocation = macroInvocationFromDiagnostic(context.document.text, diagnostic.range);
+        if (!invocation.has_value() || !isValidIdentifier(invocation->name) ||
+            !emitted_macro_names.insert(invocation->name).second) {
+            continue;
+        }
+        SemanticCodeAction action;
+        action.title = "Define macro '" + invocation->name + "'";
+        action.kind = "quickfix";
+        action.diagnostics.push_back(SemanticDiagnosticData{.code = diagnostic.code,
+                                                            .message = diagnostic.message,
+                                                            .range = diagnostic.range,
+                                                            .severity = diagnostic.severity});
+        action.edits.push_back(SemanticCodeActionEdit{.uri = context.document.uri,
+                                                      .range = ParseRange{},
+                                                      .new_text = macroDefinitionInsertionText(*invocation)});
+        result.actions.push_back(std::move(action));
     }
 
     std::set<std::string> emitted_package_names;
