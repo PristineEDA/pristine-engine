@@ -1,18 +1,23 @@
 {
-  "name": "signature help records current nested function call debt explicitly",
+  "name": "signature help prefers the nested function call second argument",
   "sources": [
     {
       "uri": "file:///golden/semantic/signature-nested-call-second.sv",
-      "text": "module top;\n  function int mix(input int lhs, input int rhs); return lhs + rhs; endfunction\n  function int pack(input int a, input int b); return a + b; endfunction\n  int value = mix(pack(a, b), rhs_value);\nendmodule\n"
+      "text": "module top;\n  int a;\n  int b;\n  int rhs_value;\n  function int mix(input int lhs, input int rhs); return lhs + rhs; endfunction\n  function int pack(input int inner_a, input int inner_b); return inner_a + inner_b; endfunction\n  int value = mix(pack(a, b), rhs_value);\nendmodule\n"
     }
   ],
   "request": {
     "kind": "signatureHelp",
     "uri": "file:///golden/semantic/signature-nested-call-second.sv",
-    "line": 3,
-    "character": 36
+    "line": 6,
+    "character": 27
   },
   "expected": {
-    "unresolved": true
+    "label": "function int pack(input int inner_a, input int inner_b)",
+    "activeParameter": 1,
+    "parameters": [
+      "input int inner_a",
+      "input int inner_b"
+    ]
   }
 }

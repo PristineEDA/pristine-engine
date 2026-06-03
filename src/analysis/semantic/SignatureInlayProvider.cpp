@@ -117,6 +117,19 @@ std::optional<size_t> openParenBeforePosition(std::string_view text,
     return std::nullopt;
 }
 
+bool rangeIsNarrowerAtPosition(const ParseRange& candidate, const ParseRange& current) {
+    if (candidate.start_line != current.start_line) {
+        return candidate.start_line > current.start_line;
+    }
+    if (candidate.start_character != current.start_character) {
+        return candidate.start_character > current.start_character;
+    }
+    if (candidate.end_line != current.end_line) {
+        return candidate.end_line < current.end_line;
+    }
+    return candidate.end_character < current.end_character;
+}
+
 std::optional<ParseRange> pointRangeAtUtf8Offset(std::string_view text, size_t offset) {
     if (offset > text.size()) {
         return std::nullopt;
@@ -337,6 +350,8 @@ SemanticSignatureHelpResult signatureHelpAt(const SignatureInlayContext& context
         return result;
     }
 
+    const SignatureInlayCall* matched_call = nullptr;
+    std::optional<size_t> matched_open_paren;
     for (const auto& call : context.calls) {
         if (!parseRangeContainsPosition(call.range, line, character)) {
             continue;
@@ -356,13 +371,20 @@ SemanticSignatureHelpResult signatureHelpAt(const SignatureInlayContext& context
         if (!open_paren.has_value()) {
             continue;
         }
-        result.label = callSignatureLabel(call);
-        result.parameters = call.parameters;
+        if (matched_call == nullptr ||
+            rangeIsNarrowerAtPosition(call.range, matched_call->range)) {
+            matched_call = &call;
+            matched_open_paren = open_paren;
+        }
+    }
+    if (matched_call != nullptr && matched_open_paren.has_value()) {
+        result.label = callSignatureLabel(*matched_call);
+        result.parameters = matched_call->parameters;
         const auto parameter_count = result.parameters.size();
         result.active_parameter = parameter_count == 0
                                       ? 0
                                       : std::min(activeParameterAt(*context.document_text,
-                                                                   *open_paren,
+                                                                   *matched_open_paren,
                                                                    *position_offset),
                                                  static_cast<int>(parameter_count) - 1);
         return result;

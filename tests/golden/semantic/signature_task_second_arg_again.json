@@ -1,18 +1,23 @@
 {
-  "name": "signature help current debt for multi-argument task fixture",
+  "name": "signature help reports repeated multi-argument task second argument",
   "sources": [
     {
       "uri": "file:///golden/semantic/signature-task-second-again.sv",
-      "text": "module top;\n  task automatic emit(input logic ready, input logic valid);\n  endtask\n  initial begin\n    emit(ready, valid);\n  end\nendmodule\n"
+      "text": "module top;\n  logic ready;\n  logic valid;\n  task automatic emit(input logic ready_arg, input logic valid_arg);\n  endtask\n  initial begin\n    emit(ready, valid);\n  end\nendmodule\n"
     }
   ],
   "request": {
     "kind": "signatureHelp",
     "uri": "file:///golden/semantic/signature-task-second-again.sv",
-    "line": 4,
+    "line": 6,
     "character": 21
   },
   "expected": {
-    "unresolved": true
+    "label": "task emit(input logic ready_arg, input logic valid_arg)",
+    "activeParameter": 1,
+    "parameters": [
+      "input logic ready_arg",
+      "input logic valid_arg"
+    ]
   }
 }

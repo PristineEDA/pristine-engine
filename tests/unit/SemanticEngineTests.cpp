@@ -754,6 +754,29 @@ TEST_CASE("SemanticEngine provides AST-backed function and task signature help",
     CHECK(task_signature.active_parameter == 0);
 }
 
+TEST_CASE("SemanticEngine prefers innermost AST-backed function calls for signature help",
+          "[analysis][semantic-engine][signature][function][nested][no-fallback]") {
+    SemanticEngine engine;
+    engine.updateDocument("file:///workspace/nested-calls.sv",
+                          "module top;\n"
+                          "  int a;\n"
+                          "  int b;\n"
+                          "  int rhs_value;\n"
+                          "  function int mix(input int lhs, input int rhs); return lhs + rhs; endfunction\n"
+                          "  function int pack(input int inner_a, input int inner_b); return inner_a + inner_b; endfunction\n"
+                          "  int value = mix(pack(a, b), rhs_value);\n"
+                          "endmodule\n",
+                          SemanticEngineDocumentState{.version = 1, .is_open = true});
+
+    const auto signature = engine.signatureHelpAt("file:///workspace/nested-calls.sv", 6, 27);
+
+    REQUIRE_FALSE(signature.unresolved);
+    CHECK(signature.label == "function int pack(input int inner_a, input int inner_b)");
+    REQUIRE(signature.parameters.size() == 2);
+    CHECK(signature.parameters[1] == "input int inner_b");
+    CHECK(signature.active_parameter == 1);
+}
+
 TEST_CASE("SemanticEngine emits AST-backed port inlay hints for module instances",
           "[analysis][semantic-engine][inlay][ports]") {
     SemanticEngine engine;
