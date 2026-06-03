@@ -1449,6 +1449,41 @@ TEST_CASE("SemanticEngine traces backward cone through AstIndex identifiers with
     CHECK(cone.edges.front().location.range.start_line == 3);
 }
 
+TEST_CASE("SemanticEngine traces backward cone through parameterized width assignments",
+          "[analysis][semantic-engine][design][cone][parameterized][no-fallback]") {
+    SemanticEngine engine;
+    engine.configure(SemanticEngineConfig{.top_modules = {"top"}});
+    engine.updateDocument("file:///workspace/cone-param-width.sv",
+                          "module top #(parameter int WIDTH = 8);\n"
+                          "  logic [WIDTH-1:0] a;\n"
+                          "  logic [WIDTH-1:0] b;\n"
+                          "  logic [WIDTH-1:0] mid;\n"
+                          "  logic [WIDTH-1:0] out;\n"
+                          "  assign mid = a ^ b;\n"
+                          "  assign out = mid;\n"
+                          "endmodule\n",
+                          SemanticEngineDocumentState{.version = 1, .is_open = true});
+
+    const auto cone = engine.backwardConeAt("file:///workspace/cone-param-width.sv", 4, 20);
+
+    REQUIRE_FALSE(cone.unresolved);
+    REQUIRE(cone.root_symbol_id.has_value());
+    CHECK(cone.nodes.size() == 4);
+    CHECK(cone.edges.size() == 3);
+    CHECK(std::any_of(cone.nodes.begin(), cone.nodes.end(), [](const SemanticConeNode& node) {
+        return node.name == "out";
+    }));
+    CHECK(std::any_of(cone.nodes.begin(), cone.nodes.end(), [](const SemanticConeNode& node) {
+        return node.name == "mid";
+    }));
+    CHECK(std::any_of(cone.edges.begin(), cone.edges.end(), [](const SemanticConeEdge& edge) {
+        return edge.expression == "mid";
+    }));
+    CHECK(std::any_of(cone.edges.begin(), cone.edges.end(), [](const SemanticConeEdge& edge) {
+        return edge.expression == "a ^ b";
+    }));
+}
+
 TEST_CASE("SemanticEngine resolves type definitions through AstIndex type references",
           "[analysis][semantic-engine][type-definition][no-fallback]") {
     SemanticEngine engine;
