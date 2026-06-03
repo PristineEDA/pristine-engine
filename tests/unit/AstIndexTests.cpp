@@ -456,6 +456,69 @@ TEST_CASE("AstIndex derives declared type references from slang AST",
     CHECK(locations.front().range.end_character == 30);
 }
 
+TEST_CASE("AstIndex resolves typedef alias chain type references by indexed type facts",
+          "[analysis][semantic][ast-index][type-definition][alias][no-fallback]") {
+    SnapshotBuildInput input{.generation = 36,
+                             .documents = {{"file:///workspace/alias.sv",
+                                            SemanticEngineDocument{
+                                                .uri = "file:///workspace/alias.sv",
+                                                .text = "package defs;\n"
+                                                        "  typedef logic [7:0] base_t;\n"
+                                                        "  typedef base_t alias_t;\n"
+                                                        "endpackage\n"
+                                                        "module top;\n"
+                                                        "  import defs::*;\n"
+                                                        "  alias_t value;\n"
+                                                        "endmodule\n",
+                                                .version = 1,
+                                                .is_open = true}}}};
+
+    auto output = SnapshotBuilder{}.build(std::move(input));
+    REQUIRE(output.data != nullptr);
+
+    const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
+    const auto alias_locations = typeDefinitionLocationsAt(view, "file:///workspace/alias.sv", 6, 3);
+    REQUIRE(alias_locations.size() == 1);
+    CHECK(alias_locations.front().uri == "file:///workspace/alias.sv");
+    CHECK(alias_locations.front().range.start_line == 2);
+    CHECK(alias_locations.front().range.start_character == 17);
+    CHECK(alias_locations.front().range.end_character == 24);
+
+    const auto base_locations = typeDefinitionLocationsAt(view, "file:///workspace/alias.sv", 2, 10);
+    REQUIRE(base_locations.size() == 1);
+    CHECK(base_locations.front().range.start_line == 1);
+    CHECK(base_locations.front().range.start_character == 22);
+    CHECK(base_locations.front().range.end_character == 28);
+}
+
+TEST_CASE("AstIndex alias lookup does not resolve unimported package members by name",
+          "[analysis][semantic][ast-index][type-definition][alias][no-fallback]") {
+    SnapshotBuildInput input{.generation = 37,
+                             .documents = {{"file:///workspace/defs.sv",
+                                            SemanticEngineDocument{
+                                                .uri = "file:///workspace/defs.sv",
+                                                .text = "package defs;\n"
+                                                        "  typedef logic exported_t;\n"
+                                                        "endpackage\n",
+                                                .version = 1}},
+                                           {"file:///workspace/top.sv",
+                                            SemanticEngineDocument{
+                                                .uri = "file:///workspace/top.sv",
+                                                .text = "module top;\n"
+                                                        "  exported_t value;\n"
+                                                        "endmodule\n",
+                                                .version = 1,
+                                                .is_open = true}}}};
+
+    auto output = SnapshotBuilder{}.build(std::move(input));
+    REQUIRE(output.data != nullptr);
+
+    const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
+    const auto locations = typeDefinitionLocationsAt(view, "file:///workspace/top.sv", 1, 3);
+
+    CHECK(locations.empty());
+}
+
 TEST_CASE("AstIndex derives function and task signature calls from slang AST",
           "[analysis][semantic][ast-index][signature][function][task][no-fallback]") {
     SnapshotBuildInput input{.generation = 39,

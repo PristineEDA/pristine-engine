@@ -1,5 +1,5 @@
 {
-  "name": "type definition marks unresolved typedef alias chains as next-stage debt",
+  "name": "type definition resolves typedef alias chains through AstIndex facts",
   "sources": [
     {
       "uri": "file:///golden/semantic/alias-chain.sv",
@@ -9,11 +9,19 @@
   "request": {
     "kind": "typeDefinition",
     "uri": "file:///golden/semantic/alias-chain.sv",
-    "line": 5,
+    "line": 6,
     "character": 3
   },
   "expected": {
-    "unresolved": true,
-    "count": 0
+    "count": 1,
+    "locations": [
+      {
+        "uri": "file:///golden/semantic/alias-chain.sv",
+        "startLine": 2,
+        "startCharacter": 17,
+        "endLine": 2,
+        "endCharacter": 24
+      }
+    ]
   }
 }

@@ -1,0 +1,53 @@
+{
+  "name": "schematic exposes discovery closure telemetry for Pristine request shape",
+  "config": {
+    "topModules": [
+      "top"
+    ]
+  },
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/schematic-closure-child.sv",
+      "text": "module child(output logic ready);\nendmodule\n"
+    },
+    {
+      "uri": "file:///golden/semantic/schematic-closure-top.sv",
+      "text": "module top;\n  logic ready;\n  child u_child(.ready(ready));\nendmodule\n"
+    },
+    {
+      "uri": "file:///golden/semantic/schematic-closure-unused.sv",
+      "text": "module unused;\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "schematic",
+    "moduleName": "top",
+    "maxDepth": 8
+  },
+  "expected": {
+    "discoveryClosureUsed": true,
+    "discoveryClosureRoot": "top",
+    "discoveryClosureCandidateDocumentCount": 2,
+    "discoveryClosureDocumentCount": 2,
+    "discoveryClosureMissingCandidateCount": 0,
+    "discoveryClosureDedupedDocumentCount": 0,
+    "rootModule": "top",
+    "modules": [
+      "top",
+      "child"
+    ],
+    "cells": [
+      {
+        "module": "top",
+        "name": "u_child",
+        "type": "child",
+        "connections": [
+          "ready"
+        ]
+      }
+    ],
+    "nets": [
+      "ready"
+    ]
+  }
+}

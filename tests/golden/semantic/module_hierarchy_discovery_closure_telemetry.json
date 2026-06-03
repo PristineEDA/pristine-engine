@@ -1,0 +1,41 @@
+{
+  "name": "module hierarchy exposes discovery closure telemetry without using it as semantic truth",
+  "config": {
+    "topModules": [
+      "top"
+    ]
+  },
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/closure-child.sv",
+      "text": "module child;\nendmodule\n"
+    },
+    {
+      "uri": "file:///golden/semantic/closure-top.sv",
+      "text": "module top;\n  child u_child();\nendmodule\n"
+    },
+    {
+      "uri": "file:///golden/semantic/closure-unrelated.sv",
+      "text": "module unrelated;\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "moduleHierarchy",
+    "moduleName": "top",
+    "maxDepth": 8
+  },
+  "expected": {
+    "discoveryClosureUsed": true,
+    "discoveryClosureRoot": "top",
+    "discoveryClosureCandidateDocumentCount": 2,
+    "discoveryClosureDocumentCount": 2,
+    "discoveryClosureMissingCandidateCount": 0,
+    "discoveryClosureDedupedDocumentCount": 0,
+    "rootModules": [
+      "top"
+    ],
+    "modules": [
+      "child"
+    ]
+  }
+}

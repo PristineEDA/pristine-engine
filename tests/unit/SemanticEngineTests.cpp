@@ -966,6 +966,128 @@ TEST_CASE("SemanticEngine invalidates discovery closure caches for affected hier
     CHECK(deleted_schematic.discovery_closure_document_count < changed_schematic.discovery_closure_document_count);
 }
 
+TEST_CASE("SemanticEngine invalidates workspace symbol and graph caches for add change delete rebuilds",
+          "[analysis][semantic-engine][cache][affected][workspace-symbol][hierarchy][schematic]") {
+    SemanticEngine engine;
+    engine.configure(SemanticEngineConfig{.top_modules = {"top"}});
+    engine.updateDocument("file:///workspace/top.sv",
+                          "module top;\n"
+                          "  child u_child();\n"
+                          "endmodule\n",
+                          SemanticEngineDocumentState{.version = 1});
+    engine.updateDocument("file:///workspace/unrelated.sv",
+                          "module unrelated;\n"
+                          "endmodule\n",
+                          SemanticEngineDocumentState{.version = 1});
+
+    const auto initial_symbols = engine.workspaceSymbols("child");
+    REQUIRE_FALSE(initial_symbols.unresolved);
+    CHECK(std::none_of(initial_symbols.symbols.begin(),
+                       initial_symbols.symbols.end(),
+                       [](const SemanticWorkspaceSymbol& symbol) {
+                           return symbol.name == "child" &&
+                                  symbol.location.uri == "file:///workspace/child.sv";
+                       }));
+
+    const auto initial_hierarchy = engine.moduleHierarchy(std::string_view("top"), 8);
+    REQUIRE_FALSE(initial_hierarchy.unresolved);
+    CHECK(initial_hierarchy.partial);
+    CHECK_FALSE(initial_hierarchy.discovery_closure_cache_hit);
+    REQUIRE(initial_hierarchy.roots.size() == 1);
+    REQUIRE(initial_hierarchy.roots.front().children.size() == 1);
+    CHECK(initial_hierarchy.roots.front().children.front().unresolved);
+
+    const auto cached_hierarchy = engine.moduleHierarchy(std::string_view("top"), 8);
+    CHECK(cached_hierarchy.discovery_closure_cache_hit);
+
+    engine.updateDocument("file:///workspace/child.sv",
+                          "module child;\n"
+                          "endmodule\n",
+                          SemanticEngineDocumentState{.version = 1});
+
+    const auto created_symbols = engine.workspaceSymbols("child");
+    REQUIRE_FALSE(created_symbols.unresolved);
+    CHECK(created_symbols.generation > initial_symbols.generation);
+    CHECK(std::any_of(created_symbols.symbols.begin(),
+                      created_symbols.symbols.end(),
+                      [](const SemanticWorkspaceSymbol& symbol) {
+                          return symbol.name == "child" &&
+                                 symbol.location.uri == "file:///workspace/child.sv";
+                      }));
+
+    const auto created_hierarchy = engine.moduleHierarchy(std::string_view("top"), 8);
+    REQUIRE_FALSE(created_hierarchy.unresolved);
+    CHECK_FALSE(created_hierarchy.partial);
+    CHECK_FALSE(created_hierarchy.discovery_closure_cache_hit);
+    REQUIRE(created_hierarchy.roots.size() == 1);
+    REQUIRE(created_hierarchy.roots.front().children.size() == 1);
+    CHECK_FALSE(created_hierarchy.roots.front().children.front().unresolved);
+
+    const auto created_schematic = engine.schematic(std::string_view("top"), 8);
+    REQUIRE_FALSE(created_schematic.unresolved);
+    CHECK_FALSE(created_schematic.discovery_closure_cache_hit);
+    CHECK(std::any_of(created_schematic.modules.begin(),
+                      created_schematic.modules.end(),
+                      [](const SemanticSchematicModuleView& view) {
+                          return view.module.name == "child";
+                      }));
+
+    engine.updateDocument("file:///workspace/grandchild.sv",
+                          "module grandchild;\n"
+                          "endmodule\n",
+                          SemanticEngineDocumentState{.version = 1});
+    engine.updateDocument("file:///workspace/child.sv",
+                          "module child;\n"
+                          "  grandchild u_grandchild();\n"
+                          "endmodule\n",
+                          SemanticEngineDocumentState{.version = 2});
+
+    const auto changed_hierarchy = engine.moduleHierarchy(std::string_view("top"), 8);
+    REQUIRE_FALSE(changed_hierarchy.unresolved);
+    CHECK_FALSE(changed_hierarchy.discovery_closure_cache_hit);
+    REQUIRE(changed_hierarchy.roots.size() == 1);
+    REQUIRE(changed_hierarchy.roots.front().children.size() == 1);
+    REQUIRE(changed_hierarchy.roots.front().children.front().children.size() == 1);
+    CHECK(changed_hierarchy.roots.front().children.front().children.front().module_name == "grandchild");
+
+    const auto changed_symbols = engine.workspaceSymbols("grandchild");
+    REQUIRE_FALSE(changed_symbols.unresolved);
+    CHECK(std::any_of(changed_symbols.symbols.begin(),
+                      changed_symbols.symbols.end(),
+                      [](const SemanticWorkspaceSymbol& symbol) {
+                          return symbol.name == "grandchild";
+                      }));
+
+    engine.removeDocument("file:///workspace/child.sv");
+
+    const auto deleted_symbols = engine.workspaceSymbols("child");
+    REQUIRE_FALSE(deleted_symbols.unresolved);
+    CHECK(deleted_symbols.generation > created_symbols.generation);
+    CHECK(std::none_of(deleted_symbols.symbols.begin(),
+                       deleted_symbols.symbols.end(),
+                       [](const SemanticWorkspaceSymbol& symbol) {
+                           return symbol.name == "child" &&
+                                  symbol.location.uri == "file:///workspace/child.sv";
+                       }));
+
+    const auto deleted_hierarchy = engine.moduleHierarchy(std::string_view("top"), 8);
+    REQUIRE_FALSE(deleted_hierarchy.unresolved);
+    CHECK(deleted_hierarchy.partial);
+    CHECK_FALSE(deleted_hierarchy.discovery_closure_cache_hit);
+    REQUIRE(deleted_hierarchy.roots.size() == 1);
+    REQUIRE(deleted_hierarchy.roots.front().children.size() == 1);
+    CHECK(deleted_hierarchy.roots.front().children.front().unresolved);
+
+    const auto deleted_schematic = engine.schematic(std::string_view("top"), 8);
+    REQUIRE_FALSE(deleted_schematic.unresolved);
+    CHECK_FALSE(deleted_schematic.discovery_closure_cache_hit);
+    CHECK_FALSE(std::any_of(deleted_schematic.modules.begin(),
+                            deleted_schematic.modules.end(),
+                            [](const SemanticSchematicModuleView& view) {
+                                return view.module.name == "child";
+                            }));
+}
+
 TEST_CASE("SemanticEngine invalidates discovery-backed graph caches after index config changes",
           "[analysis][semantic-engine][discovery][hierarchy][schematic][cache][config]") {
     SemanticEngine engine;

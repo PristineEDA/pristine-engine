@@ -149,6 +149,70 @@ bool isModuleDefinitionKind(std::string_view kind) {
     return kind == "Definition" || kind == "Instance" || kind == "InstanceBody";
 }
 
+bool documentImportsPackage(const SnapshotData& data,
+                            std::string_view document_uri,
+                            std::string_view package_name) {
+    const auto imports_it = data.package_imports_by_uri.find(std::string(document_uri));
+    if (imports_it == data.package_imports_by_uri.end()) {
+        return false;
+    }
+    return std::any_of(imports_it->second.begin(),
+                       imports_it->second.end(),
+                       [&](const PackageImport& package_import) {
+                           return package_import.package_name == package_name;
+                       });
+}
+
+bool packageIsDeclaredInUri(const SnapshotData& data,
+                            std::string_view package_name,
+                            std::string_view uri) {
+    return std::any_of(data.symbols_by_id.begin(),
+                       data.symbols_by_id.end(),
+                       [&](const auto& entry) {
+                           const auto& identity = entry.second.identity;
+                           return identity.kind == "Package" && identity.name == package_name &&
+                                  identity.location.uri == uri;
+                       });
+}
+
+std::vector<SemanticLocation> visibleTypeDefinitionLocationsByName(
+    const SnapshotData& data,
+    std::string_view reference_uri,
+    std::string_view name,
+    std::optional<std::string_view> qualified_package) {
+    std::vector<SemanticLocation> locations;
+    for (const auto& [_, symbol] : data.symbols_by_id) {
+        const auto& identity = symbol.identity;
+        if (identity.name != name || !isTypeDefinitionKind(identity.kind) ||
+            isModuleDefinitionKind(identity.kind)) {
+            continue;
+        }
+        if (identity.location.uri == reference_uri) {
+            locations.push_back(identity.location);
+            continue;
+        }
+        if (qualified_package.has_value()) {
+            if (packageIsDeclaredInUri(data, *qualified_package, identity.location.uri)) {
+                locations.push_back(identity.location);
+            }
+            continue;
+        }
+        for (const auto& [__, package_symbol] : data.symbols_by_id) {
+            const auto& package_identity = package_symbol.identity;
+            if (package_identity.kind != "Package" ||
+                package_identity.location.uri != identity.location.uri) {
+                continue;
+            }
+            if (documentImportsPackage(data, reference_uri, package_identity.name)) {
+                locations.push_back(identity.location);
+            }
+        }
+    }
+    std::sort(locations.begin(), locations.end(), locationLess);
+    locations.erase(std::unique(locations.begin(), locations.end(), sameLocation), locations.end());
+    return locations;
+}
+
 std::string directionName(slang::ast::ArgumentDirection direction) {
     switch (direction) {
         case slang::ast::ArgumentDirection::In:
@@ -1637,6 +1701,13 @@ void addTypeReferenceForSymbol(SnapshotData& data,
         }
     }
 
+    std::string type_name = type.toString();
+    if (document_it != documents.end()) {
+        if (auto text = textForRange(document_it->second.text, reference_location->range)) {
+            type_name = std::move(*text);
+        }
+    }
+
     std::vector<SemanticLocation> definitions;
     if (const auto type_location = declarationLocationForSymbol(source_manager, type)) {
         definitions.push_back(*type_location);
@@ -1646,6 +1717,21 @@ void addTypeReferenceForSymbol(SnapshotData& data,
             sameLocation(indexed_symbol.identity.location, *reference_location)) {
             definitions.push_back(indexed_symbol.identity.location);
         }
+    }
+    if (definitions.empty()) {
+        const auto delimiter = type_name.rfind("::");
+        const auto qualified_package = delimiter == std::string::npos
+                                           ? std::optional<std::string_view>{}
+                                           : std::optional<std::string_view>{
+                                                 std::string_view(type_name).substr(0, delimiter)};
+        const auto lookup_name = delimiter == std::string::npos
+                                     ? std::string_view(type_name)
+                                     : std::string_view(type_name).substr(delimiter + 2);
+        auto named_definitions = visibleTypeDefinitionLocationsByName(data,
+                                                                      reference_location->uri,
+                                                                      lookup_name,
+                                                                      qualified_package);
+        definitions.insert(definitions.end(), named_definitions.begin(), named_definitions.end());
     }
     std::sort(definitions.begin(), definitions.end(), locationLess);
     definitions.erase(std::unique(definitions.begin(), definitions.end(), sameLocation),
@@ -1658,12 +1744,6 @@ void addTypeReferenceForSymbol(SnapshotData& data,
                                        });
     if (duplicate) {
         return;
-    }
-    std::string type_name = type.toString();
-    if (document_it != documents.end()) {
-        if (auto text = textForRange(document_it->second.text, reference_location->range)) {
-            type_name = std::move(*text);
-        }
     }
 
     references.push_back(SnapshotTypeReference{.reference = *reference_location,
