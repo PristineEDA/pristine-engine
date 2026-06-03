@@ -1,25 +1,25 @@
 {
-  "name": "member completion keeps interface modport-like names in member context",
+  "name": "member completion restricts real interface modport members",
   "sources": [
     {
       "uri": "file:///golden/semantic/completion-modport-member.sv",
-      "text": "interface bus_if;\nendinterface\nmodule top;\n  logic bus;\n  logic master_ready;\n  logic master_valid;\n  logic slave_ready;\n  initial begin\n    bus.master_\n  end\nendmodule\n"
+      "text": "interface bus_if;\n  logic status_ready;\n  logic status_valid;\n  logic payload;\n  modport master(input status_ready, output status_valid);\nendinterface\nmodule consumer(bus_if.master master_bus);\n  initial begin\n    master_bus.\n  end\nendmodule\n"
     }
   ],
   "request": {
     "kind": "completion",
     "uri": "file:///golden/semantic/completion-modport-member.sv",
     "line": 8,
-    "character": 16,
-    "prefix": "master_"
+    "character": 15,
+    "prefix": ""
   },
   "expected": {
     "labels": [
-      "master_ready",
-      "master_valid"
+      "status_ready",
+      "status_valid"
     ],
     "absentLabels": [
-      "slave_ready"
+      "payload"
     ]
   }
 }

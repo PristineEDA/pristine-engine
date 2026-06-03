@@ -631,6 +631,66 @@ TEST_CASE("SemanticEngine completes class members through typed AstIndex view",
     }));
 }
 
+TEST_CASE("SemanticEngine completes interface and modport members through typed AstIndex view",
+          "[analysis][semantic-engine][completion][member][interface][modport]") {
+    SemanticEngine engine;
+    engine.updateDocument("file:///workspace/interface-member.sv",
+                          "interface bus_if;\n"
+                          "  logic status_valid;\n"
+                          "  logic status_ready;\n"
+                          "  logic payload;\n"
+                          "  modport master(input status_ready, output status_valid);\n"
+                          "endinterface\n"
+                          "module consumer(bus_if.master master_bus);\n"
+                          "  initial begin\n"
+                          "    master_bus.\n"
+                          "  end\n"
+                          "endmodule\n"
+                          "module top;\n"
+                          "  bus_if bus();\n"
+                          "  initial begin\n"
+                          "    bus.status_\n"
+                          "  end\n"
+                          "endmodule\n",
+                          SemanticEngineDocumentState{.version = 1, .is_open = true});
+
+    const auto modport_completions = engine.completionsAt("file:///workspace/interface-member.sv", 8, 15, "");
+    REQUIRE_FALSE(modport_completions.unresolved);
+    CHECK(std::any_of(modport_completions.items.begin(),
+                      modport_completions.items.end(),
+                      [](const auto& item) {
+                          return item.label == "status_valid" && item.detail == "Variable";
+                      }));
+    CHECK(std::any_of(modport_completions.items.begin(),
+                      modport_completions.items.end(),
+                      [](const auto& item) {
+                          return item.label == "status_ready" && item.detail == "Variable";
+                      }));
+    CHECK(std::none_of(modport_completions.items.begin(),
+                       modport_completions.items.end(),
+                       [](const auto& item) {
+                           return item.label == "payload";
+                       }));
+    CHECK(std::any_of(modport_completions.messages.begin(),
+                      modport_completions.messages.end(),
+                      [](const std::string& message) {
+                          return message.find("typed AstIndex member view") != std::string::npos;
+                      }));
+
+    const auto interface_completions = engine.completionsAt("file:///workspace/interface-member.sv", 14, 15, "status_");
+    REQUIRE_FALSE(interface_completions.unresolved);
+    CHECK(std::any_of(interface_completions.items.begin(),
+                      interface_completions.items.end(),
+                      [](const auto& item) {
+                          return item.label == "status_valid";
+                      }));
+    CHECK(std::any_of(interface_completions.items.begin(),
+                      interface_completions.items.end(),
+                      [](const auto& item) {
+                          return item.label == "status_ready";
+                      }));
+}
+
 TEST_CASE("SemanticEngine provides AST-backed function and task signature help",
           "[analysis][semantic-engine][signature][function][task][no-fallback]") {
     SemanticEngine engine;

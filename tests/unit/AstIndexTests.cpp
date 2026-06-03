@@ -787,6 +787,54 @@ TEST_CASE("AstIndex derives class property and method member completion facts fr
     CHECK(has_member("size_sum", "Subroutine"));
 }
 
+TEST_CASE("AstIndex derives interface instance and modport member completion facts",
+          "[analysis][semantic][ast-index][completion][member][interface][modport]") {
+    SnapshotBuildInput input{
+        .generation = 42,
+        .documents = {{"file:///workspace/interface-member.sv",
+                       SemanticEngineDocument{.uri = "file:///workspace/interface-member.sv",
+                                              .text = "interface bus_if;\n"
+                                                      "  logic status_valid;\n"
+                                                      "  logic status_ready;\n"
+                                                      "  logic payload;\n"
+                                                      "  modport master(input status_ready, output status_valid);\n"
+                                                      "endinterface\n"
+                                                      "module consumer(bus_if.master master_bus);\n"
+                                                      "endmodule\n"
+                                                      "module top;\n"
+                                                      "  bus_if bus();\n"
+                                                      "endmodule\n",
+                                              .version = 1,
+                                              .is_open = true}}}};
+
+    auto output = SnapshotBuilder{}.build(std::move(input));
+    REQUIRE(output.data != nullptr);
+
+    const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
+    const auto completions_it = view.member_completions_by_uri.find("file:///workspace/interface-member.sv");
+    REQUIRE(completions_it != view.member_completions_by_uri.end());
+
+    const auto has_member = [&](std::string_view qualifier,
+                                std::string_view name,
+                                std::string_view kind) {
+        return std::any_of(completions_it->second.begin(),
+                           completions_it->second.end(),
+                           [&](const SnapshotMemberCompletion& completion) {
+                               return completion.qualifier == qualifier &&
+                                      completion.identity.name == name &&
+                                      completion.identity.kind == kind;
+                           });
+    };
+
+    CHECK(has_member("bus", "status_valid", "Variable"));
+    CHECK(has_member("bus", "status_ready", "Variable"));
+    CHECK(has_member("bus", "payload", "Variable"));
+    CHECK(has_member("master_bus", "status_valid", "Field"));
+    CHECK(has_member("master_bus", "status_ready", "Field"));
+    CHECK_FALSE(has_member("master_bus", "payload", "Net"));
+    CHECK_FALSE(has_member("master_bus", "payload", "Field"));
+}
+
 TEST_CASE("AstIndex narrows package-qualified type references to the AST type token",
           "[analysis][semantic][ast-index][type-definition][package][no-fallback]") {
     SnapshotBuildInput input{

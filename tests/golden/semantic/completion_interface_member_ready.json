@@ -1,15 +1,15 @@
 {
-  "name": "member completion offers interface-style member names",
+  "name": "member completion offers real interface instance members",
   "sources": [
     {
       "uri": "file:///golden/semantic/completion-interface-member.sv",
-      "text": "module top;\n  logic bus;\n  logic ready;\n  logic data_valid;\n  initial begin\n    bus.rea\n  end\nendmodule\n"
+      "text": "interface bus_if;\n  logic ready;\n  logic data_valid;\nendinterface\nmodule top;\n  bus_if bus();\n  initial begin\n    bus.rea\n  end\nendmodule\n"
     }
   ],
   "request": {
     "kind": "completion",
     "uri": "file:///golden/semantic/completion-interface-member.sv",
-    "line": 5,
+    "line": 7,
     "character": 11,
     "prefix": "rea"
   },

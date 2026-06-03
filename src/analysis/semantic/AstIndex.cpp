@@ -968,6 +968,56 @@ std::vector<SemanticSymbolIdentity> typedMembersForType(const slang::SourceManag
     return members;
 }
 
+std::optional<std::string> completionMemberKind(std::string_view kind) {
+    if (kind == "Field" || kind == "Member" || kind == "Net" || kind == "Variable" ||
+        kind == "Parameter" || kind == "Subroutine") {
+        return std::string(kind);
+    }
+    if (kind == "MethodPrototype") {
+        return "Subroutine";
+    }
+    if (kind == "TypeParameter") {
+        return "Parameter";
+    }
+    if (kind == "Port" || kind == "MultiPort" || kind == "InterfacePort" ||
+        kind == "ModportPort" || kind == "ModportClocking") {
+        return "Field";
+    }
+    return std::nullopt;
+}
+
+void appendMemberCompletion(SnapshotData& data,
+                            std::string_view uri,
+                            std::string_view qualifier,
+                            std::string_view owner_stable_id,
+                            SemanticSymbolIdentity member) {
+    if (uri.empty() || qualifier.empty() || member.name.empty()) {
+        return;
+    }
+    auto kind = completionMemberKind(member.kind);
+    if (!kind.has_value()) {
+        return;
+    }
+    member.kind = std::move(*kind);
+    if (member.stable_id.empty()) {
+        member.stable_id = std::string(owner_stable_id) + "|member|" + member.name;
+    }
+
+    auto& completions = data.member_completions_by_uri[std::string(uri)];
+    const auto duplicate = std::any_of(completions.begin(),
+                                       completions.end(),
+                                       [&](const SnapshotMemberCompletion& existing) {
+                                           return existing.qualifier == qualifier &&
+                                                  existing.identity.name == member.name &&
+                                                  existing.identity.kind == member.kind;
+                                       });
+    if (duplicate) {
+        return;
+    }
+    completions.push_back(SnapshotMemberCompletion{.qualifier = std::string(qualifier),
+                                                   .identity = std::move(member)});
+}
+
 void indexTypedMemberCompletions(SnapshotData& data,
                                  const slang::SourceManager& source_manager,
                                  const slang::ast::Symbol& symbol,
@@ -986,21 +1036,168 @@ void indexTypedMemberCompletions(SnapshotData& data,
         return;
     }
 
-    auto& completions = data.member_completions_by_uri[owner_location.uri];
-    for (const auto& member : members) {
-        const auto duplicate = std::any_of(completions.begin(),
-                                           completions.end(),
-                                           [&](const SnapshotMemberCompletion& existing) {
-                                               return existing.qualifier == symbol.name &&
-                                                      existing.identity.name == member.name &&
-                                                      existing.identity.kind == member.kind;
-                                           });
-        if (duplicate) {
+    for (auto& member : members) {
+        appendMemberCompletion(data, owner_location.uri, symbol.name, owner_stable_id, std::move(member));
+    }
+}
+
+std::optional<ParseRange> indexedSymbolRange(const slang::SourceManager& source_manager,
+                                             const SnapshotIndexedSymbol& symbol) {
+    if (symbol.symbol != nullptr) {
+        if (auto range = parseRangeForSymbolSyntax(source_manager, *symbol.symbol)) {
+            return range;
+        }
+    }
+    if (!symbol.identity.location.uri.empty()) {
+        return symbol.identity.location.range;
+    }
+    return std::nullopt;
+}
+
+std::optional<ParseRange> modportRangeForInterfaceDefinition(const SnapshotData& data,
+                                                            const slang::SourceManager& source_manager,
+                                                            std::string_view uri,
+                                                            const ParseRange& definition_range,
+                                                            std::string_view modport_name) {
+    if (modport_name.empty()) {
+        return std::nullopt;
+    }
+
+    for (const auto& [_, indexed] : data.symbols_by_id) {
+        if (indexed.identity.name != modport_name || indexed.identity.kind != "Modport" ||
+            indexed.identity.location.uri != uri ||
+            !rangeContainsRange(definition_range, indexed.identity.location.range)) {
             continue;
         }
-        completions.push_back(SnapshotMemberCompletion{
-            .qualifier = std::string(symbol.name),
-            .identity = member});
+        if (auto range = indexedSymbolRange(source_manager, indexed)) {
+            return range;
+        }
+        return indexed.identity.location.range;
+    }
+    return std::nullopt;
+}
+
+void appendIndexedMembersInRange(SnapshotData& data,
+                                 const slang::SourceManager& source_manager,
+                                 std::string_view target_uri,
+                                 std::string_view qualifier,
+                                 std::string_view owner_stable_id,
+                                 std::string_view definition_uri,
+                                 const ParseRange& member_range,
+                                 const std::vector<ParseRange>& excluded_ranges = {}) {
+    for (const auto& [_, indexed] : data.symbols_by_id) {
+        if (indexed.identity.location.uri != definition_uri ||
+            indexed.identity.stable_id == owner_stable_id ||
+            !rangeContainsRange(member_range, indexed.identity.location.range)) {
+            continue;
+        }
+        const auto excluded = std::any_of(excluded_ranges.begin(),
+                                          excluded_ranges.end(),
+                                          [&](const ParseRange& excluded_range) {
+                                              return rangeContainsRange(excluded_range,
+                                                                        indexed.identity.location.range);
+                                          });
+        if (excluded) {
+            continue;
+        }
+        auto member = indexed.identity;
+        if (auto range = indexedSymbolRange(source_manager, indexed)) {
+            member.location.range = *range;
+        }
+        appendMemberCompletion(data, target_uri, qualifier, owner_stable_id, std::move(member));
+    }
+}
+
+void appendScopeMembers(SnapshotData& data,
+                        const slang::SourceManager& source_manager,
+                        std::string_view target_uri,
+                        std::string_view qualifier,
+                        std::string_view owner_stable_id,
+                        const slang::ast::Scope& scope) {
+    for (const auto& member_symbol : scope.members()) {
+        const auto location = declarationLocationForSymbol(source_manager, member_symbol);
+        if (!location.has_value()) {
+            continue;
+        }
+        const auto stable_id = symbolStableId(source_manager, member_symbol, *location);
+        appendMemberCompletion(data,
+                               target_uri,
+                               qualifier,
+                               owner_stable_id,
+                               SemanticSymbolIdentity{.stable_id = stable_id,
+                                                      .name = std::string(member_symbol.name),
+                                                      .kind = symbolKindName(member_symbol.kind),
+                                                      .location = *location});
+    }
+}
+
+void indexInterfaceMemberCompletions(SnapshotData& data, const slang::SourceManager& source_manager) {
+    for (const auto& [stable_id, indexed] : data.symbols_by_id) {
+        if (indexed.symbol == nullptr || indexed.identity.name.empty() ||
+            indexed.identity.location.uri.empty()) {
+            continue;
+        }
+
+        if (indexed.symbol->kind == slang::ast::SymbolKind::Instance) {
+            const auto& instance = indexed.symbol->as<slang::ast::InstanceSymbol>();
+            if (!instance.isInterface()) {
+                continue;
+            }
+            const auto& definition = instance.getDefinition();
+            const auto definition_location = declarationLocationForSymbol(source_manager, definition);
+            if (!definition_location.has_value()) {
+                continue;
+            }
+            if (definition_location.has_value() &&
+                instance.name == definition.name &&
+                sameLocation(indexed.identity.location, *definition_location)) {
+                continue;
+            }
+            if (definition_location->uri.empty()) {
+                continue;
+            }
+            appendScopeMembers(data,
+                               source_manager,
+                               indexed.identity.location.uri,
+                               indexed.identity.name,
+                               stable_id,
+                               instance.body);
+            continue;
+        }
+
+        if (indexed.symbol->kind != slang::ast::SymbolKind::InterfacePort) {
+            continue;
+        }
+        const auto& port = indexed.symbol->as<slang::ast::InterfacePortSymbol>();
+        if (port.interfaceDef == nullptr) {
+            continue;
+        }
+        const auto definition_location = declarationLocationForSymbol(source_manager, *port.interfaceDef);
+        const auto definition_range = parseRangeForSymbolSyntax(source_manager, *port.interfaceDef);
+        if (!definition_location.has_value() || !definition_range.has_value() ||
+            definition_location->uri.empty()) {
+            continue;
+        }
+
+        auto member_range = definition_range;
+        if (!port.modport.empty()) {
+            member_range = modportRangeForInterfaceDefinition(data,
+                                                             source_manager,
+                                                             definition_location->uri,
+                                                             *definition_range,
+                                                             port.modport);
+        }
+        if (!member_range.has_value()) {
+            continue;
+        }
+
+        appendIndexedMembersInRange(data,
+                                    source_manager,
+                                    indexed.identity.location.uri,
+                                    indexed.identity.name,
+                                    stable_id,
+                                    definition_location->uri,
+                                    *member_range);
     }
 }
 
@@ -2190,6 +2387,20 @@ void sortSnapshotIndexes(SnapshotData& data) {
             return lhs.label < rhs.label;
         });
     }
+    for (auto& [_, completions] : data.member_completions_by_uri) {
+        std::sort(completions.begin(), completions.end(), [](const auto& lhs, const auto& rhs) {
+            if (lhs.qualifier != rhs.qualifier) {
+                return lhs.qualifier < rhs.qualifier;
+            }
+            if (lhs.identity.name != rhs.identity.name) {
+                return lhs.identity.name < rhs.identity.name;
+            }
+            if (lhs.identity.kind != rhs.identity.kind) {
+                return lhs.identity.kind < rhs.identity.kind;
+            }
+            return lhs.identity.stable_id < rhs.identity.stable_id;
+        });
+    }
     for (auto& [_, ranges] : data.selection_ranges_by_uri) {
         std::sort(ranges.begin(), ranges.end(), rangeLessWideFirst);
         ranges.erase(std::unique(ranges.begin(),
@@ -2307,6 +2518,7 @@ void buildAstIndexes(SnapshotData& data,
             insertSymbol(data, *data.source_manager, *definition);
         }
     }
+    indexInterfaceMemberCompletions(data, *data.source_manager);
     updateModuleInstanceTargets(data);
     sortModuleInstances(data);
     attachInstancesToModuleDefinitions(data);
