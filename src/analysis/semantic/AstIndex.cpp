@@ -13,6 +13,7 @@
 #include "slang/ast/expressions/OperatorExpressions.h"
 #include "slang/ast/symbols/InstanceSymbols.h"
 #include "slang/ast/symbols/MemberSymbols.h"
+#include "slang/ast/symbols/ClassSymbols.h"
 #include "slang/ast/symbols/ParameterSymbols.h"
 #include "slang/ast/symbols/PortSymbols.h"
 #include "slang/ast/symbols/SubroutineSymbols.h"
@@ -918,14 +919,30 @@ const slang::ast::Type& unwrapArrayElementType(const slang::ast::Type& type) {
     return *current;
 }
 
-std::vector<const slang::ast::FieldSymbol*> structFieldsForType(const slang::ast::Type& type) {
+std::vector<SemanticSymbolIdentity> typedMembersForType(const slang::SourceManager& source_manager,
+                                                        const slang::ast::Type& type,
+                                                        const SemanticLocation& owner_location,
+                                                        std::string_view owner_stable_id) {
     const auto& canonical = unwrapArrayElementType(type);
-    std::vector<const slang::ast::FieldSymbol*> fields;
+    std::vector<SemanticSymbolIdentity> members;
+    const auto append_member = [&](const slang::ast::Symbol& member, std::string_view kind) {
+        if (member.name.empty()) {
+            return;
+        }
+        const auto member_location = declarationLocationForSymbol(source_manager, member)
+                                         .value_or(owner_location);
+        members.push_back(SemanticSymbolIdentity{
+            .stable_id = std::string(owner_stable_id) + "|member|" + std::string(member.name),
+            .name = std::string(member.name),
+            .kind = std::string(kind),
+            .location = member_location});
+    };
+
     if (canonical.kind == slang::ast::SymbolKind::PackedStructType) {
         const auto& struct_type = canonical.as<slang::ast::PackedStructType>();
         for (const auto& member : struct_type.members()) {
             if (member.kind == slang::ast::SymbolKind::Field) {
-                fields.push_back(&member.as<slang::ast::FieldSymbol>());
+                append_member(member, "Field");
             }
         }
     }
@@ -933,11 +950,22 @@ std::vector<const slang::ast::FieldSymbol*> structFieldsForType(const slang::ast
         const auto& struct_type = canonical.as<slang::ast::UnpackedStructType>();
         for (const auto* field : struct_type.fields) {
             if (field != nullptr) {
-                fields.push_back(field);
+                append_member(*field, "Field");
             }
         }
     }
-    return fields;
+    else if (canonical.kind == slang::ast::SymbolKind::ClassType) {
+        const auto& class_type = canonical.as<slang::ast::ClassType>();
+        for (const auto& property : class_type.properties()) {
+            append_member(property, "Field");
+        }
+        for (const auto& member : class_type.members()) {
+            if (member.kind == slang::ast::SymbolKind::Subroutine) {
+                append_member(member, "Subroutine");
+            }
+        }
+    }
+    return members;
 }
 
 void indexTypedMemberCompletions(SnapshotData& data,
@@ -953,34 +981,26 @@ void indexTypedMemberCompletions(SnapshotData& data,
         return;
     }
 
-    auto fields = structFieldsForType(declared_type->getType());
-    if (fields.empty()) {
+    auto members = typedMembersForType(source_manager, declared_type->getType(), owner_location, owner_stable_id);
+    if (members.empty()) {
         return;
     }
 
     auto& completions = data.member_completions_by_uri[owner_location.uri];
-    for (const auto* field : fields) {
-        if (field == nullptr || field->name.empty()) {
-            continue;
-        }
-        const auto field_location = declarationLocationForSymbol(source_manager, *field)
-                                        .value_or(owner_location);
-        const auto stable_id = std::string(owner_stable_id) + "|member|" + std::string(field->name);
+    for (const auto& member : members) {
         const auto duplicate = std::any_of(completions.begin(),
                                            completions.end(),
                                            [&](const SnapshotMemberCompletion& existing) {
                                                return existing.qualifier == symbol.name &&
-                                                      existing.identity.name == field->name;
+                                                      existing.identity.name == member.name &&
+                                                      existing.identity.kind == member.kind;
                                            });
         if (duplicate) {
             continue;
         }
         completions.push_back(SnapshotMemberCompletion{
             .qualifier = std::string(symbol.name),
-            .identity = SemanticSymbolIdentity{.stable_id = stable_id,
-                                               .name = std::string(field->name),
-                                               .kind = "Field",
-                                               .location = field_location}});
+            .identity = member});
     }
 }
 

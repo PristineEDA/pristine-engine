@@ -1,22 +1,23 @@
 {
-  "name": "member completion offers class-like members from indexed symbols",
+  "name": "member completion offers class members from typed AstIndex view",
   "sources": [
     {
       "uri": "file:///golden/semantic/completion-class-member.sv",
-      "text": "class packet;\nendclass\nmodule top;\n  logic pkt;\n  logic size_bytes;\n  logic size_words;\n  logic valid;\n  initial begin\n    pkt.size_\n  end\nendmodule\n"
+      "text": "class packet;\n  int size_bytes;\n  int size_words;\n  int valid;\n  function int size_sum();\n    return size_bytes + size_words;\n  endfunction\nendclass\nmodule top;\n  packet pkt;\n  initial begin\n    pkt.size_\n  end\nendmodule\n"
     }
   ],
   "request": {
     "kind": "completion",
     "uri": "file:///golden/semantic/completion-class-member.sv",
-    "line": 8,
+    "line": 11,
     "character": 14,
     "prefix": "size_"
   },
   "expected": {
     "labels": [
       "size_bytes",
-      "size_words"
+      "size_words",
+      "size_sum"
     ],
     "absentLabels": [
       "valid"

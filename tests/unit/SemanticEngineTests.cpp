@@ -594,6 +594,43 @@ TEST_CASE("SemanticEngine completes array-of-struct members through typed AstInd
                       }));
 }
 
+TEST_CASE("SemanticEngine completes class members through typed AstIndex view",
+          "[analysis][semantic-engine][completion][member][class]") {
+    SemanticEngine engine;
+    engine.updateDocument("file:///workspace/class-member.sv",
+                          "class packet;\n"
+                          "  int size_bytes;\n"
+                          "  int size_words;\n"
+                          "  int valid;\n"
+                          "  function int size_sum();\n"
+                          "    return size_bytes + size_words;\n"
+                          "  endfunction\n"
+                          "endclass\n"
+                          "module top;\n"
+                          "  packet pkt;\n"
+                          "  initial begin\n"
+                          "    pkt.size_\n"
+                          "  end\n"
+                          "endmodule\n",
+                          SemanticEngineDocumentState{.version = 1, .is_open = true});
+
+    const auto completions = engine.completionsAt("file:///workspace/class-member.sv", 11, 14, "size_");
+
+    REQUIRE_FALSE(completions.unresolved);
+    CHECK(std::any_of(completions.items.begin(), completions.items.end(), [](const auto& item) {
+        return item.label == "size_bytes";
+    }));
+    CHECK(std::any_of(completions.items.begin(), completions.items.end(), [](const auto& item) {
+        return item.label == "size_words";
+    }));
+    CHECK(std::any_of(completions.items.begin(), completions.items.end(), [](const auto& item) {
+        return item.label == "size_sum" && item.detail == "Callable";
+    }));
+    CHECK(std::none_of(completions.items.begin(), completions.items.end(), [](const auto& item) {
+        return item.label == "valid";
+    }));
+}
+
 TEST_CASE("SemanticEngine provides AST-backed function and task signature help",
           "[analysis][semantic-engine][signature][function][task][no-fallback]") {
     SemanticEngine engine;

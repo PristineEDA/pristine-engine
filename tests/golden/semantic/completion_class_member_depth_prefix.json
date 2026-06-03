@@ -1,15 +1,15 @@
 {
-  "name": "class-like member completion filters depth prefix",
+  "name": "class member completion filters depth prefix from typed AstIndex view",
   "sources": [
     {
       "uri": "file:///golden/semantic/completion-class-depth.sv",
-      "text": "class cfg;\nendclass\nmodule top;\n  logic cfg_i;\n  logic depth_value;\n  logic depth_limit;\n  logic width_value;\n  initial begin\n    cfg_i.depth_\n  end\nendmodule\n"
+      "text": "class cfg;\n  int depth_value;\n  int depth_limit;\n  int width_value;\nendclass\nmodule top;\n  cfg cfg_i;\n  initial begin\n    cfg_i.depth_\n  end\nendmodule\n"
     }
   ],
   "request": {
     "kind": "completion",
     "uri": "file:///golden/semantic/completion-class-depth.sv",
-    "line": 8,
+    "line": 7,
     "character": 16,
     "prefix": "depth_"
   },

@@ -746,6 +746,47 @@ TEST_CASE("AstIndex derives array-of-struct member completion facts from declare
     CHECK(has_member("payload"));
 }
 
+TEST_CASE("AstIndex derives class property and method member completion facts from declared types",
+          "[analysis][semantic][ast-index][completion][member][class]") {
+    SnapshotBuildInput input{
+        .generation = 41,
+        .documents = {{"file:///workspace/class-member.sv",
+                       SemanticEngineDocument{.uri = "file:///workspace/class-member.sv",
+                                              .text = "class packet;\n"
+                                                      "  int size_bytes;\n"
+                                                      "  int size_words;\n"
+                                                      "  function int size_sum();\n"
+                                                      "    return size_bytes + size_words;\n"
+                                                      "  endfunction\n"
+                                                      "endclass\n"
+                                                      "module top;\n"
+                                                      "  packet pkt;\n"
+                                                      "endmodule\n",
+                                              .version = 1,
+                                              .is_open = true}}}};
+
+    auto output = SnapshotBuilder{}.build(std::move(input));
+    REQUIRE(output.data != nullptr);
+
+    const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
+    const auto completions_it = view.member_completions_by_uri.find("file:///workspace/class-member.sv");
+    REQUIRE(completions_it != view.member_completions_by_uri.end());
+
+    const auto has_member = [&](std::string_view name, std::string_view kind) {
+        return std::any_of(completions_it->second.begin(),
+                           completions_it->second.end(),
+                           [&](const SnapshotMemberCompletion& completion) {
+                               return completion.qualifier == "pkt" &&
+                                      completion.identity.name == name &&
+                                      completion.identity.kind == kind;
+                           });
+    };
+
+    CHECK(has_member("size_bytes", "Field"));
+    CHECK(has_member("size_words", "Field"));
+    CHECK(has_member("size_sum", "Subroutine"));
+}
+
 TEST_CASE("AstIndex narrows package-qualified type references to the AST type token",
           "[analysis][semantic][ast-index][type-definition][package][no-fallback]") {
     SnapshotBuildInput input{
