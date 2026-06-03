@@ -968,6 +968,13 @@ std::vector<SemanticSymbolIdentity> typedMembersForType(const slang::SourceManag
     return members;
 }
 
+std::string typeDisplayForMemberCompletion(const slang::ast::Symbol& symbol) {
+    if (const auto* declared_type = symbol.getDeclaredType()) {
+        return normalizedTypeDisplay(declared_type->getType().toString());
+    }
+    return {};
+}
+
 std::optional<std::string> completionMemberKind(std::string_view kind) {
     if (kind == "Field" || kind == "Member" || kind == "Net" || kind == "Variable" ||
         kind == "Parameter" || kind == "Subroutine") {
@@ -990,7 +997,8 @@ void appendMemberCompletion(SnapshotData& data,
                             std::string_view uri,
                             std::string_view qualifier,
                             std::string_view owner_stable_id,
-                            SemanticSymbolIdentity member) {
+                            SemanticSymbolIdentity member,
+                            std::string type_display = {}) {
     if (uri.empty() || qualifier.empty() || member.name.empty()) {
         return;
     }
@@ -1015,7 +1023,8 @@ void appendMemberCompletion(SnapshotData& data,
         return;
     }
     completions.push_back(SnapshotMemberCompletion{.qualifier = std::string(qualifier),
-                                                   .identity = std::move(member)});
+                                                   .identity = std::move(member),
+                                                   .type_display = std::move(type_display)});
 }
 
 void indexTypedMemberCompletions(SnapshotData& data,
@@ -1104,7 +1113,12 @@ void appendIndexedMembersInRange(SnapshotData& data,
         if (auto range = indexedSymbolRange(source_manager, indexed)) {
             member.location.range = *range;
         }
-        appendMemberCompletion(data, target_uri, qualifier, owner_stable_id, std::move(member));
+        appendMemberCompletion(data,
+                               target_uri,
+                               qualifier,
+                               owner_stable_id,
+                               std::move(member),
+                               indexed.type_display);
     }
 }
 
@@ -1127,7 +1141,8 @@ void appendScopeMembers(SnapshotData& data,
                                SemanticSymbolIdentity{.stable_id = stable_id,
                                                       .name = std::string(member_symbol.name),
                                                       .kind = symbolKindName(member_symbol.kind),
-                                                      .location = *location});
+                                                      .location = *location},
+                               typeDisplayForMemberCompletion(member_symbol));
     }
 }
 

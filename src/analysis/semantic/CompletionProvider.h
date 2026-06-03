@@ -40,6 +40,7 @@ struct CompletionResolveContext {
     const std::unordered_map<std::string, std::string>* module_uris_by_name = nullptr;
     const std::unordered_map<std::string, std::vector<MacroDefinition>>* macros_by_uri = nullptr;
     std::optional<CompletionResolveSymbol> symbol;
+    std::optional<CompletionResolveSymbol> member;
 };
 
 [[nodiscard]] constexpr std::string_view completionProviderName() {

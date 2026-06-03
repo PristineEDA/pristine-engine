@@ -1382,6 +1382,22 @@ SemanticCompletionItem SemanticEngine::resolveCompletion(std::string_view stable
         context.symbol = semantic::CompletionResolveSymbol{.identity = symbol_it->second.identity,
                                                            .type_display = symbol_it->second.type_display};
     }
+    else {
+        const auto stable_id_text = std::string(stable_id);
+        for (const auto& [_, member_completions] : ast_index.member_completions_by_uri) {
+            const auto member_it = std::find_if(member_completions.begin(),
+                                                member_completions.end(),
+                                                [&](const semantic::SnapshotMemberCompletion& completion) {
+                                                    return completion.identity.stable_id == stable_id_text;
+                                                });
+            if (member_it == member_completions.end()) {
+                continue;
+            }
+            context.member = semantic::CompletionResolveSymbol{.identity = member_it->identity,
+                                                               .type_display = member_it->type_display};
+            break;
+        }
+    }
     return semantic::resolveCompletionItem(stable_id, label, context);
 }
 

@@ -691,6 +691,37 @@ TEST_CASE("SemanticEngine completes interface and modport members through typed 
                       }));
 }
 
+TEST_CASE("SemanticEngine resolves typed member completion documentation",
+          "[analysis][semantic-engine][completion][resolve][member][interface]") {
+    SemanticEngine engine;
+    engine.updateDocument("file:///workspace/interface-resolve.sv",
+                          "interface bus_if;\n"
+                          "  logic status_ready;\n"
+                          "endinterface\n"
+                          "module top;\n"
+                          "  bus_if bus();\n"
+                          "  initial begin\n"
+                          "    bus.status_\n"
+                          "  end\n"
+                          "endmodule\n",
+                          SemanticEngineDocumentState{.version = 1, .is_open = true});
+
+    const auto completions = engine.completionsAt("file:///workspace/interface-resolve.sv", 6, 15, "status_");
+    REQUIRE_FALSE(completions.unresolved);
+    const auto completion = std::find_if(completions.items.begin(),
+                                         completions.items.end(),
+                                         [](const auto& item) {
+                                             return item.label == "status_ready";
+                                         });
+    REQUIRE(completion != completions.items.end());
+
+    const auto resolved = engine.resolveCompletion(completion->stable_id, completion->label);
+
+    REQUIRE_FALSE(resolved.unresolved);
+    CHECK(resolved.documentation.find("**Variable** `status_ready`") != std::string::npos);
+    CHECK(resolved.documentation.find("Type: `logic`") != std::string::npos);
+}
+
 TEST_CASE("SemanticEngine provides AST-backed function and task signature help",
           "[analysis][semantic-engine][signature][function][task][no-fallback]") {
     SemanticEngine engine;

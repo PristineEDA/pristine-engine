@@ -434,5 +434,29 @@ TEST_CASE("CompletionProvider resolves completion documentation and snippets",
     CHECK(missing.unresolved);
 }
 
+TEST_CASE("CompletionProvider resolves member completion documentation",
+          "[analysis][semantic][completion-provider][resolve][member]") {
+    CompletionResolveContext context;
+    context.member = CompletionResolveSymbol{
+        .identity = SemanticSymbolIdentity{.stable_id = "owner|member|status_ready",
+                                           .name = "status_ready",
+                                           .kind = "Variable",
+                                           .location = SemanticLocation{
+                                               .uri = "file:///workspace/interface.sv",
+                                               .range = ParseRange{.start_line = 1,
+                                                                   .start_character = 8,
+                                                                   .end_line = 1,
+                                                                   .end_character = 20}}},
+        .type_display = "logic"};
+
+    const auto resolved = resolveCompletionItem("owner|member|status_ready", "status_ready", context);
+
+    CHECK_FALSE(resolved.unresolved);
+    CHECK(resolved.detail == "Variable");
+    CHECK(resolved.documentation.find("**Variable** `status_ready`") != std::string::npos);
+    CHECK(resolved.documentation.find("Type: `logic`") != std::string::npos);
+    CHECK(resolved.documentation.find("Declared: `file:///workspace/interface.sv:2:9`") != std::string::npos);
+}
+
 } // namespace
 } // namespace pristine::analysis::semantic

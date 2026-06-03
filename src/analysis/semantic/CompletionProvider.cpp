@@ -471,6 +471,24 @@ SemanticCompletionItem resolveCompletionItem(std::string_view stable_id,
         return item;
     }
 
+    if (context.member.has_value()) {
+        const auto& member = *context.member;
+        item.detail = completionDetailForSemanticKind(member.identity.kind);
+        if (item.detail.empty()) {
+            item.detail = member.identity.kind;
+        }
+        item.documentation = "**" + member.identity.kind + "** `" + member.identity.name + "`";
+        if (!member.type_display.empty()) {
+            item.documentation += "\n\nType: `" + member.type_display + "`";
+        }
+        if (!member.identity.location.uri.empty()) {
+            item.documentation += "\n\nDeclared: `" + member.identity.location.uri + ":" +
+                                  std::to_string(member.identity.location.range.start_line + 1) + ":" +
+                                  std::to_string(member.identity.location.range.start_character + 1) + "`";
+        }
+        return item;
+    }
+
     if (!context.symbol.has_value()) {
         item.unresolved = true;
         return item;

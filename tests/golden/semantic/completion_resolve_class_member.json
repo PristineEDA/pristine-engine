@@ -1,0 +1,20 @@
+{
+  "name": "completion resolve documents typed class member completions",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/resolve-class-member.sv",
+      "text": "class packet;\n  int size_bytes;\nendclass\nmodule top;\n  packet pkt;\n  initial begin\n    pkt.size_\n  end\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "completionResolve",
+    "uri": "file:///golden/semantic/resolve-class-member.sv",
+    "line": 6,
+    "character": 14,
+    "prefix": "size_",
+    "label": "size_bytes"
+  },
+  "expected": {
+    "documentationContains": "size_bytes"
+  }
+}

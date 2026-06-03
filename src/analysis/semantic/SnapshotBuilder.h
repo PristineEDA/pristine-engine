@@ -40,6 +40,7 @@ struct SnapshotIndexedReference {
 struct SnapshotMemberCompletion {
     std::string qualifier;
     SemanticSymbolIdentity identity;
+    std::string type_display;
 };
 
 struct SnapshotModuleInstance {
