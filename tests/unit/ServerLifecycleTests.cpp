@@ -574,6 +574,33 @@ TEST_CASE("ServerSession publishes semantic diagnostics for unresolved module in
     CHECK(semantic_diagnostic->at("range").at("end").at("character") == 15);
 }
 
+TEST_CASE("ServerSession publishes empty diagnostics after semantic diagnostics clear",
+          "[server][diagnostics][sync]") {
+    jsonrpc::JsonRpcServer rpc_server;
+    ServerSession session{"pristine-engine", kTestServerVersion};
+    session.bind(rpc_server);
+
+    constexpr std::string_view uri = "file:///workspace/diagnostics-clear.sv";
+    ScriptedTransport transport{
+        R"({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}})",
+        R"({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///workspace/diagnostics-clear.sv","languageId":"systemverilog","version":1,"text":"module top;\n  missing_child u_missing();\nendmodule\n"}}})",
+        R"({"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":{"uri":"file:///workspace/diagnostics-clear.sv","version":2},"contentChanges":[{"text":"module top;\nendmodule\n"}]}})"};
+
+    const int exit_code = rpc_server.run(transport);
+
+    CHECK(exit_code == 0);
+    const auto diagnostics = findNotifications(transport, "textDocument/publishDiagnostics");
+    REQUIRE(diagnostics.size() == 2);
+    CHECK(diagnostics.front().at("params").at("uri") == std::string(uri));
+    CHECK(diagnostics.back().at("params").at("uri") == std::string(uri));
+    const auto& initial_items = diagnostics.front().at("params").at("diagnostics");
+    REQUIRE(std::any_of(initial_items.begin(), initial_items.end(), [](const jsonrpc::Json& item) {
+        const auto code_it = item.find("code");
+        return code_it != item.end() && *code_it == "unresolvedModule";
+    }));
+    CHECK(diagnostics.back().at("params").at("diagnostics").empty());
+}
+
 TEST_CASE("ServerSession publishes semantic diagnostics for duplicate symbols",
           "[server][diagnostics]") {
     jsonrpc::JsonRpcServer rpc_server;
