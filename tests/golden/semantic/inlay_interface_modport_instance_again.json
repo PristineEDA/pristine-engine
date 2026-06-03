@@ -1,9 +1,9 @@
 {
-  "name": "inlay hints record current interface modport instance type debt again",
+  "name": "inlay hints expose interface modport port type display",
   "sources": [
     {
       "uri": "file:///golden/semantic/inlay-if-modport-again.sv",
-      "text": "interface bus_if;\n  modport master(input ready);\nendinterface\nmodule top;\n  bus_if.master bus();\nendmodule\n"
+      "text": "interface bus_if;\n  logic ready;\n  modport master(input ready);\nendinterface\nmodule top(bus_if.master bus);\nendmodule\n"
     }
   ],
   "request": {
@@ -12,9 +12,13 @@
     "range": {
       "startLine": 3,
       "startCharacter": 0,
-      "endLine": 6,
+      "endLine": 5,
       "endCharacter": 0
     }
   },
-  "expected": {}
+  "expected": {
+    "labels": [
+      ": bus_if.master"
+    ]
+  }
 }

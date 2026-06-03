@@ -349,6 +349,36 @@ TEST_CASE("AstIndex derives module instances from slang AST rather than syntax m
     CHECK(inlay_instance.connections[1].port_name == "ready");
 }
 
+TEST_CASE("AstIndex records modport-qualified interface port type display",
+          "[analysis][semantic][ast-index][inlay][interface][modport]") {
+    SnapshotBuildInput input{
+        .generation = 37,
+        .documents = {{"file:///workspace/top.sv",
+                       SemanticEngineDocument{.uri = "file:///workspace/top.sv",
+                                              .text = "interface bus_if;\n"
+                                                      "  logic ready;\n"
+                                                      "  modport master(input ready);\n"
+                                                      "endinterface\n"
+                                                      "module top(bus_if.master bus);\n"
+                                                      "endmodule\n",
+                                              .version = 1,
+                                              .is_open = true}}}};
+
+    auto output = SnapshotBuilder{}.build(std::move(input));
+    REQUIRE(output.data != nullptr);
+
+    const auto& data = *output.data;
+    const auto port_it = std::find_if(data.symbols_by_id.begin(),
+                                      data.symbols_by_id.end(),
+                                      [](const auto& entry) {
+                                          const auto& indexed = entry.second;
+                                          return indexed.identity.kind == "InterfacePort" &&
+                                                 indexed.identity.name == "bus";
+                                      });
+    REQUIRE(port_it != data.symbols_by_id.end());
+    CHECK(port_it->second.type_display == "bus_if.master");
+}
+
 TEST_CASE("AstIndex derives parameter override inlay facts from AST module parameters",
           "[analysis][semantic][ast-index][inlay][parameter]") {
     SnapshotBuildInput input{

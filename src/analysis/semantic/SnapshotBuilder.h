@@ -46,6 +46,7 @@ struct SnapshotMemberCompletion {
 struct SnapshotModuleInstance {
     std::string module_name;
     std::string instance_name;
+    std::string type_display;
     std::string target_stable_id;
     std::string uri;
     ParseRange range;

@@ -766,7 +766,7 @@ TEST_CASE("SignatureInlayProvider filters call argument hints outside requested 
     CHECK(result.hints.empty());
 }
 
-TEST_CASE("SignatureInlayProvider emits interface instance type hints",
+TEST_CASE("SignatureInlayProvider emits modport-qualified interface instance type hints",
           "[analysis][semantic][signature-inlay-provider][inlay][interface]") {
     const ModuleDefinition bus{.name = "bus_if", .kind = "interface", .ports = {"ready"}};
     const std::unordered_map<std::string, ModuleDefinition> modules{{"bus_if", bus}};
@@ -775,6 +775,7 @@ TEST_CASE("SignatureInlayProvider emits interface instance type hints",
         .document_uri = "file:///workspace/top.sv",
         .modules_by_name = &modules,
         .module_instances = {SignatureInlayModuleInstance{.module_name = "bus_if",
+                                                          .type_display = "bus_if.master",
                                                           .range = rangeAt(1, 2, 16),
                                                           .selection_range = rangeAt(1, 9, 12)}},
         .snapshot_available = true};
@@ -783,7 +784,7 @@ TEST_CASE("SignatureInlayProvider emits interface instance type hints",
 
     REQUIRE_FALSE(result.unresolved);
     CHECK(std::any_of(result.hints.begin(), result.hints.end(), [](const SemanticInlayHint& hint) {
-        return hint.kind == "type" && hint.label == ": bus_if" &&
+        return hint.kind == "type" && hint.label == ": bus_if.master" &&
                hint.tooltip == "bus_if(ready)";
     }));
 }

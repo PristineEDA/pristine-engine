@@ -453,6 +453,8 @@ SemanticInlayHintResult inlayHints(const SignatureInlayContext& context,
                                    : context.modules_by_name->find(instance.module_name);
         const auto module_found = context.modules_by_name != nullptr &&
                                   module_it != context.modules_by_name->end();
+        const auto type_display = instance.type_display.empty() ? instance.module_name
+                                                                : instance.type_display;
         result.hints.push_back(SemanticInlayHint{
             .location = SemanticLocation{.uri = context.document_uri,
                                          .range = ParseRange{
@@ -460,7 +462,7 @@ SemanticInlayHintResult inlayHints(const SignatureInlayContext& context,
                                              .start_character = instance.selection_range.end_character,
                                              .end_line = instance.selection_range.end_line,
                                              .end_character = instance.selection_range.end_character}},
-            .label = ": " + instance.module_name,
+            .label = ": " + type_display,
             .kind = "type",
             .tooltip = module_found ? moduleSignatureLabel(module_it->second) : std::string{}});
 

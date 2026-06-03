@@ -573,6 +573,66 @@ std::optional<ParseRange> instanceStatementRange(std::string_view text,
     return std::nullopt;
 }
 
+bool isIdentifierContinue(char value) {
+    const auto ch = static_cast<unsigned char>(value);
+    return std::isalnum(ch) != 0 || value == '_' || value == '$';
+}
+
+std::optional<std::string> interfaceModportForInstanceRange(std::string_view text,
+                                                            const ParseRange& instance_range,
+                                                            std::string_view interface_name) {
+    if (instance_range.start_line != instance_range.end_line || interface_name.empty()) {
+        return std::nullopt;
+    }
+
+    int current_line = 0;
+    size_t line_start = 0;
+    for (size_t offset = 0; offset <= text.size(); ++offset) {
+        if (offset != text.size() && text[offset] != '\n') {
+            continue;
+        }
+        if (current_line == instance_range.start_line) {
+            const auto line_end = offset > line_start && text[offset - 1] == '\r' ? offset - 1 : offset;
+            const auto line = text.substr(line_start, line_end - line_start);
+            if (instance_range.start_character < 0 || instance_range.end_character < instance_range.start_character ||
+                static_cast<size_t>(instance_range.end_character) > line.size()) {
+                return std::nullopt;
+            }
+            const auto bounded = line.substr(static_cast<size_t>(instance_range.start_character),
+                                             static_cast<size_t>(instance_range.end_character -
+                                                                 instance_range.start_character));
+            const auto interface_start = bounded.find(interface_name);
+            if (interface_start == std::string_view::npos) {
+                return std::nullopt;
+            }
+            auto cursor = interface_start + interface_name.size();
+            while (cursor < bounded.size() &&
+                   std::isspace(static_cast<unsigned char>(bounded[cursor])) != 0) {
+                ++cursor;
+            }
+            if (cursor >= bounded.size() || bounded[cursor] != '.') {
+                return std::nullopt;
+            }
+            ++cursor;
+            while (cursor < bounded.size() &&
+                   std::isspace(static_cast<unsigned char>(bounded[cursor])) != 0) {
+                ++cursor;
+            }
+            const auto modport_start = cursor;
+            while (cursor < bounded.size() && isIdentifierContinue(bounded[cursor])) {
+                ++cursor;
+            }
+            if (cursor == modport_start) {
+                return std::nullopt;
+            }
+            return std::string(bounded.substr(modport_start, cursor - modport_start));
+        }
+        ++current_line;
+        line_start = offset + 1;
+    }
+    return std::nullopt;
+}
+
 std::string symbolKindName(slang::ast::SymbolKind kind) {
     return std::string(slang::ast::toString(kind));
 }
@@ -1771,9 +1831,18 @@ void indexModuleInstanceBinding(SnapshotData& data,
 
     auto instance_range = cell->range;
     auto module_selection_range = cell->range;
+    auto type_display = cell->type;
     if (document != nullptr) {
         if (auto module_range = identifierRangeByName(document->text, cell->range, cell->type)) {
             module_selection_range = *module_range;
+        }
+        if (instance.isInterface()) {
+            if (const auto modport = interfaceModportForInstanceRange(document->text,
+                                                                      cell->range,
+                                                                      cell->type)) {
+                type_display += ".";
+                type_display += *modport;
+            }
         }
     }
 
@@ -1783,6 +1852,7 @@ void indexModuleInstanceBinding(SnapshotData& data,
             (rangeContainsRange(module_instance.range, instance_location->range) ||
              rangesOverlapOrTouch(module_instance.selection_range, instance_location->range))) {
             module_instance.module_name = std::string(definition.name);
+            module_instance.type_display = type_display;
             module_instance.target_stable_id = definition_id;
             module_instance.parameter_connections =
                 parameterOverrideConnectionsForAstInstance(instance, document, instance_range);
@@ -1792,6 +1862,7 @@ void indexModuleInstanceBinding(SnapshotData& data,
 
     instances.push_back(SnapshotModuleInstance{.module_name = std::string(definition.name),
                                                .instance_name = std::string(instance.name),
+                                               .type_display = std::move(type_display),
                                                .target_stable_id = definition_id,
                                                .uri = instance_location->uri,
                                                .range = instance_range,
@@ -1824,14 +1895,17 @@ void upsertModuleInstanceCandidate(SnapshotData& data,
     if (duplicate != instances.end()) {
         if (duplicate->target_stable_id.empty()) {
             duplicate->module_name = std::move(module_name);
+            duplicate->type_display = duplicate->module_name;
             duplicate->range = range;
             duplicate->module_selection_range = module_selection_range;
         }
         return;
     }
 
+    const auto type_display = module_name;
     instances.push_back(SnapshotModuleInstance{.module_name = std::move(module_name),
                                                .instance_name = std::move(instance_name),
+                                               .type_display = type_display,
                                                .target_stable_id = {},
                                                .uri = instance_location.uri,
                                                .range = range,
@@ -2752,6 +2826,8 @@ AstIndexView buildAstIndexView(const SnapshotData* data, std::uint64_t generatio
             SignatureInlayModuleInstance view_instance;
             view_instance.module_name = instance.module_name;
             view_instance.instance_name = instance.instance_name;
+            view_instance.type_display = instance.type_display.empty() ? instance.module_name
+                                                                       : instance.type_display;
             view_instance.range = instance.range;
             view_instance.selection_range = instance.selection_range;
             for (const auto& [_, signature] : view.module_signatures_by_name) {
@@ -2763,7 +2839,7 @@ AstIndexView buildAstIndexView(const SnapshotData* data, std::uint64_t generatio
                                                   [&](const SchematicCell& cell) {
                                                       return cell.name == instance.instance_name &&
                                                              cell.type == instance.module_name &&
-                                                             rangesOverlapOrTouch(cell.selection_range,
+                                                              rangesOverlapOrTouch(cell.selection_range,
                                                                                   instance.selection_range);
                                                   });
                 if (cell_it != signature.schematic.cells.end()) {
