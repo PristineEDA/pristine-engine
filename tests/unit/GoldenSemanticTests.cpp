@@ -783,17 +783,45 @@ void runSchematicFixture(SemanticEngine& engine, const nlohmann::json& fixture) 
     }
     if (expected.contains("nets")) {
         for (const auto& expected_net : expected.at("nets")) {
-            const auto net = expected_net.get<std::string>();
+            const auto net = expected_net.is_string() ? expected_net.get<std::string>()
+                                                      : expected_net.at("name").get<std::string>();
             CAPTURE(net);
-            CHECK(std::any_of(result.modules.begin(),
-                              result.modules.end(),
-                              [&](const SemanticSchematicModuleView& view) {
-                                  return std::any_of(view.nets.begin(),
-                                                     view.nets.end(),
-                                                     [&](const SemanticSchematicNet& candidate) {
-                                                         return candidate.name == net;
-                                                    });
-                              }));
+            const SemanticSchematicNet* matched_net = nullptr;
+            for (const auto& view : result.modules) {
+                const auto net_it = std::find_if(view.nets.begin(),
+                                                 view.nets.end(),
+                                                 [&](const SemanticSchematicNet& candidate) {
+                                                     return candidate.name == net;
+                                                 });
+                if (net_it != view.nets.end()) {
+                    matched_net = &*net_it;
+                    break;
+                }
+            }
+            REQUIRE(matched_net != nullptr);
+            const auto endpoint_matches = [](const std::vector<SemanticSchematicEndpoint>& endpoints,
+                                             const nlohmann::json& expected_endpoint) {
+                const auto node_id = expected_endpoint.at("nodeId").get<std::string>();
+                const auto port_name = expected_endpoint.at("portName").get<std::string>();
+                return std::any_of(endpoints.begin(),
+                                   endpoints.end(),
+                                   [&](const SemanticSchematicEndpoint& endpoint) {
+                                       return endpoint.node_id == node_id &&
+                                              endpoint.port_name == port_name;
+                                   });
+            };
+            if (!expected_net.is_string() && expected_net.contains("drivers")) {
+                for (const auto& expected_driver : expected_net.at("drivers")) {
+                    CAPTURE(expected_driver.dump());
+                    CHECK(endpoint_matches(matched_net->drivers, expected_driver));
+                }
+            }
+            if (!expected_net.is_string() && expected_net.contains("loads")) {
+                for (const auto& expected_load : expected_net.at("loads")) {
+                    CAPTURE(expected_load.dump());
+                    CHECK(endpoint_matches(matched_net->loads, expected_load));
+                }
+            }
         }
     }
     if (expected.contains("messagesContain")) {

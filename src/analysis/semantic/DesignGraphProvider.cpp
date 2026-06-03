@@ -134,6 +134,14 @@ std::vector<SemanticSchematicNet> buildSchematicNets(const ModuleSchematic& sche
                             : signature_it->second.schematic.cells;
 
     for (const auto& cell : cells) {
+        if (cell.kind == "interface" && !cell.name.empty()) {
+            auto& net = ensure_net(cell.name);
+            appendEndpointByDirection(net,
+                                      "interface",
+                                      SemanticSchematicEndpoint{.node_id = cell.id,
+                                                                .port_name = "interface"});
+        }
+
         const auto target_it = cell.kind == "module"
                                    ? context.module_signatures_by_name.find(cell.type)
                                    : context.module_signatures_by_name.end();

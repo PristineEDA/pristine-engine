@@ -382,6 +382,132 @@ TEST_CASE("DesignGraphProvider schematic emits Pristine-compatible ports cells a
                       }));
 }
 
+TEST_CASE("DesignGraphProvider schematic connects interface cells to same-name nets",
+          "[analysis][semantic][design-graph-provider][schematic][interface][modport]") {
+    auto context = simpleDesignContext();
+    ModuleDefinition bus_if{.name = "bus_if",
+                            .kind = "interface",
+                            .range = rangeAt(7, 0, 40),
+                            .selection_range = rangeAt(7, 10, 16),
+                            .ports = {},
+                            .port_details = {},
+                            .instances = {}};
+    ModuleDefinition consumer{.name = "consumer",
+                              .kind = "module",
+                              .range = rangeAt(9, 0, 40),
+                              .selection_range = rangeAt(9, 7, 15),
+                              .ports = {},
+                              .port_details = {SchematicPort{.name = "bus",
+                                                             .direction = "interface",
+                                                             .width_text = "bus_if.master",
+                                                             .range = rangeAt(9, 16, 33),
+                                                             .selection_range = rangeAt(9, 30, 33)}},
+                              .instances = {}};
+    ModuleDefinition top{.name = "top",
+                         .kind = "module",
+                         .range = rangeAt(12, 0, 80),
+                         .selection_range = rangeAt(12, 7, 10),
+                         .ports = {},
+                         .port_details = {},
+                         .instances = {ModuleInstantiation{.module_name = "bus_if",
+                                                           .instance_name = "bus",
+                                                           .range = rangeAt(13, 2, 15),
+                                                           .selection_range = rangeAt(13, 9, 12),
+                                                           .module_selection_range = rangeAt(13, 2, 8)},
+                                       ModuleInstantiation{.module_name = "consumer",
+                                                           .instance_name = "u_consumer",
+                                                           .range = rangeAt(14, 2, 26),
+                                                           .selection_range = rangeAt(14, 11, 21),
+                                                           .module_selection_range = rangeAt(14, 2, 10)}}};
+    context.modules_by_name = {{"bus_if", bus_if}, {"consumer", consumer}, {"top", top}};
+    context.module_uris_by_name = {{"bus_if", "file:///workspace/bus_if.sv"},
+                                   {"consumer", "file:///workspace/consumer.sv"},
+                                   {"top", "file:///workspace/top.sv"}};
+    context.module_signatures_by_name = {
+        {"bus_if",
+         SemanticModuleSignature{.definition = bus_if,
+                                 .schematic = ModuleSchematic{.name = "bus_if",
+                                                              .range = bus_if.range,
+                                                              .selection_range = bus_if.selection_range,
+                                                              .ports = {},
+                                                              .cells = {}},
+                                 .uri = "file:///workspace/bus_if.sv"}},
+        {"consumer",
+         SemanticModuleSignature{.definition = consumer,
+                                 .schematic = ModuleSchematic{.name = "consumer",
+                                                              .range = consumer.range,
+                                                              .selection_range = consumer.selection_range,
+                                                              .ports = consumer.port_details,
+                                                              .cells = {}},
+                                 .uri = "file:///workspace/consumer.sv"}},
+        {"top",
+         SemanticModuleSignature{
+             .definition = top,
+             .schematic = ModuleSchematic{.name = "top",
+                                          .range = top.range,
+                                          .selection_range = top.selection_range,
+                                          .ports = {},
+                                          .cells = {SchematicCell{.id = "bus",
+                                                                  .name = "bus",
+                                                                  .type = "bus_if",
+                                                                  .kind = "interface",
+                                                                  .range = rangeAt(13, 2, 15),
+                                                                  .selection_range = rangeAt(13, 9, 12)},
+                                                    SchematicCell{.id = "u_consumer",
+                                                                  .name = "u_consumer",
+                                                                  .type = "consumer",
+                                                                  .kind = "module",
+                                                                  .range = rangeAt(14, 2, 26),
+                                                                  .selection_range = rangeAt(14, 11, 21),
+                                                                  .connections = {SchematicConnection{
+                                                                      .port_name = "bus",
+                                                                      .signal = "bus",
+                                                                      .range = rangeAt(14, 22, 25)}}}}},
+             .uri = "file:///workspace/top.sv"}}};
+    context.module_entries = {DesignGraphModuleEntry{.uri = "file:///workspace/bus_if.sv",
+                                                     .definition = bus_if},
+                              DesignGraphModuleEntry{.uri = "file:///workspace/consumer.sv",
+                                                     .definition = consumer},
+                              DesignGraphModuleEntry{.uri = "file:///workspace/top.sv",
+                                                     .definition = top}};
+
+    const auto graph = schematic(context, std::string_view("top"), 8);
+
+    REQUIRE_FALSE(graph.unresolved);
+    const auto top_view = std::find_if(graph.modules.begin(),
+                                       graph.modules.end(),
+                                       [](const SemanticSchematicModuleView& view) {
+                                           return view.module.name == "top";
+                                       });
+    REQUIRE(top_view != graph.modules.end());
+    const auto bus_net = std::find_if(top_view->nets.begin(),
+                                      top_view->nets.end(),
+                                      [](const SemanticSchematicNet& net) {
+                                          return net.name == "bus";
+                                      });
+    REQUIRE(bus_net != top_view->nets.end());
+    CHECK(std::any_of(bus_net->drivers.begin(),
+                      bus_net->drivers.end(),
+                      [](const SemanticSchematicEndpoint& endpoint) {
+                          return endpoint.node_id == "bus" && endpoint.port_name == "interface";
+                      }));
+    CHECK(std::any_of(bus_net->loads.begin(),
+                      bus_net->loads.end(),
+                      [](const SemanticSchematicEndpoint& endpoint) {
+                          return endpoint.node_id == "bus" && endpoint.port_name == "interface";
+                      }));
+    CHECK(std::any_of(bus_net->drivers.begin(),
+                      bus_net->drivers.end(),
+                      [](const SemanticSchematicEndpoint& endpoint) {
+                          return endpoint.node_id == "u_consumer" && endpoint.port_name == "bus";
+                      }));
+    CHECK(std::any_of(bus_net->loads.begin(),
+                      bus_net->loads.end(),
+                      [](const SemanticSchematicEndpoint& endpoint) {
+                          return endpoint.node_id == "u_consumer" && endpoint.port_name == "bus";
+                      }));
+}
+
 TEST_CASE("DesignGraphProvider traces backward cone through continuous assignments",
           "[analysis][semantic][design-graph-provider][cone]") {
     auto context = simpleDesignContext();
