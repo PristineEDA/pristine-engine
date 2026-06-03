@@ -590,6 +590,14 @@ void appendSymbolCompletion(std::vector<SemanticCompletionItem>& items,
                          truncated);
 }
 
+std::string baseMemberQualifier(std::string_view qualifier) {
+    const auto dot = qualifier.rfind('.');
+    const auto segment = dot == std::string_view::npos ? qualifier : qualifier.substr(dot + 1);
+    const auto bracket = segment.find('[');
+    const auto base = bracket == std::string_view::npos ? segment : segment.substr(0, bracket);
+    return std::string(base);
+}
+
 bool isMemberCompletionKind(std::string_view kind) {
     return kind == "Field" || kind == "Member" || kind == "Net" || kind == "Variable" ||
            kind == "Parameter" || kind == "Subroutine";

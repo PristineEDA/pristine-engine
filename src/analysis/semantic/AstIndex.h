@@ -38,6 +38,7 @@ struct AstIndexView {
     std::vector<DesignGraphModuleEntry> design_graph_module_entries;
     std::unordered_map<std::string, std::vector<SnapshotAssignmentEdge>> assignment_edges_by_uri;
     std::unordered_map<std::string, std::vector<SnapshotTypeReference>> type_references_by_uri;
+    std::unordered_map<std::string, std::vector<SnapshotMemberCompletion>> member_completions_by_uri;
     std::unordered_map<std::string, std::vector<IncludeDirective>> include_directives_by_uri;
     std::unordered_map<std::string, std::vector<MacroDefinition>> macros_by_uri;
     std::unordered_map<std::string, std::vector<PackageImport>> package_imports_by_uri;

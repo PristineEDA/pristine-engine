@@ -37,6 +37,11 @@ struct SnapshotIndexedReference {
     bool is_declaration = false;
 };
 
+struct SnapshotMemberCompletion {
+    std::string qualifier;
+    SemanticSymbolIdentity identity;
+};
+
 struct SnapshotModuleInstance {
     std::string module_name;
     std::string instance_name;
@@ -97,6 +102,7 @@ struct SnapshotData {
     std::vector<SnapshotIndexedReference> references;
     std::unordered_map<std::string, std::vector<size_t>> references_by_symbol;
     std::unordered_map<std::string, std::vector<SemanticCompletionItem>> completions_by_uri;
+    std::unordered_map<std::string, std::vector<SnapshotMemberCompletion>> member_completions_by_uri;
     std::vector<SnapshotModuleEntry> module_entries;
     std::unordered_map<std::string, ModuleDefinition> modules_by_name;
     std::unordered_map<std::string, std::string> module_uris_by_name;

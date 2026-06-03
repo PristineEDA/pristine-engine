@@ -1,5 +1,5 @@
 {
-  "name": "array-of-struct member completion records current unresolved debt shape",
+  "name": "array-of-struct member completion uses typed AstIndex fields",
   "sources": [
     {
       "uri": "file:///golden/semantic/array-struct-member.sv",
@@ -9,11 +9,15 @@
   "request": {
     "kind": "completion",
     "uri": "file:///golden/semantic/array-struct-member.sv",
-    "line": 7,
+    "line": 8,
     "character": 20,
     "prefix": "status_"
   },
   "expected": {
+    "labels": [
+      "status_valid",
+      "status_ready"
+    ],
     "absentLabels": [
       "payload"
     ]

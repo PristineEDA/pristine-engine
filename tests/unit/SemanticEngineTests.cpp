@@ -558,6 +558,42 @@ TEST_CASE("SemanticEngine provides AST-backed module signature help and port com
     }));
 }
 
+TEST_CASE("SemanticEngine completes array-of-struct members through typed AstIndex view",
+          "[analysis][semantic-engine][completion][member][array]") {
+    SemanticEngine engine;
+    engine.updateDocument("file:///workspace/array-struct.sv",
+                          "typedef struct packed {\n"
+                          "  logic status_valid;\n"
+                          "  logic status_ready;\n"
+                          "  logic payload;\n"
+                          "} packet_t;\n"
+                          "module top;\n"
+                          "  packet_t lanes [2];\n"
+                          "  initial begin\n"
+                          "    lanes[0].status_\n"
+                          "  end\n"
+                          "endmodule\n",
+                          SemanticEngineDocumentState{.version = 1, .is_open = true});
+
+    const auto completions = engine.completionsAt("file:///workspace/array-struct.sv", 8, 20, "status_");
+
+    REQUIRE_FALSE(completions.unresolved);
+    CHECK(std::any_of(completions.items.begin(), completions.items.end(), [](const auto& item) {
+        return item.label == "status_valid" && item.detail == "Variable";
+    }));
+    CHECK(std::any_of(completions.items.begin(), completions.items.end(), [](const auto& item) {
+        return item.label == "status_ready" && item.detail == "Variable";
+    }));
+    CHECK(std::none_of(completions.items.begin(), completions.items.end(), [](const auto& item) {
+        return item.label == "payload";
+    }));
+    CHECK(std::any_of(completions.messages.begin(),
+                      completions.messages.end(),
+                      [](const std::string& message) {
+                          return message.find("typed AstIndex member view") != std::string::npos;
+                      }));
+}
+
 TEST_CASE("SemanticEngine provides AST-backed function and task signature help",
           "[analysis][semantic-engine][signature][function][task][no-fallback]") {
     SemanticEngine engine;

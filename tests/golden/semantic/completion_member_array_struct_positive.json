@@ -1,5 +1,5 @@
 {
-  "name": "array-of-struct member completion records current missing typed-member view debt",
+  "name": "array-of-struct member completion stays positive for typed member view",
   "sources": [
     {
       "uri": "file:///golden/semantic/array-struct-member-positive.sv",
@@ -9,11 +9,15 @@
   "request": {
     "kind": "completion",
     "uri": "file:///golden/semantic/array-struct-member-positive.sv",
-    "line": 7,
+    "line": 8,
     "character": 20,
     "prefix": "status_"
   },
   "expected": {
+    "labels": [
+      "status_valid",
+      "status_ready"
+    ],
     "absentLabels": [
       "payload"
     ]

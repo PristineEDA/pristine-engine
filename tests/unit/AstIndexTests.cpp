@@ -707,6 +707,45 @@ TEST_CASE("AstIndex derives function and task signature calls from slang AST",
     CHECK(emit_call->parameters[0] == "input logic ready");
 }
 
+TEST_CASE("AstIndex derives array-of-struct member completion facts from declared types",
+          "[analysis][semantic][ast-index][completion][member][array]") {
+    SnapshotBuildInput input{
+        .generation = 40,
+        .documents = {{"file:///workspace/array-struct.sv",
+                       SemanticEngineDocument{.uri = "file:///workspace/array-struct.sv",
+                                              .text = "typedef struct packed {\n"
+                                                      "  logic status_valid;\n"
+                                                      "  logic status_ready;\n"
+                                                      "  logic payload;\n"
+                                                      "} packet_t;\n"
+                                                      "module top;\n"
+                                                      "  packet_t lanes [2];\n"
+                                                      "endmodule\n",
+                                              .version = 1,
+                                              .is_open = true}}}};
+
+    auto output = SnapshotBuilder{}.build(std::move(input));
+    REQUIRE(output.data != nullptr);
+
+    const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
+    const auto completions_it = view.member_completions_by_uri.find("file:///workspace/array-struct.sv");
+    REQUIRE(completions_it != view.member_completions_by_uri.end());
+
+    const auto has_member = [&](std::string_view name) {
+        return std::any_of(completions_it->second.begin(),
+                           completions_it->second.end(),
+                           [&](const SnapshotMemberCompletion& completion) {
+                               return completion.qualifier == "lanes" &&
+                                      completion.identity.name == name &&
+                                      completion.identity.kind == "Field";
+                           });
+    };
+
+    CHECK(has_member("status_valid"));
+    CHECK(has_member("status_ready"));
+    CHECK(has_member("payload"));
+}
+
 TEST_CASE("AstIndex narrows package-qualified type references to the AST type token",
           "[analysis][semantic][ast-index][type-definition][package][no-fallback]") {
     SnapshotBuildInput input{

@@ -1278,17 +1278,37 @@ SemanticCompletionResult SemanticEngine::completionsAt(std::string_view uri,
         if (const auto member_name = completion_context.member_qualifier) {
             semantic::CompletionMemberContext member_context;
             member_context.qualifier = *member_name;
-            member_context.candidates.reserve(data->symbols_by_id.size());
-            for (const auto& [_, indexed_symbol] : data->symbols_by_id) {
-                member_context.candidates.push_back(
-                    semantic::CompletionMemberCandidate{.identity = indexed_symbol.identity});
+            const auto qualifier_base = semantic::baseMemberQualifier(*member_name);
+            bool used_typed_member_view = false;
+            const auto ast_index = semantic::buildAstIndexView(data, current_snapshot.generation);
+            if (const auto completions_it = ast_index.member_completions_by_uri.find(document_uri);
+                completions_it != ast_index.member_completions_by_uri.end()) {
+                for (const auto& member_completion : completions_it->second) {
+                    if (member_completion.qualifier != qualifier_base) {
+                        continue;
+                    }
+                    member_context.candidates.push_back(
+                        semantic::CompletionMemberCandidate{.identity = member_completion.identity});
+                }
+            }
+            if (!member_context.candidates.empty()) {
+                used_typed_member_view = true;
+            }
+            else {
+                member_context.candidates.reserve(data->symbols_by_id.size());
+                for (const auto& [_, indexed_symbol] : data->symbols_by_id) {
+                    member_context.candidates.push_back(
+                        semantic::CompletionMemberCandidate{.identity = indexed_symbol.identity});
+                }
             }
             semantic::appendMemberCompletions(result.items,
                                               emitted,
                                               member_context,
                                               prefix,
                                               result.truncated);
-            result.messages.push_back("member completion used AST-backed member context provider");
+            result.messages.push_back(used_typed_member_view
+                                          ? "member completion used typed AstIndex member view"
+                                          : "member completion used AST-backed member context provider");
             return finish(std::move(result));
         }
 

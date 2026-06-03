@@ -72,6 +72,7 @@ struct CompletionResolveContext {
 [[nodiscard]] std::string portDocumentation(const ModuleDefinition& module,
                                            const SchematicPort& port,
                                            std::string_view declaration_uri);
+[[nodiscard]] std::string baseMemberQualifier(std::string_view qualifier);
 [[nodiscard]] SemanticCompletionItem resolveCompletionItem(std::string_view stable_id,
                                                            std::string_view label,
                                                            const CompletionResolveContext& context);

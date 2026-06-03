@@ -17,6 +17,7 @@
 #include "slang/ast/symbols/PortSymbols.h"
 #include "slang/ast/symbols/SubroutineSymbols.h"
 #include "slang/ast/symbols/VariableSymbols.h"
+#include "slang/ast/types/AllTypes.h"
 #include "slang/ast/types/DeclaredType.h"
 #include "slang/ast/types/Type.h"
 #include "slang/syntax/AllSyntax.h"
@@ -909,6 +910,80 @@ std::string typeDisplayForSymbol(const slang::ast::Symbol& symbol) {
     return {};
 }
 
+const slang::ast::Type& unwrapArrayElementType(const slang::ast::Type& type) {
+    const auto* current = &type.getCanonicalType();
+    while (const auto* element = current->getArrayElementType()) {
+        current = &element->getCanonicalType();
+    }
+    return *current;
+}
+
+std::vector<const slang::ast::FieldSymbol*> structFieldsForType(const slang::ast::Type& type) {
+    const auto& canonical = unwrapArrayElementType(type);
+    std::vector<const slang::ast::FieldSymbol*> fields;
+    if (canonical.kind == slang::ast::SymbolKind::PackedStructType) {
+        const auto& struct_type = canonical.as<slang::ast::PackedStructType>();
+        for (const auto& member : struct_type.members()) {
+            if (member.kind == slang::ast::SymbolKind::Field) {
+                fields.push_back(&member.as<slang::ast::FieldSymbol>());
+            }
+        }
+    }
+    else if (canonical.kind == slang::ast::SymbolKind::UnpackedStructType) {
+        const auto& struct_type = canonical.as<slang::ast::UnpackedStructType>();
+        for (const auto* field : struct_type.fields) {
+            if (field != nullptr) {
+                fields.push_back(field);
+            }
+        }
+    }
+    return fields;
+}
+
+void indexTypedMemberCompletions(SnapshotData& data,
+                                 const slang::SourceManager& source_manager,
+                                 const slang::ast::Symbol& symbol,
+                                 const SemanticLocation& owner_location,
+                                 std::string_view owner_stable_id) {
+    if (symbol.name.empty()) {
+        return;
+    }
+    const auto* declared_type = symbol.getDeclaredType();
+    if (declared_type == nullptr) {
+        return;
+    }
+
+    auto fields = structFieldsForType(declared_type->getType());
+    if (fields.empty()) {
+        return;
+    }
+
+    auto& completions = data.member_completions_by_uri[owner_location.uri];
+    for (const auto* field : fields) {
+        if (field == nullptr || field->name.empty()) {
+            continue;
+        }
+        const auto field_location = declarationLocationForSymbol(source_manager, *field)
+                                        .value_or(owner_location);
+        const auto stable_id = std::string(owner_stable_id) + "|member|" + std::string(field->name);
+        const auto duplicate = std::any_of(completions.begin(),
+                                           completions.end(),
+                                           [&](const SnapshotMemberCompletion& existing) {
+                                               return existing.qualifier == symbol.name &&
+                                                      existing.identity.name == field->name;
+                                           });
+        if (duplicate) {
+            continue;
+        }
+        completions.push_back(SnapshotMemberCompletion{
+            .qualifier = std::string(symbol.name),
+            .identity = SemanticSymbolIdentity{.stable_id = stable_id,
+                                               .name = std::string(field->name),
+                                               .kind = "Field",
+                                               .location = field_location}});
+    }
+}
+
 std::string argumentSignatureLabel(const slang::ast::FormalArgumentSymbol& argument) {
     std::string label = directionName(argument.direction);
     const auto type_display = normalizedTypeDisplay(argument.getType().toString());
@@ -1396,6 +1471,7 @@ void insertSymbol(SnapshotData& data,
                                   .type_display = std::move(type_display)});
     }
     data.ids_by_symbol.emplace(&symbol, stable_id);
+    indexTypedMemberCompletions(data, source_manager, symbol, *location, stable_id);
 
     auto& completions = data.completions_by_uri[location->uri];
     const auto duplicate = std::any_of(completions.begin(),
@@ -2384,6 +2460,7 @@ AstIndexView buildAstIndexView(const SnapshotData* data, std::uint64_t generatio
     }
     view.assignment_edges_by_uri = data->assignment_edges_by_uri;
     view.type_references_by_uri = data->type_references_by_uri;
+    view.member_completions_by_uri = data->member_completions_by_uri;
     view.include_directives_by_uri = data->include_directives_by_uri;
     view.macros_by_uri = data->macros_by_uri;
     view.package_imports_by_uri = data->package_imports_by_uri;

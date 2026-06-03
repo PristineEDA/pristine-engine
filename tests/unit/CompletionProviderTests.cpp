@@ -201,6 +201,13 @@ TEST_CASE("CompletionProvider appends member completions from provider-facing ca
     CHECK(items.front().detail == "Variable");
 }
 
+TEST_CASE("CompletionProvider normalizes array and hierarchical member qualifiers",
+          "[analysis][semantic][completion-provider][member]") {
+    CHECK(baseMemberQualifier("lanes[0]") == "lanes");
+    CHECK(baseMemberQualifier("bus.master[1]") == "master");
+    CHECK(baseMemberQualifier("status") == "status");
+}
+
 TEST_CASE("CompletionProvider computes connected named ports within an instance range",
           "[analysis][semantic][completion-provider][ports]") {
     const std::string text = "module top;\n  child u_child(.clk(clk), .ready(ready), .da);\nendmodule\n";
