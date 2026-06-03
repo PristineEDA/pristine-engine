@@ -864,11 +864,15 @@ TEST_CASE("SemanticEngine invalidates discovery closure caches for affected hier
           "[analysis][semantic-engine][discovery][hierarchy][schematic][cache][affected]") {
     SemanticEngine engine;
     engine.configure(SemanticEngineConfig{.top_modules = {"top"}});
+    engine.updateDocument("file:///workspace/z_defs.svh",
+                          "`define ENABLE_CHILD 1\n",
+                          SemanticEngineDocumentState{.version = 1});
     engine.updateDocument("file:///workspace/child.sv",
                           "module child;\n"
                           "endmodule\n",
                           SemanticEngineDocumentState{.version = 1});
     engine.updateDocument("file:///workspace/top.sv",
+                          "`include \"z_defs.svh\"\n"
                           "module top;\n"
                           "  child u_child();\n"
                           "endmodule\n",
@@ -882,7 +886,7 @@ TEST_CASE("SemanticEngine invalidates discovery closure caches for affected hier
     REQUIRE_FALSE(initial_hierarchy.unresolved);
     CHECK(initial_hierarchy.discovery_closure_used);
     CHECK_FALSE(initial_hierarchy.discovery_closure_cache_hit);
-    CHECK(initial_hierarchy.discovery_closure_document_count == 2);
+    CHECK(initial_hierarchy.discovery_closure_document_count == 3);
     REQUIRE(initial_hierarchy.roots.size() == 1);
     REQUIRE(initial_hierarchy.roots.front().children.size() == 1);
     CHECK(initial_hierarchy.roots.front().children.front().module_name == "child");
@@ -891,7 +895,7 @@ TEST_CASE("SemanticEngine invalidates discovery closure caches for affected hier
     REQUIRE_FALSE(initial_schematic.unresolved);
     CHECK(initial_schematic.discovery_closure_used);
     CHECK_FALSE(initial_schematic.discovery_closure_cache_hit);
-    CHECK(initial_schematic.discovery_closure_document_count == 2);
+    CHECK(initial_schematic.discovery_closure_document_count == 3);
     CHECK(std::any_of(initial_schematic.modules.begin(),
                       initial_schematic.modules.end(),
                       [](const SemanticSchematicModuleView& view) {
@@ -917,7 +921,7 @@ TEST_CASE("SemanticEngine invalidates discovery closure caches for affected hier
     REQUIRE_FALSE(changed_hierarchy.unresolved);
     CHECK(changed_hierarchy.discovery_closure_used);
     CHECK_FALSE(changed_hierarchy.discovery_closure_cache_hit);
-    CHECK(changed_hierarchy.discovery_closure_document_count == 3);
+    CHECK(changed_hierarchy.discovery_closure_document_count == 4);
     REQUIRE(changed_hierarchy.roots.size() == 1);
     REQUIRE(changed_hierarchy.roots.front().children.size() == 1);
     REQUIRE(changed_hierarchy.roots.front().children.front().children.size() == 1);
@@ -927,19 +931,34 @@ TEST_CASE("SemanticEngine invalidates discovery closure caches for affected hier
     REQUIRE_FALSE(changed_schematic.unresolved);
     CHECK(changed_schematic.discovery_closure_used);
     CHECK_FALSE(changed_schematic.discovery_closure_cache_hit);
-    CHECK(changed_schematic.discovery_closure_document_count == 3);
+    CHECK(changed_schematic.discovery_closure_document_count == 4);
     CHECK(std::any_of(changed_schematic.modules.begin(),
                       changed_schematic.modules.end(),
                       [](const SemanticSchematicModuleView& view) {
                           return view.module.name == "grandchild";
                       }));
 
+    engine.updateDocument("file:///workspace/pkg.sv",
+                          "package pkg;\n"
+                          "endpackage\n",
+                          SemanticEngineDocumentState{.version = 1});
+    engine.updateDocument("file:///workspace/z_defs.svh",
+                          "`include \"pkg.sv\"\n"
+                          "`define ENABLE_CHILD 1\n",
+                          SemanticEngineDocumentState{.version = 2});
+
+    const auto include_changed_hierarchy = engine.moduleHierarchy(std::string_view("top"), 8);
+    REQUIRE_FALSE(include_changed_hierarchy.unresolved);
+    CHECK(include_changed_hierarchy.discovery_closure_used);
+    CHECK_FALSE(include_changed_hierarchy.discovery_closure_cache_hit);
+    CHECK(include_changed_hierarchy.discovery_closure_document_count == 5);
+
     engine.removeDocument("file:///workspace/child.sv");
 
     const auto deleted_hierarchy = engine.moduleHierarchy(std::string_view("top"), 8);
     CHECK(deleted_hierarchy.discovery_closure_used);
     CHECK_FALSE(deleted_hierarchy.discovery_closure_cache_hit);
-    CHECK(deleted_hierarchy.discovery_closure_document_count < changed_hierarchy.discovery_closure_document_count);
+    CHECK(deleted_hierarchy.discovery_closure_document_count < include_changed_hierarchy.discovery_closure_document_count);
 
     const auto deleted_schematic = engine.schematic(std::string_view("top"), 8);
     CHECK(deleted_schematic.discovery_closure_used);

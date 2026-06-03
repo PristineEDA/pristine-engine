@@ -12,6 +12,7 @@
 #include "slang/util/Bag.h"
 
 #include <algorithm>
+#include <unordered_map>
 
 namespace pristine::analysis::semantic {
 namespace {
@@ -98,6 +99,23 @@ SnapshotBuildOutput SnapshotBuilder::build(SnapshotBuildInput input) const {
     }
     std::sort(output.snapshot.document_uris.begin(), output.snapshot.document_uris.end());
 
+    std::unordered_map<std::string, slang::SourceBuffer> source_buffers_by_uri;
+    source_buffers_by_uri.reserve(output.snapshot.document_uris.size());
+    for (const auto& uri : output.snapshot.document_uris) {
+        const auto document_it = input.documents.find(uri);
+        if (document_it == input.documents.end()) {
+            continue;
+        }
+
+        const auto path = fileUriToPath(uri);
+        auto buffer = data->source_manager->assignText(path, document_it->second.text);
+        if (!buffer) {
+            continue;
+        }
+        data->source_manager->addLineDirective(slang::SourceLocation(buffer.id, 0), 2, "source", 0);
+        source_buffers_by_uri.emplace(uri, buffer);
+    }
+
     for (const auto& uri : output.snapshot.document_uris) {
         const auto document_it = input.documents.find(uri);
         if (document_it == input.documents.end()) {
@@ -131,11 +149,12 @@ SnapshotBuildOutput SnapshotBuilder::build(SnapshotBuildInput input) const {
         append_symbol_ranges(append_symbol_ranges,
                              compilation_service.documentSymbols(document_it->second.text, uri));
 
-        auto tree = slang::syntax::SyntaxTree::fromFileInMemory(document_it->second.text,
-                                                                *data->source_manager,
-                                                                "source",
-                                                                fileUriToPath(uri),
-                                                                options);
+        const auto buffer_it = source_buffers_by_uri.find(uri);
+        if (buffer_it == source_buffers_by_uri.end()) {
+            continue;
+        }
+
+        auto tree = slang::syntax::SyntaxTree::fromBuffer(buffer_it->second, *data->source_manager, options);
         if (tree) {
             data->syntax_trees.push_back(std::move(tree));
         }

@@ -101,9 +101,38 @@ TEST_CASE("SnapshotBuilder builds syntax, diagnostics, and include dependency ed
                       }));
 }
 
+TEST_CASE("SnapshotBuilder reuses opened include buffers when included by another document",
+          "[analysis][semantic][snapshot-builder][include][regression]") {
+    SnapshotBuildInput input{.generation = 13,
+                             .config = SemanticEngineConfig{.top_modules = {"top"}},
+                             .documents = {{"file:///workspace/a_top.sv",
+                                            SemanticEngineDocument{
+                                                .uri = "file:///workspace/a_top.sv",
+                                                .text = "`include \"z_defs.svh\"\n"
+                                                        "module top;\n"
+                                                        "endmodule\n",
+                                                .version = 1,
+                                                .is_open = true}},
+                                           {"file:///workspace/z_defs.svh",
+                                            SemanticEngineDocument{
+                                                .uri = "file:///workspace/z_defs.svh",
+                                                .text = "`define READY 1\n",
+                                                .version = 1,
+                                                .is_open = true}}}};
+
+    const auto output = SnapshotBuilder{}.build(std::move(input));
+
+    CHECK(output.snapshot.generation == 13);
+    CHECK(output.snapshot.has_design_ast);
+    REQUIRE(output.data != nullptr);
+    CHECK(output.data->syntax_trees.size() == 2);
+    CHECK(output.includes.at("file:///workspace/a_top.sv") ==
+          std::vector<std::string>{"file:///workspace/z_defs.svh"});
+}
+
 TEST_CASE("SnapshotBuilder enters design mode when build or top config is present",
           "[analysis][semantic][snapshot-builder]") {
-    SnapshotBuildInput input{.generation = 13,
+    SnapshotBuildInput input{.generation = 14,
                              .config = SemanticEngineConfig{.top_modules = {"top"}},
                              .documents = {{"file:///workspace/top.sv",
                                             SemanticEngineDocument{.uri = "file:///workspace/top.sv",

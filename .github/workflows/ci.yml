@@ -230,3 +230,36 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
             throw "GitHub release publication failed with exit code $LASTEXITCODE"
           }
+
+  clang-linux:
+    name: Ubuntu 24.04 clang++ x64
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Cache dependency archives
+        uses: actions/cache@v4
+        with:
+          path: .deps/archives
+          key: deps-Linux-clang-${{ hashFiles('cmake/DepsLock.cmake') }}
+          restore-keys: |
+            deps-Linux-clang-
+            deps-Linux-x64-
+
+      - name: Bootstrap dependencies
+        run: cmake -DPRISTINE_ROOT_DIR=. -P scripts/bootstrap_deps.cmake
+
+      - name: Configure clang++
+        run: cmake -S . -B build/clang-linux -G Ninja -D CMAKE_BUILD_TYPE=Debug -D CMAKE_CXX_COMPILER=clang++ -D PRISTINE_BUILD_TESTS=ON
+
+      - name: Build clang++
+        run: cmake --build build/clang-linux
+
+      - name: Run clang++ tests
+        run: ctest --test-dir build/clang-linux --output-on-failure
