@@ -1,19 +1,24 @@
 {
-  "name": "selection range records nested function call expression debt",
+  "name": "selection range includes nested function call parent range",
   "sources": [
     {
       "uri": "file:///golden/semantic/selection-nested-call-again.sv",
-      "text": "module top;\n  function automatic int mix(input int a, input int b);\n    return a + b;\n  endfunction\n  initial begin\n    int value = mix(mix(1, 2), 3);\n  end\nendmodule\n"
+      "text": "module top;\n  int a;\n  int b;\n  int c;\n  function automatic int mix(input int lhs, input int rhs);\n    return lhs + rhs;\n  endfunction\n  initial begin\n    int value = mix(mix(a, b), c);\n  end\nendmodule\n"
     }
   ],
   "request": {
     "kind": "selectionRange",
     "uri": "file:///golden/semantic/selection-nested-call-again.sv",
-    "line": 5,
-    "character": 22
+    "line": 8,
+    "character": 24
   },
   "expected": {
-    "unresolved": true,
-    "minCount": 0
+    "minCount": 2,
+    "ranges": [
+      {
+        "startLine": 8,
+        "startCharacter": 20
+      }
+    ]
   }
 }

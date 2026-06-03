@@ -888,6 +888,32 @@ TEST_CASE("SemanticEngine builds selection parent chains from AST and syntax ran
     CHECK(*selection.ranges.front().parent == 1);
 }
 
+TEST_CASE("SemanticEngine builds selection parent chains for AST-backed function calls",
+          "[analysis][semantic-engine][selection][function][no-fallback]") {
+    SemanticEngine engine;
+    engine.updateDocument("file:///workspace/selection-call.sv",
+                          "module top;\n"
+                          "  function automatic int add(input int lhs, input int rhs);\n"
+                          "    return lhs + rhs;\n"
+                          "  endfunction\n"
+                          "  initial begin\n"
+                          "    int value = add(1, 2);\n"
+                          "  end\n"
+                          "endmodule\n",
+                          SemanticEngineDocumentState{.version = 1, .is_open = true});
+
+    const auto selection = engine.selectionRangesAt("file:///workspace/selection-call.sv", 5, 18);
+
+    REQUIRE_FALSE(selection.unresolved);
+    REQUIRE(selection.ranges.size() >= 2);
+    CHECK(selection.ranges.front().range.start_line == 5);
+    CHECK(selection.ranges.front().range.start_character == 16);
+    CHECK(std::any_of(selection.ranges.begin(), selection.ranges.end(), [](const SemanticSelectionRange& range) {
+        return range.range.start_line == 5 && range.range.start_character == 16 &&
+               range.range.end_character == 25;
+    }));
+}
+
 TEST_CASE("SemanticEngine reports UTF-16 ranges for AST references",
           "[analysis][semantic-engine][utf16]") {
     SemanticEngine engine;

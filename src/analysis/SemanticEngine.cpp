@@ -1505,10 +1505,28 @@ SemanticTokenResult SemanticEngine::semanticTokens(std::string_view uri) const {
 SemanticSelectionRangeResult SemanticEngine::selectionRangesAt(std::string_view uri,
                                                                int line,
                                                                int character) const {
-    const auto lookup = lookupAt(uri, line, character);
+    auto lookup = lookupAt(uri, line, character);
     const auto document_uri = withoutTrailingSlash(normalizeFileUri(uri));
     const auto* data = snapshotData();
     const auto ast_index = semantic::buildAstIndexView(data, lookup.generation);
+    if (lookup.unresolved) {
+        if (const auto calls_it = ast_index.signature_calls_by_uri.find(document_uri);
+            calls_it != ast_index.signature_calls_by_uri.end()) {
+            const auto call_it = std::find_if(calls_it->second.begin(),
+                                              calls_it->second.end(),
+                                              [&](const semantic::SignatureInlayCall& call) {
+                                                  return containsPosition(call.selection_range,
+                                                                          line,
+                                                                          character);
+                                              });
+            if (call_it != calls_it->second.end()) {
+                lookup.query_location = SemanticLocation{.uri = document_uri,
+                                                         .range = call_it->selection_range};
+                lookup.messages.clear();
+                lookup.unresolved = false;
+            }
+        }
+    }
     const auto document_it = documents_.find(document_uri);
     auto context = navigationContextFor(data,
                                         snapshot(),

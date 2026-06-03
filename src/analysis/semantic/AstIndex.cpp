@@ -1366,6 +1366,8 @@ void addSignatureCall(SnapshotData& data,
     if (!call_location.has_value() || call_location->uri.empty()) {
         return;
     }
+    data.selection_ranges_by_uri[call_location->uri].push_back(signature_call->range);
+    data.selection_ranges_by_uri[call_location->uri].push_back(signature_call->selection_range);
     data.signature_calls_by_uri[call_location->uri].push_back(std::move(*signature_call));
 }
 

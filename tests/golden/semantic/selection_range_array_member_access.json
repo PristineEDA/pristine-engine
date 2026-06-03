@@ -1,5 +1,5 @@
 {
-  "name": "selection range handles array member access debt shape",
+  "name": "selection range handles assignment target parent chain",
   "sources": [
     {
       "uri": "file:///golden/semantic/selection-array-member.sv",
