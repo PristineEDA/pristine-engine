@@ -1,5 +1,5 @@
 {
-  "name": "parameter override inlay records current no-label debt shape",
+  "name": "parameter override inlay emits AST-backed parameter labels",
   "sources": [
     {
       "uri": "file:///golden/semantic/inlay-param-child.sv",
@@ -22,7 +22,14 @@
   },
   "expected": {
     "labels": [
+      ": child",
+      ".WIDTH",
+      ".DEPTH",
       ".clk"
+    ],
+    "tooltips": [
+      "parameter int WIDTH",
+      "parameter int DEPTH"
     ]
   }
 }

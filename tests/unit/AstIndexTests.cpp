@@ -349,6 +349,74 @@ TEST_CASE("AstIndex derives module instances from slang AST rather than syntax m
     CHECK(inlay_instance.connections[1].port_name == "ready");
 }
 
+TEST_CASE("AstIndex derives parameter override inlay facts from AST module parameters",
+          "[analysis][semantic][ast-index][inlay][parameter]") {
+    SnapshotBuildInput input{
+        .generation = 38,
+        .documents = {{"file:///workspace/child.sv",
+                       SemanticEngineDocument{
+                           .uri = "file:///workspace/child.sv",
+                           .text = "module child #(parameter int WIDTH = 8, parameter int DEPTH = 4) "
+                                   "(input logic clk);\n"
+                                   "endmodule\n",
+                           .version = 1}},
+                      {"file:///workspace/top.sv",
+                       SemanticEngineDocument{.uri = "file:///workspace/top.sv",
+                                              .text = "module top;\n"
+                                                      "  logic clk;\n"
+                                                      "  child #(.WIDTH(16), .DEPTH(2)) u_child(.clk(clk));\n"
+                                                      "endmodule\n",
+                                              .version = 1,
+                                              .is_open = true}}}};
+
+    auto output = SnapshotBuilder{}.build(std::move(input));
+    REQUIRE(output.data != nullptr);
+
+    const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
+    REQUIRE(view.module_signatures_by_name.contains("child"));
+    const auto& child_definition = view.module_signatures_by_name.at("child").definition;
+    CHECK(std::any_of(child_definition.parameter_details.begin(),
+                      child_definition.parameter_details.end(),
+                      [](const SchematicPort& port) {
+                          return port.name == "WIDTH" && port.direction == "parameter" &&
+                                 port.width_text == "int";
+                      }));
+    CHECK(std::any_of(child_definition.parameter_details.begin(),
+                      child_definition.parameter_details.end(),
+                      [](const SchematicPort& port) {
+                          return port.name == "DEPTH" && port.direction == "parameter" &&
+                                 port.width_text == "int";
+                      }));
+
+    REQUIRE(view.module_signatures_by_name.contains("top"));
+    const auto& top_cells = view.module_signatures_by_name.at("top").schematic.cells;
+    REQUIRE(top_cells.size() == 1);
+    REQUIRE(top_cells.front().connections.size() == 1);
+    CHECK(top_cells.front().connections.front().port_name == "clk");
+
+    REQUIRE(view.signature_module_instances_by_uri.contains("file:///workspace/top.sv"));
+    const auto& inlay_instances = view.signature_module_instances_by_uri.at("file:///workspace/top.sv");
+    REQUIRE(inlay_instances.size() == 1);
+    const auto& inlay_connections = inlay_instances.front().connections;
+    CHECK(std::any_of(inlay_connections.begin(),
+                      inlay_connections.end(),
+                      [](const SchematicConnection& connection) {
+                          return connection.port_name == "WIDTH" && connection.signal == "16" &&
+                                 connection.range.start_line == 2;
+                      }));
+    CHECK(std::any_of(inlay_connections.begin(),
+                      inlay_connections.end(),
+                      [](const SchematicConnection& connection) {
+                          return connection.port_name == "DEPTH" && connection.signal == "2" &&
+                                 connection.range.start_line == 2;
+                      }));
+    CHECK(std::any_of(inlay_connections.begin(),
+                      inlay_connections.end(),
+                      [](const SchematicConnection& connection) {
+                          return connection.port_name == "clk" && connection.signal == "clk";
+                      }));
+}
+
 TEST_CASE("AstIndex attaches self-cycle and unresolved instance candidates to module definitions",
           "[analysis][semantic][ast-index][module-instance][hierarchy][no-fallback]") {
     SnapshotBuildInput input{.generation = 37,

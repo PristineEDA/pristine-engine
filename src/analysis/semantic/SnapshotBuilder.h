@@ -45,6 +45,7 @@ struct SnapshotModuleInstance {
     ParseRange range;
     ParseRange selection_range;
     ParseRange module_selection_range;
+    std::vector<SchematicConnection> parameter_connections;
 };
 
 struct SnapshotModuleEntry {

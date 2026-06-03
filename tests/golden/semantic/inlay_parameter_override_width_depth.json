@@ -23,8 +23,14 @@
   "expected": {
     "labels": [
       ": child",
+      ".WIDTH",
+      ".DEPTH",
       ".clk",
       ".data"
+    ],
+    "tooltips": [
+      "parameter int WIDTH",
+      "parameter int DEPTH"
     ]
   }
 }

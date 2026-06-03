@@ -13,6 +13,7 @@
 #include "slang/ast/expressions/OperatorExpressions.h"
 #include "slang/ast/symbols/InstanceSymbols.h"
 #include "slang/ast/symbols/MemberSymbols.h"
+#include "slang/ast/symbols/ParameterSymbols.h"
 #include "slang/ast/symbols/PortSymbols.h"
 #include "slang/ast/symbols/SubroutineSymbols.h"
 #include "slang/ast/symbols/VariableSymbols.h"
@@ -26,7 +27,9 @@
 
 #include <algorithm>
 #include <cctype>
+#include <limits>
 #include <set>
+#include <string_view>
 #include <type_traits>
 
 namespace pristine::analysis::semantic {
@@ -617,6 +620,8 @@ std::optional<ParseRange> parseRangeForSymbolSyntax(const slang::SourceManager& 
     return std::nullopt;
 }
 
+std::string typeDisplayForSymbol(const slang::ast::Symbol& symbol);
+
 std::string symbolStableId(const slang::SourceManager& source_manager,
                            const slang::ast::Symbol& symbol,
                            const SemanticLocation& location) {
@@ -683,6 +688,190 @@ std::optional<SchematicPort> schematicPortForAstPort(const slang::SourceManager&
                          .width_text = std::move(type_display),
                          .range = *range,
                          .selection_range = location->range};
+}
+
+std::optional<SchematicPort> schematicPortForAstParameter(
+    const slang::SourceManager& source_manager,
+    const slang::ast::ParameterSymbolBase& parameter) {
+    const auto& symbol = parameter.symbol;
+    if (symbol.name.empty()) {
+        return std::nullopt;
+    }
+
+    const auto location = declarationLocationForSymbol(source_manager, symbol);
+    const auto range = parseRangeForSymbolSyntax(source_manager, symbol);
+    if (!location.has_value() || !range.has_value()) {
+        return std::nullopt;
+    }
+
+    std::string type_display;
+    if (symbol.kind == slang::ast::SymbolKind::Parameter) {
+        type_display = typeDisplayForSymbol(symbol);
+    }
+    else if (symbol.kind == slang::ast::SymbolKind::TypeParameter) {
+        type_display = "type";
+    }
+
+    return SchematicPort{.name = std::string(symbol.name),
+                         .direction = "parameter",
+                         .width_text = std::move(type_display),
+                         .range = *range,
+                         .selection_range = location->range};
+}
+
+std::optional<size_t> findMatchingParen(std::string_view text, size_t open) {
+    if (open >= text.size() || text[open] != '(') {
+        return std::nullopt;
+    }
+
+    int depth = 0;
+    for (size_t index = open; index < text.size(); ++index) {
+        if (text[index] == '(') {
+            ++depth;
+        }
+        else if (text[index] == ')') {
+            --depth;
+            if (depth == 0) {
+                return index;
+            }
+        }
+    }
+    return std::nullopt;
+}
+
+std::optional<ParseRange> singleLineRangeAt(const ParseRange& statement_range,
+                                            size_t start,
+                                            size_t end) {
+    if (start > end || start > static_cast<size_t>(std::numeric_limits<int>::max()) ||
+        end > static_cast<size_t>(std::numeric_limits<int>::max())) {
+        return std::nullopt;
+    }
+    return ParseRange{.start_line = statement_range.start_line,
+                      .start_character = statement_range.start_character + static_cast<int>(start),
+                      .end_line = statement_range.start_line,
+                      .end_character = statement_range.start_character + static_cast<int>(end)};
+}
+
+std::vector<SchematicConnection> parameterOverrideConnectionsForAstInstance(
+    const slang::ast::InstanceSymbol& instance,
+    const SemanticEngineDocument* document,
+    const ParseRange& statement_range) {
+    if (document == nullptr || statement_range.start_line != statement_range.end_line) {
+        return {};
+    }
+
+    std::set<std::string> parameter_names;
+    for (const auto* parameter : instance.body.getParameters()) {
+        if (parameter == nullptr || parameter->symbol.name.empty() || !parameter->isPortParam()) {
+            continue;
+        }
+        parameter_names.insert(std::string(parameter->symbol.name));
+    }
+    if (parameter_names.empty()) {
+        return {};
+    }
+
+    const auto statement_text = textForRange(document->text, statement_range);
+    if (!statement_text.has_value()) {
+        return {};
+    }
+
+    const auto instance_name = std::string(instance.name);
+    const auto instance_name_offset = statement_text->find(instance_name);
+    if (instance_name_offset == std::string::npos) {
+        return {};
+    }
+    const auto param_marker = statement_text->find('#');
+    if (param_marker == std::string::npos || param_marker > instance_name_offset) {
+        return {};
+    }
+    const auto param_open = statement_text->find('(', param_marker);
+    if (param_open == std::string::npos || param_open > instance_name_offset) {
+        return {};
+    }
+    const auto param_close = findMatchingParen(*statement_text, param_open);
+    if (!param_close.has_value() || *param_close > instance_name_offset) {
+        return {};
+    }
+
+    std::vector<SchematicConnection> connections;
+    size_t cursor = param_open + 1;
+    while (cursor < *param_close) {
+        const auto dot = statement_text->find('.', cursor);
+        if (dot == std::string::npos || dot >= *param_close) {
+            break;
+        }
+
+        auto name_start = dot + 1;
+        while (name_start < *param_close &&
+               std::isspace(static_cast<unsigned char>((*statement_text)[name_start])) != 0) {
+            ++name_start;
+        }
+        auto name_end = name_start;
+        while (name_end < *param_close) {
+            const auto ch = (*statement_text)[name_end];
+            if (std::isalnum(static_cast<unsigned char>(ch)) == 0 && ch != '_' && ch != '$') {
+                break;
+            }
+            ++name_end;
+        }
+        if (name_end == name_start) {
+            cursor = name_end + 1;
+            continue;
+        }
+
+        const auto parameter_name = statement_text->substr(name_start, name_end - name_start);
+        const auto parameter_name_string = std::string(parameter_name);
+        if (!parameter_names.contains(parameter_name_string)) {
+            cursor = name_end;
+            continue;
+        }
+
+        const auto value_open = statement_text->find('(', name_end);
+        if (value_open == std::string::npos || value_open >= *param_close) {
+            break;
+        }
+        const auto value_close = findMatchingParen(*statement_text, value_open);
+        if (!value_close.has_value() || *value_close > *param_close) {
+            break;
+        }
+
+        auto value_start = value_open + 1;
+        while (value_start < *value_close &&
+               std::isspace(static_cast<unsigned char>((*statement_text)[value_start])) != 0) {
+            ++value_start;
+        }
+        auto value_end = *value_close;
+        while (value_end > value_start &&
+               std::isspace(static_cast<unsigned char>((*statement_text)[value_end - 1])) != 0) {
+            --value_end;
+        }
+        auto value_text = statement_text->substr(value_start, value_end - value_start);
+        auto value_range = singleLineRangeAt(statement_range, value_start, value_end);
+        if (!value_range.has_value()) {
+            value_range = singleLineRangeAt(statement_range, name_start, name_end);
+        }
+        if (value_range.has_value()) {
+            connections.push_back(SchematicConnection{.port_name = std::move(parameter_name_string),
+                                                      .port_index = -1,
+                                                      .signal = std::string(value_text),
+                                                      .range = *value_range});
+        }
+        cursor = *value_close + 1;
+    }
+
+    std::sort(connections.begin(),
+              connections.end(),
+              [](const SchematicConnection& lhs, const SchematicConnection& rhs) {
+                  if (lhs.range.start_line != rhs.range.start_line) {
+                      return lhs.range.start_line < rhs.range.start_line;
+                  }
+                  if (lhs.range.start_character != rhs.range.start_character) {
+                      return lhs.range.start_character < rhs.range.start_character;
+                  }
+                  return lhs.port_name < rhs.port_name;
+              });
+    return connections;
 }
 
 std::string typeDisplayForSymbol(const slang::ast::Symbol& symbol) {
@@ -814,6 +1003,14 @@ std::optional<ModuleDefinition> moduleDefinitionForAstBody(const slang::SourceMa
         module.ports.push_back(std::string(port_symbol->name));
         if (auto port = schematicPortForAstPort(source_manager, *port_symbol)) {
             module.port_details.push_back(std::move(*port));
+        }
+    }
+    for (const auto* parameter : body.getParameters()) {
+        if (parameter == nullptr || !parameter->isPortParam()) {
+            continue;
+        }
+        if (auto port = schematicPortForAstParameter(source_manager, *parameter)) {
+            module.parameter_details.push_back(std::move(*port));
         }
     }
     return module;
@@ -1279,6 +1476,8 @@ void indexModuleInstanceBinding(SnapshotData& data,
              rangesOverlapOrTouch(module_instance.selection_range, instance_location->range))) {
             module_instance.module_name = std::string(definition.name);
             module_instance.target_stable_id = definition_id;
+            module_instance.parameter_connections =
+                parameterOverrideConnectionsForAstInstance(instance, document, instance_range);
             return;
         }
     }
@@ -1289,7 +1488,11 @@ void indexModuleInstanceBinding(SnapshotData& data,
                                                .uri = instance_location->uri,
                                                .range = instance_range,
                                                .selection_range = instance_location->range,
-                                               .module_selection_range = module_selection_range});
+                                               .module_selection_range = module_selection_range,
+                                               .parameter_connections =
+                                                   parameterOverrideConnectionsForAstInstance(instance,
+                                                                                              document,
+                                                                                              instance_range)});
     data.selection_ranges_by_uri[instance_location->uri].push_back(instance_range);
     data.selection_ranges_by_uri[instance_location->uri].push_back(instance_location->range);
     data.selection_ranges_by_uri[instance_location->uri].push_back(module_selection_range);
@@ -1325,7 +1528,8 @@ void upsertModuleInstanceCandidate(SnapshotData& data,
                                                .uri = instance_location.uri,
                                                .range = range,
                                                .selection_range = instance_location.range,
-                                               .module_selection_range = module_selection_range});
+                                               .module_selection_range = module_selection_range,
+                                               .parameter_connections = {}});
     data.selection_ranges_by_uri[instance_location.uri].push_back(range);
     data.selection_ranges_by_uri[instance_location.uri].push_back(instance_location.range);
     data.selection_ranges_by_uri[instance_location.uri].push_back(module_selection_range);
@@ -2243,6 +2447,26 @@ AstIndexView buildAstIndexView(const SnapshotData* data, std::uint64_t generatio
                     break;
                 }
             }
+            view_instance.connections.insert(view_instance.connections.end(),
+                                             instance.parameter_connections.begin(),
+                                             instance.parameter_connections.end());
+            std::sort(view_instance.connections.begin(),
+                      view_instance.connections.end(),
+                      [](const SchematicConnection& lhs, const SchematicConnection& rhs) {
+                          if (lhs.range.start_line != rhs.range.start_line) {
+                              return lhs.range.start_line < rhs.range.start_line;
+                          }
+                          if (lhs.range.start_character != rhs.range.start_character) {
+                              return lhs.range.start_character < rhs.range.start_character;
+                          }
+                          if (lhs.range.end_line != rhs.range.end_line) {
+                              return lhs.range.end_line < rhs.range.end_line;
+                          }
+                          if (lhs.range.end_character != rhs.range.end_character) {
+                              return lhs.range.end_character < rhs.range.end_character;
+                          }
+                          return lhs.port_name < rhs.port_name;
+                      });
             view_instances.push_back(std::move(view_instance));
         }
     }

@@ -58,6 +58,7 @@ struct ModuleDefinition {
     ParseRange selection_range;
     std::vector<std::string> ports;
     std::vector<SchematicPort> port_details;
+    std::vector<SchematicPort> parameter_details;
     std::vector<ModuleInstantiation> instances;
 };
 

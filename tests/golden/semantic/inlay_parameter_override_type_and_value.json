@@ -1,0 +1,31 @@
+{
+  "name": "inlay hints label type and value parameter overrides",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/inlay-param-mixed.sv",
+      "text": "module child #(parameter type T = logic, parameter int WIDTH = 1) (input T data);\nendmodule\nmodule top;\n  logic [3:0] data;\n  child #(.T(logic [3:0]), .WIDTH(4)) u_child(.data(data));\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "inlayHint",
+    "uri": "file:///golden/semantic/inlay-param-mixed.sv",
+    "range": {
+      "startLine": 2,
+      "startCharacter": 0,
+      "endLine": 5,
+      "endCharacter": 0
+    }
+  },
+  "expected": {
+    "labels": [
+      ": child",
+      ".T",
+      ".WIDTH",
+      ".data"
+    ],
+    "tooltips": [
+      "parameter type T",
+      "parameter int WIDTH"
+    ]
+  }
+}

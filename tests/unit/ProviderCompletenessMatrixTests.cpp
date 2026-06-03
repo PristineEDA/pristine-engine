@@ -614,16 +614,16 @@ TEST_CASE("SignatureInlayProvider emits parameter override labels",
           "[analysis][semantic][signature-inlay-provider][inlay][parameters]") {
     const ModuleDefinition child{.name = "child",
                                  .kind = "module",
-                                 .port_details = {SchematicPort{.name = "WIDTH",
-                                                                .direction = "parameter",
-                                                                .width_text = "int",
-                                                                .range = ParseRange{},
-                                                                .selection_range = ParseRange{}},
-                                                  SchematicPort{.name = "DEPTH",
-                                                                .direction = "parameter",
-                                                                .width_text = "int",
-                                                                .range = ParseRange{},
-                                                                .selection_range = ParseRange{}}}};
+                                 .parameter_details = {SchematicPort{.name = "WIDTH",
+                                                                     .direction = "parameter",
+                                                                     .width_text = "int",
+                                                                     .range = ParseRange{},
+                                                                     .selection_range = ParseRange{}},
+                                                       SchematicPort{.name = "DEPTH",
+                                                                     .direction = "parameter",
+                                                                     .width_text = "int",
+                                                                     .range = ParseRange{},
+                                                                     .selection_range = ParseRange{}}}};
     const std::unordered_map<std::string, ModuleDefinition> modules{{"child", child}};
     const SignatureInlayContext context{
         .generation = 25,

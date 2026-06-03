@@ -51,6 +51,14 @@ bool sameRange(const ParseRange& lhs, const ParseRange& rhs) {
 const SchematicPort* portForConnection(const ModuleDefinition& module,
                                        const SchematicConnection& connection) {
     if (!connection.port_name.empty()) {
+        const auto found_parameter = std::find_if(module.parameter_details.begin(),
+                                                  module.parameter_details.end(),
+                                                  [&](const SchematicPort& port) {
+                                                      return port.name == connection.port_name;
+                                                  });
+        if (found_parameter != module.parameter_details.end()) {
+            return &*found_parameter;
+        }
         const auto found = std::find_if(module.port_details.begin(),
                                         module.port_details.end(),
                                         [&](const SchematicPort& port) {
@@ -63,6 +71,10 @@ const SchematicPort* portForConnection(const ModuleDefinition& module,
     if (connection.port_index >= 0 &&
         static_cast<size_t>(connection.port_index) < module.port_details.size()) {
         return &module.port_details[static_cast<size_t>(connection.port_index)];
+    }
+    if (module.port_details.empty() && connection.port_index >= 0 &&
+        static_cast<size_t>(connection.port_index) < module.parameter_details.size()) {
+        return &module.parameter_details[static_cast<size_t>(connection.port_index)];
     }
     return nullptr;
 }

@@ -1452,6 +1452,7 @@ std::optional<ModuleDefinition> toModuleDefinition(const slang::SourceManager& s
                             .selection_range = toParseRange(source_manager, text, declaration.header->name.range()),
                             .ports = collectHeaderPortNames(source_manager, text, *declaration.header),
                             .port_details = std::move(port_details),
+                            .parameter_details = {},
                             .instances = std::move(instances)};
 }
 
