@@ -133,6 +133,65 @@ TEST_CASE("CodeActionProvider creates include, module, port, and typedef fixes",
     }));
 }
 
+TEST_CASE("CodeActionProvider scopes missing port fixes to the requested instance",
+          "[analysis][semantic][code-action-provider][ports]") {
+    constexpr std::string_view uri = "file:///workspace/rtl/top.sv";
+    const auto document_text = "module top;\n"
+                               "  logic clk;\n"
+                               "  child u_a(.clk(clk));\n"
+                               "  child u_b(.clk(clk));\n"
+                               "endmodule\n";
+    CodeActionContext context{
+        .generation = 11,
+        .snapshot_available = true,
+        .document = SemanticEngineDocument{.uri = std::string(uri), .text = document_text},
+        .range = rangeAt(3, 2, 23),
+        .modules_by_name = {{"child",
+                             ModuleDefinition{.name = "child",
+                                              .kind = "module",
+                                              .port_details = {SchematicPort{.name = "clk",
+                                                                             .direction = "input",
+                                                                             .width_text = "logic"},
+                                                               SchematicPort{.name = "rst_n",
+                                                                             .direction = "input",
+                                                                             .width_text = "logic"},
+                                                               SchematicPort{.name = "data",
+                                                                             .direction = "input",
+                                                                             .width_text = "logic"}}}}},
+        .document_schematics = {ModuleSchematic{.name = "top",
+                                                .cells = {SchematicCell{.id = "u_a",
+                                                                        .name = "u_a",
+                                                                        .type = "child",
+                                                                        .kind = "module",
+                                                                        .range = rangeAt(2, 2, 23),
+                                                                        .selection_range = rangeAt(2, 8, 11),
+                                                                        .connections = {SchematicConnection{
+                                                                            .port_name = "clk",
+                                                                            .signal = "clk",
+                                                                            .range = rangeAt(2, 12, 21)}}},
+                                                          SchematicCell{.id = "u_b",
+                                                                        .name = "u_b",
+                                                                        .type = "child",
+                                                                        .kind = "module",
+                                                                        .range = rangeAt(3, 2, 23),
+                                                                        .selection_range = rangeAt(3, 8, 11),
+                                                                        .connections = {SchematicConnection{
+                                                                            .port_name = "clk",
+                                                                            .signal = "clk",
+                                                                            .range = rangeAt(3, 12, 21)}}}}}}};
+
+    const auto result = codeActionsAt(context);
+
+    REQUIRE_FALSE(result.unresolved);
+    REQUIRE(result.actions.size() == 1);
+    const auto& action = result.actions.front();
+    CHECK(action.title == "Add missing port connections to 'u_b'");
+    REQUIRE(action.edits.size() == 1);
+    CHECK(action.edits.front().range.start_line == 3);
+    CHECK(action.edits.front().range.start_character == 21);
+    CHECK(action.edits.front().new_text == ", .rst_n(rst_n), .data(data)");
+}
+
 TEST_CASE("CodeActionProvider creates macro definitions from slang macro diagnostics",
           "[analysis][semantic][code-action-provider][macro]") {
     constexpr std::string_view uri = "file:///workspace/rtl/top.sv";

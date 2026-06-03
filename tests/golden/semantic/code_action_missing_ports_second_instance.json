@@ -1,5 +1,5 @@
 {
-  "name": "code action records current second-instance missing port debt shape",
+  "name": "code action scopes missing port fix to second instance",
   "sources": [
     {
       "uri": "file:///golden/semantic/code-action-missing-ports-second.sv",
@@ -10,11 +10,18 @@
     "kind": "codeAction",
     "uri": "file:///golden/semantic/code-action-missing-ports-second.sv",
     "range": {
-      "startLine": 4,
+      "startLine": 5,
       "startCharacter": 2,
-      "endLine": 4,
+      "endLine": 5,
       "endCharacter": 22
     }
   },
-  "expected": {}
+  "expected": {
+    "actions": [
+      {
+        "title": "Add missing port connections to 'u_b'",
+        "editContains": ".rst_n(rst_n), .data(data)"
+      }
+    ]
+  }
 }
