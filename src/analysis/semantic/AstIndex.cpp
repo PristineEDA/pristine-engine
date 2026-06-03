@@ -163,16 +163,26 @@ bool documentImportsPackage(const SnapshotData& data,
                        });
 }
 
-bool packageIsDeclaredInUri(const SnapshotData& data,
-                            std::string_view package_name,
-                            std::string_view uri) {
-    return std::any_of(data.symbols_by_id.begin(),
-                       data.symbols_by_id.end(),
-                       [&](const auto& entry) {
-                           const auto& identity = entry.second.identity;
-                           return identity.kind == "Package" && identity.name == package_name &&
-                                  identity.location.uri == uri;
-                       });
+bool symbolIsDeclaredInsidePackage(const SnapshotData& data,
+                                   std::string_view stable_id,
+                                   const SemanticSymbolIdentity& identity,
+                                   std::string_view package_name) {
+    const auto scope_prefix = std::string("|") + std::string(package_name) + "::";
+    if (stable_id.find(scope_prefix) != std::string::npos) {
+        return true;
+    }
+
+    for (const auto& [_, package_symbol] : data.symbols_by_id) {
+        const auto& package_identity = package_symbol.identity;
+        if (package_identity.kind != "Package" || package_identity.name != package_name ||
+            package_identity.location.uri != identity.location.uri) {
+            continue;
+        }
+        if (rangeContainsRange(package_identity.location.range, identity.location.range)) {
+            return true;
+        }
+    }
+    return false;
 }
 
 std::vector<SemanticLocation> visibleTypeDefinitionLocationsByName(
@@ -192,7 +202,7 @@ std::vector<SemanticLocation> visibleTypeDefinitionLocationsByName(
             continue;
         }
         if (qualified_package.has_value()) {
-            if (packageIsDeclaredInUri(data, *qualified_package, identity.location.uri)) {
+            if (symbolIsDeclaredInsidePackage(data, symbol.identity.stable_id, identity, *qualified_package)) {
                 locations.push_back(identity.location);
             }
             continue;
@@ -1676,10 +1686,119 @@ std::optional<SemanticLocation> locationForDeclaredTypeReference(
     return SemanticLocation{.uri = type_uri, .range = type_range};
 }
 
+void appendTypeReference(SnapshotData& data,
+                         SemanticLocation reference_location,
+                         std::string type_name,
+                         std::vector<SemanticLocation> definitions) {
+    std::sort(definitions.begin(), definitions.end(), locationLess);
+    definitions.erase(std::unique(definitions.begin(), definitions.end(), sameLocation),
+                      definitions.end());
+    auto& references = data.type_references_by_uri[reference_location.uri];
+    const auto duplicate = std::any_of(references.begin(),
+                                       references.end(),
+                                       [&](const SnapshotTypeReference& reference) {
+                                           return sameLocation(reference.reference, reference_location);
+                                       });
+    if (duplicate) {
+        return;
+    }
+
+    references.push_back(SnapshotTypeReference{.reference = std::move(reference_location),
+                                               .type_name = std::move(type_name),
+                                               .definitions = std::move(definitions)});
+}
+
+std::vector<SemanticLocation> modportDefinitionLocationsForInterface(
+    const SnapshotData& data,
+    std::string_view interface_name,
+    const SemanticLocation& interface_location,
+    std::string_view modport_name) {
+    std::vector<SemanticLocation> locations;
+    const auto stable_scope = std::string("|") + std::string(interface_name) + "." +
+                              std::string(modport_name) + "|Modport|";
+    for (const auto& [stable_id, indexed_symbol] : data.symbols_by_id) {
+        const auto& identity = indexed_symbol.identity;
+        if (identity.kind != "Modport" || identity.name != modport_name ||
+            identity.location.uri != interface_location.uri) {
+            continue;
+        }
+        if (stable_id.find(stable_scope) != std::string::npos) {
+            locations.push_back(identity.location);
+        }
+    }
+    std::sort(locations.begin(), locations.end(), locationLess);
+    locations.erase(std::unique(locations.begin(), locations.end(), sameLocation), locations.end());
+    return locations;
+}
+
+bool addInterfacePortTypeReferences(SnapshotData& data,
+                                    const slang::SourceManager& source_manager,
+                                    const std::unordered_map<std::string, SemanticEngineDocument>& documents,
+                                    const slang::ast::InterfacePortSymbol& port) {
+    const auto port_location = declarationLocationForSymbol(source_manager, port);
+    if (!port_location.has_value()) {
+        return false;
+    }
+    const auto document_it = documents.find(port_location->uri);
+    if (document_it == documents.end()) {
+        return false;
+    }
+    const auto type_range = ParseRange{.start_line = port_location->range.start_line,
+                                       .start_character = 0,
+                                       .end_line = port_location->range.start_line,
+                                       .end_character = port_location->range.start_character};
+
+    bool inserted = false;
+    if (port.interfaceDef != nullptr) {
+        if (auto narrowed_range = identifierRangeByName(document_it->second.text,
+                                                        type_range,
+                                                        port.interfaceDef->name)) {
+            auto interface_reference = SemanticLocation{.uri = port_location->uri,
+                                                        .range = *narrowed_range};
+            if (const auto interface_definition =
+                    declarationLocationForSymbol(source_manager, *port.interfaceDef)) {
+                appendTypeReference(data,
+                                    std::move(interface_reference),
+                                    std::string(port.interfaceDef->name),
+                                    {*interface_definition});
+                inserted = true;
+
+                if (!port.modport.empty()) {
+                    if (auto modport_range = identifierRangeByName(document_it->second.text,
+                                                                   type_range,
+                                                                   port.modport)) {
+                        auto modport_definitions = modportDefinitionLocationsForInterface(data,
+                                                                                         port.interfaceDef->name,
+                                                                                         *interface_definition,
+                                                                                         port.modport);
+                        if (!modport_definitions.empty()) {
+                            appendTypeReference(data,
+                                                SemanticLocation{.uri = port_location->uri,
+                                                                 .range = *modport_range},
+                                                std::string(port.modport),
+                                                std::move(modport_definitions));
+                            inserted = true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return inserted;
+}
+
 void addTypeReferenceForSymbol(SnapshotData& data,
                                const slang::SourceManager& source_manager,
                                const std::unordered_map<std::string, SemanticEngineDocument>& documents,
                                const slang::ast::Symbol& symbol) {
+    if (symbol.kind == slang::ast::SymbolKind::InterfacePort &&
+        addInterfacePortTypeReferences(data,
+                                       source_manager,
+                                       documents,
+                                       symbol.as<slang::ast::InterfacePortSymbol>())) {
+        return;
+    }
+
     const auto* declared_type = symbol.getDeclaredType();
     if (declared_type == nullptr || declared_type->getTypeSyntax() == nullptr) {
         return;
@@ -1733,22 +1852,7 @@ void addTypeReferenceForSymbol(SnapshotData& data,
                                                                       qualified_package);
         definitions.insert(definitions.end(), named_definitions.begin(), named_definitions.end());
     }
-    std::sort(definitions.begin(), definitions.end(), locationLess);
-    definitions.erase(std::unique(definitions.begin(), definitions.end(), sameLocation),
-                      definitions.end());
-    auto& references = data.type_references_by_uri[reference_location->uri];
-    const auto duplicate = std::any_of(references.begin(),
-                                       references.end(),
-                                       [&](const SnapshotTypeReference& reference) {
-                                           return sameLocation(reference.reference, *reference_location);
-                                       });
-    if (duplicate) {
-        return;
-    }
-
-    references.push_back(SnapshotTypeReference{.reference = *reference_location,
-                                               .type_name = std::move(type_name),
-                                               .definitions = std::move(definitions)});
+    appendTypeReference(data, *reference_location, std::move(type_name), std::move(definitions));
 }
 
 void buildTypeReferences(SnapshotData& data,

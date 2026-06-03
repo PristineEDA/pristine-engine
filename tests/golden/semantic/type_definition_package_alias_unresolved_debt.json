@@ -1,5 +1,5 @@
 {
-  "name": "type definition records unresolved package alias chain debt",
+  "name": "type definition resolves package-qualified alias chain",
   "sources": [
     {
       "uri": "file:///golden/semantic/package-alias-debt.sv",
@@ -9,11 +9,25 @@
   "request": {
     "kind": "typeDefinition",
     "uri": "file:///golden/semantic/package-alias-debt.sv",
-    "line": 4,
+    "line": 5,
     "character": 10
   },
   "expected": {
-    "unresolved": true,
-    "count": 0
+    "unresolved": false,
+    "locations": [
+      {
+        "uri": "file:///golden/semantic/package-alias-debt.sv",
+        "range": {
+          "start": {
+            "line": 2,
+            "character": 17
+          },
+          "end": {
+            "line": 2,
+            "character": 24
+          }
+        }
+      }
+    ]
   }
 }

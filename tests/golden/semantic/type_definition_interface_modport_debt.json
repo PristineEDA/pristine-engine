@@ -1,19 +1,33 @@
 {
-  "name": "type definition records current interface modport type debt explicitly",
+  "name": "type definition resolves interface modport port type",
   "sources": [
     {
       "uri": "file:///golden/semantic/type-if-modport-debt.sv",
-      "text": "interface bus_if;\n  modport master(input ready);\nendinterface\nmodule top(bus_if.master bus);\nendmodule\n"
+      "text": "interface bus_if;\n  logic ready;\n  modport master(input ready);\nendinterface\nmodule top(bus_if.master bus);\nendmodule\n"
     }
   ],
   "request": {
     "kind": "typeDefinition",
     "uri": "file:///golden/semantic/type-if-modport-debt.sv",
-    "line": 2,
+    "line": 4,
     "character": 18
   },
   "expected": {
-    "unresolved": true,
-    "count": 0
+    "unresolved": false,
+    "locations": [
+      {
+        "uri": "file:///golden/semantic/type-if-modport-debt.sv",
+        "range": {
+          "start": {
+            "line": 2,
+            "character": 10
+          },
+          "end": {
+            "line": 2,
+            "character": 16
+          }
+        }
+      }
+    ]
   }
 }

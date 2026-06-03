@@ -1,0 +1,33 @@
+{
+  "name": "type definition resolves package-qualified alias without same-file package leakage",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/package-alias-same-file-shadow.sv",
+      "text": "package other;\n  typedef logic [3:0] alias_t;\nendpackage\npackage defs;\n  typedef logic [7:0] base_t;\n  typedef base_t alias_t;\nendpackage\nmodule top;\n  defs::alias_t value;\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "typeDefinition",
+    "uri": "file:///golden/semantic/package-alias-same-file-shadow.sv",
+    "line": 8,
+    "character": 10
+  },
+  "expected": {
+    "unresolved": false,
+    "locations": [
+      {
+        "uri": "file:///golden/semantic/package-alias-same-file-shadow.sv",
+        "range": {
+          "start": {
+            "line": 5,
+            "character": 17
+          },
+          "end": {
+            "line": 5,
+            "character": 24
+          }
+        }
+      }
+    ]
+  }
+}

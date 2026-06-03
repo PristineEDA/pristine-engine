@@ -519,6 +519,70 @@ TEST_CASE("AstIndex alias lookup does not resolve unimported package members by 
     CHECK(locations.empty());
 }
 
+TEST_CASE("AstIndex resolves package-qualified alias chains without leaking same-file packages",
+          "[analysis][semantic][ast-index][type-definition][package][alias][no-fallback]") {
+    SnapshotBuildInput input{.generation = 38,
+                             .documents = {{"file:///workspace/packages.sv",
+                                            SemanticEngineDocument{
+                                                .uri = "file:///workspace/packages.sv",
+                                                .text = "package other;\n"
+                                                        "  typedef logic [3:0] alias_t;\n"
+                                                        "endpackage\n"
+                                                        "package defs;\n"
+                                                        "  typedef logic [7:0] base_t;\n"
+                                                        "  typedef base_t alias_t;\n"
+                                                        "endpackage\n"
+                                                        "module top;\n"
+                                                        "  defs::alias_t value;\n"
+                                                        "endmodule\n",
+                                                .version = 1,
+                                                .is_open = true}}}};
+
+    auto output = SnapshotBuilder{}.build(std::move(input));
+    REQUIRE(output.data != nullptr);
+
+    const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
+    const auto package_locations = typeDefinitionLocationsAt(view, "file:///workspace/packages.sv", 8, 10);
+
+    REQUIRE(package_locations.size() == 1);
+    CHECK(package_locations.front().uri == "file:///workspace/packages.sv");
+    CHECK(package_locations.front().range.start_line == 5);
+    CHECK(package_locations.front().range.start_character == 17);
+    CHECK(package_locations.front().range.end_character == 24);
+}
+
+TEST_CASE("AstIndex resolves interface modport type references from interface ports",
+          "[analysis][semantic][ast-index][type-definition][interface][modport][no-fallback]") {
+    SnapshotBuildInput input{.generation = 39,
+                             .documents = {{"file:///workspace/if-port.sv",
+                                            SemanticEngineDocument{
+                                                .uri = "file:///workspace/if-port.sv",
+                                                .text = "interface bus_if;\n"
+                                                        "  logic ready;\n"
+                                                        "  modport master(input ready);\n"
+                                                        "endinterface\n"
+                                                        "module top(bus_if.master bus);\n"
+                                                        "endmodule\n",
+                                                .version = 1,
+                                                .is_open = true}}}};
+
+    auto output = SnapshotBuilder{}.build(std::move(input));
+    REQUIRE(output.data != nullptr);
+
+    const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
+    const auto interface_locations = typeDefinitionLocationsAt(view, "file:///workspace/if-port.sv", 4, 12);
+    REQUIRE(interface_locations.size() == 1);
+    CHECK(interface_locations.front().range.start_line == 0);
+    CHECK(interface_locations.front().range.start_character == 10);
+    CHECK(interface_locations.front().range.end_character == 16);
+
+    const auto modport_locations = typeDefinitionLocationsAt(view, "file:///workspace/if-port.sv", 4, 18);
+    REQUIRE(modport_locations.size() == 1);
+    CHECK(modport_locations.front().range.start_line == 2);
+    CHECK(modport_locations.front().range.start_character == 10);
+    CHECK(modport_locations.front().range.end_character == 16);
+}
+
 TEST_CASE("AstIndex derives function and task signature calls from slang AST",
           "[analysis][semantic][ast-index][signature][function][task][no-fallback]") {
     SnapshotBuildInput input{.generation = 39,
