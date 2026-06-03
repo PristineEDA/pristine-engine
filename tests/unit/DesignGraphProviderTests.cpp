@@ -567,6 +567,97 @@ TEST_CASE("DesignGraphProvider traces backward cone through continuous assignmen
     }));
 }
 
+TEST_CASE("DesignGraphProvider traces backward cone through cross-module instance port edges",
+          "[analysis][semantic][design-graph-provider][cone][instance][no-fallback]") {
+    auto context = simpleDesignContext();
+    auto& child_signature = context.module_signatures_by_name.at("child");
+    child_signature.definition.range = rangeAt(0, 0, 96);
+    child_signature.definition.port_details = {
+        SchematicPort{.name = "in",
+                      .direction = "input",
+                      .width_text = "logic [WIDTH-1:0]",
+                      .range = rangeAt(0, 42, 67),
+                      .selection_range = rangeAt(0, 60, 62)},
+        SchematicPort{.name = "out",
+                      .direction = "output",
+                      .width_text = "logic [WIDTH-1:0]",
+                      .range = rangeAt(0, 69, 95),
+                      .selection_range = rangeAt(0, 88, 91)}};
+    child_signature.schematic.ports = child_signature.definition.port_details;
+    child_signature.schematic.range = child_signature.definition.range;
+    context.modules_by_name.at("child").range = child_signature.definition.range;
+    context.modules_by_name.at("child").port_details = child_signature.definition.port_details;
+    auto& top_signature = context.module_signatures_by_name.at("top");
+    top_signature.schematic.cells.front().connections = {
+        SchematicConnection{.port_name = "in",
+                            .port_index = 0,
+                            .signal = "a",
+                            .range = rangeAt(5, 31, 32)},
+        SchematicConnection{.port_name = "out",
+                            .port_index = 1,
+                            .signal = "y",
+                            .range = rangeAt(5, 40, 41)}};
+
+    const auto a = SemanticSymbolIdentity{.stable_id = "top|a",
+                                          .name = "a",
+                                          .kind = "Variable",
+                                          .location = SemanticLocation{.uri = "file:///workspace/top.sv",
+                                                                       .range = rangeAt(3, 14, 15)}};
+    const auto y = SemanticSymbolIdentity{.stable_id = "top|y",
+                                          .name = "y",
+                                          .kind = "Variable",
+                                          .location = SemanticLocation{.uri = "file:///workspace/top.sv",
+                                                                       .range = rangeAt(4, 14, 15)}};
+    const auto child_in = SemanticSymbolIdentity{.stable_id = "child|in",
+                                                 .name = "in",
+                                                 .kind = "Port",
+                                                 .location = SemanticLocation{
+                                                     .uri = "file:///workspace/child.sv",
+                                                     .range = rangeAt(0, 60, 62)}};
+    const auto child_out = SemanticSymbolIdentity{.stable_id = "child|out",
+                                                  .name = "out",
+                                                  .kind = "Port",
+                                                  .location = SemanticLocation{
+                                                      .uri = "file:///workspace/child.sv",
+                                                      .range = rangeAt(0, 88, 91)}};
+    context.symbols_by_id = {{"top|a", DesignGraphSymbol{.identity = a}},
+                             {"top|y", DesignGraphSymbol{.identity = y}},
+                             {"child|in", DesignGraphSymbol{.identity = child_in}},
+                             {"child|out", DesignGraphSymbol{.identity = child_out}}};
+    context.symbol_ranges_by_uri["file:///workspace/top.sv"] = {
+        DesignGraphRangeSymbol{.range = a.location.range, .stable_id = "top|a"},
+        DesignGraphRangeSymbol{.range = y.location.range, .stable_id = "top|y"},
+        DesignGraphRangeSymbol{.range = rangeAt(5, 31, 32), .stable_id = "top|a"},
+        DesignGraphRangeSymbol{.range = rangeAt(5, 40, 41), .stable_id = "top|y"}};
+    context.symbol_ranges_by_uri["file:///workspace/child.sv"] = {
+        DesignGraphRangeSymbol{.range = child_in.location.range, .stable_id = "child|in"},
+        DesignGraphRangeSymbol{.range = child_out.location.range, .stable_id = "child|out"},
+        DesignGraphRangeSymbol{.range = rangeAt(1, 9, 12), .stable_id = "child|out"},
+        DesignGraphRangeSymbol{.range = rangeAt(1, 15, 17), .stable_id = "child|in"}};
+    context.assignment_edges_by_uri["file:///workspace/child.sv"] = {
+        SnapshotAssignmentEdge{.from_symbol_id = "child|out",
+                               .to_symbol_id = "child|in",
+                               .location = SemanticLocation{.uri = "file:///workspace/child.sv",
+                                                            .range = rangeAt(1, 2, 17)},
+                               .expression = "in"}};
+
+    const SemanticLookupResult lookup{.generation = 9, .symbol = y, .unresolved = false};
+
+    const auto trace = backwardCone(context, "file:///workspace/top.sv", lookup, 2000);
+
+    REQUIRE_FALSE(trace.unresolved);
+    CHECK(trace.nodes.size() == 4);
+    CHECK(std::any_of(trace.edges.begin(), trace.edges.end(), [](const SemanticConeEdge& edge) {
+        return edge.from_symbol_id == "top|y" && edge.to_symbol_id == "child|out";
+    }));
+    CHECK(std::any_of(trace.edges.begin(), trace.edges.end(), [](const SemanticConeEdge& edge) {
+        return edge.from_symbol_id == "child|out" && edge.to_symbol_id == "child|in";
+    }));
+    CHECK(std::any_of(trace.edges.begin(), trace.edges.end(), [](const SemanticConeEdge& edge) {
+        return edge.from_symbol_id == "child|in" && edge.to_symbol_id == "top|a";
+    }));
+}
+
 TEST_CASE("DesignGraphProvider truncates backward cone at the requested result cap",
           "[analysis][semantic][design-graph-provider][cone][truncated][no-fallback]") {
     auto context = simpleDesignContext();

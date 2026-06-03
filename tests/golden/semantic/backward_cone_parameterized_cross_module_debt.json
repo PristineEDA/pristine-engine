@@ -1,5 +1,5 @@
 {
-  "name": "backward cone records current parameterized cross-module query shape",
+  "name": "backward cone follows parameterized cross-module instance port edges",
   "sources": [
     {
       "uri": "file:///golden/semantic/cone-param-cross-debt.sv",
@@ -12,5 +12,19 @@
     "line": 5,
     "character": 14
   },
-  "expected": {}
+  "expected": {
+    "nodeCount": 4,
+    "edgeCount": 3,
+    "nodes": [
+      "y",
+      "out",
+      "in",
+      "a"
+    ],
+    "expressions": [
+      "y",
+      "in",
+      "a"
+    ]
+  }
 }

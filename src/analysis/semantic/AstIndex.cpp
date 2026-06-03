@@ -33,6 +33,7 @@
 #include <set>
 #include <string_view>
 #include <type_traits>
+#include <utility>
 
 namespace pristine::analysis::semantic {
 namespace {
@@ -57,6 +58,26 @@ bool sameLocation(const SemanticLocation& lhs, const SemanticLocation& rhs) {
     return lhs.uri == rhs.uri && lhs.range.start_line == rhs.range.start_line &&
            lhs.range.start_character == rhs.range.start_character &&
            lhs.range.end_line == rhs.range.end_line && lhs.range.end_character == rhs.range.end_character;
+}
+
+bool sameRange(const ParseRange& lhs, const ParseRange& rhs) {
+    return lhs.start_line == rhs.start_line && lhs.start_character == rhs.start_character &&
+           lhs.end_line == rhs.end_line && lhs.end_character == rhs.end_character;
+}
+
+void appendUniqueDesignGraphRange(std::vector<DesignGraphRangeSymbol>& ranges,
+                                  const ParseRange& range,
+                                  std::string stable_id) {
+    const auto duplicate = std::any_of(ranges.begin(),
+                                       ranges.end(),
+                                       [&](const DesignGraphRangeSymbol& existing) {
+                                           return existing.stable_id == stable_id &&
+                                                  sameRange(existing.range, range);
+                                       });
+    if (duplicate) {
+        return;
+    }
+    ranges.push_back(DesignGraphRangeSymbol{.range = range, .stable_id = std::move(stable_id)});
 }
 
 bool containsPosition(const ParseRange& range, int line, int character) {
@@ -2884,6 +2905,9 @@ AstIndexView buildAstIndexView(const SnapshotData* data, std::uint64_t generatio
                                                                .type_display = indexed_symbol.type_display});
         view.design_graph_symbols_by_id.emplace(stable_id,
                                                 DesignGraphSymbol{.identity = indexed_symbol.identity});
+        appendUniqueDesignGraphRange(view.design_graph_symbol_ranges_by_uri[indexed_symbol.identity.location.uri],
+                                     indexed_symbol.identity.location.range,
+                                     stable_id);
     }
 
     view.navigation_references.reserve(data->references.size());
@@ -2894,9 +2918,9 @@ AstIndexView buildAstIndexView(const SnapshotData* data, std::uint64_t generatio
                                                                  .is_declaration = reference.is_declaration});
         view.diagnostic_references.push_back(DiagnosticReference{.stable_id = reference.stable_id,
                                                                  .location = reference.location});
-        view.design_graph_symbol_ranges_by_uri[reference.location.uri].push_back(
-            DesignGraphRangeSymbol{.range = reference.location.range,
-                                   .stable_id = reference.stable_id});
+        appendUniqueDesignGraphRange(view.design_graph_symbol_ranges_by_uri[reference.location.uri],
+                                     reference.location.range,
+                                     reference.stable_id);
     }
     return view;
 }

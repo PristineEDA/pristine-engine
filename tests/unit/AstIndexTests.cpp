@@ -447,6 +447,65 @@ TEST_CASE("AstIndex derives parameter override inlay facts from AST module param
                       }));
 }
 
+TEST_CASE("AstIndex exposes parameterized cross-module cone inputs to design graph",
+          "[analysis][semantic][ast-index][cone][parameterized][cross-module]") {
+    SnapshotBuildInput input{
+        .generation = 41,
+        .documents = {{"file:///workspace/cone.sv",
+                       SemanticEngineDocument{
+                           .uri = "file:///workspace/cone.sv",
+                           .text =
+                               "module child #(parameter int WIDTH = 8) "
+                               "(input logic [WIDTH-1:0] in, output logic [WIDTH-1:0] out);\n"
+                               "  assign out = in;\n"
+                               "endmodule\n"
+                               "module top;\n"
+                               "  logic [3:0] a;\n"
+                               "  logic [3:0] y;\n"
+                               "  child #(.WIDTH(4)) u_child(.in(a), .out(y));\n"
+                               "endmodule\n",
+                           .version = 1,
+                           .is_open = true}}}};
+
+    auto output = SnapshotBuilder{}.build(std::move(input));
+    REQUIRE(output.data != nullptr);
+
+    const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
+    REQUIRE(view.module_signatures_by_name.contains("child"));
+    const auto& child_ports = view.module_signatures_by_name.at("child").definition.port_details;
+    CHECK(std::any_of(child_ports.begin(), child_ports.end(), [](const SchematicPort& port) {
+        return port.name == "in" && port.direction == "input";
+    }));
+    CHECK(std::any_of(child_ports.begin(), child_ports.end(), [](const SchematicPort& port) {
+        return port.name == "out" && port.direction == "output";
+    }));
+
+    REQUIRE(view.module_signatures_by_name.contains("top"));
+    const auto& cells = view.module_signatures_by_name.at("top").schematic.cells;
+    REQUIRE(cells.size() == 1);
+    CHECK(std::any_of(cells.front().connections.begin(),
+                      cells.front().connections.end(),
+                      [](const SchematicConnection& connection) {
+                          return connection.port_name == "in" && connection.signal == "a";
+                      }));
+    CHECK(std::any_of(cells.front().connections.begin(),
+                      cells.front().connections.end(),
+                      [](const SchematicConnection& connection) {
+                          return connection.port_name == "out" && connection.signal == "y";
+                      }));
+
+    REQUIRE(view.assignment_edges_by_uri.contains("file:///workspace/cone.sv"));
+    CHECK(std::any_of(view.assignment_edges_by_uri.at("file:///workspace/cone.sv").begin(),
+                      view.assignment_edges_by_uri.at("file:///workspace/cone.sv").end(),
+                      [&](const SnapshotAssignmentEdge& edge) {
+                          const auto from = view.design_graph_symbols_by_id.at(edge.from_symbol_id)
+                                                .identity.name;
+                          const auto to = view.design_graph_symbols_by_id.at(edge.to_symbol_id)
+                                              .identity.name;
+                          return from == "out" && to == "in";
+                      }));
+}
+
 TEST_CASE("AstIndex attaches self-cycle and unresolved instance candidates to module definitions",
           "[analysis][semantic][ast-index][module-instance][hierarchy][no-fallback]") {
     SnapshotBuildInput input{.generation = 37,
