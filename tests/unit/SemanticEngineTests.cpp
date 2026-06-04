@@ -1377,6 +1377,99 @@ TEST_CASE("SemanticEngine invalidates discovery-backed graph caches after index 
     CHECK(cached_included_schematic.discovery_closure_cache_hit);
 }
 
+TEST_CASE("SemanticEngine invalidates visible graph caches after topModules config changes",
+          "[analysis][semantic-engine][cache][affected][config][top-modules][hierarchy][schematic]") {
+    SemanticEngine engine;
+    engine.configure(SemanticEngineConfig{.workspace_root_uri = std::string("file:///workspace"),
+                                          .top_modules = {"top_a"}});
+    engine.updateDocument("file:///workspace/design.sv",
+                          "module child_a;\n"
+                          "endmodule\n"
+                          "module child_b;\n"
+                          "endmodule\n"
+                          "module top_a;\n"
+                          "  child_a u_a();\n"
+                          "endmodule\n"
+                          "module top_b;\n"
+                          "  child_b u_b();\n"
+                          "endmodule\n",
+                          SemanticEngineDocumentState{.version = 1, .is_open = true});
+
+    const auto symbols = engine.workspaceSymbols("top");
+    REQUIRE_FALSE(symbols.unresolved);
+    CHECK(std::any_of(symbols.symbols.begin(),
+                      symbols.symbols.end(),
+                      [](const SemanticWorkspaceSymbol& symbol) {
+                          return symbol.name == "top_a";
+                      }));
+    CHECK(std::any_of(symbols.symbols.begin(),
+                      symbols.symbols.end(),
+                      [](const SemanticWorkspaceSymbol& symbol) {
+                          return symbol.name == "top_b";
+                      }));
+
+    const auto hierarchy_a = engine.moduleHierarchy(std::nullopt, 8);
+    REQUIRE_FALSE(hierarchy_a.unresolved);
+    REQUIRE(hierarchy_a.roots.size() == 1);
+    CHECK(hierarchy_a.roots.front().module_name == "top_a");
+    REQUIRE(hierarchy_a.roots.front().children.size() == 1);
+    CHECK(hierarchy_a.roots.front().children.front().module_name == "child_a");
+
+    const auto schematic_a = engine.schematic(std::nullopt, 8);
+    REQUIRE_FALSE(schematic_a.unresolved);
+    REQUIRE(schematic_a.root_module_id.has_value());
+    CHECK(*schematic_a.root_module_id == "top_a");
+    CHECK(std::any_of(schematic_a.modules.begin(),
+                      schematic_a.modules.end(),
+                      [](const SemanticSchematicModuleView& view) {
+                          return view.module.name == "child_a";
+                      }));
+
+    engine.configure(SemanticEngineConfig{.workspace_root_uri = std::string("file:///workspace"),
+                                          .top_modules = {"top_b"}});
+
+    const auto updated_symbols = engine.workspaceSymbols("top");
+    REQUIRE_FALSE(updated_symbols.unresolved);
+    CHECK(updated_symbols.generation > symbols.generation);
+    CHECK(std::any_of(updated_symbols.symbols.begin(),
+                      updated_symbols.symbols.end(),
+                      [](const SemanticWorkspaceSymbol& symbol) {
+                          return symbol.name == "top_a";
+                      }));
+    CHECK(std::any_of(updated_symbols.symbols.begin(),
+                      updated_symbols.symbols.end(),
+                      [](const SemanticWorkspaceSymbol& symbol) {
+                          return symbol.name == "top_b";
+                      }));
+
+    const auto hierarchy_b = engine.moduleHierarchy(std::nullopt, 8);
+    REQUIRE_FALSE(hierarchy_b.unresolved);
+    REQUIRE(hierarchy_b.roots.size() == 1);
+    CHECK(hierarchy_b.roots.front().module_name == "top_b");
+    REQUIRE(hierarchy_b.roots.front().children.size() == 1);
+    CHECK(hierarchy_b.roots.front().children.front().module_name == "child_b");
+    CHECK(std::none_of(hierarchy_b.roots.front().children.begin(),
+                       hierarchy_b.roots.front().children.end(),
+                       [](const SemanticHierarchyNode& node) {
+                           return node.module_name == "child_a";
+                       }));
+
+    const auto schematic_b = engine.schematic(std::nullopt, 8);
+    REQUIRE_FALSE(schematic_b.unresolved);
+    REQUIRE(schematic_b.root_module_id.has_value());
+    CHECK(*schematic_b.root_module_id == "top_b");
+    CHECK(std::any_of(schematic_b.modules.begin(),
+                      schematic_b.modules.end(),
+                      [](const SemanticSchematicModuleView& view) {
+                          return view.module.name == "child_b";
+                      }));
+    CHECK(std::none_of(schematic_b.modules.begin(),
+                       schematic_b.modules.end(),
+                       [](const SemanticSchematicModuleView& view) {
+                           return view.module.name == "child_a";
+                       }));
+}
+
 TEST_CASE("SemanticEngine routes module signatures and schematic cells through AstIndex views",
           "[analysis][semantic-engine][ast-index][schematic][signature]") {
     SemanticEngine engine;

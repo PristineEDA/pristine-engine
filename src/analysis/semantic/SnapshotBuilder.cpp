@@ -51,12 +51,15 @@ std::string diagnosticUri(const slang::SourceManager& source_manager,
     return withoutTrailingSlash(normalizeFileUri(file_name));
 }
 
-slang::Bag makeCompilationOptions() {
+slang::Bag makeCompilationOptions(const SemanticEngineConfig& config) {
     slang::ast::CompilationOptions compilation_options;
     compilation_options.flags |= slang::ast::CompilationFlags::LintMode;
     compilation_options.flags |= slang::ast::CompilationFlags::IgnoreUnknownModules;
     compilation_options.flags |= slang::ast::CompilationFlags::AllowUseBeforeDeclare;
     compilation_options.errorLimit = 0;
+    for (const auto& top_module : config.top_modules) {
+        compilation_options.topModules.emplace(top_module);
+    }
 
     slang::Bag options;
     options.set(compilation_options);
@@ -80,7 +83,7 @@ SnapshotBuildOutput SnapshotBuilder::build(SnapshotBuildInput input) const {
     auto data = std::make_unique<SnapshotData>();
     data->source_manager = std::make_unique<slang::SourceManager>();
     data->source_manager->setDisableProximatePaths(true);
-    const auto options = makeCompilationOptions();
+    const auto options = makeCompilationOptions(input.config);
     data->syntax_trees.reserve(input.documents.size());
 
     SnapshotBuildOutput output;
