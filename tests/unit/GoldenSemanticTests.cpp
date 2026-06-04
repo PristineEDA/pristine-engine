@@ -349,6 +349,24 @@ void runOutlineFixture(SemanticEngine& engine, const nlohmann::json& fixture) {
             if (expected_item.contains("depth")) {
                 CHECK(item->depth == expected_item.at("depth").get<int>());
             }
+            if (expected_item.contains("detail")) {
+                CHECK(item->metadata.detail == expected_item.at("detail").get<std::string>());
+            }
+            if (expected_item.contains("declaration")) {
+                CHECK(item->metadata.declaration == expected_item.at("declaration").get<std::string>());
+            }
+            if (expected_item.contains("type")) {
+                CHECK(item->metadata.type == expected_item.at("type").get<std::string>());
+            }
+            if (expected_item.contains("direction")) {
+                CHECK(item->metadata.direction == expected_item.at("direction").get<std::string>());
+            }
+            if (expected_item.contains("value")) {
+                CHECK(item->metadata.value == expected_item.at("value").get<std::string>());
+            }
+            if (expected_item.contains("moduleName")) {
+                CHECK(item->metadata.module_name == expected_item.at("moduleName").get<std::string>());
+            }
             if (expected_item.contains("range")) {
                 CHECK(rangeMatchesJson(item->range, expected_item.at("range")));
             }

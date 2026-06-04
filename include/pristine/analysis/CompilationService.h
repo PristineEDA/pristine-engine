@@ -29,11 +29,21 @@ struct ParseDiagnostic {
     bool is_error = false;
 };
 
+struct OutlineMetadata {
+    std::string detail;
+    std::string declaration;
+    std::string type;
+    std::string direction;
+    std::string value;
+    std::string module_name;
+};
+
 struct DocumentSymbol {
     std::string name;
     int kind = 0;
     ParseRange range;
     ParseRange selection_range;
+    OutlineMetadata metadata;
     std::vector<DocumentSymbol> children;
 };
 
@@ -53,6 +63,7 @@ struct OutlineItem {
     ParseRange range;
     ParseRange selection_range;
     int depth = 0;
+    OutlineMetadata metadata;
     std::vector<OutlineItem> children;
 };
 

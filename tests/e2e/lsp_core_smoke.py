@@ -559,7 +559,11 @@ def main() -> int:
             outline_items = {item["name"]: item for item in outline["items"]}
             assert outline_items["top"]["id"] == "outline:0"
             assert outline_items["child_i"]["parentId"] == "outline:0"
+            assert outline_items["child_i"]["detail"] == "child"
+            assert outline_items["child_i"]["moduleName"] == "child"
             assert outline_items["ready"]["parentId"] == "outline:0"
+            assert outline_items["ready"]["detail"] == "logic"
+            assert outline_items["ready"]["type"] == "logic"
 
             definition = request(
                 process,

@@ -815,7 +815,7 @@ TEST_CASE("ServerSession returns SystemVerilog outline for opened document", "[s
 
     ScriptedTransport transport{
         R"({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}})",
-        R"({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///workspace/outline.sv","languageId":"systemverilog","version":7,"text":"package pkg; endpackage\ninterface bus; endinterface\nmodule top;\n  logic ready;\nendmodule\n"}}})",
+        R"({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///workspace/outline.sv","languageId":"systemverilog","version":7,"text":"package pkg; parameter int Width = 8; endpackage\ninterface bus(input logic clk); endinterface\nmodule child; endmodule\nmodule top;\n  child u_child();\n  logic ready;\nendmodule\n"}}})",
         R"({"jsonrpc":"2.0","id":2,"method":"systemverilog/outline","params":{"textDocument":{"uri":"file:///workspace/outline.sv"}}})"};
 
     const int exit_code = rpc_server.run(transport);
@@ -829,15 +829,30 @@ TEST_CASE("ServerSession returns SystemVerilog outline for opened document", "[s
     CHECK(result.at("version") == 7);
     CHECK(result.at("partial") == false);
     CHECK(result.at("truncated") == false);
-    REQUIRE(result.at("roots").size() == 3);
+    REQUIRE(result.at("roots").size() == 4);
     CHECK(result.at("roots").at(0).at("id") == "outline:0");
     CHECK(result.at("roots").at(0).at("kind") == "package");
     CHECK(result.at("roots").at(1).at("kind") == "interface");
     CHECK(result.at("roots").at(2).at("kind") == "module");
-    REQUIRE(result.at("items").size() == 4);
+    CHECK(result.at("roots").at(3).at("kind") == "module");
+    REQUIRE(result.at("items").size() == 8);
     CHECK(result.at("items").at(0).at("parentId").is_null());
-    CHECK(result.at("items").at(3).at("name") == "ready");
-    CHECK(result.at("items").at(3).at("parentId") == "outline:2");
+    CHECK(result.at("items").at(1).at("name") == "Width");
+    CHECK(result.at("items").at(1).at("kind") == "parameter");
+    CHECK(result.at("items").at(1).at("detail") == "int = 8");
+    CHECK(result.at("items").at(1).at("type") == "int");
+    CHECK(result.at("items").at(1).at("value") == "8");
+    CHECK(result.at("items").at(3).at("name") == "clk");
+    CHECK(result.at("items").at(3).at("kind") == "port");
+    CHECK(result.at("items").at(3).at("detail") == "input logic");
+    CHECK(result.at("items").at(3).at("direction") == "input");
+    CHECK(result.at("items").at(3).at("type") == "logic");
+    CHECK(result.at("items").at(6).at("name") == "u_child");
+    CHECK(result.at("items").at(6).at("kind") == "instance");
+    CHECK(result.at("items").at(6).at("detail") == "child");
+    CHECK(result.at("items").at(6).at("moduleName") == "child");
+    CHECK(result.at("items").at(7).at("name") == "ready");
+    CHECK(result.at("items").at(7).at("parentId") == "outline:3");
 }
 
 TEST_CASE("ServerSession outline honors depth limit and flat toggle", "[server][outline]") {

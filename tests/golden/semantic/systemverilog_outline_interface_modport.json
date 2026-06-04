@@ -17,9 +17,13 @@
     "rootNames": ["axi_if"],
     "items": [
       { "id": "outline:0", "name": "axi_if", "kind": "interface", "parentId": null, "depth": 0 },
+      { "id": "outline:0.0", "name": "clk", "kind": "port", "parentId": "outline:0", "depth": 1, "detail": "input logic", "type": "logic", "direction": "input" },
+      { "id": "outline:0.1", "name": "valid", "kind": "variable", "parentId": "outline:0", "depth": 1, "detail": "logic", "type": "logic" },
       { "id": "outline:0.3", "name": "master", "kind": "modport", "parentId": "outline:0", "depth": 1 },
-      { "id": "outline:0.3.0", "name": "ready", "kind": "variable", "parentId": "outline:0.3", "depth": 2 },
-      { "id": "outline:0.3.1", "name": "valid", "kind": "variable", "parentId": "outline:0.3", "depth": 2 }
+      { "id": "outline:0.3.0", "name": "ready", "kind": "port", "parentId": "outline:0.3", "depth": 2, "detail": "input", "direction": "input" },
+      { "id": "outline:0.3.1", "name": "valid", "kind": "port", "parentId": "outline:0.3", "depth": 2, "detail": "output", "direction": "output" },
+      { "id": "outline:0.3.2", "name": "drive", "kind": "function", "parentId": "outline:0.3", "depth": 2, "detail": "import", "direction": "import" },
+      { "id": "outline:0.4", "name": "drive", "kind": "function", "parentId": "outline:0", "depth": 1 }
     ]
   }
 }

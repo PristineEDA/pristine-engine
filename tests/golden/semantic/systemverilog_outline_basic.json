@@ -4,7 +4,7 @@
     {
       "uri": "file:///golden/outline_basic.sv",
       "version": 3,
-      "text": "package cfg_pkg;\n  parameter int Width = 8;\nendpackage\n\ninterface link_if(input logic clk);\n  logic ready;\nendinterface\n\nmodule top;\n  link_if bus();\n  logic done;\nendmodule\n"
+      "text": "package cfg_pkg;\n  parameter int Width = 8;\nendpackage\n\ninterface link_if(input logic clk);\n  logic ready;\nendinterface\n\nmodule child;\nendmodule\n\nmodule top;\n  link_if bus();\n  child u_child();\n  logic done;\nendmodule\n"
     }
   ],
   "request": {
@@ -14,12 +14,18 @@
   },
   "expected": {
     "version": 3,
-    "rootNames": ["cfg_pkg", "link_if", "top"],
+    "rootNames": ["cfg_pkg", "link_if", "child", "top"],
     "items": [
       { "id": "outline:0", "name": "cfg_pkg", "kind": "package", "parentId": null, "depth": 0 },
-      { "id": "outline:0.0", "name": "Width", "kind": "parameter", "parentId": "outline:0", "depth": 1 },
+      { "id": "outline:0.0", "name": "Width", "kind": "parameter", "parentId": "outline:0", "depth": 1, "detail": "int = 8", "type": "int", "value": "8" },
       { "id": "outline:1", "name": "link_if", "kind": "interface", "parentId": null, "depth": 0 },
-      { "id": "outline:2", "name": "top", "kind": "module", "parentId": null, "depth": 0 }
+      { "id": "outline:1.0", "name": "clk", "kind": "port", "parentId": "outline:1", "depth": 1, "detail": "input logic", "type": "logic", "direction": "input" },
+      { "id": "outline:1.1", "name": "ready", "kind": "variable", "parentId": "outline:1", "depth": 1, "detail": "logic", "type": "logic" },
+      { "id": "outline:2", "name": "child", "kind": "module", "parentId": null, "depth": 0 },
+      { "id": "outline:3", "name": "top", "kind": "module", "parentId": null, "depth": 0 },
+      { "id": "outline:3.0", "name": "bus", "kind": "instance", "parentId": "outline:3", "depth": 1, "detail": "link_if", "moduleName": "link_if" },
+      { "id": "outline:3.1", "name": "u_child", "kind": "instance", "parentId": "outline:3", "depth": 1, "detail": "child", "moduleName": "child" },
+      { "id": "outline:3.2", "name": "done", "kind": "variable", "parentId": "outline:3", "depth": 1, "detail": "logic", "type": "logic" }
     ]
   }
 }

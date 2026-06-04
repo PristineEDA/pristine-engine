@@ -465,6 +465,25 @@ jsonrpc::Json toOutlineItemJson(const analysis::OutlineItem& item, bool include_
                          {"selectionRange", toRangeJson(item.selection_range)},
                          {"depth", item.depth}};
 
+    if (!item.metadata.detail.empty()) {
+        result["detail"] = item.metadata.detail;
+    }
+    if (!item.metadata.declaration.empty()) {
+        result["declaration"] = item.metadata.declaration;
+    }
+    if (!item.metadata.type.empty()) {
+        result["type"] = item.metadata.type;
+    }
+    if (!item.metadata.direction.empty()) {
+        result["direction"] = item.metadata.direction;
+    }
+    if (!item.metadata.value.empty()) {
+        result["value"] = item.metadata.value;
+    }
+    if (!item.metadata.module_name.empty()) {
+        result["moduleName"] = item.metadata.module_name;
+    }
+
     if (include_children) {
         result["children"] = jsonrpc::Json::array();
         for (const auto& child : item.children) {
