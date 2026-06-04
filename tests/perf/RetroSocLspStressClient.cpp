@@ -260,6 +260,21 @@ std::string sanitizedIdentifier(std::string value, std::string fallback) {
 }
 
 SourceFile makeProbeSource(const fs::path& root, const std::string& requested_top) {
+    if (requested_top.empty()) {
+        std::ostringstream text;
+        text << "module retro_probe_child(input logic clk, output logic q);\n"
+             << "  assign q = clk;\n"
+             << "endmodule\n\n"
+             << "module retro_probe_top_a(input logic clk, output logic q);\n"
+             << "  retro_probe_child u_child_a(.clk(clk), .q(q));\n"
+             << "endmodule\n\n"
+             << "module retro_probe_top_b(input logic clk, output logic q);\n"
+             << "  retro_probe_child u_child_b(.clk(clk), .q(q));\n"
+             << "endmodule\n";
+        const auto path = root / "__pristine_lsp_probe.sv";
+        return SourceFile{.path = path, .uri = fileUriFor(path), .text = text.str()};
+    }
+
     const auto top = sanitizedIdentifier(requested_top, "retro_probe_top");
     const auto child = sanitizedIdentifier(top + "_child", "retro_probe_child");
     std::ostringstream text;
@@ -991,10 +1006,11 @@ int main(int argc, char** argv) {
         metrics.opened_file_count = 1;
         metrics.opened_byte_count = opened_source.text.size();
         metrics.opened_source_path = fs::absolute(opened_source.path).lexically_normal().string();
-        metrics.top_module = args.mode == "real"
-                                 ? selected_top
-                                 : (args.top_module.empty() ? "retro_probe_top"
-                                                            : sanitizedIdentifier(args.top_module, "retro_probe_top"));
+        metrics.top_module = args.top_module.empty()
+                                 ? std::string{}
+                                 : (args.mode == "real"
+                                        ? selected_top
+                                        : sanitizedIdentifier(args.top_module, "retro_probe_top"));
         metrics.client_workspace_discovery_micros = client_workspace_discovery_micros;
         metrics.client_open_file_select_micros = client_open_file_select_micros;
         metrics.trace_enabled = args.trace;
@@ -1030,10 +1046,12 @@ int main(int argc, char** argv) {
                        metrics.did_open_probe_micros);
         writeStage(operation_log, "didOpen:end", std::to_string(metrics.did_open_probe_micros) + "us");
 
-        writeStage(operation_log, "moduleHierarchy:cold:begin", metrics.top_module);
+        const auto hierarchy_request_top = args.top_module.empty() ? std::string{} : metrics.top_module;
+
+        writeStage(operation_log, "moduleHierarchy:cold:begin", hierarchy_request_top);
         start = Clock::now();
         auto hierarchy_cold = client.request("systemverilog/moduleHierarchy",
-                                             hierarchyParams(metrics.top_module, args.max_depth));
+                                             hierarchyParams(hierarchy_request_top, args.max_depth));
         metrics.hierarchy_cold_micros = elapsedMicros(start, Clock::now());
         collectHierarchyMetrics(hierarchy_cold, metrics, false);
         writeOperation(operation_log,
@@ -1042,10 +1060,10 @@ int main(int argc, char** argv) {
                        &hierarchy_cold);
         writeStage(operation_log, "moduleHierarchy:cold:end", std::to_string(metrics.hierarchy_cold_micros) + "us");
 
-        writeStage(operation_log, "moduleHierarchy:warm:begin", metrics.top_module);
+        writeStage(operation_log, "moduleHierarchy:warm:begin", hierarchy_request_top);
         start = Clock::now();
         auto hierarchy_warm = client.request("systemverilog/moduleHierarchy",
-                                             hierarchyParams(metrics.top_module, args.max_depth));
+                                             hierarchyParams(hierarchy_request_top, args.max_depth));
         metrics.hierarchy_warm_micros = elapsedMicros(start, Clock::now());
         collectHierarchyMetrics(hierarchy_warm, metrics, true);
         writeOperation(operation_log,
@@ -1054,10 +1072,11 @@ int main(int argc, char** argv) {
                        &hierarchy_warm);
         writeStage(operation_log, "moduleHierarchy:warm:end", std::to_string(metrics.hierarchy_warm_micros) + "us");
 
-        writeStage(operation_log, "schematic:begin", metrics.top_module);
+        const auto schematic_top = metrics.top_module;
+        writeStage(operation_log, "schematic:begin", schematic_top);
         start = Clock::now();
         auto schematic = client.request("systemverilog/schematic",
-                                        hierarchyParams(metrics.top_module, args.max_depth));
+                                        hierarchyParams(schematic_top, args.max_depth));
         metrics.schematic_micros = elapsedMicros(start, Clock::now());
         collectSchematicMetrics(schematic, metrics);
         writeOperation(operation_log, "systemverilog/schematic", metrics.schematic_micros, &schematic);

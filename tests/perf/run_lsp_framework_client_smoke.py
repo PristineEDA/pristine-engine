@@ -20,18 +20,13 @@ def main() -> int:
 
     with tempfile.TemporaryDirectory(prefix="pristine-lsp-framework-smoke-") as temp:
         root = Path(temp)
-        (root / "child.sv").write_text(
-            "module child(input logic clk, output logic q);\nendmodule\n",
-            encoding="utf-8",
-        )
-        (root / "top.sv").write_text(
-            "module top(input logic clk, output logic q);\n"
-            "  child u_child(.clk(clk), .q(q));\n"
-            "endmodule\n",
+        (root / "placeholder.sv").write_text(
+            "// The probe source is sent via didOpen; this file only makes the workspace non-empty.\n",
             encoding="utf-8",
         )
 
-        def run_client(log_dir: Path, *extra: str) -> dict:
+        def run_client(log_dir: Path, *extra: str, top: str | None = "top_a") -> dict:
+            top_args = [] if top is None else ["--top", top]
             completed = subprocess.run(
                 [
                     str(client),
@@ -41,8 +36,7 @@ def main() -> int:
                     str(root),
                     "--log-dir",
                     str(log_dir),
-                    "--top",
-                    "top",
+                    *top_args,
                     "--max-depth",
                     "8",
                     *extra,
@@ -59,10 +53,10 @@ def main() -> int:
             return json.loads(completed.stdout.strip().splitlines()[-1])
 
         no_trace_dir = binary_dir / "lsp-framework-smoke-logs" / "no-trace"
-        no_trace_summary = run_client(no_trace_dir)
-        assert no_trace_summary["fileCount"] == 2
-        assert no_trace_summary["topModule"] == "top"
-        assert no_trace_summary["hierarchyRootCount"] >= 1
+        no_trace_summary = run_client(no_trace_dir, top=None)
+        assert no_trace_summary["fileCount"] == 1
+        assert no_trace_summary["topModule"] == "retro_probe_top_a"
+        assert no_trace_summary["hierarchyRootCount"] == 2
         assert no_trace_summary["schematicModuleCount"] >= 1
         assert no_trace_summary["schematicCellCount"] >= 1
         assert no_trace_summary["schematicNetCount"] >= 1
@@ -78,10 +72,11 @@ def main() -> int:
             trace_dir,
             "--trace-file",
             str(trace_file),
+            top="top_a",
         )
-        assert trace_summary["fileCount"] == 2
-        assert trace_summary["topModule"] == "top"
-        assert trace_summary["hierarchyRootCount"] >= 1
+        assert trace_summary["fileCount"] == 1
+        assert trace_summary["topModule"] == "top_a"
+        assert trace_summary["hierarchyRootCount"] == 1
         assert trace_summary["schematicModuleCount"] >= 1
         assert trace_summary["traceEnabled"] is True
         assert Path(trace_summary["tracePath"]) == trace_file.resolve()

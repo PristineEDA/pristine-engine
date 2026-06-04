@@ -734,6 +734,50 @@ TEST_CASE("DesignGraphProvider reports unresolved configured hierarchy roots",
     }));
 }
 
+TEST_CASE("DesignGraphProvider infers all uninstantiated hierarchy roots",
+          "[analysis][semantic][design-graph-provider][hierarchy][multi-root]") {
+    auto context = simpleDesignContext();
+    context.top_modules.clear();
+    ModuleDefinition top_b{.name = "top_b",
+                           .kind = "module",
+                           .range = rangeAt(8, 0, 20),
+                           .selection_range = rangeAt(8, 7, 12),
+                           .ports = {},
+                           .port_details = {},
+                           .instances = {ModuleInstantiation{.module_name = "child",
+                                                             .instance_name = "u_child_b",
+                                                             .range = rangeAt(9, 2, 26),
+                                                             .selection_range = rangeAt(9, 8, 17),
+                                                             .module_selection_range = rangeAt(9, 2, 7)}}};
+    context.modules_by_name.emplace("top_b", top_b);
+    context.module_uris_by_name.emplace("top_b", "file:///workspace/top_b.sv");
+
+    const auto hierarchy = moduleHierarchy(context, std::nullopt, 8);
+
+    REQUIRE_FALSE(hierarchy.unresolved);
+    REQUIRE(hierarchy.roots.size() == 2);
+    CHECK(hierarchy.roots[0].module_name == "top");
+    CHECK(hierarchy.roots[1].module_name == "top_b");
+}
+
+TEST_CASE("DesignGraphProvider falls back to all hierarchy roots for cyclic designs",
+          "[analysis][semantic][design-graph-provider][hierarchy][multi-root][cycle]") {
+    auto context = simpleDesignContext();
+    context.top_modules.clear();
+    context.modules_by_name.at("child").instances = {ModuleInstantiation{.module_name = "top",
+                                                                         .instance_name = "u_top",
+                                                                         .range = rangeAt(1, 2, 20),
+                                                                         .selection_range = rangeAt(1, 8, 13),
+                                                                         .module_selection_range = rangeAt(1, 2, 5)}};
+
+    const auto hierarchy = moduleHierarchy(context, std::nullopt, 8);
+
+    REQUIRE_FALSE(hierarchy.unresolved);
+    REQUIRE(hierarchy.roots.size() == 2);
+    CHECK(hierarchy.roots[0].module_name == "child");
+    CHECK(hierarchy.roots[1].module_name == "top");
+}
+
 TEST_CASE("DesignGraphProvider reports missing schematic signatures without syntax fallback",
           "[analysis][semantic][design-graph-provider][schematic][partial][no-fallback]") {
     auto context = simpleDesignContext();

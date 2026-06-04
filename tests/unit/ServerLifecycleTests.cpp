@@ -1664,6 +1664,11 @@ TEST_CASE("ServerSession returns inferred SystemVerilog module hierarchy", "[ser
         "  child u_child();\n"
         "  bus_if bus();\n"
         "endmodule\n");
+    const auto zz_top_path = workspace.writeFile(
+        "rtl/zz_top.sv",
+        "module zz_top;\n"
+        "  child u_child();\n"
+        "endmodule\n");
 
     ScriptedTransport transport{
         std::string(R"({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"rootUri":")") +
@@ -1679,7 +1684,7 @@ TEST_CASE("ServerSession returns inferred SystemVerilog module hierarchy", "[ser
     CHECK(hierarchy_response.at("id") == 2);
     const auto& result = hierarchy_response.at("result");
     REQUIRE(result.at("messages").empty());
-    REQUIRE(result.at("roots").size() == 1);
+    REQUIRE(result.at("roots").size() == 2);
 
     const auto& top = result.at("roots").at(0);
     CHECK(top.at("moduleName") == "top");
@@ -1694,6 +1699,12 @@ TEST_CASE("ServerSession returns inferred SystemVerilog module hierarchy", "[ser
     CHECK(child.at("uri") == toFileUri(child_path));
     CHECK(child.at("instanceSelectionRange").at("start").at("line") == 1);
     REQUIRE(child.at("children").size() == 1);
+
+    const auto& zz_top = result.at("roots").at(1);
+    CHECK(zz_top.at("moduleName") == "zz_top");
+    CHECK(zz_top.at("kind") == "module");
+    CHECK(zz_top.at("uri") == toFileUri(zz_top_path));
+    REQUIRE(zz_top.at("children").size() == 1);
 
     const auto& leaf = child.at("children").at(0);
     CHECK(leaf.at("moduleName") == "leaf");

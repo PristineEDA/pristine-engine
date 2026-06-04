@@ -669,6 +669,9 @@ void runModuleHierarchyFixture(SemanticEngine& engine, const nlohmann::json& fix
         CHECK(result.discovery_closure_cache_hit == expected.at("discoveryClosureCacheHit").get<bool>());
     }
     if (expected.contains("rootModules")) {
+        if (expected.contains("rootModuleCount")) {
+            CHECK(result.roots.size() == expected.at("rootModuleCount").get<size_t>());
+        }
         for (const auto& expected_root : expected.at("rootModules")) {
             const auto module = expected_root.get<std::string>();
             CAPTURE(module);

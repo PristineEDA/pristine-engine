@@ -1,0 +1,24 @@
+{
+  "name": "module hierarchy returns multiple inferred top modules without config",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/hierarchy-multi-top-inferred.sv",
+      "text": "module leaf;\nendmodule\nmodule top_a;\n  leaf u_leaf_a();\nendmodule\nmodule top_b;\n  leaf u_leaf_b();\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "moduleHierarchy",
+    "moduleName": null,
+    "maxDepth": 8
+  },
+  "expected": {
+    "rootModuleCount": 2,
+    "rootModules": [
+      "top_a",
+      "top_b"
+    ],
+    "modules": [
+      "leaf"
+    ]
+  }
+}

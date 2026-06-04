@@ -12,7 +12,7 @@
 namespace pristine::analysis::semantic {
 namespace {
 
-std::optional<std::string> firstUninstantiatedModuleName(
+std::vector<std::string> inferredHierarchyRootNames(
     const std::unordered_map<std::string, ModuleDefinition>& modules_by_name) {
     std::set<std::string> instantiated;
     for (const auto& [_, module] : modules_by_name) {
@@ -20,15 +20,21 @@ std::optional<std::string> firstUninstantiatedModuleName(
             instantiated.insert(instance.module_name);
         }
     }
+    std::vector<std::string> roots;
     for (const auto& [name, _] : modules_by_name) {
         if (!instantiated.contains(name)) {
-            return name;
+            roots.push_back(name);
         }
     }
-    if (!modules_by_name.empty()) {
-        return modules_by_name.begin()->first;
+    if (roots.empty()) {
+        roots.reserve(modules_by_name.size());
+        for (const auto& [name, _] : modules_by_name) {
+            roots.push_back(name);
+        }
     }
-    return std::nullopt;
+    std::sort(roots.begin(), roots.end());
+    roots.erase(std::unique(roots.begin(), roots.end()), roots.end());
+    return roots;
 }
 
 std::string lowerAsciiCopy(std::string value) {
@@ -423,8 +429,8 @@ SemanticModuleHierarchyResult moduleHierarchy(const DesignGraphContext& context,
     else if (!context.top_modules.empty()) {
         root_names = context.top_modules;
     }
-    else if (const auto inferred = firstUninstantiatedModuleName(context.modules_by_name)) {
-        root_names.push_back(*inferred);
+    else {
+        root_names = inferredHierarchyRootNames(context.modules_by_name);
     }
 
     if (root_names.empty()) {
@@ -544,7 +550,10 @@ SemanticSchematicResult schematic(const DesignGraphContext& context,
         root_name = context.top_modules.front();
     }
     else {
-        root_name = firstUninstantiatedModuleName(context.modules_by_name);
+        const auto inferred_roots = inferredHierarchyRootNames(context.modules_by_name);
+        if (!inferred_roots.empty()) {
+            root_name = inferred_roots.front();
+        }
         if (!root_name.has_value() && !context.modules_by_name.empty()) {
             root_name = context.modules_by_name.begin()->first;
             result.messages.push_back("No uninstantiated top module could be inferred for this workspace.");

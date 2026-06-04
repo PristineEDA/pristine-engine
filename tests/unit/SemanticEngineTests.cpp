@@ -1006,6 +1006,28 @@ TEST_CASE("SemanticEngine builds design snapshot hierarchy, schematic, call hier
     }));
 }
 
+TEST_CASE("SemanticEngine returns all inferred hierarchy roots without top configuration",
+          "[analysis][semantic-engine][design][hierarchy][multi-root]") {
+    SemanticEngine engine;
+    engine.updateDocument("file:///workspace/design.sv",
+                          "module leaf;\n"
+                          "endmodule\n"
+                          "module top_a;\n"
+                          "  leaf u_leaf_a();\n"
+                          "endmodule\n"
+                          "module top_b;\n"
+                          "  leaf u_leaf_b();\n"
+                          "endmodule\n",
+                          SemanticEngineDocumentState{.version = 1, .is_open = true});
+
+    const auto hierarchy = engine.moduleHierarchy(std::nullopt, 8);
+
+    REQUIRE_FALSE(hierarchy.unresolved);
+    REQUIRE(hierarchy.roots.size() == 2);
+    CHECK(hierarchy.roots[0].module_name == "top_a");
+    CHECK(hierarchy.roots[1].module_name == "top_b");
+}
+
 TEST_CASE("SemanticEngine uses discovery closure for hierarchy and schematic cold graph builds",
           "[analysis][semantic-engine][discovery][hierarchy][schematic][cache]") {
     SemanticEngine engine;

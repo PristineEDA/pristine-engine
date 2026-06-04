@@ -338,30 +338,15 @@ void appendModulePortCompletions(std::vector<SemanticCompletionItem>& items,
                                           truncated);
 }
 
-template<typename Map>
-std::optional<std::string> firstUninstantiatedModuleName(const Map& modules_by_name) {
-    std::set<std::string> instantiated;
-    for (const auto& [_, module] : modules_by_name) {
-        for (const auto& instance : module.instances) {
-            instantiated.insert(instance.module_name);
-        }
-    }
-    for (const auto& [name, _] : modules_by_name) {
-        if (!instantiated.contains(name)) {
-            return name;
-        }
-    }
-    if (!modules_by_name.empty()) {
-        return modules_by_name.begin()->first;
-    }
-    return std::nullopt;
-}
-
 std::optional<std::string_view> inferredDiscoveryTop(
     std::optional<std::string_view> requested_module_name,
+    const SemanticEngineConfig& config,
     const SemanticWorkspaceDiscoverySnapshot& discovery) {
     if (requested_module_name.has_value() && !requested_module_name->empty()) {
         return requested_module_name;
+    }
+    if (config.top_modules.size() == 1) {
+        return std::string_view(config.top_modules.front());
     }
     if (discovery.top_candidates.size() == 1) {
         return std::string_view(discovery.top_candidates.front());
@@ -371,8 +356,9 @@ std::optional<std::string_view> inferredDiscoveryTop(
 
 const SemanticDiscoveryClosureMetric* discoveryClosureMetricFor(
     std::optional<std::string_view> requested_module_name,
+    const SemanticEngineConfig& config,
     const SemanticWorkspaceDiscoverySnapshot& discovery) {
-    const auto selected_top = inferredDiscoveryTop(requested_module_name, discovery);
+    const auto selected_top = inferredDiscoveryTop(requested_module_name, config, discovery);
     if (!selected_top.has_value() || selected_top->empty()) {
         return nullptr;
     }
@@ -440,7 +426,7 @@ ClosureDesignGraphSnapshot buildClosureDesignGraphSnapshot(
     input.generation = generation;
     input.config = config;
     input.config.top_modules.clear();
-    if (const auto selected_top = inferredDiscoveryTop(module_name, discovery);
+    if (const auto selected_top = inferredDiscoveryTop(module_name, config, discovery);
         selected_top.has_value() && !selected_top->empty()) {
         input.config.top_modules.push_back(std::string(*selected_top));
     }
@@ -783,7 +769,7 @@ const semantic::SnapshotData* SemanticEngine::snapshotData() const {
 std::vector<std::string> SemanticEngine::closureDocumentUrisFor(
     std::optional<std::string_view> module_name,
     const SemanticWorkspaceDiscoverySnapshot& discovery) const {
-    const auto selected_top = inferredDiscoveryTop(module_name, discovery);
+    const auto selected_top = inferredDiscoveryTop(module_name, config_, discovery);
     if (!selected_top.has_value() || selected_top->empty()) {
         return {};
     }
@@ -1549,7 +1535,7 @@ SemanticModuleHierarchyResult SemanticEngine::moduleHierarchy(std::optional<std:
         return result;
     }
     const auto closure_uris = closureDocumentUrisFor(module_name, discovery);
-    const auto* closure_metric = discoveryClosureMetricFor(module_name, discovery);
+    const auto* closure_metric = discoveryClosureMetricFor(module_name, config_, discovery);
     auto closure_snapshot = buildClosureDesignGraphSnapshot(generation_,
                                                             config_,
                                                             documents_,
@@ -1615,7 +1601,7 @@ SemanticSchematicResult SemanticEngine::schematic(std::optional<std::string_view
         return result;
     }
     const auto closure_uris = closureDocumentUrisFor(module_name, discovery);
-    const auto* closure_metric = discoveryClosureMetricFor(module_name, discovery);
+    const auto* closure_metric = discoveryClosureMetricFor(module_name, config_, discovery);
     auto closure_snapshot = buildClosureDesignGraphSnapshot(generation_,
                                                             config_,
                                                             documents_,
