@@ -808,6 +808,112 @@ TEST_CASE("ServerSession returns top-level document symbols", "[server][symbols]
     CHECK(symbols_response.at("result").at(2).at("kind") == 2);
 }
 
+TEST_CASE("ServerSession returns SystemVerilog outline for opened document", "[server][outline]") {
+    jsonrpc::JsonRpcServer rpc_server;
+    ServerSession session{"pristine-engine", kTestServerVersion};
+    session.bind(rpc_server);
+
+    ScriptedTransport transport{
+        R"({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}})",
+        R"({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///workspace/outline.sv","languageId":"systemverilog","version":7,"text":"package pkg; endpackage\ninterface bus; endinterface\nmodule top;\n  logic ready;\nendmodule\n"}}})",
+        R"({"jsonrpc":"2.0","id":2,"method":"systemverilog/outline","params":{"textDocument":{"uri":"file:///workspace/outline.sv"}}})"};
+
+    const int exit_code = rpc_server.run(transport);
+
+    CHECK(exit_code == 0);
+    REQUIRE(transport.outputs().size() == 3);
+
+    const auto outline_response = parseOutput(transport, 2);
+    const auto& result = outline_response.at("result");
+    CHECK(result.at("uri") == "file:///workspace/outline.sv");
+    CHECK(result.at("version") == 7);
+    CHECK(result.at("partial") == false);
+    CHECK(result.at("truncated") == false);
+    REQUIRE(result.at("roots").size() == 3);
+    CHECK(result.at("roots").at(0).at("id") == "outline:0");
+    CHECK(result.at("roots").at(0).at("kind") == "package");
+    CHECK(result.at("roots").at(1).at("kind") == "interface");
+    CHECK(result.at("roots").at(2).at("kind") == "module");
+    REQUIRE(result.at("items").size() == 4);
+    CHECK(result.at("items").at(0).at("parentId").is_null());
+    CHECK(result.at("items").at(3).at("name") == "ready");
+    CHECK(result.at("items").at(3).at("parentId") == "outline:2");
+}
+
+TEST_CASE("ServerSession outline honors depth limit and flat toggle", "[server][outline]") {
+    jsonrpc::JsonRpcServer rpc_server;
+    ServerSession session{"pristine-engine", kTestServerVersion};
+    session.bind(rpc_server);
+
+    ScriptedTransport transport{
+        R"({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}})",
+        R"({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///workspace/outline-depth.sv","languageId":"systemverilog","version":1,"text":"module top;\n  generate\n    begin : gen_blk\n      logic enabled;\n    end\n  endgenerate\nendmodule\n"}}})",
+        R"({"jsonrpc":"2.0","id":2,"method":"systemverilog/outline","params":{"textDocument":{"uri":"file:///workspace/outline-depth.sv"},"maxDepth":0,"includeFlat":false}})"};
+
+    const int exit_code = rpc_server.run(transport);
+
+    CHECK(exit_code == 0);
+    REQUIRE(transport.outputs().size() == 3);
+
+    const auto outline_response = parseOutput(transport, 2);
+    const auto& result = outline_response.at("result");
+    REQUIRE(result.at("roots").size() == 1);
+    CHECK(result.at("roots").at(0).at("name") == "top");
+    REQUIRE(result.at("roots").at(0).at("children").empty());
+    CHECK(result.at("items").empty());
+    CHECK(result.at("partial") == true);
+    CHECK(result.at("truncated") == false);
+    REQUIRE(result.at("messages").size() == 1);
+}
+
+TEST_CASE("ServerSession outline truncates by item limit", "[server][outline]") {
+    jsonrpc::JsonRpcServer rpc_server;
+    ServerSession session{"pristine-engine", kTestServerVersion};
+    session.bind(rpc_server);
+
+    ScriptedTransport transport{
+        R"({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}})",
+        R"({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///workspace/outline-limit.sv","languageId":"systemverilog","version":1,"text":"module top;\n  logic a;\n  logic b;\nendmodule\n"}}})",
+        R"({"jsonrpc":"2.0","id":2,"method":"systemverilog/outline","params":{"textDocument":{"uri":"file:///workspace/outline-limit.sv"},"limit":2}})"};
+
+    const int exit_code = rpc_server.run(transport);
+
+    CHECK(exit_code == 0);
+    REQUIRE(transport.outputs().size() == 3);
+
+    const auto outline_response = parseOutput(transport, 2);
+    const auto& result = outline_response.at("result");
+    CHECK(result.at("truncated") == true);
+    CHECK(result.at("partial") == true);
+    REQUIRE(result.at("items").size() == 2);
+    CHECK(result.at("items").at(0).at("name") == "top");
+    CHECK(result.at("items").at(1).at("name") == "a");
+    REQUIRE(result.at("messages").size() == 1);
+}
+
+TEST_CASE("ServerSession outline returns message for unopened document", "[server][outline]") {
+    jsonrpc::JsonRpcServer rpc_server;
+    ServerSession session{"pristine-engine", kTestServerVersion};
+    session.bind(rpc_server);
+
+    ScriptedTransport transport{
+        R"({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}})",
+        R"({"jsonrpc":"2.0","id":2,"method":"systemverilog/outline","params":{"textDocument":{"uri":"file:///workspace/missing.sv"}}})"};
+
+    const int exit_code = rpc_server.run(transport);
+
+    CHECK(exit_code == 0);
+    REQUIRE(transport.outputs().size() >= 2);
+
+    const auto outline_response = findResponse(transport, 2);
+    REQUIRE(outline_response.has_value());
+    const auto& result = outline_response->at("result");
+    CHECK(result.at("uri") == "file:///workspace/missing.sv");
+    CHECK(result.at("roots").empty());
+    CHECK(result.at("items").empty());
+    REQUIRE(result.at("messages").size() == 1);
+}
+
 TEST_CASE("ServerSession returns nested document symbols", "[server][symbols]") {
     jsonrpc::JsonRpcServer rpc_server;
     ServerSession session{"pristine-engine", kTestServerVersion};

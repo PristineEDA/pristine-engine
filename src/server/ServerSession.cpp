@@ -453,6 +453,60 @@ jsonrpc::Json toDocumentSymbolJson(const analysis::DocumentSymbol& symbol) {
     return result;
 }
 
+jsonrpc::Json toOutlineItemJson(const analysis::OutlineItem& item, bool include_children) {
+    jsonrpc::Json result{{"id", item.id},
+                         {"parentId",
+                          item.parent_id.has_value() ? jsonrpc::Json(*item.parent_id)
+                                                     : jsonrpc::Json(nullptr)},
+                         {"name", item.name},
+                         {"kind", item.kind},
+                         {"symbolKind", item.symbol_kind},
+                         {"range", toRangeJson(item.range)},
+                         {"selectionRange", toRangeJson(item.selection_range)},
+                         {"depth", item.depth}};
+
+    if (include_children) {
+        result["children"] = jsonrpc::Json::array();
+        for (const auto& child : item.children) {
+            result["children"].push_back(toOutlineItemJson(child, true));
+        }
+    }
+
+    return result;
+}
+
+jsonrpc::Json toOutlineResultJson(const analysis::OutlineResult& outline,
+                                  bool include_children,
+                                  bool include_flat) {
+    jsonrpc::Json roots = jsonrpc::Json::array();
+    if (include_children) {
+        for (const auto& root : outline.roots) {
+            roots.push_back(toOutlineItemJson(root, true));
+        }
+    }
+
+    jsonrpc::Json items = jsonrpc::Json::array();
+    if (include_flat) {
+        for (const auto& item : outline.items) {
+            items.push_back(toOutlineItemJson(item, false));
+        }
+    }
+
+    jsonrpc::Json messages = jsonrpc::Json::array();
+    for (const auto& message : outline.messages) {
+        messages.push_back(message);
+    }
+
+    return jsonrpc::Json{{"uri", outline.uri},
+                         {"version", outline.version},
+                         {"generation", outline.generation},
+                         {"roots", std::move(roots)},
+                         {"items", std::move(items)},
+                         {"partial", outline.partial},
+                         {"truncated", outline.truncated},
+                         {"messages", std::move(messages)}};
+}
+
 jsonrpc::Json toSchematicPortJson(const analysis::SchematicPort& port) {
     return jsonrpc::Json{{"name", port.name},
                          {"direction", port.direction},
@@ -664,6 +718,9 @@ void ServerSession::bind(jsonrpc::JsonRpcServer& server) {
     server.registerRequestHandler("textDocument/documentSymbol", [this](const jsonrpc::Json& params) {
         return handleDocumentSymbol(params);
     });
+    server.registerRequestHandler("systemverilog/outline", [this](const jsonrpc::Json& params) {
+        return handleOutline(params);
+    });
     server.registerRequestHandler("systemverilog/moduleHierarchy", [this](const jsonrpc::Json& params) {
         return handleModuleHierarchy(params);
     });
@@ -815,6 +872,46 @@ jsonrpc::Json ServerSession::handleDocumentSymbol(const jsonrpc::Json& params) {
     }
 
     return result;
+}
+
+jsonrpc::Json ServerSession::handleOutline(const jsonrpc::Json& params) {
+    if (!initialized_) {
+        throw std::runtime_error("systemverilog/outline received before initialize");
+    }
+
+    const auto uri = params.at("textDocument").at("uri").get<std::string>();
+    analysis::OutlineOptions options;
+    if (params.contains("maxDepth") && params.at("maxDepth").is_number_integer()) {
+        options.max_depth = params.at("maxDepth").get<int>();
+    }
+    if (params.contains("limit") && params.at("limit").is_number_unsigned()) {
+        options.limit = params.at("limit").get<size_t>();
+    }
+    else if (params.contains("limit") && params.at("limit").is_number_integer()) {
+        const auto limit = params.at("limit").get<int>();
+        options.limit = limit <= 0 ? 0 : static_cast<size_t>(limit);
+    }
+    if (params.contains("includeChildren") && params.at("includeChildren").is_boolean()) {
+        options.include_children = params.at("includeChildren").get<bool>();
+    }
+    if (params.contains("includeFlat") && params.at("includeFlat").is_boolean()) {
+        options.include_flat = params.at("includeFlat").get<bool>();
+    }
+
+    const auto* document = document_store_.find(uri);
+    if (!document) {
+        analysis::OutlineResult result;
+        result.uri = uri;
+        result.messages.push_back("Document is not open; systemverilog/outline only operates on opened documents.");
+        return toOutlineResultJson(result, options.include_children, options.include_flat);
+    }
+
+    const auto outline = compilation_service_.outline(document->text,
+                                                      document->uri,
+                                                      document->version,
+                                                      semantic_workspace_.engineGeneration(),
+                                                      options);
+    return toOutlineResultJson(outline, options.include_children, options.include_flat);
 }
 
 jsonrpc::Json ServerSession::handleModuleHierarchy(const jsonrpc::Json& params) {

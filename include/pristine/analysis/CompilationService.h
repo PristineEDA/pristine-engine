@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <optional>
 #include <string>
@@ -33,6 +35,36 @@ struct DocumentSymbol {
     ParseRange range;
     ParseRange selection_range;
     std::vector<DocumentSymbol> children;
+};
+
+struct OutlineOptions {
+    int max_depth = 8;
+    size_t limit = 2000;
+    bool include_children = true;
+    bool include_flat = true;
+};
+
+struct OutlineItem {
+    std::string id;
+    std::optional<std::string> parent_id;
+    std::string name;
+    std::string kind;
+    int symbol_kind = 0;
+    ParseRange range;
+    ParseRange selection_range;
+    int depth = 0;
+    std::vector<OutlineItem> children;
+};
+
+struct OutlineResult {
+    std::string uri;
+    int version = 0;
+    std::uint64_t generation = 0;
+    std::vector<OutlineItem> roots;
+    std::vector<OutlineItem> items;
+    bool partial = false;
+    bool truncated = false;
+    std::vector<std::string> messages;
 };
 
 struct ModuleInstantiation {
@@ -139,6 +171,11 @@ public:
     [[nodiscard]] ParseResult parse(std::string_view text, std::string_view uri) const;
     [[nodiscard]] std::vector<DocumentSymbol> documentSymbols(std::string_view text,
                                                               std::string_view uri) const;
+    [[nodiscard]] OutlineResult outline(std::string_view text,
+                                        std::string_view uri,
+                                        int version,
+                                        std::uint64_t generation,
+                                        OutlineOptions options = {}) const;
     [[nodiscard]] std::vector<ModuleDefinition> moduleDefinitions(std::string_view text,
                                                                   std::string_view uri) const;
     [[nodiscard]] std::optional<HoverResult> hover(std::string_view text,

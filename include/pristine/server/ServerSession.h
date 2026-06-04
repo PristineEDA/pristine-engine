@@ -28,6 +28,7 @@ public:
 private:
     jsonrpc::Json handleInitialize(const jsonrpc::Json& params);
     jsonrpc::Json handleDocumentSymbol(const jsonrpc::Json& params);
+    jsonrpc::Json handleOutline(const jsonrpc::Json& params);
     jsonrpc::Json handleModuleHierarchy(const jsonrpc::Json& params);
     jsonrpc::Json handleSchematic(const jsonrpc::Json& params);
     jsonrpc::Json handleBackwardCone(const jsonrpc::Json& params);

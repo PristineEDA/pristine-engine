@@ -1,0 +1,26 @@
+{
+  "name": "systemverilog outline class enum instance generate",
+  "sources": [
+    {
+      "uri": "file:///golden/outline_class_enum_generate.sv",
+      "version": 2,
+      "text": "class packet;\n  enum logic [1:0] {Idle, Busy} state_t;\n  function void pack();\n  endfunction\nendclass\n\nmodule leaf;\nendmodule\n\nmodule top;\n  leaf u_leaf();\n  if (1) begin : g_ready\n    logic flag;\n  end\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "outline",
+    "uri": "file:///golden/outline_class_enum_generate.sv",
+    "version": 2
+  },
+  "expected": {
+    "version": 2,
+    "rootNames": ["packet", "leaf", "top"],
+    "items": [
+      { "id": "outline:0", "name": "packet", "kind": "class", "parentId": null, "depth": 0 },
+      { "id": "outline:0.0", "name": "state_t", "kind": "variable", "parentId": "outline:0", "depth": 1 },
+      { "id": "outline:0.1", "name": "pack", "kind": "function", "parentId": "outline:0", "depth": 1 },
+      { "id": "outline:2.0", "name": "u_leaf", "kind": "instance", "parentId": "outline:2", "depth": 1 },
+      { "id": "outline:2.1", "name": "g_ready", "kind": "generateBlock", "parentId": "outline:2", "depth": 1 }
+    ]
+  }
+}

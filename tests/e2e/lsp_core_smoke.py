@@ -538,6 +538,29 @@ def main() -> int:
                 },
             )
 
+            outline = request(
+                process,
+                36,
+                "systemverilog/outline",
+                {
+                    "textDocument": {"uri": top_uri},
+                    "includeChildren": True,
+                    "includeFlat": True,
+                },
+            )["result"]
+            assert outline["uri"] == top_uri
+            assert outline["version"] == 1
+            assert outline["partial"] is False
+            assert outline["truncated"] is False
+            assert outline["messages"] == []
+            assert len(outline["roots"]) == 1
+            assert outline["roots"][0]["name"] == "top"
+            assert outline["roots"][0]["kind"] == "module"
+            outline_items = {item["name"]: item for item in outline["items"]}
+            assert outline_items["top"]["id"] == "outline:0"
+            assert outline_items["child_i"]["parentId"] == "outline:0"
+            assert outline_items["ready"]["parentId"] == "outline:0"
+
             definition = request(
                 process,
                 2,

@@ -137,6 +137,117 @@ DocumentSymbol makeDocumentSymbol(std::string name,
                           .children = std::move(children)};
 }
 
+std::string outlineKindForSymbolKind(int kind, bool has_parent) {
+    switch (kind) {
+        case 2:
+            return "module";
+        case 3:
+            return "generateBlock";
+        case 4:
+            return "package";
+        case 5:
+            return "class";
+        case 6:
+            return "function";
+        case 7:
+            return "variable";
+        case 8:
+            return "variable";
+        case 9:
+            return "variable";
+        case 10:
+            return "enum";
+        case 11:
+            return has_parent ? "modport" : "interface";
+        case 12:
+            return "function";
+        case 13:
+            return "variable";
+        case 14:
+            return "parameter";
+        case 15:
+            return "variable";
+        case 19:
+            return "instance";
+        case 22:
+            return "enumMember";
+        case 26:
+            return "typedef";
+        default:
+            return "unknown";
+    }
+}
+
+OutlineItem makeOutlineItem(const DocumentSymbol& symbol,
+                            std::string id,
+                            std::optional<std::string> parent_id,
+                            int depth) {
+    return OutlineItem{.id = std::move(id),
+                       .parent_id = std::move(parent_id),
+                       .name = symbol.name,
+                       .kind = outlineKindForSymbolKind(symbol.kind, parent_id.has_value()),
+                       .symbol_kind = symbol.kind,
+                       .range = symbol.range,
+                       .selection_range = symbol.selection_range,
+                       .depth = depth,
+                       .children = {}};
+}
+
+bool appendOutlineSymbol(const DocumentSymbol& symbol,
+                         const OutlineOptions& options,
+                         std::string id,
+                         std::optional<std::string> parent_id,
+                         int depth,
+                         size_t& emitted_count,
+                         OutlineItem& output,
+                         std::vector<OutlineItem>& flat_items,
+                         bool& truncated,
+                         bool& depth_limited) {
+    if (emitted_count >= options.limit) {
+        truncated = true;
+        return false;
+    }
+
+    output = makeOutlineItem(symbol, id, parent_id, depth);
+    ++emitted_count;
+    if (options.include_flat) {
+        auto flat_item = output;
+        flat_item.children.clear();
+        flat_items.push_back(std::move(flat_item));
+    }
+
+    if (depth < options.max_depth) {
+        for (size_t index = 0; index < symbol.children.size(); ++index) {
+            if (emitted_count >= options.limit) {
+                truncated = true;
+                break;
+            }
+            OutlineItem child;
+            const auto child_id = output.id + "." + std::to_string(index);
+            if (!appendOutlineSymbol(symbol.children[index],
+                                     options,
+                                     child_id,
+                                     output.id,
+                                     depth + 1,
+                                     emitted_count,
+                                     child,
+                                     flat_items,
+                                     truncated,
+                                     depth_limited)) {
+                break;
+            }
+            if (options.include_children) {
+                output.children.push_back(std::move(child));
+            }
+        }
+    }
+    else if (!symbol.children.empty() && depth >= options.max_depth) {
+        depth_limited = true;
+    }
+
+    return true;
+}
+
 std::string trimWhitespace(std::string value) {
     const auto is_space = [](unsigned char ch) {
         return ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n';
@@ -1525,6 +1636,70 @@ std::vector<DocumentSymbol> CompilationService::documentSymbols(std::string_view
     const auto& compilation_unit = syntax_tree->root().as<slang::syntax::CompilationUnitSyntax>();
 
     return collectMemberSymbols(source_manager, text, compilation_unit.members);
+}
+
+OutlineResult CompilationService::outline(std::string_view text,
+                                          std::string_view uri,
+                                          int version,
+                                          std::uint64_t generation,
+                                          OutlineOptions options) const {
+    if (options.max_depth < 0) {
+        options.max_depth = 8;
+    }
+    if (options.limit == 0) {
+        options.limit = 2000;
+    }
+
+    OutlineResult result;
+    result.uri = std::string(uri);
+    result.version = version;
+    result.generation = generation;
+
+    const auto symbols = documentSymbols(text, uri);
+    size_t emitted_count = 0;
+    bool depth_limited = false;
+    for (size_t index = 0; index < symbols.size(); ++index) {
+        if (emitted_count >= options.limit) {
+            result.truncated = true;
+            break;
+        }
+        OutlineItem root;
+        if (!appendOutlineSymbol(symbols[index],
+                                 options,
+                                 "outline:" + std::to_string(index),
+                                 std::nullopt,
+                                 0,
+                                 emitted_count,
+                                 root,
+                                 result.items,
+                                 result.truncated,
+                                 depth_limited)) {
+            break;
+        }
+        if (options.include_children) {
+            result.roots.push_back(std::move(root));
+        }
+    }
+
+    if (symbols.empty()) {
+        result.messages.push_back("No outline symbols found for opened document.");
+    }
+    if (!options.include_children) {
+        result.roots.clear();
+    }
+    if (!options.include_flat) {
+        result.items.clear();
+    }
+    result.partial = result.truncated || depth_limited;
+    if (depth_limited) {
+        result.messages.push_back("Outline results were limited to maxDepth " +
+                                  std::to_string(options.max_depth) + ".");
+    }
+    if (result.truncated) {
+        result.messages.push_back("Outline results were truncated at " +
+                                  std::to_string(options.limit) + " items.");
+    }
+    return result;
 }
 
 std::vector<ModuleDefinition> CompilationService::moduleDefinitions(std::string_view text,

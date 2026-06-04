@@ -1,0 +1,25 @@
+{
+  "name": "systemverilog outline basic roots and flat items",
+  "sources": [
+    {
+      "uri": "file:///golden/outline_basic.sv",
+      "version": 3,
+      "text": "package cfg_pkg;\n  parameter int Width = 8;\nendpackage\n\ninterface link_if(input logic clk);\n  logic ready;\nendinterface\n\nmodule top;\n  link_if bus();\n  logic done;\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "outline",
+    "uri": "file:///golden/outline_basic.sv",
+    "version": 3
+  },
+  "expected": {
+    "version": 3,
+    "rootNames": ["cfg_pkg", "link_if", "top"],
+    "items": [
+      { "id": "outline:0", "name": "cfg_pkg", "kind": "package", "parentId": null, "depth": 0 },
+      { "id": "outline:0.0", "name": "Width", "kind": "parameter", "parentId": "outline:0", "depth": 1 },
+      { "id": "outline:1", "name": "link_if", "kind": "interface", "parentId": null, "depth": 0 },
+      { "id": "outline:2", "name": "top", "kind": "module", "parentId": null, "depth": 0 }
+    ]
+  }
+}

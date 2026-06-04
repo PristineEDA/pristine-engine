@@ -1,3 +1,4 @@
+#include "pristine/analysis/CompilationService.h"
 #include "pristine/analysis/SemanticEngine.h"
 
 #include <catch2/catch_test_macros.hpp>
@@ -264,6 +265,105 @@ void checkLocations(const std::vector<SemanticLocation>& locations, const nlohma
                               [&](const SemanticLocation& location) {
                                   return locationMatchesJson(location, expected_location);
                               }));
+        }
+    }
+}
+
+void runOutlineFixture(SemanticEngine& engine, const nlohmann::json& fixture) {
+    const auto& request = fixture.at("request");
+    const auto& expected = fixture.at("expected");
+    const auto uri = request.at("uri").get<std::string>();
+
+    std::optional<std::string> text;
+    int version = request.value("version", 1);
+    for (const auto& source : fixture.at("sources")) {
+        if (source.at("uri").get<std::string>() == uri) {
+            text = source.at("text").get<std::string>();
+            version = source.value("version", version);
+            break;
+        }
+    }
+    REQUIRE(text.has_value());
+
+    OutlineOptions options;
+    options.max_depth = request.value("maxDepth", options.max_depth);
+    options.limit = request.value("limit", options.limit);
+    options.include_children = request.value("includeChildren", options.include_children);
+    options.include_flat = request.value("includeFlat", options.include_flat);
+
+    const CompilationService service;
+    const auto result = service.outline(*text, uri, version, engine.generation(), options);
+    CHECK(result.uri == uri);
+    CHECK(result.version == expected.value("version", version));
+    CHECK(result.partial == expected.value("partial", false));
+    CHECK(result.truncated == expected.value("truncated", false));
+    if (expected.contains("rootNames")) {
+        const auto expected_names = expected.at("rootNames").get<std::vector<std::string>>();
+        std::vector<std::string> actual_names;
+        actual_names.reserve(result.roots.size());
+        for (const auto& root : result.roots) {
+            actual_names.push_back(root.name);
+        }
+        CHECK(actual_names == expected_names);
+    }
+    if (expected.contains("itemNames")) {
+        const auto expected_names = expected.at("itemNames").get<std::vector<std::string>>();
+        std::vector<std::string> actual_names;
+        actual_names.reserve(result.items.size());
+        for (const auto& item : result.items) {
+            actual_names.push_back(item.name);
+        }
+        CHECK(actual_names == expected_names);
+    }
+    if (expected.contains("rootCount")) {
+        CHECK(result.roots.size() == expected.at("rootCount").get<size_t>());
+    }
+    if (expected.contains("itemCount")) {
+        CHECK(result.items.size() == expected.at("itemCount").get<size_t>());
+    }
+    if (expected.contains("items")) {
+        for (const auto& expected_item : expected.at("items")) {
+            CAPTURE(expected_item.dump());
+            const auto id = expected_item.at("id").get<std::string>();
+            const auto item = std::find_if(result.items.begin(),
+                                           result.items.end(),
+                                           [&](const OutlineItem& candidate) {
+                                               return candidate.id == id;
+                                           });
+            REQUIRE(item != result.items.end());
+            if (expected_item.contains("name")) {
+                CHECK(item->name == expected_item.at("name").get<std::string>());
+            }
+            if (expected_item.contains("kind")) {
+                CHECK(item->kind == expected_item.at("kind").get<std::string>());
+            }
+            if (expected_item.contains("parentId")) {
+                if (expected_item.at("parentId").is_null()) {
+                    CHECK_FALSE(item->parent_id.has_value());
+                }
+                else {
+                    REQUIRE(item->parent_id.has_value());
+                    CHECK(*item->parent_id == expected_item.at("parentId").get<std::string>());
+                }
+            }
+            if (expected_item.contains("depth")) {
+                CHECK(item->depth == expected_item.at("depth").get<int>());
+            }
+            if (expected_item.contains("range")) {
+                CHECK(rangeMatchesJson(item->range, expected_item.at("range")));
+            }
+            if (expected_item.contains("selectionRange")) {
+                CHECK(rangeMatchesJson(item->selection_range, expected_item.at("selectionRange")));
+            }
+        }
+    }
+    if (expected.contains("messagesContain")) {
+        for (const auto& expected_message : expected.at("messagesContain")) {
+            const auto message = expected_message.get<std::string>();
+            CAPTURE(message);
+            CHECK(std::any_of(result.messages.begin(), result.messages.end(), [&](const std::string& item) {
+                return item.find(message) != std::string::npos;
+            }));
         }
     }
 }
@@ -1064,6 +1164,9 @@ TEST_CASE("JSON semantic golden fixtures exercise stable request shapes",
         const auto kind = fixture.at("request").at("kind").get<std::string>();
         if (kind == "lookup") {
             runLookupFixture(engine, fixture);
+        }
+        else if (kind == "outline") {
+            runOutlineFixture(engine, fixture);
         }
         else if (kind == "definition") {
             runDefinitionFixture(engine, fixture);

@@ -1,0 +1,23 @@
+{
+  "name": "systemverilog outline limit truncates flat preorder",
+  "sources": [
+    {
+      "uri": "file:///golden/outline_limit.sv",
+      "version": 1,
+      "text": "module top;\n  logic a;\n  logic b;\n  logic c;\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "outline",
+    "uri": "file:///golden/outline_limit.sv",
+    "limit": 2
+  },
+  "expected": {
+    "itemNames": ["top", "a"],
+    "itemCount": 2,
+    "rootCount": 1,
+    "partial": true,
+    "truncated": true,
+    "messagesContain": ["truncated at 2 items"]
+  }
+}

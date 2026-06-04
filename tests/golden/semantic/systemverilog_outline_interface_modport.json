@@ -1,0 +1,25 @@
+{
+  "name": "systemverilog outline preserves interface modport members",
+  "sources": [
+    {
+      "uri": "file:///golden/outline_interface_modport.sv",
+      "version": 5,
+      "text": "interface axi_if(input logic clk);\n  logic valid;\n  logic ready;\n  modport master(input ready, output valid, import task drive);\n  task drive(input logic value);\n  endtask\nendinterface\n"
+    }
+  ],
+  "request": {
+    "kind": "outline",
+    "uri": "file:///golden/outline_interface_modport.sv",
+    "version": 5
+  },
+  "expected": {
+    "version": 5,
+    "rootNames": ["axi_if"],
+    "items": [
+      { "id": "outline:0", "name": "axi_if", "kind": "interface", "parentId": null, "depth": 0 },
+      { "id": "outline:0.3", "name": "master", "kind": "modport", "parentId": "outline:0", "depth": 1 },
+      { "id": "outline:0.3.0", "name": "ready", "kind": "variable", "parentId": "outline:0.3", "depth": 2 },
+      { "id": "outline:0.3.1", "name": "valid", "kind": "variable", "parentId": "outline:0.3", "depth": 2 }
+    ]
+  }
+}
