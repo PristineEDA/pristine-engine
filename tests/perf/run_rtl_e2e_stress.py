@@ -5,13 +5,24 @@ import sys
 from pathlib import Path
 
 
+def env_value(name: str, legacy_name: str | None = None) -> str | None:
+    value = os.environ.get(name)
+    if value is not None and value.strip():
+        return value.strip()
+    if legacy_name is not None:
+        legacy_value = os.environ.get(legacy_name)
+        if legacy_value is not None and legacy_value.strip():
+            return legacy_value.strip()
+    return None
+
+
 def main() -> int:
     if len(sys.argv) < 2:
-        print("usage: run_retrosoc_stress.py <pristine_retrosoc_stress_binary>", file=sys.stderr)
+        print("usage: run_rtl_e2e_stress.py <pristine_rtl_e2e_stress_binary>", file=sys.stderr)
         return 2
 
     repo_root = Path(__file__).resolve().parents[2]
-    prepare = repo_root / "tests" / "perf" / "prepare_retrosoc.py"
+    prepare = repo_root / "tests" / "perf" / "prepare_rtl_e2e_corpus.py"
     try:
         prepared = subprocess.run(
             [sys.executable, str(prepare)],
@@ -29,7 +40,7 @@ def main() -> int:
         return 1
 
     command = [sys.argv[1], root]
-    top = os.environ.get("RETROSOC_TOP")
+    top = env_value("RTL_E2E_TOP", "RETROSOC_TOP")
     if top:
         command.append(top)
 

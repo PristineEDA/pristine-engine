@@ -7,8 +7,25 @@ import sys
 from pathlib import Path
 
 
-DEFAULT_REPO_URL = "https://github.com/retroSoC/retroSoC.git"
-DEFAULT_COMMIT = "76651fd"
+DEFAULT_CORPUS = "retrosoc"
+CORPORA = {
+    "retrosoc": {
+        "repo_url": "https://github.com/retroSoC/retroSoC.git",
+        "commit": "76651fd",
+        "checkout_dir": "retroSoC",
+    },
+}
+
+
+def env_value(name: str, legacy_name: str | None = None, default: str | None = None) -> str | None:
+    value = os.environ.get(name)
+    if value is not None and value.strip():
+        return value.strip()
+    if legacy_name is not None:
+        legacy_value = os.environ.get(legacy_name)
+        if legacy_value is not None and legacy_value.strip():
+            return legacy_value.strip()
+    return default
 
 
 class CommandFailure(RuntimeError):
@@ -17,7 +34,7 @@ class CommandFailure(RuntimeError):
 
 
 def run(command: list[str], cwd: Path | None = None) -> str:
-    timeout = int(os.environ.get("RETROSOC_GIT_TIMEOUT_SECONDS", "120"))
+    timeout = int(env_value("RTL_E2E_GIT_TIMEOUT_SECONDS", "RETROSOC_GIT_TIMEOUT_SECONDS", "120"))
     env = os.environ.copy()
     env.setdefault("GIT_TERMINAL_PROMPT", "0")
     popen_kwargs = {
@@ -74,8 +91,8 @@ def clone_cached_checkout(checkout: Path, repo_url: str) -> None:
         raise
 
 
-def ensure_cached_checkout(cache_root: Path, repo_url: str, commit: str) -> Path:
-    checkout = cache_root / "retroSoC"
+def ensure_cached_checkout(cache_root: Path, checkout_dir: str, repo_url: str, commit: str) -> Path:
+    checkout = cache_root / checkout_dir
     if not checkout.exists():
         clone_cached_checkout(checkout, repo_url)
     if not (checkout / ".git").exists():
@@ -90,34 +107,43 @@ def ensure_cached_checkout(cache_root: Path, repo_url: str, commit: str) -> Path
 
 def main() -> int:
     repo_root = Path(__file__).resolve().parents[2]
-    expected = os.environ.get("RETROSOC_EXPECTED_COMMIT", DEFAULT_COMMIT).strip() or DEFAULT_COMMIT
-    repo_url = os.environ.get("RETROSOC_REPO_URL", DEFAULT_REPO_URL).strip() or DEFAULT_REPO_URL
-    explicit_root = os.environ.get("RETROSOC_ROOT")
+    corpus_name = env_value("RTL_E2E_CORPUS", default=DEFAULT_CORPUS).lower()
+    corpus = CORPORA.get(corpus_name)
+    if corpus is None:
+        print(f"ERROR: Unknown RTL_E2E_CORPUS '{corpus_name}'", file=sys.stderr)
+        return 1
+    expected = env_value("RTL_E2E_EXPECTED_COMMIT", "RETROSOC_EXPECTED_COMMIT", corpus["commit"])
+    repo_url = env_value("RTL_E2E_REPO_URL", "RETROSOC_REPO_URL", corpus["repo_url"])
+    explicit_root = env_value("RTL_E2E_ROOT", "RETROSOC_ROOT")
 
     try:
         if explicit_root:
             checkout = Path(explicit_root).resolve()
             if not checkout.exists():
-                raise RuntimeError(f"RETROSOC_ROOT does not exist: {checkout}")
+                raise RuntimeError(f"RTL_E2E_ROOT does not exist: {checkout}")
             head = git_head(checkout)
             if not head.startswith(expected):
                 raise RuntimeError(
-                    f"RETROSOC_ROOT commit {head} does not match expected prefix {expected}. "
-                    "Use a checkout at commit 76651fd, or unset RETROSOC_ROOT to use the local cache."
+                    f"RTL_E2E_ROOT commit {head} does not match expected prefix {expected}. "
+                    "Use a checkout at the configured corpus commit, or unset RTL_E2E_ROOT to use the local cache."
                 )
             print(checkout)
             return 0
 
-        cache_root = Path(os.environ.get("RETROSOC_CACHE_DIR", repo_root / ".cache" / "retrosoc")).resolve()
-        checkout = ensure_cached_checkout(cache_root, repo_url, expected)
+        default_cache = repo_root / ".cache" / "rtl-e2e" / corpus_name
+        cache_root = Path(env_value("RTL_E2E_CACHE_DIR", "RETROSOC_CACHE_DIR", str(default_cache))).resolve()
+        checkout = ensure_cached_checkout(cache_root, corpus["checkout_dir"], repo_url, expected)
         head = git_head(checkout)
         if not head.startswith(expected):
-            raise RuntimeError(f"Cached retroSoC commit {head} does not match expected prefix {expected}")
+            raise RuntimeError(f"Cached {corpus_name} commit {head} does not match expected prefix {expected}")
         print(checkout)
         return 0
     except (OSError, RuntimeError) as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
-        return 1
+        if explicit_root:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 1
+        print(f"SKIP: {exc}")
+        return 77
 
 
 if __name__ == "__main__":

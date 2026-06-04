@@ -163,7 +163,8 @@ Use the nearest owning layer instead of patching around it from a wrapper.
 - Differential fixtures should be fixture-driven and rewritten for this repository by default. If a slang-server MIT fixture is copied instead of rewritten, update notice/attribution in the same change.
 - The local `slang-server v0.2.5` checkout is covered in the attribution/notice pipeline as a differential reference. Keep `cmake/attributions.cmake`, `licenses/texts/`, `ATTRIBUTIONS.md`, and `NOTICE` in sync whenever copied upstream fixture material changes.
 - Changes that scan, cache, or rebuild workspace-wide state must include or update a performance-oriented test/benchmark plan or JSON baseline before being considered complete.
-- Real-design stress tests such as retroSoC must stay opt-in and must not vendor RTL. The LSP stress path may download retroSoC into `.cache/retrosoc` only when perf tests are explicitly built and the retroSoC stress test is explicitly run; user-provided `RETROSOC_ROOT` must be verified but not auto-checked-out or modified. `RETROSOC_LSP_MODE=probe` is the quick synthetic one-file data-path smoke, while `RETROSOC_LSP_MODE=real` opens an actual RTL file and should be used for real hierarchy/schematic timing. Update notice/attribution before copying any external fixture into this repository.
+- Real-design stress tests use the opt-in RTL E2E corpus framework and must not vendor RTL. The default corpus is retroSoC, but the framework is named for reusable RTL E2E coverage across open-source RTL corpora. The LSP stress path may download the selected corpus into `.cache/rtl-e2e/<corpus>` only when perf tests are explicitly built and the RTL E2E stress test is explicitly run; user-provided `RTL_E2E_ROOT` must be verified but not auto-checked-out or modified. `RTL_E2E_LSP_MODE=probe` is the quick synthetic one-file data-path smoke, while `RTL_E2E_LSP_MODE=real` opens an actual RTL file and should be used for real hierarchy/schematic timing. Legacy `RETROSOC_*` environment variables are aliases for the default retroSoC corpus only. Update notice/attribution before copying any external fixture into this repository.
+- After completing and testing feature work in the Debug build, run a Release configure/build pass with `cmake --preset release` and `cmake --build --preset release`. If the Release build cannot be run in the current environment, record the reason in the final handoff.
 - New or modified aggregate initialization and semantic/provider C++ changes should be validated with the clang toolchain before CI when practical, because GCC/Clang and MSVC reject different warning-as-error patterns. Treat unused helpers, narrowing conversions, case-sensitive include paths, partial designated initialization, filesystem path separators, and CRLF/LF-sensitive fixtures as Linux/macOS CI risks even if MSVC accepts them.
 - Avoid broad refactors unless the user asks for them or the local change cannot be made safely otherwise.
 - Do not reintroduce agent process rules into `README.md` unless explicitly requested.
@@ -255,15 +256,16 @@ ctest --test-dir build/clang-linux --output-on-failure
 
 If a WSL, Linux, container, or native clang++ environment is available, add an equivalent non-MSVC ABI configure/build/test pass and record the result in the handoff. Use this specifically to catch aggregate initialization, unused/static helper, narrowing conversion, case-sensitive include, filesystem path, and CRLF/LF issues that MSVC may miss.
 
-For opt-in performance baselines, configure with `PRISTINE_BUILD_PERF_TESTS=ON` and run `pristine_perf_tests`; the perf target prints JSON for 100/1000/5000-file synthetic workspaces and is not part of the default `ctest` suite. The env-gated retroSoC stress CTests can be used for real-design hierarchy/schematic timing without vendoring RTL:
+For opt-in performance baselines, configure with `PRISTINE_BUILD_PERF_TESTS=ON` and run `pristine_perf_tests`; the perf target prints JSON for 100/1000/5000-file synthetic workspaces and is not part of the default `ctest` suite. The env-gated RTL E2E stress CTests can be used for real-design hierarchy/schematic timing without vendoring RTL:
 
 ```powershell
-$env:RETROSOC_ROOT='C:\path\to\retroSoC'
-$env:RETROSOC_EXPECTED_COMMIT='76651fd'
-ctest --test-dir build/dev -L retrosoc --output-on-failure
+$env:RTL_E2E_CORPUS='retrosoc'
+$env:RTL_E2E_ROOT='C:\path\to\retroSoC'
+$env:RTL_E2E_EXPECTED_COMMIT='76651fd'
+ctest --test-dir build/dev -L rtl-e2e --output-on-failure
 ```
 
-When `RETROSOC_ROOT` is unset, the retroSoC wrappers clone/fetch into `.cache/retrosoc/retroSoC`; keep this behind explicit perf builds/runs so default CI does not depend on that network path.
+When `RTL_E2E_ROOT` is unset, the corpus wrapper clone/fetches the selected corpus into `.cache/rtl-e2e/<corpus>`; keep this behind explicit perf builds/runs so default CI does not depend on that network path. `RETROSOC_ROOT`, `RETROSOC_EXPECTED_COMMIT`, `RETROSOC_REPO_URL`, and `RETROSOC_CACHE_DIR` remain legacy aliases for the default retroSoC corpus only.
 
 The direct stress output is JSON with file/byte counts, parse/index timing, hierarchy timing, schematic timing, result counts, and partial/truncated/message counters. For LSP-level retroSoC pressure, first bootstrap the opt-in test dependency:
 
@@ -272,25 +274,26 @@ cmake -DPRISTINE_COMPONENTS=lsp_framework -P scripts/bootstrap_deps.cmake
 cmake --preset dev -DPRISTINE_BUILD_PERF_TESTS=ON
 cmake --build --preset dev
 ctest --test-dir build/dev -L lsp --output-on-failure
-ctest --test-dir build/dev -R pristine_retrosoc_lsp_stress --output-on-failure
+ctest --test-dir build/dev -R pristine_rtl_e2e_lsp_stress --output-on-failure
 ```
 
-`pristine_lsp_framework_client_smoke` uses generated mock RTL and never touches the network. `pristine_retrosoc_lsp_stress` verifies `RETROSOC_ROOT` when provided, or prepares retroSoC at commit `76651fd` under `.cache/retrosoc`; it writes `summary.json` and `operations.jsonl` under the build log directory or `RETROSOC_LSP_LOG_DIR`. The summary includes client source-discovery time, real/probe didOpen source selection time, opened source path, LSP initialize, hierarchy cold/warm, schematic, optional discovery closure document/build counters, shutdown, and result-size counters. LSP protocol transaction tracing is off by default; enable it with `RETROSOC_LSP_TRACE=1` or set `RETROSOC_LSP_TRACE_FILE=<path>` to write a JSONL trace of client->server and server->client messages.
+`pristine_rtl_e2e_smoke` uses generated mock RTL and never touches the network. `pristine_rtl_e2e_lsp_stress` verifies `RTL_E2E_ROOT` when provided, or prepares the selected corpus under `.cache/rtl-e2e`; it writes `summary.json` and `operations.jsonl` under the build log directory or `RTL_E2E_LSP_LOG_DIR`. The summary includes `corpusName`, `corpusRoot`, `corpusCommit`, client source-discovery time, real/probe didOpen source selection time, opened source path, LSP initialize, hierarchy cold/warm, schematic, optional discovery closure document/build counters, shutdown, and result-size counters. LSP protocol transaction tracing is off by default; enable it with `RTL_E2E_LSP_TRACE=1` or set `RTL_E2E_LSP_TRACE_FILE=<path>` to write a JSONL trace of client->server and server->client messages.
 
-By default the LSP stress uses `RETROSOC_LSP_MODE=probe`, which opens a generated one-file probe module to prove the LSP data path without depending on a real top. To time a real retroSoC RTL file, set `RETROSOC_LSP_MODE=real` and preferably `RETROSOC_TOP=<top>`:
+By default the LSP stress uses `RTL_E2E_LSP_MODE=probe`, which opens a generated one-file probe module to prove the LSP data path without depending on a real top. To time a real RTL file, set `RTL_E2E_LSP_MODE=real` and preferably `RTL_E2E_TOP=<top>`:
 
 ```powershell
-$env:RETROSOC_LSP_MODE='real'
-$env:RETROSOC_TOP='<top-module>'
-ctest --test-dir build/dev -R pristine_retrosoc_lsp_stress --output-on-failure
+$env:RTL_E2E_LSP_MODE='real'
+$env:RTL_E2E_TOP='<top-module>'
+ctest --test-dir build/dev -R pristine_rtl_e2e_lsp_stress --output-on-failure
 ```
 
-When `RETROSOC_TOP` is omitted in real mode, the client uses the first discovered module/interface declaration only as a test driver; treat that as a data-path smoke rather than a representative design-top baseline.
+When `RTL_E2E_TOP` is omitted in real mode, the client uses the first discovered module/interface declaration only as a test driver; treat that as a data-path smoke rather than a representative design-top baseline. `RETROSOC_LSP_MODE`, `RETROSOC_TOP`, `RETROSOC_MAX_DEPTH`, `RETROSOC_LSP_LOG_DIR`, `RETROSOC_LSP_TRACE`, and `RETROSOC_LSP_TRACE_FILE` remain legacy aliases for the default retroSoC corpus only.
 
 If `ctest` is not on `PATH` in the current Windows shell, use:
 
 ```powershell
 & 'C:\Program Files (x86)\Microsoft Visual Studio\18\BuildTools\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\ctest.exe' --test-dir '.\build\dev' --output-on-failure
+```
 ```
 
 If the change touches CLI behavior, entrypoint wiring, binary naming, or packaging expectations, also run:

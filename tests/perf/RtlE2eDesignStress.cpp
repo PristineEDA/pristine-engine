@@ -152,14 +152,14 @@ std::optional<std::string_view> maybeTop(std::string_view top_module) {
 
 int main(int argc, char** argv) {
     if (argc < 2) {
-        std::cerr << "Usage: pristine_retrosoc_stress <RETROSOC_ROOT> [topModule]\n";
+        std::cerr << "Usage: pristine_rtl_e2e_stress <RTL_E2E_ROOT> [topModule]\n";
         return 2;
     }
 
     const fs::path root = fs::path(argv[1]);
     std::string top_module = argc >= 3 ? argv[2] : "";
     if (!fs::exists(root)) {
-        std::cerr << "retroSoC root does not exist: " << root << "\n";
+        std::cerr << "RTL E2E corpus root does not exist: " << root << "\n";
         return 2;
     }
 

@@ -36,6 +36,8 @@ def main() -> int:
                     str(root),
                     "--log-dir",
                     str(log_dir),
+                    "--corpus",
+                    "smoke",
                     *top_args,
                     "--max-depth",
                     "8",
@@ -55,7 +57,8 @@ def main() -> int:
         no_trace_dir = binary_dir / "lsp-framework-smoke-logs" / "no-trace"
         no_trace_summary = run_client(no_trace_dir, top=None)
         assert no_trace_summary["fileCount"] == 1
-        assert no_trace_summary["topModule"] == "retro_probe_top_a"
+        assert no_trace_summary["corpusName"] == "smoke"
+        assert no_trace_summary["topModule"] == "rtl_e2e_probe_top_a"
         assert no_trace_summary["hierarchyRootCount"] == 2
         assert no_trace_summary["schematicModuleCount"] >= 1
         assert no_trace_summary["schematicCellCount"] >= 1
@@ -75,6 +78,7 @@ def main() -> int:
             top="top_a",
         )
         assert trace_summary["fileCount"] == 1
+        assert trace_summary["corpusName"] == "smoke"
         assert trace_summary["topModule"] == "top_a"
         assert trace_summary["hierarchyRootCount"] == 1
         assert trace_summary["schematicModuleCount"] >= 1

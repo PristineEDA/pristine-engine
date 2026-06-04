@@ -49,8 +49,9 @@ struct WorkspaceStats {
 
 struct Metrics {
     std::string mode = "probe";
-    std::string retro_soc_root;
-    std::string commit;
+    std::string corpus_name = "retrosoc";
+    std::string corpus_root;
+    std::string corpus_commit;
     std::string server_path;
     size_t file_count = 0;
     size_t byte_count = 0;
@@ -262,21 +263,21 @@ std::string sanitizedIdentifier(std::string value, std::string fallback) {
 SourceFile makeProbeSource(const fs::path& root, const std::string& requested_top) {
     if (requested_top.empty()) {
         std::ostringstream text;
-        text << "module retro_probe_child(input logic clk, output logic q);\n"
+        text << "module rtl_e2e_probe_child(input logic clk, output logic q);\n"
              << "  assign q = clk;\n"
              << "endmodule\n\n"
-             << "module retro_probe_top_a(input logic clk, output logic q);\n"
-             << "  retro_probe_child u_child_a(.clk(clk), .q(q));\n"
+             << "module rtl_e2e_probe_top_a(input logic clk, output logic q);\n"
+             << "  rtl_e2e_probe_child u_child_a(.clk(clk), .q(q));\n"
              << "endmodule\n\n"
-             << "module retro_probe_top_b(input logic clk, output logic q);\n"
-             << "  retro_probe_child u_child_b(.clk(clk), .q(q));\n"
+             << "module rtl_e2e_probe_top_b(input logic clk, output logic q);\n"
+             << "  rtl_e2e_probe_child u_child_b(.clk(clk), .q(q));\n"
              << "endmodule\n";
         const auto path = root / "__pristine_lsp_probe.sv";
         return SourceFile{.path = path, .uri = fileUriFor(path), .text = text.str()};
     }
 
-    const auto top = sanitizedIdentifier(requested_top, "retro_probe_top");
-    const auto child = sanitizedIdentifier(top + "_child", "retro_probe_child");
+    const auto top = sanitizedIdentifier(requested_top, "rtl_e2e_probe_top");
+    const auto child = sanitizedIdentifier(top + "_child", "rtl_e2e_probe_child");
     std::ostringstream text;
     text << "module " << child << "(input logic clk, output logic q);\n"
          << "  assign q = clk;\n"
@@ -343,7 +344,7 @@ SourceFile selectRealSource(const fs::path& root, std::string& top_module) {
     }
 
     auto text = readFileText(files.front());
-    top_module = sanitizedIdentifier(files.front().stem().string(), "retro_real_top");
+    top_module = sanitizedIdentifier(files.front().stem().string(), "rtl_e2e_real_top");
     return SourceFile{.path = files.front(), .uri = fileUriFor(files.front()), .text = std::move(text)};
 }
 
@@ -787,7 +788,7 @@ void writeOperation(std::ofstream& log,
 }
 
 void writeStage(std::ofstream& log, std::string_view stage, std::string_view detail = {}) {
-    std::cerr << "[retrosoc-lsp] " << stage;
+    std::cerr << "[rtl-e2e-lsp] " << stage;
     if (!detail.empty()) {
         std::cerr << " " << detail;
     }
@@ -804,8 +805,9 @@ std::string summaryJson(const Metrics& metrics) {
     std::ostringstream out;
     out << "{"
         << "\"mode\":" << jsonString(metrics.mode) << ","
-        << "\"retroSocRoot\":" << jsonString(metrics.retro_soc_root) << ","
-        << "\"commit\":" << jsonString(metrics.commit) << ","
+        << "\"corpusName\":" << jsonString(metrics.corpus_name) << ","
+        << "\"corpusRoot\":" << jsonString(metrics.corpus_root) << ","
+        << "\"corpusCommit\":" << jsonString(metrics.corpus_commit) << ","
         << "\"serverPath\":" << jsonString(metrics.server_path) << ","
         << "\"fileCount\":" << metrics.file_count << ","
         << "\"byteCount\":" << metrics.byte_count << ","
@@ -889,6 +891,7 @@ struct Args {
     fs::path trace_file;
     std::string top_module;
     std::string mode = "probe";
+    std::string corpus_name = "retrosoc";
     int max_depth = 64;
     bool trace = false;
 };
@@ -927,6 +930,9 @@ Args parseArgs(int argc, char** argv) {
         else if (auto value = read_value("--mode"); !value.empty()) {
             args.mode = lowerAscii(value);
         }
+        else if (auto value = read_value("--corpus"); !value.empty()) {
+            args.corpus_name = lowerAscii(value);
+        }
         else if (auto value = read_value("--max-depth"); !value.empty()) {
             args.max_depth = std::max(0, std::stoi(value));
         }
@@ -943,7 +949,7 @@ Args parseArgs(int argc, char** argv) {
     }
 
     if (args.server.empty() || args.root.empty() || args.log_dir.empty()) {
-        throw std::runtime_error("Usage: pristine_retrosoc_lsp_stress --server <path> --root <path> --log-dir <path> [--mode probe|real] [--top <module>] [--max-depth <n>] [--trace] [--trace-file <path>] [--no-trace]");
+        throw std::runtime_error("Usage: pristine_rtl_e2e_lsp_stress --server <path> --root <path> --log-dir <path> [--mode probe|real] [--corpus <name>] [--top <module>] [--max-depth <n>] [--trace] [--trace-file <path>] [--no-trace]");
     }
     if (args.mode != "probe" && args.mode != "real") {
         throw std::runtime_error("--mode must be 'probe' or 'real'");
@@ -998,8 +1004,9 @@ int main(int argc, char** argv) {
 
         Metrics metrics;
         metrics.mode = args.mode;
-        metrics.retro_soc_root = fs::absolute(args.root).lexically_normal().string();
-        metrics.commit = gitHeadFor(args.root);
+        metrics.corpus_name = args.corpus_name;
+        metrics.corpus_root = fs::absolute(args.root).lexically_normal().string();
+        metrics.corpus_commit = gitHeadFor(args.root);
         metrics.server_path = fs::absolute(args.server).lexically_normal().string();
         metrics.file_count = workspace_stats.file_count;
         metrics.byte_count = workspace_stats.byte_count;
@@ -1010,7 +1017,7 @@ int main(int argc, char** argv) {
                                  ? std::string{}
                                  : (args.mode == "real"
                                         ? selected_top
-                                        : sanitizedIdentifier(args.top_module, "retro_probe_top"));
+                                        : sanitizedIdentifier(args.top_module, "rtl_e2e_probe_top"));
         metrics.client_workspace_discovery_micros = client_workspace_discovery_micros;
         metrics.client_open_file_select_micros = client_open_file_select_micros;
         metrics.trace_enabled = args.trace;
@@ -1095,7 +1102,7 @@ int main(int argc, char** argv) {
         std::ofstream summary_stream(summary_path, std::ios::binary);
         summary_stream << summary << "\n";
         std::cout << summary << "\n";
-        std::cerr << "[retrosoc-lsp] done " << summary << std::endl;
+        std::cerr << "[rtl-e2e-lsp] done " << summary << std::endl;
         return 0;
     }
     catch (const std::exception& error) {

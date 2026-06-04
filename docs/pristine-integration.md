@@ -71,8 +71,8 @@ Request params use the standard LSP `textDocument` plus `position` shape. This r
 - `moduleName` is optional. If omitted, the engine uses configured `topModules` and otherwise infers an uninstantiated top.
 - `maxDepth` is optional and prevents runaway cyclic or very large designs.
 - `messages`, `partial`, and `truncated` are part of the contract and should be surfaced or logged by callers when present.
-- Real design data is never fetched by tests. Repository-scale stress runs are opt-in through `RETROSOC_ROOT`.
+- Real design data is never fetched by default tests. Repository-scale stress runs are opt-in through the RTL E2E corpus framework and can use `RTL_E2E_ROOT`.
 
 ## Validation
 
-The repository contains provider-level mock tests and semantic golden fixtures for hierarchy and schematic wire shapes. The optional retroSoC pressure test is enabled only when `PRISTINE_BUILD_PERF_TESTS=ON` and `RETROSOC_ROOT` points to a local checkout at the expected commit.
+The repository contains provider-level mock tests and semantic golden fixtures for hierarchy and schematic wire shapes. Optional RTL E2E pressure tests are enabled only when `PRISTINE_BUILD_PERF_TESTS=ON`; the default corpus is retroSoC and can use `RTL_E2E_ROOT` for a local checkout at the expected commit.

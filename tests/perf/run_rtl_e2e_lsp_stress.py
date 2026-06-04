@@ -9,10 +9,27 @@ def truthy_env(name: str) -> bool:
     return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def truthy_env_with_legacy(name: str, legacy_name: str) -> bool:
+    if os.environ.get(name) is not None:
+        return truthy_env(name)
+    return truthy_env(legacy_name)
+
+
+def env_value(name: str, legacy_name: str | None = None, default: str | None = None) -> str | None:
+    value = os.environ.get(name)
+    if value is not None and value.strip():
+        return value.strip()
+    if legacy_name is not None:
+        legacy_value = os.environ.get(legacy_name)
+        if legacy_value is not None and legacy_value.strip():
+            return legacy_value.strip()
+    return default
+
+
 def main() -> int:
     if len(sys.argv) < 4:
         print(
-            "usage: run_retrosoc_lsp_stress.py <client> <pristine-engine> <binary-dir>",
+            "usage: run_rtl_e2e_lsp_stress.py <client> <pristine-engine> <binary-dir>",
             file=sys.stderr,
         )
         return 2
@@ -21,7 +38,7 @@ def main() -> int:
     server = Path(sys.argv[2]).resolve()
     binary_dir = Path(sys.argv[3]).resolve()
     repo_root = Path(__file__).resolve().parents[2]
-    prepare = repo_root / "tests" / "perf" / "prepare_retrosoc.py"
+    prepare = repo_root / "tests" / "perf" / "prepare_rtl_e2e_corpus.py"
 
     try:
         prepared = subprocess.run(
@@ -39,7 +56,9 @@ def main() -> int:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
 
-    log_dir = Path(os.environ.get("RETROSOC_LSP_LOG_DIR", binary_dir / "retrosoc-lsp-logs")).resolve()
+    log_dir = Path(
+        env_value("RTL_E2E_LSP_LOG_DIR", "RETROSOC_LSP_LOG_DIR", str(binary_dir / "rtl-e2e-lsp-logs"))
+    ).resolve()
     command = [
         str(client),
         "--server",
@@ -49,17 +68,19 @@ def main() -> int:
         "--log-dir",
         str(log_dir),
         "--mode",
-        os.environ.get("RETROSOC_LSP_MODE", "probe"),
+        env_value("RTL_E2E_LSP_MODE", "RETROSOC_LSP_MODE", "probe"),
+        "--corpus",
+        env_value("RTL_E2E_CORPUS", None, "retrosoc"),
         "--max-depth",
-        os.environ.get("RETROSOC_MAX_DEPTH", "64"),
+        env_value("RTL_E2E_MAX_DEPTH", "RETROSOC_MAX_DEPTH", "64"),
     ]
-    top = os.environ.get("RETROSOC_TOP")
+    top = env_value("RTL_E2E_TOP", "RETROSOC_TOP")
     if top:
         command.extend(["--top", top])
-    trace_file = os.environ.get("RETROSOC_LSP_TRACE_FILE")
+    trace_file = env_value("RTL_E2E_LSP_TRACE_FILE", "RETROSOC_LSP_TRACE_FILE")
     if trace_file:
         command.extend(["--trace-file", str(Path(trace_file).resolve())])
-    elif truthy_env("RETROSOC_LSP_TRACE"):
+    elif truthy_env_with_legacy("RTL_E2E_LSP_TRACE", "RETROSOC_LSP_TRACE"):
         command.append("--trace")
 
     print("RUN:", " ".join(command), flush=True)
