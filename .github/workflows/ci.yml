@@ -29,34 +29,42 @@ jobs:
             name: Ubuntu 22.04 x64
             runs_on: ubuntu-22.04
             arch: x64
+            cxx_compiler: clang++
           - id: ubuntu-24.04-x64
             name: Ubuntu 24.04 x64
             runs_on: ubuntu-24.04
             arch: x64
+            cxx_compiler: clang++
           - id: windows-2022-x64
             name: Windows 2022 x64
             runs_on: windows-2022
             arch: x64
+            cxx_compiler: ''
           - id: windows-2025-x64
             name: Windows 2025 x64
             runs_on: windows-2025
             arch: x64
+            cxx_compiler: ''
           - id: macos-15-arm64
             name: macOS 15 arm64
             runs_on: macos-15
             arch: arm64
+            cxx_compiler: ''
           - id: macos-15-x64
             name: macOS 15 x64
             runs_on: macos-15-intel
             arch: x64
+            cxx_compiler: ''
           - id: macos-26-arm64
             name: macOS 26 arm64
             runs_on: macos-26
             arch: arm64
+            cxx_compiler: ''
           - id: macos-26-x64
             name: macOS 26 x64
             runs_on: macos-26-intel
             arch: x64
+            cxx_compiler: ''
 
     defaults:
       run:
@@ -104,7 +112,12 @@ jobs:
         run: cmake -DPRISTINE_ROOT_DIR=. -P scripts/bootstrap_deps.cmake
 
       - name: Configure
-        run: cmake --preset dev
+        run: |
+          $args = @('--preset', 'dev')
+          if ('${{ matrix.cxx_compiler }}') {
+            $args += "-DCMAKE_CXX_COMPILER=${{ matrix.cxx_compiler }}"
+          }
+          cmake @args
 
       - name: Validate notice files
         run: cmake --build --preset dev --target pristine_validate_notice
@@ -126,8 +139,59 @@ jobs:
             throw "Version command failed with exit code $LASTEXITCODE"
           }
           $expected = 'pristine-engine ${{ steps.version.outputs.version }}'
-          if ($actual -ne $expected) {
-            throw "Expected version output '$expected', got '$actual'"
+          if (-not $actual.StartsWith("$expected ")) {
+            throw "Expected version output to start with '$expected ', got '$actual'"
+          }
+
+          $fields = @{}
+          foreach ($token in ($actual -split '\s+' | Select-Object -Skip 2)) {
+            $parts = $token -split '=', 2
+            if ($parts.Count -eq 2) {
+              $fields[$parts[0]] = $parts[1]
+            }
+          }
+
+          foreach ($field in @('branch', 'commit', 'tag', 'os', 'arch', 'build')) {
+            if (-not $fields.ContainsKey($field) -or [string]::IsNullOrWhiteSpace($fields[$field])) {
+              throw "Version output is missing '$field': $actual"
+            }
+          }
+
+          $expectedBranch = '${{ github.head_ref }}'
+          if (-not $expectedBranch) {
+            $expectedBranch = '${{ github.ref_name }}'
+          }
+          if ($fields['branch'] -ne $expectedBranch) {
+            throw "Expected branch '$expectedBranch', got '$($fields['branch'])'"
+          }
+
+          $expectedCommit = '${{ github.sha }}'.Substring(0, 12)
+          if ($fields['commit'] -ne $expectedCommit) {
+            throw "Expected commit '$expectedCommit', got '$($fields['commit'])'"
+          }
+
+          $expectedTag = 'none'
+          if ('${{ github.ref_type }}' -eq 'tag') {
+            $expectedTag = '${{ github.ref_name }}'
+          }
+          if ($fields['tag'] -ne $expectedTag) {
+            throw "Expected tag '$expectedTag', got '$($fields['tag'])'"
+          }
+
+          $expectedOs = switch ('${{ runner.os }}') {
+            'Windows' { 'windows' }
+            'Linux' { 'linux' }
+            'macOS' { 'macos' }
+            default { '${{ runner.os }}'.ToLowerInvariant() }
+          }
+          if ($fields['os'] -ne $expectedOs) {
+            throw "Expected os '$expectedOs', got '$($fields['os'])'"
+          }
+          if ($fields['arch'] -ne '${{ matrix.arch }}') {
+            throw "Expected arch '${{ matrix.arch }}', got '$($fields['arch'])'"
+          }
+          if ($fields['build'] -ne 'debug') {
+            throw "Expected build 'debug', got '$($fields['build'])'"
           }
 
       - name: Install to staged prefix
@@ -230,36 +294,3 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
             throw "GitHub release publication failed with exit code $LASTEXITCODE"
           }
-
-  clang-linux:
-    name: Ubuntu 24.04 clang++ x64
-    runs-on: ubuntu-24.04
-    timeout-minutes: 45
-    defaults:
-      run:
-        shell: pwsh
-
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Cache dependency archives
-        uses: actions/cache@v4
-        with:
-          path: .deps/archives
-          key: deps-Linux-clang-${{ hashFiles('cmake/DepsLock.cmake') }}
-          restore-keys: |
-            deps-Linux-clang-
-            deps-Linux-x64-
-
-      - name: Bootstrap dependencies
-        run: cmake -DPRISTINE_ROOT_DIR=. -P scripts/bootstrap_deps.cmake
-
-      - name: Configure clang++
-        run: cmake -S . -B build/clang-linux -G Ninja -D CMAKE_BUILD_TYPE=Debug -D CMAKE_CXX_COMPILER=clang++ -D PRISTINE_BUILD_TESTS=ON
-
-      - name: Build clang++
-        run: cmake --build build/clang-linux
-
-      - name: Run clang++ tests
-        run: ctest --test-dir build/clang-linux --output-on-failure

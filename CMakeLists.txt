@@ -25,6 +25,104 @@ include(Dependencies)
 
 set(PRISTINE_GENERATED_INCLUDE_DIR "${PROJECT_BINARY_DIR}/generated/include")
 file(MAKE_DIRECTORY "${PRISTINE_GENERATED_INCLUDE_DIR}/pristine")
+
+function(pristine_normalize_version_literal input output)
+  set(value "${input}")
+  string(REPLACE "\\" "\\\\" value "${value}")
+  string(REPLACE "\"" "\\\"" value "${value}")
+  string(REPLACE "\n" " " value "${value}")
+  string(REPLACE "\r" " " value "${value}")
+  set("${output}" "${value}" PARENT_SCOPE)
+endfunction()
+
+set(PRISTINE_GIT_BRANCH "$ENV{GITHUB_HEAD_REF}")
+if(NOT PRISTINE_GIT_BRANCH)
+  set(PRISTINE_GIT_BRANCH "$ENV{GITHUB_REF_NAME}")
+endif()
+if(NOT PRISTINE_GIT_BRANCH)
+  execute_process(
+    COMMAND git -C "${PROJECT_SOURCE_DIR}" rev-parse --abbrev-ref HEAD
+    OUTPUT_VARIABLE PRISTINE_GIT_BRANCH
+    ERROR_QUIET
+    OUTPUT_STRIP_TRAILING_WHITESPACE)
+endif()
+if(NOT PRISTINE_GIT_BRANCH)
+  set(PRISTINE_GIT_BRANCH "unknown")
+elseif(PRISTINE_GIT_BRANCH STREQUAL "HEAD")
+  set(PRISTINE_GIT_BRANCH "detached")
+endif()
+
+set(PRISTINE_GIT_COMMIT "$ENV{GITHUB_SHA}")
+if(NOT PRISTINE_GIT_COMMIT)
+  execute_process(
+    COMMAND git -C "${PROJECT_SOURCE_DIR}" rev-parse HEAD
+    OUTPUT_VARIABLE PRISTINE_GIT_COMMIT
+    ERROR_QUIET
+    OUTPUT_STRIP_TRAILING_WHITESPACE)
+endif()
+if(NOT PRISTINE_GIT_COMMIT)
+  set(PRISTINE_GIT_COMMIT "unknown")
+endif()
+if(NOT PRISTINE_GIT_COMMIT STREQUAL "unknown")
+  string(SUBSTRING "${PRISTINE_GIT_COMMIT}" 0 12 PRISTINE_GIT_COMMIT)
+endif()
+
+if("$ENV{GITHUB_REF_TYPE}" STREQUAL "tag" AND "$ENV{GITHUB_REF_NAME}")
+  set(PRISTINE_GIT_TAG "$ENV{GITHUB_REF_NAME}")
+else()
+  execute_process(
+    COMMAND git -C "${PROJECT_SOURCE_DIR}" describe --tags --exact-match HEAD
+    OUTPUT_VARIABLE PRISTINE_GIT_TAG
+    ERROR_QUIET
+    OUTPUT_STRIP_TRAILING_WHITESPACE)
+  if(NOT PRISTINE_GIT_TAG)
+    set(PRISTINE_GIT_TAG "none")
+  endif()
+endif()
+
+if(WIN32)
+  set(PRISTINE_BUILD_OS "windows")
+elseif(APPLE)
+  set(PRISTINE_BUILD_OS "macos")
+elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  set(PRISTINE_BUILD_OS "linux")
+else()
+  string(TOLOWER "${CMAKE_SYSTEM_NAME}" PRISTINE_BUILD_OS)
+  if(NOT PRISTINE_BUILD_OS)
+    set(PRISTINE_BUILD_OS "unknown")
+  endif()
+endif()
+
+string(TOLOWER "${CMAKE_SYSTEM_PROCESSOR}" PRISTINE_SYSTEM_PROCESSOR_LOWER)
+if(PRISTINE_SYSTEM_PROCESSOR_LOWER MATCHES "^(aarch64|arm64)$")
+  set(PRISTINE_BUILD_ARCH "arm64")
+elseif(PRISTINE_SYSTEM_PROCESSOR_LOWER MATCHES "^(x86_64|amd64)$")
+  set(PRISTINE_BUILD_ARCH "x64")
+elseif(PRISTINE_SYSTEM_PROCESSOR_LOWER MATCHES "^(i[3-6]86|x86)$")
+  set(PRISTINE_BUILD_ARCH "x32")
+elseif(CMAKE_SIZEOF_VOID_P EQUAL 8)
+  set(PRISTINE_BUILD_ARCH "x64")
+elseif(CMAKE_SIZEOF_VOID_P EQUAL 4)
+  set(PRISTINE_BUILD_ARCH "x32")
+else()
+  set(PRISTINE_BUILD_ARCH "${PRISTINE_SYSTEM_PROCESSOR_LOWER}")
+  if(NOT PRISTINE_BUILD_ARCH)
+    set(PRISTINE_BUILD_ARCH "unknown")
+  endif()
+endif()
+
+string(TOLOWER "${CMAKE_BUILD_TYPE}" PRISTINE_BUILD_TYPE)
+if(NOT PRISTINE_BUILD_TYPE)
+  set(PRISTINE_BUILD_TYPE "unknown")
+endif()
+
+pristine_normalize_version_literal("${PRISTINE_GIT_BRANCH}" PRISTINE_GIT_BRANCH_LITERAL)
+pristine_normalize_version_literal("${PRISTINE_GIT_COMMIT}" PRISTINE_GIT_COMMIT_LITERAL)
+pristine_normalize_version_literal("${PRISTINE_GIT_TAG}" PRISTINE_GIT_TAG_LITERAL)
+pristine_normalize_version_literal("${PRISTINE_BUILD_OS}" PRISTINE_BUILD_OS_LITERAL)
+pristine_normalize_version_literal("${PRISTINE_BUILD_ARCH}" PRISTINE_BUILD_ARCH_LITERAL)
+pristine_normalize_version_literal("${PRISTINE_BUILD_TYPE}" PRISTINE_BUILD_TYPE_LITERAL)
+
 configure_file(
   "${PROJECT_SOURCE_DIR}/cmake/Version.h.in"
   "${PRISTINE_GENERATED_INCLUDE_DIR}/pristine/Version.h"

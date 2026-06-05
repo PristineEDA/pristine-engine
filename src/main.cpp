@@ -38,7 +38,7 @@ int main(int argc, char** argv) {
 
     const std::string_view command = argv[1];
     if (command == "--version") {
-        std::cout << kServerName << ' ' << pristine::kVersion << '\n';
+        std::cout << pristine::kVersionLine << '\n';
         return 0;
     }
 

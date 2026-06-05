@@ -6,5 +6,23 @@ namespace pristine {
 
 inline constexpr char kVersionString[] = "@PROJECT_VERSION@";
 inline constexpr std::string_view kVersion = kVersionString;
+inline constexpr char kGitBranchString[] = "@PRISTINE_GIT_BRANCH_LITERAL@";
+inline constexpr std::string_view kGitBranch = kGitBranchString;
+inline constexpr char kGitCommitString[] = "@PRISTINE_GIT_COMMIT_LITERAL@";
+inline constexpr std::string_view kGitCommit = kGitCommitString;
+inline constexpr char kGitTagString[] = "@PRISTINE_GIT_TAG_LITERAL@";
+inline constexpr std::string_view kGitTag = kGitTagString;
+inline constexpr char kBuildOsString[] = "@PRISTINE_BUILD_OS_LITERAL@";
+inline constexpr std::string_view kBuildOs = kBuildOsString;
+inline constexpr char kBuildArchString[] = "@PRISTINE_BUILD_ARCH_LITERAL@";
+inline constexpr std::string_view kBuildArch = kBuildArchString;
+inline constexpr char kBuildTypeString[] = "@PRISTINE_BUILD_TYPE_LITERAL@";
+inline constexpr std::string_view kBuildType = kBuildTypeString;
+inline constexpr char kVersionLineString[] =
+    "pristine-engine @PROJECT_VERSION@ branch=@PRISTINE_GIT_BRANCH_LITERAL@ "
+    "commit=@PRISTINE_GIT_COMMIT_LITERAL@ tag=@PRISTINE_GIT_TAG_LITERAL@ "
+    "os=@PRISTINE_BUILD_OS_LITERAL@ arch=@PRISTINE_BUILD_ARCH_LITERAL@ "
+    "build=@PRISTINE_BUILD_TYPE_LITERAL@";
+inline constexpr std::string_view kVersionLine = kVersionLineString;
 
 } // namespace pristine
