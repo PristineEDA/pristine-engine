@@ -16,9 +16,9 @@ def truthy_env_with_legacy(name: str, legacy_name: str) -> bool:
 
 
 def env_value(name: str, legacy_name: str | None = None, default: str | None = None) -> str | None:
-    value = os.environ.get(name)
-    if value is not None and value.strip():
-        return value.strip()
+    if name in os.environ:
+        value = os.environ.get(name, "")
+        return value.strip() or default
     if legacy_name is not None:
         legacy_value = os.environ.get(legacy_name)
         if legacy_value is not None and legacy_value.strip():
@@ -84,7 +84,20 @@ def main() -> int:
         command.append("--trace")
 
     print("RUN:", " ".join(command), flush=True)
-    completed = subprocess.run(command, check=False)
+    child_env = os.environ.copy()
+    server_trace = env_value("RTL_E2E_SERVER_DEBUG_TRACE", "RETROSOC_SERVER_DEBUG_TRACE")
+    if server_trace is not None:
+        child_env["PRISTINE_DEBUG_TRACE"] = server_trace
+    server_trace_file = env_value("RTL_E2E_SERVER_DEBUG_TRACE_FILE", "RETROSOC_SERVER_DEBUG_TRACE_FILE")
+    if server_trace_file:
+        child_env["PRISTINE_DEBUG_TRACE_FILE"] = str(Path(server_trace_file).resolve())
+    suppress_abort_dialog = env_value(
+        "RTL_E2E_SERVER_SUPPRESS_ABORT_DIALOG",
+        "RETROSOC_SERVER_SUPPRESS_ABORT_DIALOG",
+    )
+    if suppress_abort_dialog is not None:
+        child_env["PRISTINE_DEBUG_SUPPRESS_ABORT_DIALOG"] = suppress_abort_dialog
+    completed = subprocess.run(command, check=False, env=child_env)
     return completed.returncode
 
 

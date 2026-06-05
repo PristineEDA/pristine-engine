@@ -3,6 +3,7 @@
 #include "semantic/AstIndex.h"
 #include "semantic/CodeActionProvider.h"
 #include "semantic/CompletionProvider.h"
+#include "semantic/DebugTrace.h"
 #include "semantic/DesignGraphProvider.h"
 #include "semantic/DiagnosticProvider.h"
 #include "semantic/NavigationProvider.h"
@@ -631,6 +632,9 @@ std::vector<std::string> SemanticEngine::affectedDocumentUris(std::string_view u
 }
 
 const SemanticEngineSnapshot& SemanticEngine::snapshot() const {
+    PRISTINE_DEBUG_TRACE_SCOPE("semantic.snapshot",
+                               std::to_string(documents_.size()) + " documents generation=" +
+                                   std::to_string(generation_));
     if (!snapshot_.has_value() || snapshot_dirty_) {
         rebuildSnapshot();
     }
@@ -742,6 +746,7 @@ SemanticWorkspaceDiscoverySnapshot SemanticEngine::workspaceDiscovery() const {
 }
 
 std::vector<SemanticEngineDiagnostic> SemanticEngine::diagnosticsFor(std::string_view uri) const {
+    PRISTINE_DEBUG_TRACE_SCOPE("semantic.diagnosticsFor", std::string(uri));
     const auto document_uri = withoutTrailingSlash(normalizeFileUri(uri));
     const auto& current_snapshot = snapshot();
     if (const auto cached = query_cache_->diagnostics(current_snapshot.generation, document_uri)) {
@@ -1046,6 +1051,9 @@ SemanticReferenceResult SemanticEngine::implementationsAt(std::string_view uri,
 }
 
 SemanticHoverResult SemanticEngine::hoverAt(std::string_view uri, int line, int character) const {
+    PRISTINE_DEBUG_TRACE_SCOPE("semantic.hoverAt",
+                               std::string(uri) + ":" + std::to_string(line) + ":" +
+                                   std::to_string(character));
     const auto lookup = lookupAt(uri, line, character);
     SemanticHoverResult result;
     result.generation = lookup.generation;
@@ -1524,6 +1532,8 @@ SemanticSelectionRangeResult SemanticEngine::selectionRangesAt(std::string_view 
 
 SemanticModuleHierarchyResult SemanticEngine::moduleHierarchy(std::optional<std::string_view> module_name,
                                                               int max_depth) const {
+    PRISTINE_DEBUG_TRACE_SCOPE("semantic.moduleHierarchy",
+                               module_name.has_value() ? std::string(*module_name) : std::string("<auto>"));
     const auto discovery = workspaceDiscovery();
     if (const auto cached = query_cache_->moduleHierarchy(generation_,
                                                           module_name,
@@ -1592,6 +1602,8 @@ SemanticModuleHierarchyResult SemanticEngine::moduleHierarchy(std::optional<std:
 
 SemanticSchematicResult SemanticEngine::schematic(std::optional<std::string_view> module_name,
                                                   int max_depth) const {
+    PRISTINE_DEBUG_TRACE_SCOPE("semantic.schematic",
+                               module_name.has_value() ? std::string(*module_name) : std::string("<auto>"));
     const auto discovery = workspaceDiscovery();
     if (const auto cached = query_cache_->schematic(generation_, module_name, max_depth)) {
         auto result = *cached;
@@ -1788,6 +1800,9 @@ void SemanticEngine::rebuildDependenciesFor(std::string_view document_uri, std::
 }
 
 void SemanticEngine::rebuildSnapshot() const {
+    PRISTINE_DEBUG_TRACE_SCOPE("semantic.rebuildSnapshot",
+                               std::to_string(documents_.size()) + " documents generation=" +
+                                   std::to_string(generation_));
     semantic::SnapshotBuildInput input;
     input.generation = generation_;
     input.config = config_;

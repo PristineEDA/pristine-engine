@@ -4,6 +4,7 @@
 
 #include "pristine/jsonrpc/JsonRpcServer.h"
 #include "pristine/lsp/Protocol.h"
+#include "../analysis/semantic/DebugTrace.h"
 
 #include <algorithm>
 #include <cctype>
@@ -840,6 +841,7 @@ void ServerSession::bind(jsonrpc::JsonRpcServer& server) {
 }
 
 jsonrpc::Json ServerSession::handleInitialize(const jsonrpc::Json& params) {
+    PRISTINE_DEBUG_TRACE_SCOPE_SIMPLE("server.initialize");
     workspace_manager_.initialize(lsp::parseInitializeParams(params));
     semantic_workspace_.clear();
     const auto& workspace_config = workspace_manager_.state().config;
@@ -875,6 +877,7 @@ jsonrpc::Json ServerSession::handleInitialize(const jsonrpc::Json& params) {
 }
 
 jsonrpc::Json ServerSession::handleDocumentSymbol(const jsonrpc::Json& params) {
+    PRISTINE_DEBUG_TRACE_SCOPE_SIMPLE("server.documentSymbol");
     if (!initialized_) {
         throw std::runtime_error("textDocument/documentSymbol received before initialize");
     }
@@ -894,6 +897,7 @@ jsonrpc::Json ServerSession::handleDocumentSymbol(const jsonrpc::Json& params) {
 }
 
 jsonrpc::Json ServerSession::handleOutline(const jsonrpc::Json& params) {
+    PRISTINE_DEBUG_TRACE_SCOPE_SIMPLE("server.outline");
     if (!initialized_) {
         throw std::runtime_error("systemverilog/outline received before initialize");
     }
@@ -934,6 +938,7 @@ jsonrpc::Json ServerSession::handleOutline(const jsonrpc::Json& params) {
 }
 
 jsonrpc::Json ServerSession::handleModuleHierarchy(const jsonrpc::Json& params) {
+    PRISTINE_DEBUG_TRACE_SCOPE_SIMPLE("server.moduleHierarchy");
     if (!initialized_) {
         throw std::runtime_error("systemverilog/moduleHierarchy received before initialize");
     }
@@ -983,6 +988,7 @@ jsonrpc::Json ServerSession::handleModuleHierarchy(const jsonrpc::Json& params) 
 }
 
 jsonrpc::Json ServerSession::handleSchematic(const jsonrpc::Json& params) {
+    PRISTINE_DEBUG_TRACE_SCOPE_SIMPLE("server.schematic");
     if (!initialized_) {
         throw std::runtime_error("systemverilog/schematic received before initialize");
     }
@@ -1048,6 +1054,7 @@ jsonrpc::Json ServerSession::handleBackwardCone(const jsonrpc::Json& params) {
 }
 
 jsonrpc::Json ServerSession::handleHover(const jsonrpc::Json& params) {
+    PRISTINE_DEBUG_TRACE_SCOPE_SIMPLE("server.hover");
     if (!initialized_) {
         throw std::runtime_error("textDocument/hover received before initialize");
     }
@@ -1590,6 +1597,7 @@ jsonrpc::Json ServerSession::handleShutdown(const jsonrpc::Json&) {
 void ServerSession::handleInitialized(const jsonrpc::Json&) {}
 
 void ServerSession::handleDidOpen(const jsonrpc::Json& params) {
+    PRISTINE_DEBUG_TRACE_SCOPE_SIMPLE("server.didOpen");
     if (!initialized_) {
         throw std::runtime_error("textDocument/didOpen received before initialize");
     }
@@ -1606,6 +1614,7 @@ void ServerSession::handleDidOpen(const jsonrpc::Json& params) {
 }
 
 void ServerSession::handleDidChange(const jsonrpc::Json& params) {
+    PRISTINE_DEBUG_TRACE_SCOPE_SIMPLE("server.didChange");
     if (!initialized_) {
         throw std::runtime_error("textDocument/didChange received before initialize");
     }
@@ -1709,6 +1718,7 @@ void ServerSession::handleExit(const jsonrpc::Json&) {
 }
 
 void ServerSession::indexWorkspaceSources() {
+    PRISTINE_DEBUG_TRACE_SCOPE_SIMPLE("server.indexWorkspaceSources");
     for (const auto& path : workspace_manager_.sourceFilesForIndex()) {
         const auto text = readFileText(path);
         if (!text.has_value()) {
@@ -1756,6 +1766,7 @@ void ServerSession::removeSemanticDocument(std::string_view uri) {
 }
 
 void ServerSession::publishDiagnostics(std::string_view uri) {
+    PRISTINE_DEBUG_TRACE_SCOPE("server.publishDiagnostics", std::string(uri));
     if (!server_) {
         return;
     }

@@ -6,9 +6,9 @@ from pathlib import Path
 
 
 def env_value(name: str, legacy_name: str | None = None) -> str | None:
-    value = os.environ.get(name)
-    if value is not None and value.strip():
-        return value.strip()
+    if name in os.environ:
+        value = os.environ.get(name, "")
+        return value.strip() or None
     if legacy_name is not None:
         legacy_value = os.environ.get(legacy_name)
         if legacy_value is not None and legacy_value.strip():

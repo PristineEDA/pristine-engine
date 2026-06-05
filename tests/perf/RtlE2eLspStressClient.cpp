@@ -64,6 +64,9 @@ struct Metrics {
     long long initialize_micros = 0;
     long long did_open_all_micros = 0;
     long long did_open_probe_micros = 0;
+    long long first_response_micros = 0;
+    long long outline_micros = 0;
+    long long hover_micros = 0;
     long long hierarchy_cold_micros = 0;
     long long hierarchy_warm_micros = 0;
     long long schematic_micros = 0;
@@ -96,6 +99,9 @@ struct Metrics {
     bool schematic_closure_cache_hit = false;
     long long shutdown_micros = 0;
     long long total_micros = 0;
+    size_t outline_root_count = 0;
+    size_t outline_item_count = 0;
+    size_t hover_result_count = 0;
     size_t hierarchy_root_count = 0;
     size_t schematic_module_count = 0;
     size_t schematic_cell_count = 0;
@@ -302,6 +308,24 @@ std::optional<std::string> firstModuleName(std::string_view text) {
     return (*begin)[1].str();
 }
 
+std::pair<int, int> firstIdentifierPosition(std::string_view text) {
+    int line = 0;
+    int character = 0;
+    for (const unsigned char ch : text) {
+        if (std::isalpha(ch) || ch == '_') {
+            return {line, character};
+        }
+        if (ch == '\n') {
+            ++line;
+            character = 0;
+        }
+        else {
+            ++character;
+        }
+    }
+    return {0, 0};
+}
+
 bool containsTopDeclaration(std::string_view text, std::string_view top) {
     if (text.empty() || top.empty()) {
         return false;
@@ -418,6 +442,26 @@ lsp::json::Value hierarchyParams(const std::string& top_module, int max_depth) {
     }
     params["maxDepth"] = lsp::json::Value(lsp::json::Integer(max_depth));
     return params;
+}
+
+lsp::json::Value textDocumentParams(const std::string& uri) {
+    lsp::json::Object params;
+    lsp::json::Object text_document;
+    text_document["uri"] = lsp::json::Value(std::string(uri));
+    params["textDocument"] = lsp::json::Value(std::move(text_document));
+    return params;
+}
+
+lsp::json::Value hoverParams(const std::string& uri, int line, int character) {
+    lsp::json::Object params;
+    lsp::json::Object text_document;
+    text_document["uri"] = lsp::json::Value(std::string(uri));
+    params["textDocument"] = lsp::json::Value(std::move(text_document));
+    lsp::json::Object position;
+    position["line"] = lsp::json::Value(lsp::json::Integer(line));
+    position["character"] = lsp::json::Value(lsp::json::Integer(character));
+    params["position"] = lsp::json::Value(std::move(position));
+    return lsp::json::Value(std::move(params));
 }
 
 size_t arraySize(const lsp::json::Object& object_value, std::string_view key) {
@@ -649,6 +693,29 @@ void collectHierarchyMetrics(const lsp::json::Value& result, Metrics& metrics, b
     }
 }
 
+void collectOutlineMetrics(const lsp::json::Value& result, Metrics& metrics) {
+    if (!result.isObject()) {
+        throw std::runtime_error("outline response result is not an object");
+    }
+    const auto& response = result.object();
+    metrics.outline_root_count = arraySize(response, "roots");
+    metrics.outline_item_count = arraySize(response, "items");
+    metrics.partial = metrics.partial || boolValue(response, "partial");
+    metrics.truncated = metrics.truncated || boolValue(response, "truncated");
+    metrics.messages_count += arraySize(response, "messages");
+}
+
+void collectHoverMetrics(const lsp::json::Value& result, Metrics& metrics) {
+    if (!result.isObject()) {
+        return;
+    }
+    const auto& response = result.object();
+    const auto* contents = response.find("contents");
+    if (contents != nullptr) {
+        metrics.hover_result_count = 1;
+    }
+}
+
 void collectSchematicMetrics(const lsp::json::Value& result, Metrics& metrics) {
     if (!result.isObject()) {
         throw std::runtime_error("schematic response result is not an object");
@@ -820,6 +887,9 @@ std::string summaryJson(const Metrics& metrics) {
         << "\"initializeMicros\":" << metrics.initialize_micros << ","
         << "\"didOpenAllMicros\":" << metrics.did_open_all_micros << ","
         << "\"didOpenProbeMicros\":" << metrics.did_open_probe_micros << ","
+        << "\"firstResponseMicros\":" << metrics.first_response_micros << ","
+        << "\"outlineMicros\":" << metrics.outline_micros << ","
+        << "\"hoverMicros\":" << metrics.hover_micros << ","
         << "\"moduleHierarchyColdMicros\":" << metrics.hierarchy_cold_micros << ","
         << "\"moduleHierarchyWarmMicros\":" << metrics.hierarchy_warm_micros << ","
         << "\"schematicMicros\":" << metrics.schematic_micros << ","
@@ -871,6 +941,9 @@ std::string summaryJson(const Metrics& metrics) {
         << "\"schematicClosureCacheHit\":" << boolJson(metrics.schematic_closure_cache_hit) << ","
         << "\"shutdownMicros\":" << metrics.shutdown_micros << ","
         << "\"totalMicros\":" << metrics.total_micros << ","
+        << "\"outlineRootCount\":" << metrics.outline_root_count << ","
+        << "\"outlineItemCount\":" << metrics.outline_item_count << ","
+        << "\"hoverResultCount\":" << metrics.hover_result_count << ","
         << "\"hierarchyRootCount\":" << metrics.hierarchy_root_count << ","
         << "\"schematicModuleCount\":" << metrics.schematic_module_count << ","
         << "\"schematicCellCount\":" << metrics.schematic_cell_count << ","
@@ -1052,6 +1125,28 @@ int main(int argc, char** argv) {
                        metrics.mode == "real" ? "textDocument/didOpen:real" : "textDocument/didOpen:probe",
                        metrics.did_open_probe_micros);
         writeStage(operation_log, "didOpen:end", std::to_string(metrics.did_open_probe_micros) + "us");
+
+        writeStage(operation_log, "outline:begin", opened_source.uri);
+        start = Clock::now();
+        auto outline = client.request("systemverilog/outline", textDocumentParams(opened_source.uri));
+        metrics.outline_micros = elapsedMicros(start, Clock::now());
+        metrics.first_response_micros = metrics.outline_micros;
+        collectOutlineMetrics(outline, metrics);
+        writeOperation(operation_log, "systemverilog/outline", metrics.outline_micros, &outline);
+        writeStage(operation_log, "outline:end", std::to_string(metrics.outline_micros) + "us");
+
+        const auto [hover_line, hover_character] = firstIdentifierPosition(opened_source.text);
+        writeStage(operation_log,
+                   "hover:begin",
+                   opened_source.uri + ":" + std::to_string(hover_line) + ":" +
+                       std::to_string(hover_character));
+        start = Clock::now();
+        auto hover = client.request("textDocument/hover",
+                                    hoverParams(opened_source.uri, hover_line, hover_character));
+        metrics.hover_micros = elapsedMicros(start, Clock::now());
+        collectHoverMetrics(hover, metrics);
+        writeOperation(operation_log, "textDocument/hover", metrics.hover_micros, &hover);
+        writeStage(operation_log, "hover:end", std::to_string(metrics.hover_micros) + "us");
 
         const auto hierarchy_request_top = args.top_module.empty() ? std::string{} : metrics.top_module;
 

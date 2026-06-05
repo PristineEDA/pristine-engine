@@ -59,6 +59,9 @@ def main() -> int:
         assert no_trace_summary["fileCount"] == 1
         assert no_trace_summary["corpusName"] == "smoke"
         assert no_trace_summary["topModule"] == "rtl_e2e_probe_top_a"
+        assert no_trace_summary["outlineRootCount"] >= 1
+        assert no_trace_summary["outlineItemCount"] >= 3
+        assert no_trace_summary["hoverMicros"] >= 0
         assert no_trace_summary["hierarchyRootCount"] == 2
         assert no_trace_summary["schematicModuleCount"] >= 1
         assert no_trace_summary["schematicCellCount"] >= 1
@@ -80,6 +83,9 @@ def main() -> int:
         assert trace_summary["fileCount"] == 1
         assert trace_summary["corpusName"] == "smoke"
         assert trace_summary["topModule"] == "top_a"
+        assert trace_summary["outlineRootCount"] >= 1
+        assert trace_summary["outlineItemCount"] >= 2
+        assert trace_summary["hoverMicros"] >= 0
         assert trace_summary["hierarchyRootCount"] == 1
         assert trace_summary["schematicModuleCount"] >= 1
         assert trace_summary["traceEnabled"] is True
@@ -89,6 +95,8 @@ def main() -> int:
         assert any('"direction":"client->server"' in line for line in trace_lines)
         assert any('"direction":"server->client"' in line for line in trace_lines)
         assert any('"method":"initialize"' in line for line in trace_lines)
+        assert any('"method":"systemverilog/outline"' in line for line in trace_lines)
+        assert any('"method":"textDocument/hover"' in line for line in trace_lines)
         assert any('"method":"systemverilog/moduleHierarchy"' in line for line in trace_lines)
         assert any('"method":"systemverilog/schematic"' in line for line in trace_lines)
 
