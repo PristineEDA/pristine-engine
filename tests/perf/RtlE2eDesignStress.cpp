@@ -69,6 +69,16 @@ std::string boolJson(bool value) {
     return value ? "true" : "false";
 }
 
+void writeQueryCacheStats(const pristine::analysis::SemanticQueryCacheStats& stats) {
+    std::cout << "\"queryCacheHits\":" << stats.hits << ","
+              << "\"queryCacheMisses\":" << stats.misses << ","
+              << "\"queryCacheStores\":" << stats.stores << ","
+              << "\"queryCacheEvictions\":" << stats.evictions << ","
+              << "\"queryCacheEntries\":" << stats.total_entries << ","
+              << "\"queryCacheModuleHierarchyEntries\":" << stats.module_hierarchy_entries << ","
+              << "\"queryCacheSchematicEntries\":" << stats.schematic_entries << ",";
+}
+
 std::string lowerAscii(std::string value) {
     std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch) {
         return static_cast<char>(std::tolower(ch));
@@ -209,6 +219,7 @@ int main(int argc, char** argv) {
         top_module = *schematic.root_module_id;
     }
 
+    const auto cache_stats = engine.queryCacheStats();
     const auto messages_count = hierarchy.messages.size() + schematic.messages.size();
     std::cout << "{"
               << "\"fileCount\":" << files.size() << ","
@@ -218,6 +229,9 @@ int main(int argc, char** argv) {
               << "\"parseIndexMicros\":" << elapsedMicros(parse_start, parse_end) << ","
               << "\"moduleHierarchyMicros\":" << elapsedMicros(hierarchy_start, hierarchy_end) << ","
               << "\"schematicMicros\":" << elapsedMicros(schematic_start, schematic_end) << ","
+              ;
+    writeQueryCacheStats(cache_stats);
+    std::cout
               << "\"diagnosticCount\":" << snapshot.diagnostics.size() << ","
               << "\"hierarchyRootCount\":" << hierarchy.roots.size() << ","
               << "\"schematicModuleCount\":" << schematic.modules.size() << ","

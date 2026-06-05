@@ -185,6 +185,25 @@ bool documentMatchesDiscoveryConfig(std::string_view uri,
 
 namespace {
 
+#ifndef NDEBUG
+std::string queryCacheStatsDetail(const SemanticQueryCacheStats& stats) {
+    std::ostringstream out;
+    out << "hits=" << stats.hits << " misses=" << stats.misses << " stores=" << stats.stores
+        << " evictions=" << stats.evictions << " entries=" << stats.total_entries
+        << " workspaceSymbols=" << stats.workspace_symbols_entries
+        << " hierarchy=" << stats.module_hierarchy_entries
+        << " schematic=" << stats.schematic_entries
+        << " backwardCone=" << stats.backward_cone_entries;
+    return out.str();
+}
+
+void traceQueryCacheStats(std::string_view phase, const SemanticQueryCacheStats& stats) {
+    semantic::debugTraceInstant(phase, queryCacheStatsDetail(stats));
+}
+#else
+void traceQueryCacheStats(std::string_view, const SemanticQueryCacheStats&) {}
+#endif
+
 template<typename SnapshotData>
 semantic::DesignGraphContext designGraphContextFor(const SnapshotData* data,
                                                    const SemanticEngineSnapshot& snapshot,
@@ -1566,6 +1585,7 @@ SemanticModuleHierarchyResult SemanticEngine::moduleHierarchy(std::optional<std:
         if (result.discovery_closure_used) {
             result.discovery_closure_cache_hit = true;
         }
+        traceQueryCacheStats("semantic.moduleHierarchy.queryCache", queryCacheStats());
         return result;
     }
     const auto closure_uris = closureDocumentUrisFor(module_name, discovery);
@@ -1598,6 +1618,7 @@ SemanticModuleHierarchyResult SemanticEngine::moduleHierarchy(std::optional<std:
         cached_result.discovery_closure_build_micros = 0;
         cached_result.discovery_closure_query_micros = 0;
         query_cache_->storeModuleHierarchy(generation_, module_name, max_depth, std::move(cached_result));
+        traceQueryCacheStats("semantic.moduleHierarchy.queryCache", queryCacheStats());
         return result;
     }
 
@@ -1605,6 +1626,7 @@ SemanticModuleHierarchyResult SemanticEngine::moduleHierarchy(std::optional<std:
     if (const auto cached = query_cache_->moduleHierarchy(current_snapshot.generation,
                                                           module_name,
                                                           max_depth)) {
+        traceQueryCacheStats("semantic.moduleHierarchy.queryCache", queryCacheStats());
         return *cached;
     }
 
@@ -1615,6 +1637,7 @@ SemanticModuleHierarchyResult SemanticEngine::moduleHierarchy(std::optional<std:
                                            module_name,
                                            max_depth,
                                            value);
+        traceQueryCacheStats("semantic.moduleHierarchy.queryCache", queryCacheStats());
         return value;
     };
     const auto* data = snapshotData();
@@ -1634,6 +1657,7 @@ SemanticSchematicResult SemanticEngine::schematic(std::optional<std::string_view
         if (result.discovery_closure_used) {
             result.discovery_closure_cache_hit = true;
         }
+        traceQueryCacheStats("semantic.schematic.queryCache", queryCacheStats());
         return result;
     }
     const auto closure_uris = closureDocumentUrisFor(module_name, discovery);
@@ -1666,11 +1690,13 @@ SemanticSchematicResult SemanticEngine::schematic(std::optional<std::string_view
         cached_result.discovery_closure_build_micros = 0;
         cached_result.discovery_closure_query_micros = 0;
         query_cache_->storeSchematic(generation_, module_name, max_depth, std::move(cached_result));
+        traceQueryCacheStats("semantic.schematic.queryCache", queryCacheStats());
         return result;
     }
 
     const auto& current_snapshot = snapshot();
     if (const auto cached = query_cache_->schematic(current_snapshot.generation, module_name, max_depth)) {
+        traceQueryCacheStats("semantic.schematic.queryCache", queryCacheStats());
         return *cached;
     }
 
@@ -1678,6 +1704,7 @@ SemanticSchematicResult SemanticEngine::schematic(std::optional<std::string_view
     result.generation = current_snapshot.generation;
     const auto finish = [&](SemanticSchematicResult value) {
         query_cache_->storeSchematic(current_snapshot.generation, module_name, max_depth, value);
+        traceQueryCacheStats("semantic.schematic.queryCache", queryCacheStats());
         return value;
     };
     const auto* data = snapshotData();
@@ -1723,6 +1750,7 @@ SemanticConeTrace SemanticEngine::backwardConeAt(std::string_view uri,
                                                        document_uri,
                                                        line,
                                                        character)) {
+        traceQueryCacheStats("semantic.backwardCone.queryCache", queryCacheStats());
         return *cached;
     }
 
@@ -1737,6 +1765,7 @@ SemanticConeTrace SemanticEngine::backwardConeAt(std::string_view uri,
                                         line,
                                         character,
                                         value);
+        traceQueryCacheStats("semantic.backwardCone.queryCache", queryCacheStats());
         return value;
     };
     if (!lookup.symbol.has_value()) {

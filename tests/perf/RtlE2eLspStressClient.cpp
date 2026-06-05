@@ -98,6 +98,14 @@ struct Metrics {
     bool hierarchy_cold_closure_cache_hit = false;
     bool hierarchy_warm_closure_cache_hit = false;
     bool schematic_closure_cache_hit = false;
+    long long query_cache_hits = 0;
+    long long query_cache_misses = 0;
+    long long query_cache_stores = 0;
+    long long query_cache_evictions = 0;
+    long long query_cache_entries = 0;
+    long long query_cache_hierarchy_entries = 0;
+    long long query_cache_schematic_entries = 0;
+    long long query_cache_backward_cone_entries = 0;
     long long shutdown_micros = 0;
     long long total_micros = 0;
     size_t outline_root_count = 0;
@@ -648,12 +656,23 @@ private:
     std::ofstream stream_;
 };
 
+void collectQueryCacheMetrics(const lsp::json::Object& response, Metrics& metrics) {
+    metrics.query_cache_hits = integerValue(response, "queryCacheHits");
+    metrics.query_cache_misses = integerValue(response, "queryCacheMisses");
+    metrics.query_cache_stores = integerValue(response, "queryCacheStores");
+    metrics.query_cache_evictions = integerValue(response, "queryCacheEvictions");
+    metrics.query_cache_entries = integerValue(response, "queryCacheEntries");
+    metrics.query_cache_hierarchy_entries = integerValue(response, "queryCacheModuleHierarchyEntries");
+    metrics.query_cache_schematic_entries = integerValue(response, "queryCacheSchematicEntries");
+    metrics.query_cache_backward_cone_entries = integerValue(response, "queryCacheBackwardConeEntries");
+}
 
 void collectHierarchyMetrics(const lsp::json::Value& result, Metrics& metrics, bool warm) {
     if (!result.isObject()) {
         throw std::runtime_error("moduleHierarchy response result is not an object");
     }
     const auto& response = result.object();
+    collectQueryCacheMetrics(response, metrics);
     metrics.hierarchy_root_count = arraySize(response, "roots");
     metrics.partial = metrics.partial || boolValue(response, "partial");
     metrics.truncated = metrics.truncated || boolValue(response, "truncated");
@@ -729,6 +748,7 @@ void collectSchematicMetrics(const lsp::json::Value& result, Metrics& metrics) {
         throw std::runtime_error("schematic response result is not an object");
     }
     const auto& response = result.object();
+    collectQueryCacheMetrics(response, metrics);
     metrics.schematic_module_count = arraySize(response, "modules");
     metrics.partial = metrics.partial || boolValue(response, "partial");
     metrics.truncated = metrics.truncated || boolValue(response, "truncated");
@@ -961,6 +981,14 @@ std::string summaryJson(const Metrics& metrics) {
         << "\"schematicClosureBuildMicros\":" << metrics.schematic_closure_build_micros << ","
         << "\"schematicClosureQueryMicros\":" << metrics.schematic_closure_query_micros << ","
         << "\"schematicClosureCacheHit\":" << boolJson(metrics.schematic_closure_cache_hit) << ","
+        << "\"queryCacheHits\":" << metrics.query_cache_hits << ","
+        << "\"queryCacheMisses\":" << metrics.query_cache_misses << ","
+        << "\"queryCacheStores\":" << metrics.query_cache_stores << ","
+        << "\"queryCacheEvictions\":" << metrics.query_cache_evictions << ","
+        << "\"queryCacheEntries\":" << metrics.query_cache_entries << ","
+        << "\"queryCacheModuleHierarchyEntries\":" << metrics.query_cache_hierarchy_entries << ","
+        << "\"queryCacheSchematicEntries\":" << metrics.query_cache_schematic_entries << ","
+        << "\"queryCacheBackwardConeEntries\":" << metrics.query_cache_backward_cone_entries << ","
         << "\"shutdownMicros\":" << metrics.shutdown_micros << ","
         << "\"totalMicros\":" << metrics.total_micros << ","
         << "\"outlineRootCount\":" << metrics.outline_root_count << ","

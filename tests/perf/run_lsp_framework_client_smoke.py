@@ -66,6 +66,11 @@ def main() -> int:
         assert no_trace_summary["schematicModuleCount"] >= 1
         assert no_trace_summary["schematicCellCount"] >= 1
         assert no_trace_summary["schematicNetCount"] >= 1
+        assert no_trace_summary["queryCacheHits"] >= 1
+        assert no_trace_summary["queryCacheMisses"] >= 1
+        assert no_trace_summary["queryCacheEntries"] >= 1
+        assert no_trace_summary["queryCacheModuleHierarchyEntries"] >= 1
+        assert no_trace_summary["queryCacheSchematicEntries"] >= 1
         assert no_trace_summary["traceEnabled"] is False
         assert no_trace_summary["tracePath"] == ""
         assert (no_trace_dir / "summary.json").exists()
@@ -88,6 +93,9 @@ def main() -> int:
         assert trace_summary["hoverMicros"] >= 0
         assert trace_summary["hierarchyRootCount"] == 1
         assert trace_summary["schematicModuleCount"] >= 1
+        assert trace_summary["queryCacheHits"] >= 1
+        assert trace_summary["queryCacheMisses"] >= 1
+        assert trace_summary["queryCacheEntries"] >= 1
         assert trace_summary["traceEnabled"] is True
         assert Path(trace_summary["tracePath"]) == trace_file.resolve()
         assert trace_file.exists()

@@ -74,6 +74,40 @@ TEST_CASE("SemanticEngine exposes query cache stats for visible queries",
     CHECK(stats.stores == 1);
 }
 
+TEST_CASE("SemanticEngine query cache stats include graph and cone queries",
+          "[analysis][semantic-engine][query-cache][graph]") {
+    SemanticEngine engine;
+    engine.updateDocument("file:///workspace/top.sv",
+                          "module child(input logic a, output logic y);\n"
+                          "  assign y = a;\n"
+                          "endmodule\n"
+                          "module top;\n"
+                          "  logic a;\n"
+                          "  logic y;\n"
+                          "  child u_child(.a(a), .y(y));\n"
+                          "endmodule\n",
+                          SemanticEngineDocumentState{.version = 1, .is_open = true});
+
+    engine.resetQueryCacheStats();
+    CHECK(engine.moduleHierarchy("top").roots.size() == 1);
+    CHECK(engine.schematic("top").modules.size() >= 1);
+    CHECK_FALSE(engine.backwardConeAt("file:///workspace/top.sv", 5, 8).nodes.empty());
+
+    auto stats = engine.queryCacheStats();
+    CHECK(stats.misses >= 3);
+    CHECK(stats.stores >= 3);
+    CHECK(stats.module_hierarchy_entries >= 1);
+    CHECK(stats.schematic_entries >= 1);
+    CHECK(stats.backward_cone_entries >= 1);
+
+    CHECK(engine.moduleHierarchy("top").roots.size() == 1);
+    CHECK(engine.schematic("top").modules.size() >= 1);
+    CHECK_FALSE(engine.backwardConeAt("file:///workspace/top.sv", 5, 8).nodes.empty());
+
+    stats = engine.queryCacheStats();
+    CHECK(stats.hits >= 3);
+}
+
 TEST_CASE("SemanticEngine owns UX diagnostics formerly produced by workspace metadata",
           "[analysis][semantic-engine][diagnostics]") {
     SemanticEngine engine;

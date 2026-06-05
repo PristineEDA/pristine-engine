@@ -105,6 +105,7 @@ public:
     [[nodiscard]] SemanticCodeActionResult engineCodeActionsAt(std::string_view uri, ParseRange range) const;
     [[nodiscard]] SemanticWorkspaceSymbolResult engineWorkspaceSymbols(std::string_view query,
                                                                        size_t limit = 1000) const;
+    [[nodiscard]] SemanticQueryCacheStats engineQueryCacheStats() const;
     [[nodiscard]] std::uint64_t engineGeneration() const { return semantic_engine_.generation(); }
     [[nodiscard]] bool engineHasFreshSnapshot() const { return semantic_engine_.hasFreshSnapshot(); }
     [[nodiscard]] size_t documentCount() const { return documents_.size(); }

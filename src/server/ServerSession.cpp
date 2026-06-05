@@ -682,6 +682,19 @@ jsonrpc::Json toConeTraceJson(const analysis::SemanticConeTrace& trace) {
                          {"messages", std::move(messages)}};
 }
 
+void appendQueryCacheTelemetry(jsonrpc::Json& result,
+                               const analysis::SemanticQueryCacheStats& stats) {
+    result["queryCacheHits"] = stats.hits;
+    result["queryCacheMisses"] = stats.misses;
+    result["queryCacheStores"] = stats.stores;
+    result["queryCacheEvictions"] = stats.evictions;
+    result["queryCacheEntries"] = stats.total_entries;
+    result["queryCacheWorkspaceSymbolEntries"] = stats.workspace_symbols_entries;
+    result["queryCacheModuleHierarchyEntries"] = stats.module_hierarchy_entries;
+    result["queryCacheSchematicEntries"] = stats.schematic_entries;
+    result["queryCacheBackwardConeEntries"] = stats.backward_cone_entries;
+}
+
 jsonrpc::Json toCallHierarchyItemJson(const analysis::SemanticCallHierarchyItem& item) {
     return jsonrpc::Json{{"name", item.name},
                          {"kind", item.kind},
@@ -959,6 +972,7 @@ jsonrpc::Json ServerSession::handleModuleHierarchy(const jsonrpc::Json& params) 
     const auto requested_module_name = parseOptionalModuleName(params);
     const auto max_depth = parseMaxDepth(params);
     analysis::SemanticModuleHierarchyResult hierarchy;
+    analysis::SemanticQueryCacheStats query_cache_stats;
     {
         std::lock_guard semantic_lock(semantic_mutex_);
         hierarchy = semantic_workspace_.engineModuleHierarchy(
@@ -966,6 +980,7 @@ jsonrpc::Json ServerSession::handleModuleHierarchy(const jsonrpc::Json& params) 
                 ? std::optional<std::string_view>{std::string_view(*requested_module_name)}
                 : std::optional<std::string_view>{},
             max_depth);
+        query_cache_stats = semantic_workspace_.engineQueryCacheStats();
     }
 
     jsonrpc::Json roots = jsonrpc::Json::array();
@@ -1001,6 +1016,7 @@ jsonrpc::Json ServerSession::handleModuleHierarchy(const jsonrpc::Json& params) 
         result["discoveryClosureQueryMicros"] = hierarchy.discovery_closure_query_micros;
         result["discoveryClosureCacheHit"] = hierarchy.discovery_closure_cache_hit;
     }
+    appendQueryCacheTelemetry(result, query_cache_stats);
     return result;
 }
 
@@ -1013,6 +1029,7 @@ jsonrpc::Json ServerSession::handleSchematic(const jsonrpc::Json& params) {
     const auto requested_module_name = parseOptionalModuleName(params);
     const auto max_depth = parseMaxDepth(params);
     analysis::SemanticSchematicResult schematic;
+    analysis::SemanticQueryCacheStats query_cache_stats;
     {
         std::lock_guard semantic_lock(semantic_mutex_);
         schematic = semantic_workspace_.engineSchematic(
@@ -1020,6 +1037,7 @@ jsonrpc::Json ServerSession::handleSchematic(const jsonrpc::Json& params) {
                 ? std::optional<std::string_view>{std::string_view(*requested_module_name)}
                 : std::optional<std::string_view>{},
             max_depth);
+        query_cache_stats = semantic_workspace_.engineQueryCacheStats();
     }
 
     jsonrpc::Json messages = jsonrpc::Json::array();
@@ -1059,6 +1077,7 @@ jsonrpc::Json ServerSession::handleSchematic(const jsonrpc::Json& params) {
         result["discoveryClosureQueryMicros"] = schematic.discovery_closure_query_micros;
         result["discoveryClosureCacheHit"] = schematic.discovery_closure_cache_hit;
     }
+    appendQueryCacheTelemetry(result, query_cache_stats);
     return result;
 }
 
@@ -1071,8 +1090,16 @@ jsonrpc::Json ServerSession::handleBackwardCone(const jsonrpc::Json& params) {
     const auto& position = params.at("position");
     const auto line = position.at("line").get<int>();
     const auto character = position.at("character").get<int>();
-    std::lock_guard semantic_lock(semantic_mutex_);
-    return toConeTraceJson(semantic_workspace_.engineBackwardConeAt(uri, line, character));
+    analysis::SemanticConeTrace trace;
+    analysis::SemanticQueryCacheStats query_cache_stats;
+    {
+        std::lock_guard semantic_lock(semantic_mutex_);
+        trace = semantic_workspace_.engineBackwardConeAt(uri, line, character);
+        query_cache_stats = semantic_workspace_.engineQueryCacheStats();
+    }
+    auto result = toConeTraceJson(trace);
+    appendQueryCacheTelemetry(result, query_cache_stats);
+    return result;
 }
 
 jsonrpc::Json ServerSession::handleHover(const jsonrpc::Json& params) {

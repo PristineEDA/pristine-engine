@@ -13,6 +13,18 @@ long long elapsedMicros(Clock::time_point start, Clock::time_point end) {
     return std::chrono::duration_cast<std::chrono::microseconds>(end - start).count();
 }
 
+void writeQueryCacheStats(const pristine::analysis::SemanticQueryCacheStats& stats) {
+    std::cout << "\"queryCacheHits\":" << stats.hits << ","
+              << "\"queryCacheMisses\":" << stats.misses << ","
+              << "\"queryCacheStores\":" << stats.stores << ","
+              << "\"queryCacheEvictions\":" << stats.evictions << ","
+              << "\"queryCacheEntries\":" << stats.total_entries << ","
+              << "\"queryCacheWorkspaceSymbolEntries\":" << stats.workspace_symbols_entries << ","
+              << "\"queryCacheModuleHierarchyEntries\":" << stats.module_hierarchy_entries << ","
+              << "\"queryCacheSchematicEntries\":" << stats.schematic_entries << ","
+              << "\"queryCacheBackwardConeEntries\":" << stats.backward_cone_entries << ",";
+}
+
 } // namespace
 
 int main() {
@@ -95,6 +107,7 @@ int main() {
                                            .end_line = 4,
                                            .end_character = 0});
         const auto end_code_action = Clock::now();
+        const auto cache_stats = engine.queryCacheStats();
 
         if (!first_baseline) {
             std::cout << ",";
@@ -117,6 +130,9 @@ int main() {
                   << "\"schematicMicros\":" << elapsedMicros(start_schematic, end_schematic) << ","
                   << "\"backwardConeMicros\":" << elapsedMicros(start_cone, end_cone) << ","
                   << "\"codeActionMicros\":" << elapsedMicros(start_code_action, end_code_action) << ","
+                  ;
+        writeQueryCacheStats(cache_stats);
+        std::cout
                   << "\"referenceCount\":" << references.locations.size() << ","
                   << "\"completionCount\":" << completion.items.size() << ","
                   << "\"inlayHintCount\":" << inlay.hints.size() << ","

@@ -230,6 +230,10 @@ SemanticWorkspaceSymbolResult SemanticWorkspace::engineWorkspaceSymbols(std::str
     return semantic_engine_.workspaceSymbols(query, limit);
 }
 
+SemanticQueryCacheStats SemanticWorkspace::engineQueryCacheStats() const {
+    return semantic_engine_.queryCacheStats();
+}
+
 std::vector<SemanticEngineDiagnostic> SemanticWorkspace::engineDiagnosticsFor(std::string_view uri) const {
     return semantic_engine_.diagnosticsFor(uri);
 }
