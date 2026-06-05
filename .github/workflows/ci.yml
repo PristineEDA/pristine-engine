@@ -111,11 +111,59 @@ jobs:
       - name: Bootstrap dependencies
         run: cmake -DPRISTINE_ROOT_DIR=. -P scripts/bootstrap_deps.cmake
 
+      - name: Resolve C++ compiler
+        id: compiler
+        run: |
+          $compiler = '${{ matrix.cxx_compiler }}'
+          if ($IsLinux -and $compiler -eq 'clang++') {
+            $defaultVersionLine = $null
+            $defaultMajor = $null
+            if (Get-Command 'clang++' -ErrorAction SilentlyContinue) {
+              $defaultVersionLine = (& clang++ --version | Select-Object -First 1)
+              if ($defaultVersionLine -match 'clang version (\d+)') {
+                $defaultMajor = [int]$Matches[1]
+              }
+            }
+
+            if ($null -eq $defaultMajor -or $defaultMajor -lt 15) {
+              $candidates = @()
+              foreach ($command in (Get-Command 'clang++-*' -ErrorAction SilentlyContinue)) {
+                if ($command.Name -match '^clang\+\+-(\d+)$') {
+                  $candidates += [pscustomobject]@{
+                    Name = $command.Name
+                    Major = [int]$Matches[1]
+                  }
+                }
+              }
+
+              $selected = $candidates |
+                Where-Object { $_.Major -ge 15 } |
+                Sort-Object Major |
+                Select-Object -First 1
+
+              if ($selected) {
+                $compiler = $selected.Name
+                Write-Host "Default clang++ is too old for std::source_location support: $defaultVersionLine"
+              }
+              elseif ($defaultVersionLine) {
+                throw "Ubuntu clang++ must be version 15 or newer for std::source_location support; found: $defaultVersionLine"
+              }
+              else {
+                throw 'matrix.cxx_compiler requested clang++, but clang++ was not found'
+              }
+            }
+          }
+
+          if ($compiler) {
+            Write-Host "Using C++ compiler: $compiler"
+          }
+          "cxx=$compiler" >> $env:GITHUB_OUTPUT
+
       - name: Configure
         run: |
           $args = @('--preset', 'dev')
-          if ('${{ matrix.cxx_compiler }}') {
-            $args += "-DCMAKE_CXX_COMPILER=${{ matrix.cxx_compiler }}"
+          if ('${{ steps.compiler.outputs.cxx }}') {
+            $args += "-DCMAKE_CXX_COMPILER=${{ steps.compiler.outputs.cxx }}"
           }
           cmake @args
 
