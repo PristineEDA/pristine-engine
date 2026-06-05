@@ -67,6 +67,7 @@ struct Metrics {
     long long first_response_micros = 0;
     long long outline_micros = 0;
     long long hover_micros = 0;
+    long long semantic_diagnostics_micros = 0;
     long long hierarchy_cold_micros = 0;
     long long hierarchy_warm_micros = 0;
     long long schematic_micros = 0;
@@ -110,6 +111,7 @@ struct Metrics {
     bool truncated = false;
     size_t messages_count = 0;
     size_t diagnostics_notification_count = 0;
+    bool semantic_diagnostics_published = false;
     bool trace_enabled = false;
     std::string trace_path;
 };
@@ -450,6 +452,12 @@ lsp::json::Value textDocumentParams(const std::string& uri) {
     text_document["uri"] = lsp::json::Value(std::string(uri));
     params["textDocument"] = lsp::json::Value(std::move(text_document));
     return params;
+}
+
+lsp::json::Value workspaceSymbolParams(std::string query) {
+    lsp::json::Object params;
+    params["query"] = lsp::json::Value(std::move(query));
+    return lsp::json::Value(std::move(params));
 }
 
 lsp::json::Value hoverParams(const std::string& uri, int line, int character) {
@@ -834,6 +842,18 @@ public:
         return diagnostics_notification_count_;
     }
 
+    bool waitForDiagnosticsNotificationCount(size_t target_count,
+                                             std::chrono::milliseconds timeout) {
+        const auto deadline = Clock::now() + timeout;
+        while (Clock::now() < deadline) {
+            (void)request("workspace/symbol", workspaceSymbolParams("__rtl_e2e_diag_wait__"));
+            if (diagnostics_notification_count_ >= target_count) {
+                return true;
+            }
+        }
+        return diagnostics_notification_count_ >= target_count;
+    }
+
 private:
     lsp::Process process_;
     lsp::Connection connection_;
@@ -890,6 +910,8 @@ std::string summaryJson(const Metrics& metrics) {
         << "\"firstResponseMicros\":" << metrics.first_response_micros << ","
         << "\"outlineMicros\":" << metrics.outline_micros << ","
         << "\"hoverMicros\":" << metrics.hover_micros << ","
+        << "\"semanticDiagnosticsPublished\":" << boolJson(metrics.semantic_diagnostics_published) << ","
+        << "\"semanticDiagnosticsMicros\":" << metrics.semantic_diagnostics_micros << ","
         << "\"moduleHierarchyColdMicros\":" << metrics.hierarchy_cold_micros << ","
         << "\"moduleHierarchyWarmMicros\":" << metrics.hierarchy_warm_micros << ","
         << "\"schematicMicros\":" << metrics.schematic_micros << ","
@@ -1147,6 +1169,18 @@ int main(int argc, char** argv) {
         collectHoverMetrics(hover, metrics);
         writeOperation(operation_log, "textDocument/hover", metrics.hover_micros, &hover);
         writeStage(operation_log, "hover:end", std::to_string(metrics.hover_micros) + "us");
+
+        writeStage(operation_log, "semanticDiagnostics:begin");
+        const auto diagnostics_start_count = client.diagnosticsNotificationCount();
+        start = Clock::now();
+        metrics.semantic_diagnostics_published =
+            client.waitForDiagnosticsNotificationCount(diagnostics_start_count + 1,
+                                                       std::chrono::milliseconds(2000));
+        metrics.semantic_diagnostics_micros = elapsedMicros(start, Clock::now());
+        writeOperation(operation_log, "semanticDiagnostics:wait", metrics.semantic_diagnostics_micros);
+        writeStage(operation_log,
+                   "semanticDiagnostics:end",
+                   metrics.semantic_diagnostics_published ? "published" : "timeout");
 
         const auto hierarchy_request_top = args.top_module.empty() ? std::string{} : metrics.top_module;
 

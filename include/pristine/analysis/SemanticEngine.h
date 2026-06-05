@@ -442,6 +442,7 @@ public:
     [[nodiscard]] size_t documentCount() const { return documents_.size(); }
     [[nodiscard]] std::uint64_t generation() const { return generation_; }
     [[nodiscard]] bool snapshotDirty() const { return snapshot_dirty_; }
+    [[nodiscard]] bool hasFreshSnapshot() const { return snapshot_.has_value() && !snapshot_dirty_; }
     [[nodiscard]] std::vector<std::string> includedUris(std::string_view uri) const;
     [[nodiscard]] std::vector<std::string> includingUris(std::string_view uri) const;
     [[nodiscard]] std::vector<std::string> dirtyDocumentUris() const;

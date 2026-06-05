@@ -10,9 +10,11 @@
 #include <deque>
 #include <filesystem>
 #include <fstream>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 namespace pristine::server {
@@ -45,7 +47,52 @@ private:
     std::vector<std::string> outputs_;
 };
 
+class WaitingTransport final : public transport::MessageTransport {
+public:
+    WaitingTransport(std::initializer_list<std::string> messages, size_t minimum_outputs) :
+        inputs_(messages.begin(), messages.end()), minimum_outputs_(minimum_outputs) {}
+
+    std::optional<std::string> read() override {
+        if (!inputs_.empty()) {
+            std::string payload = std::move(inputs_.front());
+            inputs_.pop_front();
+            return payload;
+        }
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+        while (std::chrono::steady_clock::now() < deadline) {
+            {
+                std::lock_guard lock(outputs_mutex_);
+                if (outputs_.size() >= minimum_outputs_) {
+                    return std::nullopt;
+                }
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        return std::nullopt;
+    }
+
+    void write(std::string_view payload) override {
+        std::lock_guard lock(outputs_mutex_);
+        outputs_.emplace_back(payload);
+    }
+
+    std::vector<std::string> outputs() const {
+        std::lock_guard lock(outputs_mutex_);
+        return outputs_;
+    }
+
+private:
+    std::deque<std::string> inputs_;
+    size_t minimum_outputs_ = 0;
+    mutable std::mutex outputs_mutex_;
+    std::vector<std::string> outputs_;
+};
+
 jsonrpc::Json parseOutput(const ScriptedTransport& transport, size_t index) {
+    return jsonrpc::Json::parse(transport.outputs().at(index));
+}
+
+jsonrpc::Json parseOutput(const WaitingTransport& transport, size_t index) {
     return jsonrpc::Json::parse(transport.outputs().at(index));
 }
 
@@ -330,6 +377,20 @@ TEST_CASE("ServerSession refreshes indexes from watched file changes", "[server]
     CHECK(deleted_response->at("result").empty());
 }
 
+std::vector<jsonrpc::Json> findNotifications(const WaitingTransport& transport,
+                                             std::string_view method) {
+    std::vector<jsonrpc::Json> result;
+    for (const auto& payload : transport.outputs()) {
+        const auto message = jsonrpc::Json::parse(payload);
+        const auto method_it = message.find("method");
+        if (method_it != message.end() && method_it->is_string() &&
+            method_it->get_ref<const std::string&>() == method) {
+            result.push_back(message);
+        }
+    }
+    return result;
+}
+
 TEST_CASE("ServerSession refreshes SystemVerilog hierarchy and schematic from watched file changes",
           "[server][workspace][hierarchy][schematic]") {
     jsonrpc::JsonRpcServer rpc_server;
@@ -572,6 +633,142 @@ TEST_CASE("ServerSession publishes semantic diagnostics for unresolved module in
     CHECK(semantic_diagnostic->at("range").at("start").at("line") == 1);
     CHECK(semantic_diagnostic->at("range").at("start").at("character") == 2);
     CHECK(semantic_diagnostic->at("range").at("end").at("character") == 15);
+}
+
+TEST_CASE("ServerSession uses syntax-first diagnostics for large cold workspaces",
+          "[server][diagnostics][perf]") {
+    jsonrpc::JsonRpcServer rpc_server;
+    ServerSession session{"pristine-engine", kTestServerVersion};
+    session.bind(rpc_server);
+
+    TempWorkspace workspace;
+    for (int index = 0; index < 130; ++index) {
+        workspace.writeFile("rtl/filler_" + std::to_string(index) + ".sv",
+                            "module filler_" + std::to_string(index) + "; endmodule\n");
+    }
+
+    const auto top_text =
+        std::string("module top;\n  missing_child u_missing();\n  ?\nendmodule\n");
+    const auto top_path = workspace.writeFile("rtl/top.sv", top_text);
+    const auto top_uri = toFileUri(top_path);
+    const auto top_text_json = jsonrpc::Json(top_text).dump();
+
+    const auto initialize_message =
+        std::string(R"({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"rootUri":")") +
+        toFileUri(workspace.root()) + R"("}})";
+    const auto open_message =
+        std::string(R"({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":")") +
+        top_uri + R"(","languageId":"systemverilog","version":1,"text":)" + top_text_json + R"(}}})";
+
+    WaitingTransport transport{{initialize_message, open_message}, 3};
+
+    const int exit_code = rpc_server.run(transport);
+
+    CHECK(exit_code == 0);
+    const auto diagnostics = findNotifications(transport, "textDocument/publishDiagnostics");
+    REQUIRE(diagnostics.size() >= 2);
+    CHECK(diagnostics.front().at("params").at("uri") == top_uri);
+    const auto& syntax_items = diagnostics.front().at("params").at("diagnostics");
+    REQUIRE_FALSE(syntax_items.empty());
+    CHECK(std::none_of(syntax_items.begin(), syntax_items.end(), [](const jsonrpc::Json& item) {
+        const auto code_it = item.find("code");
+        return code_it != item.end() && *code_it == "unresolvedModule";
+    }));
+    const auto& semantic_items = diagnostics.back().at("params").at("diagnostics");
+    CHECK(std::any_of(semantic_items.begin(), semantic_items.end(), [](const jsonrpc::Json& item) {
+        const auto code_it = item.find("code");
+        return code_it != item.end() && *code_it == "unresolvedModule";
+    }));
+}
+
+TEST_CASE("ServerSession drops stale background diagnostics after document changes",
+          "[server][diagnostics][perf]") {
+    jsonrpc::JsonRpcServer rpc_server;
+    ServerSession session{"pristine-engine", kTestServerVersion};
+    session.bind(rpc_server);
+
+    TempWorkspace workspace;
+    for (int index = 0; index < 130; ++index) {
+        workspace.writeFile("rtl/filler_" + std::to_string(index) + ".sv",
+                            "module filler_" + std::to_string(index) + "; endmodule\n");
+    }
+
+    const auto top_text = std::string("module top;\n  missing_child u_missing();\nendmodule\n");
+    const auto clean_text = std::string("module top;\nendmodule\n");
+    const auto top_path = workspace.writeFile("rtl/top.sv", top_text);
+    const auto top_uri = toFileUri(top_path);
+
+    const auto initialize_message =
+        std::string(R"({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"rootUri":")") +
+        toFileUri(workspace.root()) + R"("}})";
+    const auto open_message =
+        std::string(R"({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":")") +
+        top_uri + R"(","languageId":"systemverilog","version":1,"text":)" +
+        jsonrpc::Json(top_text).dump() + R"(}}})";
+    const auto change_message =
+        std::string(R"({"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":{"uri":")") +
+        top_uri + R"(","version":2},"contentChanges":[{"text":)" + jsonrpc::Json(clean_text).dump() +
+        R"(}]}})";
+
+    WaitingTransport transport{{initialize_message, open_message, change_message}, 4};
+
+    const int exit_code = rpc_server.run(transport);
+
+    CHECK(exit_code == 0);
+    const auto diagnostics = findNotifications(transport, "textDocument/publishDiagnostics");
+    REQUIRE_FALSE(diagnostics.empty());
+    CHECK(std::none_of(diagnostics.begin(), diagnostics.end(), [](const jsonrpc::Json& notification) {
+        const auto& items = notification.at("params").at("diagnostics");
+        return std::any_of(items.begin(), items.end(), [](const jsonrpc::Json& item) {
+            const auto code_it = item.find("code");
+            return code_it != item.end() && *code_it == "unresolvedModule";
+        });
+    }));
+}
+
+TEST_CASE("ServerSession drops background diagnostics after document closes",
+          "[server][diagnostics][perf]") {
+    jsonrpc::JsonRpcServer rpc_server;
+    ServerSession session{"pristine-engine", kTestServerVersion};
+    session.bind(rpc_server);
+
+    TempWorkspace workspace;
+    for (int index = 0; index < 130; ++index) {
+        workspace.writeFile("rtl/filler_" + std::to_string(index) + ".sv",
+                            "module filler_" + std::to_string(index) + "; endmodule\n");
+    }
+
+    const auto top_text = std::string("module top;\n  missing_child u_missing();\nendmodule\n");
+    const auto top_path = workspace.writeFile("rtl/top.sv", top_text);
+    const auto top_uri = toFileUri(top_path);
+
+    const auto initialize_message =
+        std::string(R"({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"rootUri":")") +
+        toFileUri(workspace.root()) + R"("}})";
+    const auto open_message =
+        std::string(R"({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":")") +
+        top_uri + R"(","languageId":"systemverilog","version":1,"text":)" +
+        jsonrpc::Json(top_text).dump() + R"(}}})";
+    const auto close_message =
+        std::string(R"({"jsonrpc":"2.0","method":"textDocument/didClose","params":{"textDocument":{"uri":")") +
+        top_uri + R"("}}})";
+
+    WaitingTransport transport{{initialize_message, open_message, close_message}, 4};
+
+    const int exit_code = rpc_server.run(transport);
+
+    CHECK(exit_code == 0);
+    const auto diagnostics = findNotifications(transport, "textDocument/publishDiagnostics");
+    REQUIRE_FALSE(diagnostics.empty());
+    size_t unresolved_count = 0;
+    for (const auto& notification : diagnostics) {
+        const auto& items = notification.at("params").at("diagnostics");
+        unresolved_count += static_cast<size_t>(std::count_if(items.begin(), items.end(), [](const jsonrpc::Json& item) {
+            const auto code_it = item.find("code");
+            return code_it != item.end() && *code_it == "unresolvedModule";
+        }));
+    }
+    CHECK(unresolved_count == 0);
 }
 
 TEST_CASE("ServerSession publishes empty diagnostics after semantic diagnostics clear",
@@ -904,6 +1101,41 @@ TEST_CASE("ServerSession outline truncates by item limit", "[server][outline]") 
     CHECK(result.at("items").at(0).at("name") == "top");
     CHECK(result.at("items").at(1).at("name") == "a");
     REQUIRE(result.at("messages").size() == 1);
+}
+
+TEST_CASE("ServerSession outline detail strips comments from declarations",
+          "[server][outline]") {
+    jsonrpc::JsonRpcServer rpc_server;
+    ServerSession session{"pristine-engine", kTestServerVersion};
+    session.bind(rpc_server);
+
+    ScriptedTransport transport{
+        R"({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}})",
+        R"({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///workspace/outline-comments.sv","languageId":"systemverilog","version":1,"text":"module top;\n  // verilog_format on\n  // sclk\n  logic s_sclk, s_sclk_en_d, s_sclk_en_q;\n  localparam logic [2:0] FSM_IDLE = 3'd0;\nendmodule\n"}}})",
+        R"({"jsonrpc":"2.0","id":2,"method":"systemverilog/outline","params":{"textDocument":{"uri":"file:///workspace/outline-comments.sv"}}})"};
+
+    const int exit_code = rpc_server.run(transport);
+
+    CHECK(exit_code == 0);
+    REQUIRE(transport.outputs().size() == 3);
+
+    const auto outline_response = parseOutput(transport, 2);
+    const auto& items = outline_response.at("result").at("items");
+    const auto s_sclk = std::find_if(items.begin(), items.end(), [](const jsonrpc::Json& item) {
+        return item.at("name") == "s_sclk";
+    });
+    REQUIRE(s_sclk != items.end());
+    CHECK(s_sclk->at("detail") == "logic");
+    CHECK(s_sclk->at("type") == "logic");
+    CHECK(s_sclk->at("declaration") == "logic s_sclk");
+
+    const auto parameter = std::find_if(items.begin(), items.end(), [](const jsonrpc::Json& item) {
+        return item.at("name") == "FSM_IDLE";
+    });
+    REQUIRE(parameter != items.end());
+    CHECK(parameter->at("detail") == "logic [2:0] = 3'd0");
+    CHECK(parameter->at("type") == "logic [2:0]");
+    CHECK(parameter->at("value") == "3'd0");
 }
 
 TEST_CASE("ServerSession outline returns message for unopened document", "[server][outline]") {

@@ -2,6 +2,7 @@
 
 #include <functional>
 #include <nlohmann/json.hpp>
+#include <mutex>
 #include <string>
 #include <unordered_map>
 
@@ -37,6 +38,7 @@ private:
     bool stop_requested_ = false;
     int exit_code_ = 0;
     transport::MessageTransport* active_transport_ = nullptr;
+    std::mutex write_mutex_;
 };
 
 } // namespace pristine::jsonrpc

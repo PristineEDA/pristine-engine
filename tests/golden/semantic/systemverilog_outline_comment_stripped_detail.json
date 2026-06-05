@@ -1,0 +1,24 @@
+{
+  "name": "systemverilog outline detail strips comments from declaration text",
+  "sources": [
+    {
+      "uri": "file:///golden/outline_comment_detail.sv",
+      "version": 1,
+      "text": "module top;\n  // verilog_format on\n  // sclk\n  logic s_sclk, s_sclk_en_d, s_sclk_en_q;\n  localparam logic [2:0] FSM_IDLE = 3'd0;\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "outline",
+    "uri": "file:///golden/outline_comment_detail.sv",
+    "version": 1
+  },
+  "expected": {
+    "rootNames": ["top"],
+    "items": [
+      { "id": "outline:0.0", "name": "s_sclk", "kind": "variable", "parentId": "outline:0", "depth": 1, "detail": "logic", "declaration": "logic s_sclk", "type": "logic" },
+      { "id": "outline:0.1", "name": "s_sclk_en_d", "kind": "variable", "parentId": "outline:0", "depth": 1, "detail": "logic", "declaration": "logic s_sclk_en_d", "type": "logic" },
+      { "id": "outline:0.2", "name": "s_sclk_en_q", "kind": "variable", "parentId": "outline:0", "depth": 1, "detail": "logic", "declaration": "logic s_sclk_en_q", "type": "logic" },
+      { "id": "outline:0.3", "name": "FSM_IDLE", "kind": "parameter", "parentId": "outline:0", "depth": 1, "detail": "logic [2:0] = 3'd0", "declaration": "logic [2:0] FSM_IDLE = 3'd0", "type": "logic [2:0]", "value": "3'd0" }
+    ]
+  }
+}

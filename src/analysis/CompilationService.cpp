@@ -154,7 +154,70 @@ DocumentSymbol makeDocumentSymbol(std::string name,
                               std::move(children));
 }
 
+std::string stripOutlineComments(std::string_view value) {
+    std::string result;
+    result.reserve(value.size());
+    bool in_line_comment = false;
+    bool in_block_comment = false;
+    bool in_string = false;
+    bool escaped = false;
+    for (size_t index = 0; index < value.size(); ++index) {
+        const char ch = value[index];
+        const char next = index + 1 < value.size() ? value[index + 1] : '\0';
+        if (in_line_comment) {
+            if (ch == '\n' || ch == '\r') {
+                in_line_comment = false;
+                result.push_back(ch);
+            }
+            continue;
+        }
+        if (in_block_comment) {
+            if (ch == '*' && next == '/') {
+                in_block_comment = false;
+                ++index;
+                result.push_back(' ');
+            }
+            else if (ch == '\n' || ch == '\r') {
+                result.push_back(ch);
+            }
+            continue;
+        }
+        if (in_string) {
+            result.push_back(ch);
+            if (escaped) {
+                escaped = false;
+            }
+            else if (ch == '\\') {
+                escaped = true;
+            }
+            else if (ch == '"') {
+                in_string = false;
+            }
+            continue;
+        }
+        if (ch == '"') {
+            in_string = true;
+            result.push_back(ch);
+            continue;
+        }
+        if (ch == '/' && next == '/') {
+            in_line_comment = true;
+            ++index;
+            continue;
+        }
+        if (ch == '/' && next == '*') {
+            in_block_comment = true;
+            ++index;
+            result.push_back(' ');
+            continue;
+        }
+        result.push_back(ch);
+    }
+    return result;
+}
+
 std::string normalizeOutlineText(std::string value) {
+    value = stripOutlineComments(value);
     value = trimWhitespace(std::move(value));
     std::string result;
     bool pending_space = false;

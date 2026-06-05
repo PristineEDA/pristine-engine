@@ -25,6 +25,7 @@ public:
 
     const TextDocument* find(std::string_view uri) const;
     size_t size() const { return documents_.size(); }
+    const std::unordered_map<std::string, TextDocument>& documents() const { return documents_; }
 
 private:
     static void applyChange(TextDocument& document, const lsp::TextDocumentContentChangeEvent& change);

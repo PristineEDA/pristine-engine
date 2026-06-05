@@ -7,20 +7,25 @@
 #include "../analysis/semantic/DebugTrace.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cctype>
 #include <cstddef>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <map>
+#include <mutex>
 #include <optional>
 #include <set>
 #include <stdexcept>
+#include <thread>
+#include <utility>
 
 namespace pristine::server {
 namespace {
 
 namespace fs = std::filesystem;
+constexpr size_t kSyntaxFirstDiagnosticsDocumentThreshold = 128;
 
 jsonrpc::Json toRangeJson(const analysis::ParseRange& range) {
     return jsonrpc::Json{{"start",
@@ -729,6 +734,10 @@ int parseMaxDepth(const jsonrpc::Json& params) {
 ServerSession::ServerSession(std::string server_name, std::string server_version) :
     server_name_(std::move(server_name)), server_version_(std::move(server_version)) {}
 
+ServerSession::~ServerSession() {
+    stopBackgroundDiagnostics();
+}
+
 void ServerSession::bind(jsonrpc::JsonRpcServer& server) {
     server_ = &server;
 
@@ -843,7 +852,6 @@ void ServerSession::bind(jsonrpc::JsonRpcServer& server) {
 jsonrpc::Json ServerSession::handleInitialize(const jsonrpc::Json& params) {
     PRISTINE_DEBUG_TRACE_SCOPE_SIMPLE("server.initialize");
     workspace_manager_.initialize(lsp::parseInitializeParams(params));
-    semantic_workspace_.clear();
     const auto& workspace_config = workspace_manager_.state().config;
     std::vector<analysis::SemanticEngineConfig::IndexConfig> semantic_index_config;
     semantic_index_config.reserve(workspace_config.index.size());
@@ -852,23 +860,28 @@ jsonrpc::Json ServerSession::handleInitialize(const jsonrpc::Json& params) {
             analysis::SemanticEngineConfig::IndexConfig{.dirs = index_config.dirs,
                                                         .exclude_dirs = index_config.exclude_dirs});
     }
-    semantic_workspace_.configureSemanticEngine(
-        analysis::SemanticEngineConfig{.build = workspace_config.build,
-                                       .build_pattern = workspace_config.build_pattern,
-                                       .build_relative_paths = workspace_config.build_relative_paths,
-                                       .flags = workspace_config.flags,
-                                       .workspace_root_uri =
-                                           workspace_manager_.state().root_path.has_value()
-                                               ? std::optional<std::string>{toFileUri(
-                                                     *workspace_manager_.state().root_path)}
-                                               : std::optional<std::string>{},
-                                       .top_modules = workspace_config.top_modules,
-                                       .index = std::move(semantic_index_config)});
-    if (const auto& root_path = workspace_manager_.state().root_path) {
-        semantic_workspace_.setWorkspaceRoot(toFileUri(*root_path));
-    }
-    else {
-        semantic_workspace_.setWorkspaceRoot({});
+    {
+        std::lock_guard semantic_lock(semantic_mutex_);
+        semantic_workspace_.clear();
+        semantic_workspace_.configureSemanticEngine(
+            analysis::SemanticEngineConfig{.build = workspace_config.build,
+                                           .build_pattern = workspace_config.build_pattern,
+                                           .build_relative_paths = workspace_config.build_relative_paths,
+                                           .flags = workspace_config.flags,
+                                           .workspace_root_uri =
+                                               workspace_manager_.state().root_path.has_value()
+                                                   ? std::optional<std::string>{toFileUri(
+                                                         *workspace_manager_.state().root_path)}
+                                                   : std::optional<std::string>{},
+                                           .top_modules = workspace_config.top_modules,
+                                           .index = std::move(semantic_index_config)});
+        if (const auto& root_path = workspace_manager_.state().root_path) {
+            semantic_workspace_.setWorkspaceRoot(toFileUri(*root_path));
+        }
+        else {
+            semantic_workspace_.setWorkspaceRoot({});
+        }
+        semantic_generation_cache_.store(semantic_workspace_.engineGeneration(), std::memory_order_relaxed);
     }
     indexWorkspaceSources();
     initialized_ = true;
@@ -932,7 +945,7 @@ jsonrpc::Json ServerSession::handleOutline(const jsonrpc::Json& params) {
     const auto outline = compilation_service_.outline(document->text,
                                                       document->uri,
                                                       document->version,
-                                                      semantic_workspace_.engineGeneration(),
+                                                      semantic_generation_cache_.load(std::memory_order_relaxed),
                                                       options);
     return toOutlineResultJson(outline, options.include_children, options.include_flat);
 }
@@ -945,11 +958,15 @@ jsonrpc::Json ServerSession::handleModuleHierarchy(const jsonrpc::Json& params) 
 
     const auto requested_module_name = parseOptionalModuleName(params);
     const auto max_depth = parseMaxDepth(params);
-    const auto hierarchy = semantic_workspace_.engineModuleHierarchy(
-        requested_module_name.has_value()
-            ? std::optional<std::string_view>{std::string_view(*requested_module_name)}
-            : std::optional<std::string_view>{},
-        max_depth);
+    analysis::SemanticModuleHierarchyResult hierarchy;
+    {
+        std::lock_guard semantic_lock(semantic_mutex_);
+        hierarchy = semantic_workspace_.engineModuleHierarchy(
+            requested_module_name.has_value()
+                ? std::optional<std::string_view>{std::string_view(*requested_module_name)}
+                : std::optional<std::string_view>{},
+            max_depth);
+    }
 
     jsonrpc::Json roots = jsonrpc::Json::array();
     jsonrpc::Json messages = jsonrpc::Json::array();
@@ -995,11 +1012,15 @@ jsonrpc::Json ServerSession::handleSchematic(const jsonrpc::Json& params) {
 
     const auto requested_module_name = parseOptionalModuleName(params);
     const auto max_depth = parseMaxDepth(params);
-    const auto schematic = semantic_workspace_.engineSchematic(
-        requested_module_name.has_value()
-            ? std::optional<std::string_view>{std::string_view(*requested_module_name)}
-            : std::optional<std::string_view>{},
-        max_depth);
+    analysis::SemanticSchematicResult schematic;
+    {
+        std::lock_guard semantic_lock(semantic_mutex_);
+        schematic = semantic_workspace_.engineSchematic(
+            requested_module_name.has_value()
+                ? std::optional<std::string_view>{std::string_view(*requested_module_name)}
+                : std::optional<std::string_view>{},
+            max_depth);
+    }
 
     jsonrpc::Json messages = jsonrpc::Json::array();
     jsonrpc::Json modules = jsonrpc::Json::array();
@@ -1050,6 +1071,7 @@ jsonrpc::Json ServerSession::handleBackwardCone(const jsonrpc::Json& params) {
     const auto& position = params.at("position");
     const auto line = position.at("line").get<int>();
     const auto character = position.at("character").get<int>();
+    std::lock_guard semantic_lock(semantic_mutex_);
     return toConeTraceJson(semantic_workspace_.engineBackwardConeAt(uri, line, character));
 }
 
@@ -1065,9 +1087,13 @@ jsonrpc::Json ServerSession::handleHover(const jsonrpc::Json& params) {
         return nullptr;
     }
 
-    const auto semantic_result = semantic_workspace_.engineHoverAt(document->uri,
-                                                                   hover.position.line,
-                                                                   hover.position.character);
+    analysis::SemanticHoverResult semantic_result;
+    {
+        std::lock_guard semantic_lock(semantic_mutex_);
+        semantic_result = semantic_workspace_.engineHoverAt(document->uri,
+                                                            hover.position.line,
+                                                            hover.position.character);
+    }
     if (semantic_result.unresolved || semantic_result.contents.empty()) {
         return nullptr;
     }
@@ -1088,9 +1114,13 @@ jsonrpc::Json ServerSession::handleDefinition(const jsonrpc::Json& params) {
         return nullptr;
     }
 
-    const auto definitions = semantic_workspace_.engineDefinitionsAt(document->uri,
-                                                                     definition.position.line,
-                                                                     definition.position.character);
+    analysis::SemanticReferenceResult definitions;
+    {
+        std::lock_guard semantic_lock(semantic_mutex_);
+        definitions = semantic_workspace_.engineDefinitionsAt(document->uri,
+                                                              definition.position.line,
+                                                              definition.position.character);
+    }
     if (definitions.unresolved || definitions.locations.empty()) {
         return nullptr;
     }
@@ -1115,9 +1145,13 @@ jsonrpc::Json ServerSession::handleTypeDefinition(const jsonrpc::Json& params) {
     }
 
     jsonrpc::Json result = jsonrpc::Json::array();
-    const auto definitions = semantic_workspace_.engineTypeDefinitionsAt(document->uri,
-                                                                         type_definition.position.line,
-                                                                         type_definition.position.character);
+    analysis::SemanticReferenceResult definitions;
+    {
+        std::lock_guard semantic_lock(semantic_mutex_);
+        definitions = semantic_workspace_.engineTypeDefinitionsAt(document->uri,
+                                                                  type_definition.position.line,
+                                                                  type_definition.position.character);
+    }
     if (definitions.unresolved) {
         return result;
     }
@@ -1140,9 +1174,13 @@ jsonrpc::Json ServerSession::handleReferences(const jsonrpc::Json& params) {
     }
 
     jsonrpc::Json result = jsonrpc::Json::array();
-    const auto engine_references = semantic_workspace_.engineReferencesAt(
-        document->uri, references.position.line, references.position.character,
-        references.context.include_declaration);
+    analysis::SemanticReferenceResult engine_references;
+    {
+        std::lock_guard semantic_lock(semantic_mutex_);
+        engine_references = semantic_workspace_.engineReferencesAt(
+            document->uri, references.position.line, references.position.character,
+            references.context.include_declaration);
+    }
     if (engine_references.unresolved) {
         return result;
     }
@@ -1165,9 +1203,13 @@ jsonrpc::Json ServerSession::handleImplementation(const jsonrpc::Json& params) {
     }
 
     jsonrpc::Json result = jsonrpc::Json::array();
-    const auto references = semantic_workspace_.engineImplementationsAt(document->uri,
-                                                                       implementation.position.line,
-                                                                       implementation.position.character);
+    analysis::SemanticReferenceResult references;
+    {
+        std::lock_guard semantic_lock(semantic_mutex_);
+        references = semantic_workspace_.engineImplementationsAt(document->uri,
+                                                                 implementation.position.line,
+                                                                 implementation.position.character);
+    }
     if (references.unresolved) {
         return result;
     }
@@ -1190,9 +1232,13 @@ jsonrpc::Json ServerSession::handleDocumentHighlight(const jsonrpc::Json& params
     }
 
     jsonrpc::Json result = jsonrpc::Json::array();
-    const auto highlights = semantic_workspace_.engineDocumentHighlightsAt(document->uri,
-                                                                          highlight.position.line,
-                                                                          highlight.position.character);
+    analysis::SemanticReferenceResult highlights;
+    {
+        std::lock_guard semantic_lock(semantic_mutex_);
+        highlights = semantic_workspace_.engineDocumentHighlightsAt(document->uri,
+                                                                    highlight.position.line,
+                                                                    highlight.position.character);
+    }
     if (highlights.unresolved) {
         return result;
     }
@@ -1241,12 +1287,16 @@ jsonrpc::Json ServerSession::handleInlayHint(const jsonrpc::Json& params) {
     }
 
     jsonrpc::Json result = jsonrpc::Json::array();
-    const auto engine_hints = semantic_workspace_.engineInlayHints(
-        document->uri,
-        analysis::ParseRange{.start_line = hints.range.start.line,
-                             .start_character = hints.range.start.character,
-                             .end_line = hints.range.end.line,
-                             .end_character = hints.range.end.character});
+    analysis::SemanticInlayHintResult engine_hints;
+    {
+        std::lock_guard semantic_lock(semantic_mutex_);
+        engine_hints = semantic_workspace_.engineInlayHints(
+            document->uri,
+            analysis::ParseRange{.start_line = hints.range.start.line,
+                                 .start_character = hints.range.start.character,
+                                 .end_line = hints.range.end.line,
+                                 .end_character = hints.range.end.character});
+    }
     if (!engine_hints.unresolved && !engine_hints.hints.empty()) {
         for (const auto& hint : engine_hints.hints) {
             result.push_back(toInlayHintJson(hint));
@@ -1262,12 +1312,16 @@ jsonrpc::Json ServerSession::handleCodeAction(const jsonrpc::Json& params) {
     }
 
     const auto action = lsp::parseCodeActionParams(params);
-    const auto actions = semantic_workspace_.engineCodeActionsAt(
-        action.text_document.uri,
-        analysis::ParseRange{.start_line = action.range.start.line,
-                             .start_character = action.range.start.character,
-                             .end_line = action.range.end.line,
-                             .end_character = action.range.end.character});
+    analysis::SemanticCodeActionResult actions;
+    {
+        std::lock_guard semantic_lock(semantic_mutex_);
+        actions = semantic_workspace_.engineCodeActionsAt(
+            action.text_document.uri,
+            analysis::ParseRange{.start_line = action.range.start.line,
+                                 .start_character = action.range.start.character,
+                                 .end_line = action.range.end.line,
+                                 .end_character = action.range.end.character});
+    }
     jsonrpc::Json result = jsonrpc::Json::array();
     for (const auto& item : actions.actions) {
         result.push_back(toCodeActionJson(item, server_name_));
@@ -1303,7 +1357,11 @@ jsonrpc::Json ServerSession::handleSemanticTokensFull(const jsonrpc::Json& param
         return jsonrpc::Json{{"data", jsonrpc::Json::array()}};
     }
 
-    const auto engine_tokens = semantic_workspace_.engineSemanticTokens(document->uri);
+    analysis::SemanticTokenResult engine_tokens;
+    {
+        std::lock_guard semantic_lock(semantic_mutex_);
+        engine_tokens = semantic_workspace_.engineSemanticTokens(document->uri);
+    }
     if (!engine_tokens.unresolved && !engine_tokens.tokens.empty()) {
         std::vector<SemanticToken> tokens;
         for (const auto& token : engine_tokens.tokens) {
@@ -1342,9 +1400,13 @@ jsonrpc::Json ServerSession::handleSelectionRange(const jsonrpc::Json& params) {
 
     jsonrpc::Json result = jsonrpc::Json::array();
     for (const auto& position : selection_range.positions) {
-        const auto engine_selection = semantic_workspace_.engineSelectionRangesAt(document->uri,
-                                                                                  position.line,
-                                                                                  position.character);
+        analysis::SemanticSelectionRangeResult engine_selection;
+        {
+            std::lock_guard semantic_lock(semantic_mutex_);
+            engine_selection = semantic_workspace_.engineSelectionRangesAt(document->uri,
+                                                                          position.line,
+                                                                          position.character);
+        }
         if (!engine_selection.unresolved && !engine_selection.ranges.empty()) {
             result.push_back(toSelectionRangeJson(engine_selection.ranges, 0));
             continue;
@@ -1365,9 +1427,13 @@ jsonrpc::Json ServerSession::handleSignatureHelp(const jsonrpc::Json& params) {
         return nullptr;
     }
 
-    const auto engine_help = semantic_workspace_.engineSignatureHelpAt(document->uri,
-                                                                       signature_help.position.line,
-                                                                       signature_help.position.character);
+    analysis::SemanticSignatureHelpResult engine_help;
+    {
+        std::lock_guard semantic_lock(semantic_mutex_);
+        engine_help = semantic_workspace_.engineSignatureHelpAt(document->uri,
+                                                                signature_help.position.line,
+                                                                signature_help.position.character);
+    }
     if (!engine_help.unresolved && !engine_help.label.empty()) {
         return toSignatureHelpJson(engine_help);
     }
@@ -1380,9 +1446,13 @@ jsonrpc::Json ServerSession::handlePrepareCallHierarchy(const jsonrpc::Json& par
     }
 
     const auto prepare = lsp::parseCallHierarchyPrepareParams(params);
-    const auto prepared = semantic_workspace_.enginePrepareCallHierarchy(prepare.text_document.uri,
-                                                                         prepare.position.line,
-                                                                         prepare.position.character);
+    analysis::SemanticCallHierarchyPrepareResult prepared;
+    {
+        std::lock_guard semantic_lock(semantic_mutex_);
+        prepared = semantic_workspace_.enginePrepareCallHierarchy(prepare.text_document.uri,
+                                                                  prepare.position.line,
+                                                                  prepare.position.character);
+    }
     if (prepared.items.empty()) {
         return nullptr;
     }
@@ -1400,7 +1470,11 @@ jsonrpc::Json ServerSession::handleIncomingCalls(const jsonrpc::Json& params) {
     }
 
     const auto calls = lsp::parseCallHierarchyCallsParams(params);
-    const auto incoming = semantic_workspace_.engineIncomingCalls(toSemanticCallHierarchyItem(calls.item));
+    analysis::SemanticCallHierarchyCallsResult incoming;
+    {
+        std::lock_guard semantic_lock(semantic_mutex_);
+        incoming = semantic_workspace_.engineIncomingCalls(toSemanticCallHierarchyItem(calls.item));
+    }
 
     jsonrpc::Json result = jsonrpc::Json::array();
     for (const auto& call : incoming.calls) {
@@ -1421,7 +1495,11 @@ jsonrpc::Json ServerSession::handleOutgoingCalls(const jsonrpc::Json& params) {
     }
 
     const auto calls = lsp::parseCallHierarchyCallsParams(params);
-    const auto outgoing = semantic_workspace_.engineOutgoingCalls(toSemanticCallHierarchyItem(calls.item));
+    analysis::SemanticCallHierarchyCallsResult outgoing;
+    {
+        std::lock_guard semantic_lock(semantic_mutex_);
+        outgoing = semantic_workspace_.engineOutgoingCalls(toSemanticCallHierarchyItem(calls.item));
+    }
     jsonrpc::Json result = jsonrpc::Json::array();
     for (const auto& call : outgoing.calls) {
         jsonrpc::Json from_ranges = jsonrpc::Json::array();
@@ -1442,7 +1520,11 @@ jsonrpc::Json ServerSession::handleWorkspaceSymbol(const jsonrpc::Json& params) 
 
     const auto workspace_symbol = lsp::parseWorkspaceSymbolParams(params);
     jsonrpc::Json result = jsonrpc::Json::array();
-    const auto symbols = semantic_workspace_.engineWorkspaceSymbols(workspace_symbol.query);
+    analysis::SemanticWorkspaceSymbolResult symbols;
+    {
+        std::lock_guard semantic_lock(semantic_mutex_);
+        symbols = semantic_workspace_.engineWorkspaceSymbols(workspace_symbol.query);
+    }
     for (const auto& symbol : symbols.symbols) {
         result.push_back(jsonrpc::Json{{"name", symbol.name},
                                        {"kind", symbol.kind},
@@ -1467,10 +1549,14 @@ jsonrpc::Json ServerSession::handleCompletion(const jsonrpc::Json& params) {
                                                               completion.position.character);
     jsonrpc::Json result = jsonrpc::Json::array();
     std::set<std::string> emitted_labels;
-    const auto engine_completions = semantic_workspace_.engineCompletionsAt(document->uri,
-                                                                            completion.position.line,
-                                                                            completion.position.character,
-                                                                            prefix);
+    analysis::SemanticCompletionResult engine_completions;
+    {
+        std::lock_guard semantic_lock(semantic_mutex_);
+        engine_completions = semantic_workspace_.engineCompletionsAt(document->uri,
+                                                                     completion.position.line,
+                                                                     completion.position.character,
+                                                                     prefix);
+    }
     if (engine_completions.unresolved) {
         return result;
     }
@@ -1506,7 +1592,11 @@ jsonrpc::Json ServerSession::handleCompletionItemResolve(const jsonrpc::Json& pa
     if (!stable_id.has_value()) {
         return item;
     }
-    const auto resolved = semantic_workspace_.engineResolveCompletion(*stable_id, label);
+    analysis::SemanticCompletionItem resolved;
+    {
+        std::lock_guard semantic_lock(semantic_mutex_);
+        resolved = semantic_workspace_.engineResolveCompletion(*stable_id, label);
+    }
     if (resolved.unresolved) {
         return item;
     }
@@ -1537,9 +1627,13 @@ jsonrpc::Json ServerSession::handlePrepareRename(const jsonrpc::Json& params) {
         return nullptr;
     }
 
-    const auto engine_prepare = semantic_workspace_.enginePrepareRenameAt(document->uri,
-                                                                          prepare.position.line,
-                                                                          prepare.position.character);
+    analysis::SemanticPrepareRenameResult engine_prepare;
+    {
+        std::lock_guard semantic_lock(semantic_mutex_);
+        engine_prepare = semantic_workspace_.enginePrepareRenameAt(document->uri,
+                                                                   prepare.position.line,
+                                                                   prepare.position.character);
+    }
     if (engine_prepare.unresolved) {
         return nullptr;
     }
@@ -1563,10 +1657,14 @@ jsonrpc::Json ServerSession::handleRename(const jsonrpc::Json& params) {
         return nullptr;
     }
 
-    const auto engine_rename = semantic_workspace_.engineRenameAt(document->uri,
-                                                                  rename.position.line,
-                                                                  rename.position.character,
-                                                                  rename.new_name);
+    analysis::SemanticRenameResult engine_rename;
+    {
+        std::lock_guard semantic_lock(semantic_mutex_);
+        engine_rename = semantic_workspace_.engineRenameAt(document->uri,
+                                                           rename.position.line,
+                                                           rename.position.character,
+                                                           rename.new_name);
+    }
     if (engine_rename.unresolved || engine_rename.edits.empty()) {
         return nullptr;
     }
@@ -1590,6 +1688,7 @@ jsonrpc::Json ServerSession::handleRename(const jsonrpc::Json& params) {
 }
 
 jsonrpc::Json ServerSession::handleShutdown(const jsonrpc::Json&) {
+    stopBackgroundDiagnostics();
     shutdown_requested_ = true;
     return nullptr;
 }
@@ -1603,7 +1702,10 @@ void ServerSession::handleDidOpen(const jsonrpc::Json& params) {
     }
 
     const auto did_open = lsp::parseDidOpenTextDocumentParams(params);
-    document_store_.open(did_open);
+    {
+        std::lock_guard state_lock(state_mutex_);
+        document_store_.open(did_open);
+    }
     updateSemanticDocument(did_open.text_document.uri,
                            did_open.text_document.text,
                            analysis::SemanticDocumentState{.version = did_open.text_document.version,
@@ -1620,13 +1722,26 @@ void ServerSession::handleDidChange(const jsonrpc::Json& params) {
     }
 
     const auto did_change = lsp::parseDidChangeTextDocumentParams(params);
-    document_store_.applyChanges(did_change);
-    if (const auto* document = document_store_.find(did_change.text_document.uri)) {
-        updateSemanticDocument(document->uri,
-                               document->text,
-                               analysis::SemanticDocumentState{.version = document->version,
+    std::string document_uri;
+    std::string document_text;
+    int document_version = -1;
+    bool document_dirty = false;
+    {
+        std::lock_guard state_lock(state_mutex_);
+        document_store_.applyChanges(did_change);
+        if (const auto* document = document_store_.find(did_change.text_document.uri)) {
+            document_uri = document->uri;
+            document_text = document->text;
+            document_version = document->version;
+            document_dirty = document->dirty;
+        }
+    }
+    if (!document_uri.empty()) {
+        updateSemanticDocument(document_uri,
+                               document_text,
+                               analysis::SemanticDocumentState{.version = document_version,
                                                                .is_open = true,
-                                                               .dirty = document->dirty,
+                                                               .dirty = document_dirty,
                                                                .invalidate_dependents = true});
     }
     publishDiagnostics(did_change.text_document.uri);
@@ -1638,13 +1753,26 @@ void ServerSession::handleDidSave(const jsonrpc::Json& params) {
     }
 
     const auto did_save = lsp::parseDidSaveTextDocumentParams(params);
-    document_store_.save(did_save);
-    if (const auto* document = document_store_.find(did_save.text_document.uri)) {
-        updateSemanticDocument(document->uri,
-                               document->text,
-                               analysis::SemanticDocumentState{.version = document->version,
+    std::string document_uri;
+    std::string document_text;
+    int document_version = -1;
+    bool document_dirty = false;
+    {
+        std::lock_guard state_lock(state_mutex_);
+        document_store_.save(did_save);
+        if (const auto* document = document_store_.find(did_save.text_document.uri)) {
+            document_uri = document->uri;
+            document_text = document->text;
+            document_version = document->version;
+            document_dirty = document->dirty;
+        }
+    }
+    if (!document_uri.empty()) {
+        updateSemanticDocument(document_uri,
+                               document_text,
+                               analysis::SemanticDocumentState{.version = document_version,
                                                                .is_open = true,
-                                                               .dirty = document->dirty,
+                                                               .dirty = document_dirty,
                                                                .invalidate_dependents = true});
     }
     publishDiagnostics(did_save.text_document.uri);
@@ -1657,7 +1785,10 @@ void ServerSession::handleDidClose(const jsonrpc::Json& params) {
 
     const auto did_close = lsp::parseDidCloseTextDocumentParams(params);
     clearDiagnostics(did_close.text_document.uri);
-    document_store_.close(did_close);
+    {
+        std::lock_guard state_lock(state_mutex_);
+        document_store_.close(did_close);
+    }
     restoreClosedDocument(did_close.text_document.uri);
 }
 
@@ -1710,6 +1841,7 @@ void ServerSession::handleDidChangeWatchedFiles(const jsonrpc::Json& params) {
 }
 
 void ServerSession::handleExit(const jsonrpc::Json&) {
+    stopBackgroundDiagnostics();
     if (!server_) {
         return;
     }
@@ -1731,7 +1863,9 @@ void ServerSession::indexWorkspaceSources() {
 void ServerSession::updateSemanticDocument(std::string_view uri,
                                            std::string_view text,
                                            analysis::SemanticDocumentState semantic_state) {
+    std::lock_guard semantic_lock(semantic_mutex_);
     semantic_workspace_.updateDocument(uri, text, semantic_state);
+    semantic_generation_cache_.store(semantic_workspace_.engineGeneration(), std::memory_order_relaxed);
 }
 
 void ServerSession::restoreClosedDocument(std::string_view uri) {
@@ -1762,7 +1896,9 @@ void ServerSession::restoreClosedDocument(std::string_view uri) {
 }
 
 void ServerSession::removeSemanticDocument(std::string_view uri) {
+    std::lock_guard semantic_lock(semantic_mutex_);
     semantic_workspace_.removeDocument(uri);
+    semantic_generation_cache_.store(semantic_workspace_.engineGeneration(), std::memory_order_relaxed);
 }
 
 void ServerSession::publishDiagnostics(std::string_view uri) {
@@ -1771,23 +1907,190 @@ void ServerSession::publishDiagnostics(std::string_view uri) {
         return;
     }
 
-    const auto* document = document_store_.find(uri);
-    if (!document) {
-        return;
+    std::string document_uri;
+    std::string document_text;
+    {
+        std::lock_guard state_lock(state_mutex_);
+        const auto* document = document_store_.find(uri);
+        if (!document) {
+            return;
+        }
+        document_uri = document->uri;
+        document_text = document->text;
     }
 
     jsonrpc::Json diagnostics = jsonrpc::Json::array();
-    for (const auto& diagnostic : semantic_workspace_.engineDiagnosticsFor(document->uri)) {
-        diagnostics.push_back(makeDiagnosticJson(diagnostic.range,
-                                                 diagnostic.severity,
-                                                 diagnostic.code,
-                                                 server_name_,
-                                                 diagnostic.message));
+    bool syntax_first = false;
+    {
+        std::lock_guard semantic_lock(semantic_mutex_);
+        syntax_first = semantic_workspace_.documentCount() > kSyntaxFirstDiagnosticsDocumentThreshold &&
+                       !semantic_workspace_.engineHasFreshSnapshot();
+    }
+    if (syntax_first) {
+        PRISTINE_DEBUG_TRACE_SCOPE("server.publishDiagnostics.syntaxFastPath", document_uri);
+        for (const auto& diagnostic : compilation_service_.parse(document_text, document_uri).diagnostics) {
+            diagnostics.push_back(makeDiagnosticJson(diagnostic.range,
+                                                     diagnostic.severity,
+                                                     diagnostic.code,
+                                                     server_name_,
+                                                     diagnostic.message));
+        }
+    }
+    else {
+        std::vector<analysis::SemanticEngineDiagnostic> semantic_diagnostics;
+        {
+            std::lock_guard semantic_lock(semantic_mutex_);
+            semantic_diagnostics = semantic_workspace_.engineDiagnosticsFor(document_uri);
+        }
+        for (const auto& diagnostic : semantic_diagnostics) {
+            diagnostics.push_back(makeDiagnosticJson(diagnostic.range,
+                                                     diagnostic.severity,
+                                                     diagnostic.code,
+                                                     server_name_,
+                                                     diagnostic.message));
+        }
     }
 
     server_->sendNotification("textDocument/publishDiagnostics",
-                              jsonrpc::Json{{"uri", document->uri},
+                              jsonrpc::Json{{"uri", document_uri},
                                             {"diagnostics", std::move(diagnostics)}});
+    if (syntax_first) {
+        scheduleSemanticDiagnosticsPublish();
+    }
+}
+
+void ServerSession::publishDiagnostics(std::string_view uri,
+                                       std::vector<analysis::SemanticEngineDiagnostic> diagnostics) {
+    if (!server_) {
+        return;
+    }
+
+    jsonrpc::Json diagnostics_json = jsonrpc::Json::array();
+    for (const auto& diagnostic : diagnostics) {
+        diagnostics_json.push_back(makeDiagnosticJson(diagnostic.range,
+                                                      diagnostic.severity,
+                                                      diagnostic.code,
+                                                      server_name_,
+                                                      diagnostic.message));
+    }
+
+    server_->sendNotification("textDocument/publishDiagnostics",
+                              jsonrpc::Json{{"uri", std::string(uri)},
+                                            {"diagnostics", std::move(diagnostics_json)}});
+}
+
+void ServerSession::scheduleSemanticDiagnosticsPublish() {
+    struct OpenDocument {
+        std::string uri;
+        int version = -1;
+    };
+
+    std::vector<OpenDocument> open_documents;
+    {
+        std::lock_guard state_lock(state_mutex_);
+        for (const auto& [uri, document] : document_store_.documents()) {
+            open_documents.push_back(OpenDocument{.uri = uri, .version = document.version});
+        }
+    }
+    std::sort(open_documents.begin(), open_documents.end(), [](const OpenDocument& lhs,
+                                                               const OpenDocument& rhs) {
+        return lhs.uri < rhs.uri;
+    });
+    if (open_documents.empty()) {
+        return;
+    }
+
+    std::uint64_t semantic_generation = 0;
+    {
+        std::lock_guard semantic_lock(semantic_mutex_);
+        semantic_generation = semantic_workspace_.engineGeneration();
+    }
+
+    std::uint64_t request_generation = 0;
+    std::thread previous_thread;
+    {
+        std::lock_guard background_lock(background_mutex_);
+        request_generation = ++diagnostics_request_generation_;
+        diagnostics_stop_requested_ = false;
+        if (diagnostics_thread_.joinable()) {
+            previous_thread = std::move(diagnostics_thread_);
+        }
+    }
+    if (previous_thread.joinable()) {
+        previous_thread.join();
+    }
+
+    std::thread next_thread([this,
+                             request_generation,
+                             semantic_generation,
+                             open_documents = std::move(open_documents)]() {
+        try {
+            PRISTINE_DEBUG_TRACE_SCOPE_SIMPLE("server.backgroundDiagnostics");
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            for (const auto& document : open_documents) {
+                {
+                    std::lock_guard background_lock(background_mutex_);
+                    if (diagnostics_stop_requested_ ||
+                        request_generation != diagnostics_request_generation_) {
+                        return;
+                    }
+                }
+
+                std::vector<analysis::SemanticEngineDiagnostic> diagnostics;
+                {
+                    std::lock_guard semantic_lock(semantic_mutex_);
+                    diagnostics = semantic_workspace_.engineDiagnosticsFor(document.uri);
+                }
+
+                {
+                    std::lock_guard background_lock(background_mutex_);
+                    if (diagnostics_stop_requested_ ||
+                        request_generation != diagnostics_request_generation_) {
+                        return;
+                    }
+                }
+                {
+                    std::lock_guard semantic_lock(semantic_mutex_);
+                    if (semantic_workspace_.engineGeneration() != semantic_generation) {
+                        continue;
+                    }
+                }
+                {
+                    std::lock_guard state_lock(state_mutex_);
+                    const auto* current_document = document_store_.find(document.uri);
+                    if (!current_document || current_document->version != document.version) {
+                        continue;
+                    }
+                }
+                publishDiagnostics(document.uri, std::move(diagnostics));
+            }
+        }
+        catch (const std::exception& error) {
+            analysis::semantic::debugTraceInstant("server.backgroundDiagnostics.error", error.what());
+        }
+        catch (...) {
+            analysis::semantic::debugTraceInstant("server.backgroundDiagnostics.error", "unknown");
+        }
+    });
+    {
+        std::lock_guard background_lock(background_mutex_);
+        diagnostics_thread_ = std::move(next_thread);
+    }
+}
+
+void ServerSession::stopBackgroundDiagnostics() {
+    std::thread previous_thread;
+    {
+        std::lock_guard background_lock(background_mutex_);
+        diagnostics_stop_requested_ = true;
+        ++diagnostics_request_generation_;
+        if (diagnostics_thread_.joinable()) {
+            previous_thread = std::move(diagnostics_thread_);
+        }
+    }
+    if (previous_thread.joinable()) {
+        previous_thread.join();
+    }
 }
 
 void ServerSession::clearDiagnostics(std::string_view uri) {

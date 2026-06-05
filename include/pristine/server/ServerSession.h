@@ -7,7 +7,11 @@
 
 #include <nlohmann/json.hpp>
 
+#include <atomic>
+#include <mutex>
 #include <string>
+#include <thread>
+#include <vector>
 
 namespace pristine::jsonrpc {
 class JsonRpcServer;
@@ -19,6 +23,7 @@ namespace pristine::server {
 class ServerSession {
 public:
     ServerSession(std::string server_name, std::string server_version);
+    ~ServerSession();
 
     void bind(jsonrpc::JsonRpcServer& server);
 
@@ -68,6 +73,9 @@ private:
     void restoreClosedDocument(std::string_view uri);
     void removeSemanticDocument(std::string_view uri);
     void publishDiagnostics(std::string_view uri);
+    void publishDiagnostics(std::string_view uri, std::vector<analysis::SemanticEngineDiagnostic> diagnostics);
+    void scheduleSemanticDiagnosticsPublish();
+    void stopBackgroundDiagnostics();
     void clearDiagnostics(std::string_view uri);
 
     std::string server_name_;
@@ -79,6 +87,13 @@ private:
     analysis::SemanticWorkspace semantic_workspace_;
     document::DocumentStore document_store_;
     workspace::WorkspaceManager workspace_manager_;
+    std::atomic<std::uint64_t> semantic_generation_cache_ = 0;
+    mutable std::mutex state_mutex_;
+    mutable std::mutex semantic_mutex_;
+    std::mutex background_mutex_;
+    std::thread diagnostics_thread_;
+    std::uint64_t diagnostics_request_generation_ = 0;
+    bool diagnostics_stop_requested_ = false;
 };
 
 } // namespace pristine::server

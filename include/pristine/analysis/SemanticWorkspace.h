@@ -106,6 +106,7 @@ public:
     [[nodiscard]] SemanticWorkspaceSymbolResult engineWorkspaceSymbols(std::string_view query,
                                                                        size_t limit = 1000) const;
     [[nodiscard]] std::uint64_t engineGeneration() const { return semantic_engine_.generation(); }
+    [[nodiscard]] bool engineHasFreshSnapshot() const { return semantic_engine_.hasFreshSnapshot(); }
     [[nodiscard]] size_t documentCount() const { return documents_.size(); }
 
 private:

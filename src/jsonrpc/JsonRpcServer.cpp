@@ -31,7 +31,10 @@ void JsonRpcServer::registerNotificationHandler(std::string method, Notification
 }
 
 int JsonRpcServer::run(transport::MessageTransport& transport) {
-    active_transport_ = &transport;
+    {
+        std::lock_guard lock(write_mutex_);
+        active_transport_ = &transport;
+    }
     while (!stop_requested_) {
         auto payload = transport.read();
         if (!payload.has_value()) {
@@ -41,7 +44,10 @@ int JsonRpcServer::run(transport::MessageTransport& transport) {
         handleIncoming(transport, payload.value());
     }
 
-    active_transport_ = nullptr;
+    {
+        std::lock_guard lock(write_mutex_);
+        active_transport_ = nullptr;
+    }
 
     return exit_code_;
 }
@@ -52,6 +58,7 @@ void JsonRpcServer::requestStop(int exit_code) {
 }
 
 void JsonRpcServer::sendNotification(std::string method, Json params) {
+    std::lock_guard lock(write_mutex_);
     if (!active_transport_) {
         throw std::runtime_error("Cannot send a notification when no transport is active");
     }
@@ -66,12 +73,16 @@ void JsonRpcServer::handleIncoming(transport::MessageTransport& transport,
         message = Json::parse(payload);
     }
     catch (const std::exception& exception) {
-        transport.write(makeErrorResponse(nullptr, kParseError, exception.what()).dump());
+        auto response = makeErrorResponse(nullptr, kParseError, exception.what()).dump();
+        std::lock_guard lock(write_mutex_);
+        transport.write(response);
         return;
     }
 
     if (!message.is_object()) {
-        transport.write(makeErrorResponse(nullptr, kInvalidRequest, "Expected a JSON object").dump());
+        auto response = makeErrorResponse(nullptr, kInvalidRequest, "Expected a JSON object").dump();
+        std::lock_guard lock(write_mutex_);
+        transport.write(response);
         return;
     }
 
@@ -81,7 +92,9 @@ void JsonRpcServer::handleIncoming(transport::MessageTransport& transport,
 
     if (method_it == message.end() || !method_it->is_string()) {
         if (has_id) {
-            transport.write(makeErrorResponse(message_id, kInvalidRequest, "Missing method").dump());
+            auto response = makeErrorResponse(message_id, kInvalidRequest, "Missing method").dump();
+            std::lock_guard lock(write_mutex_);
+            transport.write(response);
         }
         return;
     }
@@ -92,17 +105,23 @@ void JsonRpcServer::handleIncoming(transport::MessageTransport& transport,
     if (has_id) {
         auto handler_it = request_handlers_.find(method);
         if (handler_it == request_handlers_.end()) {
-            transport.write(
+            auto response =
                 makeErrorResponse(message_id, kMethodNotFound, "Method not found: " + method)
-                    .dump());
+                    .dump();
+            std::lock_guard lock(write_mutex_);
+            transport.write(response);
             return;
         }
 
         try {
-            transport.write(makeResponse(message_id, handler_it->second(params)).dump());
+            auto response = makeResponse(message_id, handler_it->second(params)).dump();
+            std::lock_guard lock(write_mutex_);
+            transport.write(response);
         }
         catch (const std::exception& exception) {
-            transport.write(makeErrorResponse(message_id, kInternalError, exception.what()).dump());
+            auto response = makeErrorResponse(message_id, kInternalError, exception.what()).dump();
+            std::lock_guard lock(write_mutex_);
+            transport.write(response);
         }
         return;
     }
