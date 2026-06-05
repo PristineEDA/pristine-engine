@@ -2,6 +2,7 @@
 
 #include "pristine/analysis/CompilationService.h"
 #include "pristine/analysis/SemanticWorkspace.h"
+#include "pristine/analysis/SyntaxDocumentCache.h"
 #include "pristine/document/DocumentStore.h"
 #include "pristine/workspace/WorkspaceManager.h"
 
@@ -77,6 +78,8 @@ private:
     void scheduleSemanticDiagnosticsPublish();
     void stopBackgroundDiagnostics();
     void clearDiagnostics(std::string_view uri);
+    const std::vector<analysis::DocumentSymbol>& cachedDocumentSymbols(const document::TextDocument& document);
+    void invalidateSyntaxCache(std::string_view uri);
 
     std::string server_name_;
     std::string server_version_;
@@ -84,6 +87,7 @@ private:
     bool shutdown_requested_ = false;
     jsonrpc::JsonRpcServer* server_ = nullptr;
     analysis::CompilationService compilation_service_;
+    analysis::SyntaxDocumentCache syntax_cache_;
     analysis::SemanticWorkspace semantic_workspace_;
     document::DocumentStore document_store_;
     workspace::WorkspaceManager workspace_manager_;

@@ -16,6 +16,7 @@ add_executable(
 	unit/SnapshotBuilderTests.cpp
 	unit/SemanticWorkspaceTests.cpp
 	unit/SourceUtilTests.cpp
+	unit/SyntaxDocumentCacheTests.cpp
 	unit/ServerLifecycleTests.cpp
 	unit/WorkspaceDiscoveryIndexTests.cpp)
 target_link_libraries(pristine_unit_tests PRIVATE pristine_core Catch2::Catch2WithMain)

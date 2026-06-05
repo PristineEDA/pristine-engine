@@ -170,6 +170,7 @@ add_library(
   src/analysis/SemanticEngine.cpp
   src/analysis/SemanticWorkspace.cpp
   src/analysis/SourceUtil.cpp
+  src/analysis/SyntaxDocumentCache.cpp
   src/analysis/semantic/AstIndex.cpp
   src/analysis/semantic/CodeActionProvider.cpp
   src/analysis/semantic/CompletionProvider.cpp

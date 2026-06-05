@@ -896,6 +896,7 @@ jsonrpc::Json ServerSession::handleInitialize(const jsonrpc::Json& params) {
         }
         semantic_generation_cache_.store(semantic_workspace_.engineGeneration(), std::memory_order_relaxed);
     }
+    syntax_cache_.clear();
     indexWorkspaceSources();
     initialized_ = true;
     shutdown_requested_ = false;
@@ -915,7 +916,7 @@ jsonrpc::Json ServerSession::handleDocumentSymbol(const jsonrpc::Json& params) {
     }
 
     jsonrpc::Json result = jsonrpc::Json::array();
-    for (const auto& symbol : compilation_service_.documentSymbols(document->text, document->uri)) {
+    for (const auto& symbol : cachedDocumentSymbols(*document)) {
         result.push_back(toDocumentSymbolJson(symbol));
     }
 
@@ -1369,7 +1370,7 @@ jsonrpc::Json ServerSession::handleFoldingRange(const jsonrpc::Json& params) {
     }
 
     jsonrpc::Json result = jsonrpc::Json::array();
-    collectFoldingRanges(result, compilation_service_.documentSymbols(document->text, document->uri));
+    collectFoldingRanges(result, cachedDocumentSymbols(*document));
     return result;
 }
 
@@ -1410,7 +1411,7 @@ jsonrpc::Json ServerSession::handleSemanticTokensFull(const jsonrpc::Json& param
     }
 
     std::vector<SemanticToken> tokens;
-    collectSemanticTokens(tokens, compilation_service_.documentSymbols(document->text, document->uri));
+    collectSemanticTokens(tokens, cachedDocumentSymbols(*document));
     return toSemanticTokensJson(std::move(tokens));
 }
 
@@ -1733,6 +1734,7 @@ void ServerSession::handleDidOpen(const jsonrpc::Json& params) {
         std::lock_guard state_lock(state_mutex_);
         document_store_.open(did_open);
     }
+    invalidateSyntaxCache(did_open.text_document.uri);
     updateSemanticDocument(did_open.text_document.uri,
                            did_open.text_document.text,
                            analysis::SemanticDocumentState{.version = did_open.text_document.version,
@@ -1763,6 +1765,7 @@ void ServerSession::handleDidChange(const jsonrpc::Json& params) {
             document_dirty = document->dirty;
         }
     }
+    invalidateSyntaxCache(did_change.text_document.uri);
     if (!document_uri.empty()) {
         updateSemanticDocument(document_uri,
                                document_text,
@@ -1794,6 +1797,7 @@ void ServerSession::handleDidSave(const jsonrpc::Json& params) {
             document_dirty = document->dirty;
         }
     }
+    invalidateSyntaxCache(did_save.text_document.uri);
     if (!document_uri.empty()) {
         updateSemanticDocument(document_uri,
                                document_text,
@@ -1816,6 +1820,7 @@ void ServerSession::handleDidClose(const jsonrpc::Json& params) {
         std::lock_guard state_lock(state_mutex_);
         document_store_.close(did_close);
     }
+    invalidateSyntaxCache(did_close.text_document.uri);
     restoreClosedDocument(did_close.text_document.uri);
 }
 
@@ -1832,6 +1837,7 @@ void ServerSession::handleDidChangeWatchedFiles(const jsonrpc::Json& params) {
         }
 
         if (change.type == lsp::FileChangeType::Deleted) {
+            invalidateSyntaxCache(change.uri);
             removeSemanticDocument(change.uri);
             continue;
         }
@@ -1848,12 +1854,14 @@ void ServerSession::handleDidChangeWatchedFiles(const jsonrpc::Json& params) {
 
         std::error_code error;
         if (!fs::exists(*path, error) || !fs::is_regular_file(*path, error)) {
+            invalidateSyntaxCache(change.uri);
             removeSemanticDocument(change.uri);
             continue;
         }
 
         const auto text = readFileText(*path);
         if (!text.has_value()) {
+            invalidateSyntaxCache(change.uri);
             removeSemanticDocument(change.uri);
             continue;
         }
@@ -1893,6 +1901,18 @@ void ServerSession::updateSemanticDocument(std::string_view uri,
     std::lock_guard semantic_lock(semantic_mutex_);
     semantic_workspace_.updateDocument(uri, text, semantic_state);
     semantic_generation_cache_.store(semantic_workspace_.engineGeneration(), std::memory_order_relaxed);
+}
+
+const std::vector<analysis::DocumentSymbol>&
+ServerSession::cachedDocumentSymbols(const document::TextDocument& document) {
+    return syntax_cache_.documentSymbols(compilation_service_,
+                                         document.uri,
+                                         document.version,
+                                         document.text);
+}
+
+void ServerSession::invalidateSyntaxCache(std::string_view uri) {
+    syntax_cache_.invalidate(uri);
 }
 
 void ServerSession::restoreClosedDocument(std::string_view uri) {
