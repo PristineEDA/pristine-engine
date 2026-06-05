@@ -111,6 +111,26 @@ jobs:
       - name: Bootstrap dependencies
         run: cmake -DPRISTINE_ROOT_DIR=. -P scripts/bootstrap_deps.cmake
 
+      - name: Install clang on Ubuntu 22.04
+        if: runner.os == 'Linux' && matrix.runs_on == 'ubuntu-22.04'
+        shell: bash
+        run: |
+          existing_clang="$(
+            compgen -c clang++- |
+              sed -n 's/^clang++-\([0-9][0-9]*\)$/\1/p' |
+              sort -nr |
+              awk '$1 >= 16 { print "clang++-" $1; exit }'
+          )"
+          if [ -n "$existing_clang" ]; then
+            "$existing_clang" --version
+            exit 0
+          fi
+
+          curl -fsSL https://apt.llvm.org/llvm.sh -o llvm.sh
+          chmod +x llvm.sh
+          sudo ./llvm.sh 21
+          clang++-21 --version
+
       - name: Resolve C++ compiler
         id: compiler
         run: |
@@ -125,7 +145,7 @@ jobs:
               }
             }
 
-            if ($null -eq $defaultMajor -or $defaultMajor -lt 15) {
+            if ($null -eq $defaultMajor -or $defaultMajor -lt 16) {
               $candidates = @()
               foreach ($command in (Get-Command 'clang++-*' -ErrorAction SilentlyContinue)) {
                 if ($command.Name -match '^clang\+\+-(\d+)$') {
@@ -137,16 +157,16 @@ jobs:
               }
 
               $selected = $candidates |
-                Where-Object { $_.Major -ge 15 } |
-                Sort-Object Major |
+                Where-Object { $_.Major -ge 16 } |
+                Sort-Object Major -Descending |
                 Select-Object -First 1
 
               if ($selected) {
                 $compiler = $selected.Name
-                Write-Host "Default clang++ is too old for std::source_location support: $defaultVersionLine"
+                Write-Host "Default clang++ is too old for slang C++20 ranges support: $defaultVersionLine"
               }
               elseif ($defaultVersionLine) {
-                throw "Ubuntu clang++ must be version 15 or newer for std::source_location support; found: $defaultVersionLine"
+                throw "Ubuntu clang++ must be version 16 or newer for slang C++20 ranges support; found: $defaultVersionLine"
               }
               else {
                 throw 'matrix.cxx_compiler requested clang++, but clang++ was not found'
