@@ -1010,7 +1010,8 @@ std::string makeHoverContents(const DocumentSymbol& symbol) {
 
 std::vector<DocumentSymbol> collectMemberSymbols(const slang::SourceManager& source_manager,
                                                  std::string_view text,
-                                                 std::span<slang::syntax::MemberSyntax* const> members);
+                                                 std::span<slang::syntax::MemberSyntax* const> members,
+                                                 bool include_metadata);
 
 void collectModuleInstantiations(std::vector<ModuleInstantiation>& result,
                                  const slang::SourceManager& source_manager,
@@ -1024,18 +1025,20 @@ void appendNodeModuleInstantiations(std::vector<ModuleInstantiation>& result,
 
 std::optional<DocumentSymbol> toDocumentSymbol(const slang::SourceManager& source_manager,
                                                std::string_view text,
-                                               const slang::syntax::MemberSyntax& member);
+                                               const slang::syntax::MemberSyntax& member,
+                                               bool include_metadata);
 
 template<typename TDeclaratorRange>
 std::vector<DocumentSymbol> collectDeclaratorSymbols(const slang::SourceManager& source_manager,
                                                      std::string_view text,
                                                      const TDeclaratorRange& declarators,
                                                      int kind,
+                                                     bool include_metadata,
                                                      std::string_view type_text = {}) {
     std::vector<DocumentSymbol> result;
     for (const auto* declarator : declarators) {
         OutlineMetadata metadata;
-        if (!type_text.empty()) {
+        if (include_metadata && !type_text.empty()) {
             metadata = makeTypedMetadata(std::string(type_text), *declarator, declarator);
         }
         result.push_back(makeDocumentSymbol(
@@ -1051,17 +1054,20 @@ template<typename TDeclaratorRange>
 std::vector<DocumentSymbol> collectTypeAssignmentSymbols(
     const slang::SourceManager& source_manager,
     std::string_view text,
-    const TDeclaratorRange& declarators) {
+    const TDeclaratorRange& declarators,
+    bool include_metadata) {
     std::vector<DocumentSymbol> result;
     for (const auto* declarator : declarators) {
         OutlineMetadata metadata;
-        metadata.declaration = normalizeOutlineText(declarator->toString());
-        if (declarator->assignment) {
-            metadata.type = normalizeOutlineText(declarator->assignment->type->toString());
-            metadata.detail = "type = " + metadata.type;
-        }
-        else {
-            metadata.detail = "type";
+        if (include_metadata) {
+            metadata.declaration = normalizeOutlineText(declarator->toString());
+            if (declarator->assignment) {
+                metadata.type = normalizeOutlineText(declarator->assignment->type->toString());
+                metadata.detail = "type = " + metadata.type;
+            }
+            else {
+                metadata.detail = "type";
+            }
         }
         result.push_back(makeDocumentSymbol(
             std::string(declarator->name.valueText()), 26,
@@ -1074,7 +1080,8 @@ std::vector<DocumentSymbol> collectTypeAssignmentSymbols(
 
 std::vector<DocumentSymbol> collectParameterSymbols(const slang::SourceManager& source_manager,
                                                     std::string_view text,
-                                                    const slang::syntax::ParameterDeclarationBaseSyntax& parameter) {
+                                                    const slang::syntax::ParameterDeclarationBaseSyntax& parameter,
+                                                    bool include_metadata) {
     switch (parameter.kind) {
         case slang::syntax::SyntaxKind::ParameterDeclaration: {
             const auto& declaration = parameter.as<slang::syntax::ParameterDeclarationSyntax>();
@@ -1082,11 +1089,12 @@ std::vector<DocumentSymbol> collectParameterSymbols(const slang::SourceManager& 
                                             text,
                                             declaration.declarators,
                                             14,
+                                            include_metadata,
                                             normalizeOutlineText(declaration.type->toString()));
         }
         case slang::syntax::SyntaxKind::TypeParameterDeclaration: {
             const auto& declaration = parameter.as<slang::syntax::TypeParameterDeclarationSyntax>();
-            return collectTypeAssignmentSymbols(source_manager, text, declaration.declarators);
+            return collectTypeAssignmentSymbols(source_manager, text, declaration.declarators, include_metadata);
         }
         default:
             return {};
@@ -1096,14 +1104,15 @@ std::vector<DocumentSymbol> collectParameterSymbols(const slang::SourceManager& 
 std::vector<DocumentSymbol> collectHeaderParameterSymbols(
     const slang::SourceManager& source_manager,
     std::string_view text,
-    const slang::syntax::ModuleHeaderSyntax& header) {
+    const slang::syntax::ModuleHeaderSyntax& header,
+    bool include_metadata) {
     std::vector<DocumentSymbol> result;
     if (!header.parameters) {
         return result;
     }
 
     for (const auto* declaration : header.parameters->declarations) {
-        auto symbols = collectParameterSymbols(source_manager, text, *declaration);
+        auto symbols = collectParameterSymbols(source_manager, text, *declaration, include_metadata);
         result.insert(result.end(), std::make_move_iterator(symbols.begin()),
                       std::make_move_iterator(symbols.end()));
     }
@@ -1114,21 +1123,25 @@ std::vector<DocumentSymbol> collectHeaderParameterSymbols(
 void appendMemberSymbols(std::vector<DocumentSymbol>& result,
                          const slang::SourceManager& source_manager,
                          std::string_view text,
-                         const slang::syntax::MemberSyntax& member);
+                         const slang::syntax::MemberSyntax& member,
+                         bool include_metadata);
 
 void appendNodeSymbols(std::vector<DocumentSymbol>& result,
                        const slang::SourceManager& source_manager,
                        std::string_view text,
-                       const slang::syntax::SyntaxNode& node) {
+                       const slang::syntax::SyntaxNode& node,
+                       bool include_metadata) {
     if (slang::syntax::MemberSyntax::isKind(node.kind)) {
         appendMemberSymbols(result, source_manager, text,
-                            static_cast<const slang::syntax::MemberSyntax&>(node));
+                            static_cast<const slang::syntax::MemberSyntax&>(node),
+                            include_metadata);
     }
 }
 
 std::vector<DocumentSymbol> collectHeaderPortSymbols(const slang::SourceManager& source_manager,
                                                      std::string_view text,
-                                                     const slang::syntax::ModuleHeaderSyntax& header) {
+                                                     const slang::syntax::ModuleHeaderSyntax& header,
+                                                     bool include_metadata) {
     std::vector<DocumentSymbol> result;
     if (!header.ports || header.ports->kind != slang::syntax::SyntaxKind::AnsiPortList) {
         return result;
@@ -1136,7 +1149,7 @@ std::vector<DocumentSymbol> collectHeaderPortSymbols(const slang::SourceManager&
 
     const auto& ports = header.ports->as<slang::syntax::AnsiPortListSyntax>();
     for (const auto* port : ports.ports) {
-        appendMemberSymbols(result, source_manager, text, *port);
+        appendMemberSymbols(result, source_manager, text, *port, include_metadata);
     }
 
     return result;
@@ -1146,7 +1159,7 @@ std::vector<std::string> collectHeaderPortNames(const slang::SourceManager& sour
                                                 std::string_view text,
                                                 const slang::syntax::ModuleHeaderSyntax& header) {
     std::vector<std::string> result;
-    for (const auto& symbol : collectHeaderPortSymbols(source_manager, text, header)) {
+    for (const auto& symbol : collectHeaderPortSymbols(source_manager, text, header, false)) {
         result.push_back(symbol.name);
     }
     return result;
@@ -1338,7 +1351,8 @@ void collectMemberPortDeclarations(std::vector<SchematicPort>& result,
 
 std::vector<DocumentSymbol> collectModportSymbols(const slang::SourceManager& source_manager,
                                                   std::string_view text,
-                                                  const slang::syntax::AnsiPortListSyntax& ports) {
+                                                  const slang::syntax::AnsiPortListSyntax& ports,
+                                                  bool include_metadata) {
     std::vector<DocumentSymbol> result;
     for (const auto* port : ports.ports) {
         switch (port->kind) {
@@ -1352,7 +1366,8 @@ std::vector<DocumentSymbol> collectModportSymbols(const slang::SourceManager& so
                                 std::string(named.name.valueText()), 13,
                                 toParseRange(source_manager, text, named.sourceRange()),
                                 toParseRange(source_manager, text, named.name.range()),
-                                makeDirectedMetadata(list.direction.toString(), named)));
+                                include_metadata ? makeDirectedMetadata(list.direction.toString(), named)
+                                                 : OutlineMetadata{}));
                             break;
                         }
                         case slang::syntax::SyntaxKind::ModportExplicitPort: {
@@ -1361,7 +1376,8 @@ std::vector<DocumentSymbol> collectModportSymbols(const slang::SourceManager& so
                                 std::string(named.name.valueText()), 13,
                                 toParseRange(source_manager, text, named.sourceRange()),
                                 toParseRange(source_manager, text, named.name.range()),
-                                makeDirectedMetadata(list.direction.toString(), named)));
+                                include_metadata ? makeDirectedMetadata(list.direction.toString(), named)
+                                                 : OutlineMetadata{}));
                             break;
                         }
                         default:
@@ -1380,7 +1396,8 @@ std::vector<DocumentSymbol> collectModportSymbols(const slang::SourceManager& so
                             trimWhitespace(subroutine.prototype->name->toString()), 12,
                             toParseRange(source_manager, text, subroutine.sourceRange()),
                             toParseRange(source_manager, text, subroutine.prototype->name->sourceRange()),
-                            makeDirectedMetadata(list.importExport.toString(), subroutine)));
+                            include_metadata ? makeDirectedMetadata(list.importExport.toString(), subroutine)
+                                             : OutlineMetadata{}));
                     }
                 }
                 break;
@@ -1391,7 +1408,7 @@ std::vector<DocumentSymbol> collectModportSymbols(const slang::SourceManager& so
                     std::string(clocking.name.valueText()), 13,
                     toParseRange(source_manager, text, clocking.sourceRange()),
                     toParseRange(source_manager, text, clocking.name.range()),
-                    makeDeclarationMetadata(clocking)));
+                    include_metadata ? makeDeclarationMetadata(clocking) : OutlineMetadata{}));
                 break;
             }
             default:
@@ -1404,14 +1421,15 @@ std::vector<DocumentSymbol> collectModportSymbols(const slang::SourceManager& so
 
 std::vector<DocumentSymbol> collectEnumMemberSymbols(const slang::SourceManager& source_manager,
                                                      std::string_view text,
-    const slang::syntax::EnumTypeSyntax& enum_type) {
+                                                     const slang::syntax::EnumTypeSyntax& enum_type,
+                                                     bool include_metadata) {
     std::vector<DocumentSymbol> result;
     for (const auto* member : enum_type.members) {
         result.push_back(makeDocumentSymbol(
             std::string(member->name.valueText()), 22,
             toParseRange(source_manager, text, member->sourceRange()),
             toParseRange(source_manager, text, member->name.range()),
-            makeDeclarationMetadata(*member)));
+            include_metadata ? makeDeclarationMetadata(*member) : OutlineMetadata{}));
     }
     return result;
 }
@@ -1419,7 +1437,8 @@ std::vector<DocumentSymbol> collectEnumMemberSymbols(const slang::SourceManager&
 void appendMemberSymbols(std::vector<DocumentSymbol>& result,
                          const slang::SourceManager& source_manager,
                          std::string_view text,
-                         const slang::syntax::MemberSyntax& member) {
+                         const slang::syntax::MemberSyntax& member,
+                         bool include_metadata) {
     switch (member.kind) {
         case slang::syntax::SyntaxKind::ImplicitAnsiPort: {
             const auto& declaration = member.as<slang::syntax::ImplicitAnsiPortSyntax>();
@@ -1427,10 +1446,11 @@ void appendMemberSymbols(std::vector<DocumentSymbol>& result,
                 std::string(declaration.declarator->name.valueText()), 13,
                 toParseRange(source_manager, text, declaration.sourceRange()),
                 toParseRange(source_manager, text, declaration.declarator->name.range()),
-                makePortMetadata(portHeaderDirection(*declaration.header),
-                                 portHeaderWidthText(*declaration.header),
-                                 declaration,
-                                 declaration.declarator)));
+                include_metadata ? makePortMetadata(portHeaderDirection(*declaration.header),
+                                                    portHeaderWidthText(*declaration.header),
+                                                    declaration,
+                                                    declaration.declarator)
+                                 : OutlineMetadata{}));
             return;
         }
         case slang::syntax::SyntaxKind::ExplicitAnsiPort: {
@@ -1439,7 +1459,8 @@ void appendMemberSymbols(std::vector<DocumentSymbol>& result,
                 std::string(declaration.name.valueText()), 13,
                 toParseRange(source_manager, text, declaration.sourceRange()),
                 toParseRange(source_manager, text, declaration.name.range()),
-                makePortMetadata(tokenDirection(declaration.direction.valueText()), {}, declaration)));
+                include_metadata ? makePortMetadata(tokenDirection(declaration.direction.valueText()), {}, declaration)
+                                 : OutlineMetadata{}));
             return;
         }
         case slang::syntax::SyntaxKind::DataDeclaration: {
@@ -1448,6 +1469,7 @@ void appendMemberSymbols(std::vector<DocumentSymbol>& result,
                                                     text,
                                                     declaration.declarators,
                                                     13,
+                                                    include_metadata,
                                                     normalizeOutlineText(declaration.type->toString()));
             result.insert(result.end(), std::make_move_iterator(symbols.begin()),
                           std::make_move_iterator(symbols.end()));
@@ -1455,7 +1477,11 @@ void appendMemberSymbols(std::vector<DocumentSymbol>& result,
         }
         case slang::syntax::SyntaxKind::CheckerDataDeclaration: {
             const auto& declaration = member.as<slang::syntax::CheckerDataDeclarationSyntax>();
-            auto symbols = collectDeclaratorSymbols(source_manager, text, declaration.data->declarators, 13);
+            auto symbols = collectDeclaratorSymbols(source_manager,
+                                                    text,
+                                                    declaration.data->declarators,
+                                                    13,
+                                                    include_metadata);
             result.insert(result.end(), std::make_move_iterator(symbols.begin()),
                           std::make_move_iterator(symbols.end()));
             return;
@@ -1466,6 +1492,7 @@ void appendMemberSymbols(std::vector<DocumentSymbol>& result,
                                                     text,
                                                     declaration.declarators,
                                                     13,
+                                                    include_metadata,
                                                     normalizeOutlineText(declaration.type->toString()));
             result.insert(result.end(), std::make_move_iterator(symbols.begin()),
                           std::make_move_iterator(symbols.end()));
@@ -1473,7 +1500,11 @@ void appendMemberSymbols(std::vector<DocumentSymbol>& result,
         }
         case slang::syntax::SyntaxKind::UserDefinedNetDeclaration: {
             const auto& declaration = member.as<slang::syntax::UserDefinedNetDeclarationSyntax>();
-            auto symbols = collectDeclaratorSymbols(source_manager, text, declaration.declarators, 13);
+            auto symbols = collectDeclaratorSymbols(source_manager,
+                                                    text,
+                                                    declaration.declarators,
+                                                    13,
+                                                    include_metadata);
             result.insert(result.end(), std::make_move_iterator(symbols.begin()),
                           std::make_move_iterator(symbols.end()));
             return;
@@ -1485,25 +1516,27 @@ void appendMemberSymbols(std::vector<DocumentSymbol>& result,
             if (declaration.type->kind == slang::syntax::SyntaxKind::EnumType) {
                 kind = toDocumentSymbolKind(declaration.type->kind);
                 children = collectEnumMemberSymbols(source_manager, text,
-                                                    declaration.type->as<slang::syntax::EnumTypeSyntax>());
+                                                    declaration.type->as<slang::syntax::EnumTypeSyntax>(),
+                                                    include_metadata);
             }
 
             result.push_back(makeDocumentSymbol(
                 std::string(declaration.name.valueText()), kind,
                 toParseRange(source_manager, text, declaration.sourceRange()),
                 toParseRange(source_manager, text, declaration.name.range()),
-                makeTypedMetadata(normalizeOutlineText(declaration.type->toString()), declaration),
+                include_metadata ? makeTypedMetadata(normalizeOutlineText(declaration.type->toString()), declaration)
+                                 : OutlineMetadata{},
                 std::move(children)));
             return;
         }
         case slang::syntax::SyntaxKind::ClassPropertyDeclaration: {
             const auto& declaration = member.as<slang::syntax::ClassPropertyDeclarationSyntax>();
-            appendMemberSymbols(result, source_manager, text, *declaration.declaration);
+            appendMemberSymbols(result, source_manager, text, *declaration.declaration, include_metadata);
             return;
         }
         case slang::syntax::SyntaxKind::ClassMethodDeclaration: {
             const auto& declaration = member.as<slang::syntax::ClassMethodDeclarationSyntax>();
-            appendMemberSymbols(result, source_manager, text, *declaration.declaration);
+            appendMemberSymbols(result, source_manager, text, *declaration.declaration, include_metadata);
             return;
         }
         case slang::syntax::SyntaxKind::ClassMethodPrototype: {
@@ -1512,7 +1545,7 @@ void appendMemberSymbols(std::vector<DocumentSymbol>& result,
                 trimWhitespace(declaration.prototype->name->toString()), 12,
                 toParseRange(source_manager, text, declaration.sourceRange()),
                 toParseRange(source_manager, text, declaration.prototype->name->sourceRange()),
-                makeDeclarationMetadata(*declaration.prototype)));
+                include_metadata ? makeDeclarationMetadata(*declaration.prototype) : OutlineMetadata{}));
             return;
         }
         case slang::syntax::SyntaxKind::ClassDeclaration: {
@@ -1521,19 +1554,19 @@ void appendMemberSymbols(std::vector<DocumentSymbol>& result,
                 std::string(declaration.name.valueText()), toDocumentSymbolKind(member.kind),
                 toParseRange(source_manager, text, declaration.sourceRange()),
                 toParseRange(source_manager, text, declaration.name.range()),
-                collectMemberSymbols(source_manager, text, declaration.items)));
+                collectMemberSymbols(source_manager, text, declaration.items, include_metadata)));
             return;
         }
         case slang::syntax::SyntaxKind::GenerateRegion: {
             const auto& declaration = member.as<slang::syntax::GenerateRegionSyntax>();
-            auto symbols = collectMemberSymbols(source_manager, text, declaration.members);
+            auto symbols = collectMemberSymbols(source_manager, text, declaration.members, include_metadata);
             result.insert(result.end(), std::make_move_iterator(symbols.begin()),
                           std::make_move_iterator(symbols.end()));
             return;
         }
         case slang::syntax::SyntaxKind::GenerateBlock: {
             const auto& declaration = member.as<slang::syntax::GenerateBlockSyntax>();
-            auto children = collectMemberSymbols(source_manager, text, declaration.members);
+            auto children = collectMemberSymbols(source_manager, text, declaration.members, include_metadata);
             if (declaration.beginName) {
                 result.push_back(makeDocumentSymbol(
                     std::string(declaration.beginName->name.valueText()), 3,
@@ -1549,20 +1582,20 @@ void appendMemberSymbols(std::vector<DocumentSymbol>& result,
         }
         case slang::syntax::SyntaxKind::IfGenerate: {
             const auto& declaration = member.as<slang::syntax::IfGenerateSyntax>();
-            appendMemberSymbols(result, source_manager, text, *declaration.block);
+            appendMemberSymbols(result, source_manager, text, *declaration.block, include_metadata);
             if (declaration.elseClause) {
-                appendNodeSymbols(result, source_manager, text, *declaration.elseClause->clause);
+                appendNodeSymbols(result, source_manager, text, *declaration.elseClause->clause, include_metadata);
             }
             return;
         }
         case slang::syntax::SyntaxKind::LoopGenerate: {
             const auto& declaration = member.as<slang::syntax::LoopGenerateSyntax>();
-            appendMemberSymbols(result, source_manager, text, *declaration.block);
+            appendMemberSymbols(result, source_manager, text, *declaration.block, include_metadata);
             return;
         }
         case slang::syntax::SyntaxKind::ParameterDeclarationStatement: {
             const auto& declaration = member.as<slang::syntax::ParameterDeclarationStatementSyntax>();
-            auto symbols = collectParameterSymbols(source_manager, text, *declaration.parameter);
+            auto symbols = collectParameterSymbols(source_manager, text, *declaration.parameter, include_metadata);
             result.insert(result.end(), std::make_move_iterator(symbols.begin()),
                           std::make_move_iterator(symbols.end()));
             return;
@@ -1578,7 +1611,7 @@ void appendMemberSymbols(std::vector<DocumentSymbol>& result,
                     std::string(instance->decl->name.valueText()), 19,
                     toParseRange(source_manager, text, instance->sourceRange()),
                     toParseRange(source_manager, text, instance->decl->name.range()),
-                    makeInstanceMetadata(declaration.type, *instance)));
+                    include_metadata ? makeInstanceMetadata(declaration.type, *instance) : OutlineMetadata{}));
             }
             return;
         }
@@ -1589,10 +1622,11 @@ void appendMemberSymbols(std::vector<DocumentSymbol>& result,
                     std::string(declarator->name.valueText()), 13,
                     toParseRange(source_manager, text, declarator->sourceRange()),
                     toParseRange(source_manager, text, declarator->name.range()),
-                    makePortMetadata(portHeaderDirection(*declaration.header),
-                                     portHeaderWidthText(*declaration.header),
-                                     *declarator,
-                                     declarator)));
+                    include_metadata ? makePortMetadata(portHeaderDirection(*declaration.header),
+                                                        portHeaderWidthText(*declaration.header),
+                                                        *declarator,
+                                                        declarator)
+                                     : OutlineMetadata{}));
             }
             return;
         }
@@ -1603,7 +1637,7 @@ void appendMemberSymbols(std::vector<DocumentSymbol>& result,
                     std::string(identifier->identifier.valueText()), 13,
                     toParseRange(source_manager, text, identifier->sourceRange()),
                     toParseRange(source_manager, text, identifier->identifier.range()),
-                    makeGenvarMetadata(*identifier)));
+                    include_metadata ? makeGenvarMetadata(*identifier) : OutlineMetadata{}));
             }
             return;
         }
@@ -1615,7 +1649,7 @@ void appendMemberSymbols(std::vector<DocumentSymbol>& result,
                 toDocumentSymbolKind(member.kind),
                 toParseRange(source_manager, text, declaration.sourceRange()),
                 toParseRange(source_manager, text, declaration.prototype->name->sourceRange()),
-                makeDeclarationMetadata(*declaration.prototype)));
+                include_metadata ? makeDeclarationMetadata(*declaration.prototype) : OutlineMetadata{}));
             return;
         }
         case slang::syntax::SyntaxKind::CovergroupDeclaration: {
@@ -1624,7 +1658,7 @@ void appendMemberSymbols(std::vector<DocumentSymbol>& result,
                 std::string(declaration.name.valueText()), 5,
                 toParseRange(source_manager, text, declaration.sourceRange()),
                 toParseRange(source_manager, text, declaration.name.range()),
-                collectMemberSymbols(source_manager, text, declaration.members)));
+                collectMemberSymbols(source_manager, text, declaration.members, include_metadata)));
             return;
         }
         case slang::syntax::SyntaxKind::ModportDeclaration: {
@@ -1634,13 +1668,13 @@ void appendMemberSymbols(std::vector<DocumentSymbol>& result,
                     std::string(item->name.valueText()), 11,
                     toParseRange(source_manager, text, item->sourceRange()),
                     toParseRange(source_manager, text, item->name.range()),
-                    makeDeclarationMetadata(*item),
-                    collectModportSymbols(source_manager, text, *item->ports)));
+                    include_metadata ? makeDeclarationMetadata(*item) : OutlineMetadata{},
+                    collectModportSymbols(source_manager, text, *item->ports, include_metadata)));
             }
             return;
         }
         default:
-            if (auto symbol = toDocumentSymbol(source_manager, text, member)) {
+            if (auto symbol = toDocumentSymbol(source_manager, text, member, include_metadata)) {
                 result.push_back(std::move(*symbol));
             }
             return;
@@ -1649,12 +1683,26 @@ void appendMemberSymbols(std::vector<DocumentSymbol>& result,
 
 std::vector<DocumentSymbol> collectMemberSymbols(const slang::SourceManager& source_manager,
                                                  std::string_view text,
-                                                 std::span<slang::syntax::MemberSyntax* const> members) {
+                                                 std::span<slang::syntax::MemberSyntax* const> members,
+                                                 bool include_metadata) {
     std::vector<DocumentSymbol> result;
     for (const auto* member : members) {
-        appendMemberSymbols(result, source_manager, text, *member);
+        appendMemberSymbols(result, source_manager, text, *member, include_metadata);
     }
     return result;
+}
+
+std::vector<DocumentSymbol> collectDocumentSymbols(std::string_view text,
+                                                   std::string_view uri,
+                                                   bool include_metadata) {
+    slang::SourceManager source_manager;
+    auto syntax_tree = slang::syntax::SyntaxTree::fromFileInMemory(text, source_manager, "source", uri);
+    if (!syntax_tree || syntax_tree->root().kind != slang::syntax::SyntaxKind::CompilationUnit) {
+        return {};
+    }
+
+    const auto& compilation_unit = syntax_tree->root().as<slang::syntax::CompilationUnitSyntax>();
+    return collectMemberSymbols(source_manager, text, compilation_unit.members, include_metadata);
 }
 
 void appendModuleInstantiation(std::vector<ModuleInstantiation>& result,
@@ -1762,18 +1810,28 @@ std::optional<ModuleDefinition> toModuleDefinition(const slang::SourceManager& s
 
 std::optional<DocumentSymbol> toDocumentSymbol(const slang::SourceManager& source_manager,
                                                std::string_view text,
-                                               const slang::syntax::MemberSyntax& member) {
+                                               const slang::syntax::MemberSyntax& member,
+                                               bool include_metadata) {
     switch (member.kind) {
         case slang::syntax::SyntaxKind::ModuleDeclaration:
         case slang::syntax::SyntaxKind::InterfaceDeclaration:
         case slang::syntax::SyntaxKind::PackageDeclaration:
         case slang::syntax::SyntaxKind::ProgramDeclaration: {
             const auto& declaration = member.as<slang::syntax::ModuleDeclarationSyntax>();
-            auto children = collectHeaderParameterSymbols(source_manager, text, *declaration.header);
-            auto port_children = collectHeaderPortSymbols(source_manager, text, *declaration.header);
+            auto children = collectHeaderParameterSymbols(source_manager,
+                                                          text,
+                                                          *declaration.header,
+                                                          include_metadata);
+            auto port_children = collectHeaderPortSymbols(source_manager,
+                                                          text,
+                                                          *declaration.header,
+                                                          include_metadata);
             children.insert(children.end(), std::make_move_iterator(port_children.begin()),
                             std::make_move_iterator(port_children.end()));
-            auto member_children = collectMemberSymbols(source_manager, text, declaration.members);
+            auto member_children = collectMemberSymbols(source_manager,
+                                                        text,
+                                                        declaration.members,
+                                                        include_metadata);
             children.insert(children.end(), std::make_move_iterator(member_children.begin()),
                             std::make_move_iterator(member_children.end()));
             return makeDocumentSymbol(std::string(declaration.header->name.valueText()),
@@ -1788,7 +1846,10 @@ std::optional<DocumentSymbol> toDocumentSymbol(const slang::SourceManager& sourc
                                       toDocumentSymbolKind(member.kind),
                                       toParseRange(source_manager, text, declaration.sourceRange()),
                                       toParseRange(source_manager, text, declaration.name.range()),
-                                      collectMemberSymbols(source_manager, text, declaration.members));
+                                      collectMemberSymbols(source_manager,
+                                                           text,
+                                                           declaration.members,
+                                                           include_metadata));
         }
         default:
             return std::nullopt;
@@ -1820,15 +1881,7 @@ ParseResult CompilationService::parse(std::string_view text, std::string_view ur
 
 std::vector<DocumentSymbol> CompilationService::documentSymbols(std::string_view text,
                                                                 std::string_view uri) const {
-    slang::SourceManager source_manager;
-    auto syntax_tree = slang::syntax::SyntaxTree::fromFileInMemory(text, source_manager, "source", uri);
-    if (!syntax_tree || syntax_tree->root().kind != slang::syntax::SyntaxKind::CompilationUnit) {
-        return {};
-    }
-
-    const auto& compilation_unit = syntax_tree->root().as<slang::syntax::CompilationUnitSyntax>();
-
-    return collectMemberSymbols(source_manager, text, compilation_unit.members);
+    return collectDocumentSymbols(text, uri, false);
 }
 
 OutlineResult CompilationService::outline(std::string_view text,
@@ -1848,7 +1901,7 @@ OutlineResult CompilationService::outline(std::string_view text,
     result.version = version;
     result.generation = generation;
 
-    const auto symbols = documentSymbols(text, uri);
+    const auto symbols = collectDocumentSymbols(text, uri, true);
     size_t emitted_count = 0;
     bool depth_limited = false;
     for (size_t index = 0; index < symbols.size(); ++index) {

@@ -224,6 +224,35 @@ TEST_CASE("CompilationService extracts ansi header port symbols", "[analysis][sy
     CHECK(symbols[0].children[1].kind == 13);
 }
 
+TEST_CASE("CompilationService keeps outline metadata out of document symbols", "[analysis][symbols][outline]") {
+    CompilationService service;
+
+    constexpr std::string_view source =
+        "module top(input logic [7:0] data_i);\n"
+        "  parameter int WIDTH = 8;\n"
+        "endmodule\n";
+
+    const auto symbols = service.documentSymbols(source, "file:///workspace/no-outline-metadata.sv");
+    REQUIRE(symbols.size() == 1);
+    REQUIRE(symbols[0].children.size() >= 2);
+    CHECK(symbols[0].children[0].metadata.detail.empty());
+    CHECK(symbols[0].children[0].metadata.declaration.empty());
+
+    const auto outline = service.outline(source,
+                                         "file:///workspace/no-outline-metadata.sv",
+                                         1,
+                                         42,
+                                         OutlineOptions{});
+    REQUIRE(!outline.items.empty());
+    const auto data = std::find_if(outline.items.begin(), outline.items.end(), [](const OutlineItem& item) {
+        return item.name == "data_i";
+    });
+    REQUIRE(data != outline.items.end());
+    CHECK(data->metadata.detail == "input logic [7:0]");
+    CHECK(data->metadata.direction == "input");
+    CHECK(data->metadata.type == "logic [7:0]");
+}
+
 TEST_CASE("CompilationService extracts interface modport symbols", "[analysis][symbols]") {
     CompilationService service;
 
