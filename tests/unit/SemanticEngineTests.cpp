@@ -44,6 +44,36 @@ TEST_CASE("SemanticEngine surfaces slang semantic diagnostics",
     }));
 }
 
+TEST_CASE("SemanticEngine exposes query cache stats for visible queries",
+          "[analysis][semantic-engine][query-cache]") {
+    SemanticEngine engine;
+    engine.updateDocument("file:///workspace/top.sv",
+                          "module top;\n"
+                          "endmodule\n",
+                          SemanticEngineDocumentState{.version = 1, .is_open = true});
+
+    engine.resetQueryCacheStats();
+    CHECK(engine.queryCacheStats().total_entries == 0);
+
+    const auto first = engine.workspaceSymbols("top");
+    REQUIRE(first.generation != 0);
+
+    auto stats = engine.queryCacheStats();
+    CHECK(stats.hits == 0);
+    CHECK(stats.misses == 1);
+    CHECK(stats.stores == 1);
+    CHECK(stats.workspace_symbols_entries == 1);
+    CHECK(stats.total_entries == 1);
+
+    const auto second = engine.workspaceSymbols("top");
+    REQUIRE(second.generation == first.generation);
+
+    stats = engine.queryCacheStats();
+    CHECK(stats.hits == 1);
+    CHECK(stats.misses == 1);
+    CHECK(stats.stores == 1);
+}
+
 TEST_CASE("SemanticEngine owns UX diagnostics formerly produced by workspace metadata",
           "[analysis][semantic-engine][diagnostics]") {
     SemanticEngine engine;

@@ -465,6 +465,30 @@ SemanticEngine::SemanticEngine() : query_cache_(std::make_unique<semantic::Query
 
 SemanticEngine::~SemanticEngine() = default;
 
+SemanticQueryCacheStats SemanticEngine::queryCacheStats() const {
+    const auto stats = query_cache_->stats();
+    return SemanticQueryCacheStats{.hits = stats.hits,
+                                   .misses = stats.misses,
+                                   .stores = stats.stores,
+                                   .evictions = stats.evictions,
+                                   .diagnostics_entries = stats.diagnostics_entries,
+                                   .workspace_symbols_entries = stats.workspace_symbols_entries,
+                                   .references_entries = stats.references_entries,
+                                   .rename_entries = stats.rename_entries,
+                                   .completions_entries = stats.completions_entries,
+                                   .signature_help_entries = stats.signature_help_entries,
+                                   .inlay_hints_entries = stats.inlay_hints_entries,
+                                   .module_hierarchy_entries = stats.module_hierarchy_entries,
+                                   .schematic_entries = stats.schematic_entries,
+                                   .backward_cone_entries = stats.backward_cone_entries,
+                                   .code_actions_entries = stats.code_actions_entries,
+                                   .total_entries = stats.total_entries};
+}
+
+void SemanticEngine::resetQueryCacheStats() {
+    query_cache_->resetStats();
+}
+
 void SemanticEngine::clear() {
     workspace_root_uri_.clear();
     config_ = {};

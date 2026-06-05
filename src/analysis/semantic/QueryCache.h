@@ -13,7 +13,29 @@ namespace pristine::analysis::semantic {
 
 class QueryCache {
 public:
+    struct Stats {
+        std::uint64_t hits = 0;
+        std::uint64_t misses = 0;
+        std::uint64_t stores = 0;
+        std::uint64_t evictions = 0;
+        size_t diagnostics_entries = 0;
+        size_t workspace_symbols_entries = 0;
+        size_t references_entries = 0;
+        size_t rename_entries = 0;
+        size_t completions_entries = 0;
+        size_t signature_help_entries = 0;
+        size_t inlay_hints_entries = 0;
+        size_t module_hierarchy_entries = 0;
+        size_t schematic_entries = 0;
+        size_t backward_cone_entries = 0;
+        size_t code_actions_entries = 0;
+        size_t total_entries = 0;
+    };
+
     void clear();
+    void resetStats();
+    void setMaxEntriesPerQuery(size_t max_entries);
+    [[nodiscard]] Stats stats() const;
 
     [[nodiscard]] std::optional<std::vector<SemanticEngineDiagnostic>> diagnostics(
         std::uint64_t generation,
@@ -136,51 +158,61 @@ private:
 
     struct WorkspaceSymbolsEntry {
         std::uint64_t generation = 0;
+        std::uint64_t sequence = 0;
         SemanticWorkspaceSymbolResult result;
     };
 
     struct ReferencesEntry {
         std::uint64_t generation = 0;
+        std::uint64_t sequence = 0;
         SemanticReferenceResult result;
     };
 
     struct RenameEntry {
         std::uint64_t generation = 0;
+        std::uint64_t sequence = 0;
         SemanticRenameResult result;
     };
 
     struct CompletionEntry {
         std::uint64_t generation = 0;
+        std::uint64_t sequence = 0;
         SemanticCompletionResult result;
     };
 
     struct SignatureHelpEntry {
         std::uint64_t generation = 0;
+        std::uint64_t sequence = 0;
         SemanticSignatureHelpResult result;
     };
 
     struct InlayHintsEntry {
         std::uint64_t generation = 0;
+        std::uint64_t sequence = 0;
         SemanticInlayHintResult result;
     };
 
     struct ModuleHierarchyEntry {
         std::uint64_t generation = 0;
+        std::uint64_t sequence = 0;
         SemanticModuleHierarchyResult result;
     };
 
     struct SchematicEntry {
         std::uint64_t generation = 0;
+        std::uint64_t sequence = 0;
         SemanticSchematicResult result;
     };
 
     struct BackwardConeEntry {
         std::uint64_t generation = 0;
+        std::uint64_t sequence = 0;
         SemanticConeTrace result;
     };
 
     struct CodeActionsEntry {
         std::uint64_t generation = 0;
+        std::uint64_t sequence = 0;
         SemanticCodeActionResult result;
     };
 
@@ -202,6 +234,15 @@ private:
                                                     int max_depth);
     [[nodiscard]] static std::string rangeKey(std::string_view uri, ParseRange range);
 
+    void recordHit() const;
+    void recordMiss() const;
+    void recordStore();
+    void recordEviction();
+    [[nodiscard]] std::uint64_t nextSequence();
+
+    template <typename Map>
+    void evictOldestEntries(Map& map);
+
     std::unordered_map<std::string, DiagnosticsEntry> diagnostics_by_uri_;
     std::unordered_map<std::string, WorkspaceSymbolsEntry> workspace_symbols_by_key_;
     std::unordered_map<std::string, ReferencesEntry> references_by_key_;
@@ -213,6 +254,13 @@ private:
     std::unordered_map<std::string, SchematicEntry> schematic_by_key_;
     std::unordered_map<std::string, BackwardConeEntry> backward_cone_by_key_;
     std::unordered_map<std::string, CodeActionsEntry> code_actions_by_key_;
+
+    size_t max_entries_per_query_ = 128;
+    std::uint64_t sequence_ = 0;
+    mutable std::uint64_t hits_ = 0;
+    mutable std::uint64_t misses_ = 0;
+    std::uint64_t stores_ = 0;
+    std::uint64_t evictions_ = 0;
 };
 
 } // namespace pristine::analysis::semantic

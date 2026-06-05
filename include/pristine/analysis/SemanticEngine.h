@@ -425,6 +425,25 @@ struct SemanticWorkspaceDiscoverySnapshot {
     std::vector<std::string> messages;
 };
 
+struct SemanticQueryCacheStats {
+    std::uint64_t hits = 0;
+    std::uint64_t misses = 0;
+    std::uint64_t stores = 0;
+    std::uint64_t evictions = 0;
+    size_t diagnostics_entries = 0;
+    size_t workspace_symbols_entries = 0;
+    size_t references_entries = 0;
+    size_t rename_entries = 0;
+    size_t completions_entries = 0;
+    size_t signature_help_entries = 0;
+    size_t inlay_hints_entries = 0;
+    size_t module_hierarchy_entries = 0;
+    size_t schematic_entries = 0;
+    size_t backward_cone_entries = 0;
+    size_t code_actions_entries = 0;
+    size_t total_entries = 0;
+};
+
 class SemanticEngine {
 public:
     SemanticEngine();
@@ -505,6 +524,8 @@ public:
     [[nodiscard]] SemanticCodeActionResult codeActionsAt(std::string_view uri, ParseRange range) const;
     [[nodiscard]] SemanticWorkspaceSymbolResult workspaceSymbols(std::string_view query,
                                                                  size_t limit = 1000) const;
+    [[nodiscard]] SemanticQueryCacheStats queryCacheStats() const;
+    void resetQueryCacheStats();
 
 private:
     void rebuildDependenciesFor(std::string_view document_uri, std::string_view text);

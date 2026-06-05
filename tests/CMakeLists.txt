@@ -10,6 +10,7 @@ add_executable(
 	unit/MessageStreamTests.cpp
 	unit/NavigationProviderTests.cpp
 	unit/ProviderCompletenessMatrixTests.cpp
+	unit/QueryCacheTests.cpp
 	unit/SemanticEngineTests.cpp
 	unit/SignatureInlayProviderTests.cpp
 	unit/SnapshotBuilderTests.cpp
