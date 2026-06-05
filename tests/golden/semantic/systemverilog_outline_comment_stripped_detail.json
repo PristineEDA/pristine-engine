@@ -4,7 +4,7 @@
     {
       "uri": "file:///golden/outline_comment_detail.sv",
       "version": 1,
-      "text": "module top;\n  // verilog_format on\n  // sclk\n  logic s_sclk, s_sclk_en_d, s_sclk_en_q;\n  localparam logic [2:0] FSM_IDLE = 3'd0;\nendmodule\n"
+      "text": "module top;\n  // verilog_format on\n  // sclk\n  logic s_sclk, s_sclk_en_d, s_sclk_en_q;\n  localparam logic [2:0] FSM_IDLE = 3'd0;\n  localparam FSM_CMD    = 3'd1;\n  localparam FSM_ADDR   = 3'd2;\n  localparam FSM_DUM    = 3'd3;\nendmodule\n"
     }
   ],
   "request": {
@@ -18,7 +18,8 @@
       { "id": "outline:0.0", "name": "s_sclk", "kind": "variable", "parentId": "outline:0", "depth": 1, "detail": "logic", "declaration": "logic s_sclk", "type": "logic" },
       { "id": "outline:0.1", "name": "s_sclk_en_d", "kind": "variable", "parentId": "outline:0", "depth": 1, "detail": "logic", "declaration": "logic s_sclk_en_d", "type": "logic" },
       { "id": "outline:0.2", "name": "s_sclk_en_q", "kind": "variable", "parentId": "outline:0", "depth": 1, "detail": "logic", "declaration": "logic s_sclk_en_q", "type": "logic" },
-      { "id": "outline:0.3", "name": "FSM_IDLE", "kind": "parameter", "parentId": "outline:0", "depth": 1, "detail": "logic [2:0] = 3'd0", "declaration": "logic [2:0] FSM_IDLE = 3'd0", "type": "logic [2:0]", "value": "3'd0" }
+      { "id": "outline:0.3", "name": "FSM_IDLE", "kind": "parameter", "parentId": "outline:0", "depth": 1, "detail": "logic [2:0] = 3'd0", "declaration": "logic [2:0] FSM_IDLE = 3'd0", "type": "logic [2:0]", "value": "3'd0" },
+      { "id": "outline:0.6", "name": "FSM_DUM", "kind": "parameter", "parentId": "outline:0", "depth": 1, "detail": "3'd3", "declaration": "FSM_DUM = 3'd3", "value": "3'd3" }
     ]
   }
 }

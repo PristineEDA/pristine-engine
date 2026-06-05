@@ -256,7 +256,7 @@ std::string detailFromTypeValue(std::string type, const std::string& value) {
             detail += " = ";
         }
         else {
-            detail = "= ";
+            detail = "";
         }
         detail += value;
     }
@@ -1101,7 +1101,7 @@ std::vector<DocumentSymbol> collectDeclaratorSymbols(const slang::SourceManager&
     std::vector<DocumentSymbol> result;
     for (const auto* declarator : declarators) {
         OutlineMetadata metadata;
-        if (include_metadata && !type_text.empty()) {
+        if (include_metadata) {
             metadata = makeTypedMetadata(std::string(type_text), *declarator, declarator);
         }
         result.push_back(makeDocumentSymbol(

@@ -1111,7 +1111,7 @@ TEST_CASE("ServerSession outline detail strips comments from declarations",
 
     ScriptedTransport transport{
         R"({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}})",
-        R"({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///workspace/outline-comments.sv","languageId":"systemverilog","version":1,"text":"module top;\n  // verilog_format on\n  // sclk\n  logic s_sclk, s_sclk_en_d, s_sclk_en_q;\n  localparam logic [2:0] FSM_IDLE = 3'd0;\nendmodule\n"}}})",
+        R"({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///workspace/outline-comments.sv","languageId":"systemverilog","version":1,"text":"module top;\n  // verilog_format on\n  // sclk\n  logic s_sclk, s_sclk_en_d, s_sclk_en_q;\n  localparam logic [2:0] FSM_IDLE = 3'd0;\n  localparam FSM_CMD    = 3'd1;\n  localparam FSM_ADDR   = 3'd2;\n  localparam FSM_DUM    = 3'd3;\nendmodule\n"}}})",
         R"({"jsonrpc":"2.0","id":2,"method":"systemverilog/outline","params":{"textDocument":{"uri":"file:///workspace/outline-comments.sv"}}})"};
 
     const int exit_code = rpc_server.run(transport);
@@ -1136,6 +1136,16 @@ TEST_CASE("ServerSession outline detail strips comments from declarations",
     CHECK(parameter->at("detail") == "logic [2:0] = 3'd0");
     CHECK(parameter->at("type") == "logic [2:0]");
     CHECK(parameter->at("value") == "3'd0");
+
+    const auto implicit_parameter =
+        std::find_if(items.begin(), items.end(), [](const jsonrpc::Json& item) {
+            return item.at("name") == "FSM_DUM";
+        });
+    REQUIRE(implicit_parameter != items.end());
+    CHECK(implicit_parameter->at("detail") == "3'd3");
+    CHECK(implicit_parameter->at("declaration") == "FSM_DUM = 3'd3");
+    CHECK_FALSE(implicit_parameter->contains("type"));
+    CHECK(implicit_parameter->at("value") == "3'd3");
 }
 
 TEST_CASE("ServerSession outline returns message for unopened document", "[server][outline]") {
