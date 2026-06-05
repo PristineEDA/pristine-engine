@@ -21,7 +21,7 @@ namespace pristine::server {
 namespace {
 
 namespace fs = std::filesystem;
-constexpr auto kTestServerVersion = ::pristine::kVersionString;
+const auto kTestServerVersion = ::pristine::kVersionString;
 
 class ScriptedTransport final : public transport::MessageTransport {
 public:

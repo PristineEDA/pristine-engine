@@ -695,6 +695,15 @@ void appendQueryCacheTelemetry(jsonrpc::Json& result,
     result["queryCacheBackwardConeEntries"] = stats.backward_cone_entries;
 }
 
+void appendSyntaxCacheTelemetry(jsonrpc::Json& result,
+                                const analysis::SyntaxDocumentCacheStats& stats) {
+    result["syntaxCacheHits"] = stats.hits;
+    result["syntaxCacheMisses"] = stats.misses;
+    result["syntaxCacheStores"] = stats.stores;
+    result["syntaxCacheInvalidations"] = stats.invalidations;
+    result["syntaxCacheEntries"] = stats.entries;
+}
+
 jsonrpc::Json toCallHierarchyItemJson(const analysis::SemanticCallHierarchyItem& item) {
     return jsonrpc::Json{{"name", item.name},
                          {"kind", item.kind},
@@ -953,7 +962,9 @@ jsonrpc::Json ServerSession::handleOutline(const jsonrpc::Json& params) {
         analysis::OutlineResult result;
         result.uri = uri;
         result.messages.push_back("Document is not open; systemverilog/outline only operates on opened documents.");
-        return toOutlineResultJson(result, options.include_children, options.include_flat);
+        auto response = toOutlineResultJson(result, options.include_children, options.include_flat);
+        appendSyntaxCacheTelemetry(response, syntax_cache_.stats());
+        return response;
     }
 
     const auto outline = compilation_service_.outline(document->text,
@@ -961,7 +972,9 @@ jsonrpc::Json ServerSession::handleOutline(const jsonrpc::Json& params) {
                                                       document->version,
                                                       semantic_generation_cache_.load(std::memory_order_relaxed),
                                                       options);
-    return toOutlineResultJson(outline, options.include_children, options.include_flat);
+    auto response = toOutlineResultJson(outline, options.include_children, options.include_flat);
+    appendSyntaxCacheTelemetry(response, syntax_cache_.stats());
+    return response;
 }
 
 jsonrpc::Json ServerSession::handleModuleHierarchy(const jsonrpc::Json& params) {

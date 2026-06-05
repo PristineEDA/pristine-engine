@@ -66,6 +66,9 @@ def main() -> int:
         assert no_trace_summary["schematicModuleCount"] >= 1
         assert no_trace_summary["schematicCellCount"] >= 1
         assert no_trace_summary["schematicNetCount"] >= 1
+        assert no_trace_summary["syntaxCacheMisses"] >= 1
+        assert no_trace_summary["syntaxCacheStores"] >= 1
+        assert no_trace_summary["syntaxCacheEntries"] >= 1
         assert no_trace_summary["queryCacheHits"] >= 1
         assert no_trace_summary["queryCacheMisses"] >= 1
         assert no_trace_summary["queryCacheEntries"] >= 1
@@ -93,6 +96,9 @@ def main() -> int:
         assert trace_summary["hoverMicros"] >= 0
         assert trace_summary["hierarchyRootCount"] == 1
         assert trace_summary["schematicModuleCount"] >= 1
+        assert trace_summary["syntaxCacheMisses"] >= 1
+        assert trace_summary["syntaxCacheStores"] >= 1
+        assert trace_summary["syntaxCacheEntries"] >= 1
         assert trace_summary["queryCacheHits"] >= 1
         assert trace_summary["queryCacheMisses"] >= 1
         assert trace_summary["queryCacheEntries"] >= 1

@@ -24,61 +24,98 @@ list(APPEND CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/cmake")
 include(Dependencies)
 
 set(PRISTINE_GENERATED_INCLUDE_DIR "${PROJECT_BINARY_DIR}/generated/include")
+set(PRISTINE_GENERATED_SOURCE_DIR "${PROJECT_BINARY_DIR}/generated/src")
 file(MAKE_DIRECTORY "${PRISTINE_GENERATED_INCLUDE_DIR}/pristine")
+file(MAKE_DIRECTORY "${PRISTINE_GENERATED_SOURCE_DIR}")
 
-function(pristine_normalize_version_literal input output)
-  set(value "${input}")
-  string(REPLACE "\\" "\\\\" value "${value}")
-  string(REPLACE "\"" "\\\"" value "${value}")
-  string(REPLACE "\n" " " value "${value}")
-  string(REPLACE "\r" " " value "${value}")
-  set("${output}" "${value}" PARENT_SCOPE)
+function(pristine_git_path_to_absolute input output)
+  if(NOT input)
+    set("${output}" "" PARENT_SCOPE)
+    return()
+  endif()
+
+  if(IS_ABSOLUTE "${input}")
+    set(path "${input}")
+  else()
+    set(path "${PROJECT_SOURCE_DIR}/${input}")
+  endif()
+  get_filename_component(path "${path}" ABSOLUTE)
+  set("${output}" "${path}" PARENT_SCOPE)
 endfunction()
 
-set(PRISTINE_GIT_BRANCH "$ENV{GITHUB_HEAD_REF}")
-if(NOT PRISTINE_GIT_BRANCH)
-  set(PRISTINE_GIT_BRANCH "$ENV{GITHUB_REF_NAME}")
-endif()
-if(NOT PRISTINE_GIT_BRANCH)
-  execute_process(
-    COMMAND git -C "${PROJECT_SOURCE_DIR}" rev-parse --abbrev-ref HEAD
-    OUTPUT_VARIABLE PRISTINE_GIT_BRANCH
-    ERROR_QUIET
-    OUTPUT_STRIP_TRAILING_WHITESPACE)
-endif()
-if(NOT PRISTINE_GIT_BRANCH)
-  set(PRISTINE_GIT_BRANCH "unknown")
-elseif(PRISTINE_GIT_BRANCH STREQUAL "HEAD")
-  set(PRISTINE_GIT_BRANCH "detached")
-endif()
-
-set(PRISTINE_GIT_COMMIT "$ENV{GITHUB_SHA}")
-if(NOT PRISTINE_GIT_COMMIT)
-  execute_process(
-    COMMAND git -C "${PROJECT_SOURCE_DIR}" rev-parse HEAD
-    OUTPUT_VARIABLE PRISTINE_GIT_COMMIT
-    ERROR_QUIET
-    OUTPUT_STRIP_TRAILING_WHITESPACE)
-endif()
-if(NOT PRISTINE_GIT_COMMIT)
-  set(PRISTINE_GIT_COMMIT "unknown")
-endif()
-if(NOT PRISTINE_GIT_COMMIT STREQUAL "unknown")
-  string(SUBSTRING "${PRISTINE_GIT_COMMIT}" 0 12 PRISTINE_GIT_COMMIT)
-endif()
-
-if("$ENV{GITHUB_REF_TYPE}" STREQUAL "tag" AND "$ENV{GITHUB_REF_NAME}")
-  set(PRISTINE_GIT_TAG "$ENV{GITHUB_REF_NAME}")
-else()
-  execute_process(
-    COMMAND git -C "${PROJECT_SOURCE_DIR}" describe --tags --exact-match HEAD
-    OUTPUT_VARIABLE PRISTINE_GIT_TAG
-    ERROR_QUIET
-    OUTPUT_STRIP_TRAILING_WHITESPACE)
-  if(NOT PRISTINE_GIT_TAG)
-    set(PRISTINE_GIT_TAG "none")
+function(pristine_track_version_dependency path)
+  if(path AND EXISTS "${path}")
+    set_property(GLOBAL APPEND PROPERTY PRISTINE_VERSION_GIT_DEPENDS "${path}")
   endif()
-endif()
+endfunction()
+
+function(pristine_track_git_metadata)
+  execute_process(
+    COMMAND git -C "${PROJECT_SOURCE_DIR}" rev-parse --git-path HEAD
+    OUTPUT_VARIABLE PRISTINE_GIT_HEAD_PATH
+    RESULT_VARIABLE PRISTINE_GIT_HEAD_RESULT
+    ERROR_QUIET
+    OUTPUT_STRIP_TRAILING_WHITESPACE)
+  if(PRISTINE_GIT_HEAD_RESULT EQUAL 0 AND NOT "${PRISTINE_GIT_HEAD_PATH}" STREQUAL "")
+    pristine_git_path_to_absolute("${PRISTINE_GIT_HEAD_PATH}" PRISTINE_GIT_HEAD_ABSOLUTE)
+    pristine_track_version_dependency("${PRISTINE_GIT_HEAD_ABSOLUTE}")
+  endif()
+
+  execute_process(
+    COMMAND git -C "${PROJECT_SOURCE_DIR}" rev-parse --git-path logs/HEAD
+    OUTPUT_VARIABLE PRISTINE_GIT_HEAD_LOG_PATH
+    RESULT_VARIABLE PRISTINE_GIT_HEAD_LOG_RESULT
+    ERROR_QUIET
+    OUTPUT_STRIP_TRAILING_WHITESPACE)
+  if(PRISTINE_GIT_HEAD_LOG_RESULT EQUAL 0 AND NOT "${PRISTINE_GIT_HEAD_LOG_PATH}" STREQUAL "")
+    pristine_git_path_to_absolute("${PRISTINE_GIT_HEAD_LOG_PATH}" PRISTINE_GIT_HEAD_LOG_ABSOLUTE)
+    pristine_track_version_dependency("${PRISTINE_GIT_HEAD_LOG_ABSOLUTE}")
+  endif()
+
+  execute_process(
+    COMMAND git -C "${PROJECT_SOURCE_DIR}" symbolic-ref -q HEAD
+    OUTPUT_VARIABLE PRISTINE_GIT_REF_NAME
+    RESULT_VARIABLE PRISTINE_GIT_REF_RESULT
+    ERROR_QUIET
+    OUTPUT_STRIP_TRAILING_WHITESPACE)
+  if(PRISTINE_GIT_REF_RESULT EQUAL 0 AND NOT "${PRISTINE_GIT_REF_NAME}" STREQUAL "")
+    execute_process(
+      COMMAND git -C "${PROJECT_SOURCE_DIR}" rev-parse --git-path "${PRISTINE_GIT_REF_NAME}"
+      OUTPUT_VARIABLE PRISTINE_GIT_REF_PATH
+      RESULT_VARIABLE PRISTINE_GIT_REF_PATH_RESULT
+      ERROR_QUIET
+      OUTPUT_STRIP_TRAILING_WHITESPACE)
+    if(PRISTINE_GIT_REF_PATH_RESULT EQUAL 0 AND NOT "${PRISTINE_GIT_REF_PATH}" STREQUAL "")
+      pristine_git_path_to_absolute("${PRISTINE_GIT_REF_PATH}" PRISTINE_GIT_REF_ABSOLUTE)
+      pristine_track_version_dependency("${PRISTINE_GIT_REF_ABSOLUTE}")
+    endif()
+
+    execute_process(
+      COMMAND git -C "${PROJECT_SOURCE_DIR}" rev-parse --git-path "logs/${PRISTINE_GIT_REF_NAME}"
+      OUTPUT_VARIABLE PRISTINE_GIT_REF_LOG_PATH
+      RESULT_VARIABLE PRISTINE_GIT_REF_LOG_PATH_RESULT
+      ERROR_QUIET
+      OUTPUT_STRIP_TRAILING_WHITESPACE)
+    if(PRISTINE_GIT_REF_LOG_PATH_RESULT EQUAL 0 AND NOT "${PRISTINE_GIT_REF_LOG_PATH}" STREQUAL "")
+      pristine_git_path_to_absolute("${PRISTINE_GIT_REF_LOG_PATH}" PRISTINE_GIT_REF_LOG_ABSOLUTE)
+      pristine_track_version_dependency("${PRISTINE_GIT_REF_LOG_ABSOLUTE}")
+    endif()
+  endif()
+
+  execute_process(
+    COMMAND git -C "${PROJECT_SOURCE_DIR}" rev-parse --git-path packed-refs
+    OUTPUT_VARIABLE PRISTINE_GIT_PACKED_REFS_PATH
+    RESULT_VARIABLE PRISTINE_GIT_PACKED_REFS_RESULT
+    ERROR_QUIET
+    OUTPUT_STRIP_TRAILING_WHITESPACE)
+  if(PRISTINE_GIT_PACKED_REFS_RESULT EQUAL 0 AND NOT "${PRISTINE_GIT_PACKED_REFS_PATH}" STREQUAL "")
+    pristine_git_path_to_absolute("${PRISTINE_GIT_PACKED_REFS_PATH}" PRISTINE_GIT_PACKED_REFS_ABSOLUTE)
+    pristine_track_version_dependency("${PRISTINE_GIT_PACKED_REFS_ABSOLUTE}")
+  endif()
+endfunction()
+
+pristine_track_git_metadata()
+get_property(PRISTINE_VERSION_GIT_DEPENDS GLOBAL PROPERTY PRISTINE_VERSION_GIT_DEPENDS)
 
 if(WIN32)
   set(PRISTINE_BUILD_OS "windows")
@@ -116,17 +153,22 @@ if(NOT PRISTINE_BUILD_TYPE)
   set(PRISTINE_BUILD_TYPE "unknown")
 endif()
 
-pristine_normalize_version_literal("${PRISTINE_GIT_BRANCH}" PRISTINE_GIT_BRANCH_LITERAL)
-pristine_normalize_version_literal("${PRISTINE_GIT_COMMIT}" PRISTINE_GIT_COMMIT_LITERAL)
-pristine_normalize_version_literal("${PRISTINE_GIT_TAG}" PRISTINE_GIT_TAG_LITERAL)
-pristine_normalize_version_literal("${PRISTINE_BUILD_OS}" PRISTINE_BUILD_OS_LITERAL)
-pristine_normalize_version_literal("${PRISTINE_BUILD_ARCH}" PRISTINE_BUILD_ARCH_LITERAL)
-pristine_normalize_version_literal("${PRISTINE_BUILD_TYPE}" PRISTINE_BUILD_TYPE_LITERAL)
-
-configure_file(
-  "${PROJECT_SOURCE_DIR}/cmake/Version.h.in"
-  "${PRISTINE_GENERATED_INCLUDE_DIR}/pristine/Version.h"
-  @ONLY)
+set(PRISTINE_VERSION_HEADER "${PRISTINE_GENERATED_INCLUDE_DIR}/pristine/Version.h")
+set(PRISTINE_VERSION_SOURCE "${PRISTINE_GENERATED_SOURCE_DIR}/Version.cpp")
+add_custom_command(
+  OUTPUT "${PRISTINE_VERSION_HEADER}" "${PRISTINE_VERSION_SOURCE}"
+  COMMAND
+    ${CMAKE_COMMAND} -DPRISTINE_SOURCE_DIR=${PROJECT_SOURCE_DIR}
+    -DPRISTINE_HEADER_FILE=${PRISTINE_VERSION_HEADER}
+    -DPRISTINE_SOURCE_FILE=${PRISTINE_VERSION_SOURCE}
+    -DPRISTINE_PROJECT_VERSION=${PROJECT_VERSION}
+    -DPRISTINE_BUILD_OS=${PRISTINE_BUILD_OS}
+    -DPRISTINE_BUILD_ARCH=${PRISTINE_BUILD_ARCH}
+    -DPRISTINE_BUILD_TYPE=${PRISTINE_BUILD_TYPE} -P
+    ${PROJECT_SOURCE_DIR}/scripts/generate-version.cmake
+  DEPENDS ${PROJECT_SOURCE_DIR}/scripts/generate-version.cmake ${PRISTINE_VERSION_GIT_DEPENDS}
+  COMMENT "Generating pristine version sources"
+  VERBATIM)
 
 set(PRISTINE_NOTICE_OUTPUTS
     "${PROJECT_SOURCE_DIR}/ATTRIBUTIONS.md"
@@ -188,7 +230,8 @@ add_library(
   src/lsp/Protocol.cpp
   src/server/ServerSession.cpp
   src/transport/StdioTransport.cpp
-  src/workspace/WorkspaceManager.cpp)
+  src/workspace/WorkspaceManager.cpp
+  "${PRISTINE_VERSION_SOURCE}")
 
 target_include_directories(
   pristine_core PUBLIC "${PROJECT_SOURCE_DIR}/include" "${PRISTINE_GENERATED_INCLUDE_DIR}")

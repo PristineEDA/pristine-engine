@@ -98,6 +98,11 @@ struct Metrics {
     bool hierarchy_cold_closure_cache_hit = false;
     bool hierarchy_warm_closure_cache_hit = false;
     bool schematic_closure_cache_hit = false;
+    long long syntax_cache_hits = 0;
+    long long syntax_cache_misses = 0;
+    long long syntax_cache_stores = 0;
+    long long syntax_cache_invalidations = 0;
+    long long syntax_cache_entries = 0;
     long long query_cache_hits = 0;
     long long query_cache_misses = 0;
     long long query_cache_stores = 0;
@@ -667,6 +672,14 @@ void collectQueryCacheMetrics(const lsp::json::Object& response, Metrics& metric
     metrics.query_cache_backward_cone_entries = integerValue(response, "queryCacheBackwardConeEntries");
 }
 
+void collectSyntaxCacheMetrics(const lsp::json::Object& response, Metrics& metrics) {
+    metrics.syntax_cache_hits = integerValue(response, "syntaxCacheHits");
+    metrics.syntax_cache_misses = integerValue(response, "syntaxCacheMisses");
+    metrics.syntax_cache_stores = integerValue(response, "syntaxCacheStores");
+    metrics.syntax_cache_invalidations = integerValue(response, "syntaxCacheInvalidations");
+    metrics.syntax_cache_entries = integerValue(response, "syntaxCacheEntries");
+}
+
 void collectHierarchyMetrics(const lsp::json::Value& result, Metrics& metrics, bool warm) {
     if (!result.isObject()) {
         throw std::runtime_error("moduleHierarchy response result is not an object");
@@ -725,6 +738,7 @@ void collectOutlineMetrics(const lsp::json::Value& result, Metrics& metrics) {
         throw std::runtime_error("outline response result is not an object");
     }
     const auto& response = result.object();
+    collectSyntaxCacheMetrics(response, metrics);
     metrics.outline_root_count = arraySize(response, "roots");
     metrics.outline_item_count = arraySize(response, "items");
     metrics.partial = metrics.partial || boolValue(response, "partial");
@@ -981,6 +995,11 @@ std::string summaryJson(const Metrics& metrics) {
         << "\"schematicClosureBuildMicros\":" << metrics.schematic_closure_build_micros << ","
         << "\"schematicClosureQueryMicros\":" << metrics.schematic_closure_query_micros << ","
         << "\"schematicClosureCacheHit\":" << boolJson(metrics.schematic_closure_cache_hit) << ","
+        << "\"syntaxCacheHits\":" << metrics.syntax_cache_hits << ","
+        << "\"syntaxCacheMisses\":" << metrics.syntax_cache_misses << ","
+        << "\"syntaxCacheStores\":" << metrics.syntax_cache_stores << ","
+        << "\"syntaxCacheInvalidations\":" << metrics.syntax_cache_invalidations << ","
+        << "\"syntaxCacheEntries\":" << metrics.syntax_cache_entries << ","
         << "\"queryCacheHits\":" << metrics.query_cache_hits << ","
         << "\"queryCacheMisses\":" << metrics.query_cache_misses << ","
         << "\"queryCacheStores\":" << metrics.query_cache_stores << ","
@@ -1175,6 +1194,16 @@ int main(int argc, char** argv) {
                        metrics.mode == "real" ? "textDocument/didOpen:real" : "textDocument/didOpen:probe",
                        metrics.did_open_probe_micros);
         writeStage(operation_log, "didOpen:end", std::to_string(metrics.did_open_probe_micros) + "us");
+
+        writeStage(operation_log, "documentSymbol:begin", opened_source.uri);
+        start = Clock::now();
+        auto document_symbols = client.request("textDocument/documentSymbol",
+                                               textDocumentParams(opened_source.uri));
+        writeOperation(operation_log,
+                       "textDocument/documentSymbol",
+                       elapsedMicros(start, Clock::now()),
+                       &document_symbols);
+        writeStage(operation_log, "documentSymbol:end");
 
         writeStage(operation_log, "outline:begin", opened_source.uri);
         start = Clock::now();
