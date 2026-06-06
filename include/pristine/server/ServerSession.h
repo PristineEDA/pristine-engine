@@ -4,6 +4,7 @@
 #include "pristine/analysis/SemanticWorkspace.h"
 #include "pristine/analysis/SyntaxDocumentCache.h"
 #include "pristine/document/DocumentStore.h"
+#include "pristine/waveform/WaveformPipeService.h"
 #include "pristine/workspace/WorkspaceManager.h"
 
 #include <nlohmann/json.hpp>
@@ -38,6 +39,8 @@ private:
     jsonrpc::Json handleModuleHierarchy(const jsonrpc::Json& params);
     jsonrpc::Json handleSchematic(const jsonrpc::Json& params);
     jsonrpc::Json handleBackwardCone(const jsonrpc::Json& params);
+    jsonrpc::Json handleWaveformOpen(const jsonrpc::Json& params);
+    jsonrpc::Json handleWaveformClose(const jsonrpc::Json& params);
     jsonrpc::Json handleHover(const jsonrpc::Json& params);
     jsonrpc::Json handleDefinition(const jsonrpc::Json& params);
     jsonrpc::Json handleTypeDefinition(const jsonrpc::Json& params);
@@ -89,6 +92,7 @@ private:
     analysis::CompilationService compilation_service_;
     analysis::SyntaxDocumentCache syntax_cache_;
     analysis::SemanticWorkspace semantic_workspace_;
+    waveform::WaveformPipeService waveform_service_;
     document::DocumentStore document_store_;
     workspace::WorkspaceManager workspace_manager_;
     std::atomic<std::uint64_t> semantic_generation_cache_ = 0;

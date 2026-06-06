@@ -231,12 +231,53 @@ TEST_CASE("ServerSession handles initialize-shutdown-exit", "[server][lifecycle]
     CHECK(initialize_response.at("result").at("capabilities").at("workspaceSymbolProvider") == true);
     CHECK(initialize_response.at("result").at("capabilities").at("completionProvider").at(
               "resolveProvider") == true);
+    CHECK(initialize_response.at("result").at("capabilities").at("experimental").at(
+              "pristineWaveformProvider").at("transport") == "pipe");
+    CHECK(initialize_response.at("result").at("capabilities").at("experimental").at(
+              "pristineWaveformProvider").at("protocol") == "pristine-waveform-columnar-v1");
+    CHECK(initialize_response.at("result").at("capabilities").at("experimental").at(
+              "pristineWaveformProvider").at("mock") == true);
     CHECK(initialize_response.at("result").at("capabilities").at("textDocumentSync").at(
               "openClose") == true);
 
     const auto shutdown_response = parseOutput(transport, 1);
     CHECK(shutdown_response.at("id") == 2);
     CHECK(shutdown_response.at("result").is_null());
+}
+
+TEST_CASE("ServerSession opens and closes waveform pipe sessions", "[server][waveform]") {
+    jsonrpc::JsonRpcServer rpc_server;
+    ServerSession session{"pristine-engine", kTestServerVersion};
+    session.bind(rpc_server);
+
+    ScriptedTransport transport{
+        R"({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}})",
+        R"({"jsonrpc":"2.0","id":2,"method":"systemverilog/waveform/open","params":{"source":"mock"}})",
+        R"({"jsonrpc":"2.0","id":3,"method":"systemverilog/waveform/close","params":{"sessionId":"1"}})",
+        R"({"jsonrpc":"2.0","id":4,"method":"shutdown","params":null})",
+        R"({"jsonrpc":"2.0","method":"exit","params":null})"};
+
+    const int exit_code = rpc_server.run(transport);
+
+    REQUIRE(exit_code == 0);
+    REQUIRE(transport.outputs().size() == 4);
+
+    const auto open_response = parseOutput(transport, 1);
+    CHECK(open_response.at("id") == 2);
+    const auto& result = open_response.at("result");
+    CHECK(result.at("sessionId") == "1");
+    CHECK(result.at("protocol") == "pristine-waveform-columnar-v1");
+    CHECK(result.at("title") == "counter_tb");
+    CHECK(result.at("duration") == 200.0);
+    CHECK(result.at("timescaleUnit") == "ns");
+    CHECK(result.at("groupCount") == 3);
+    CHECK(result.at("signalCount") == 168);
+    CHECK(result.at("endpoint").at("path").get<std::string>().find("pristine-engine-waveform") !=
+          std::string::npos);
+
+    const auto close_response = parseOutput(transport, 2);
+    CHECK(close_response.at("id") == 3);
+    CHECK(close_response.at("result").at("closed") == true);
 }
 
 TEST_CASE("ServerSession exits with failure when shutdown is skipped", "[server][lifecycle]") {

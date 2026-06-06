@@ -751,6 +751,19 @@ int parseMaxDepth(const jsonrpc::Json& params) {
     return std::max(1, max_depth_it->get<int>());
 }
 
+jsonrpc::Json toWaveformSessionJson(const waveform::WaveformSessionInfo& info) {
+    return jsonrpc::Json{{"sessionId", info.session_id},
+                         {"protocol", info.protocol},
+                         {"endpoint",
+                          jsonrpc::Json{{"kind", info.endpoint.kind},
+                                         {"path", info.endpoint.path}}},
+                         {"title", info.title},
+                         {"duration", info.duration},
+                         {"timescaleUnit", info.timescale_unit},
+                         {"groupCount", info.group_count},
+                         {"signalCount", info.signal_count}};
+}
+
 } // namespace
 
 ServerSession::ServerSession(std::string server_name, std::string server_version) :
@@ -758,6 +771,7 @@ ServerSession::ServerSession(std::string server_name, std::string server_version
 
 ServerSession::~ServerSession() {
     stopBackgroundDiagnostics();
+    waveform_service_.stop();
 }
 
 void ServerSession::bind(jsonrpc::JsonRpcServer& server) {
@@ -780,6 +794,12 @@ void ServerSession::bind(jsonrpc::JsonRpcServer& server) {
     });
     server.registerRequestHandler("systemverilog/backwardCone", [this](const jsonrpc::Json& params) {
         return handleBackwardCone(params);
+    });
+    server.registerRequestHandler("systemverilog/waveform/open", [this](const jsonrpc::Json& params) {
+        return handleWaveformOpen(params);
+    });
+    server.registerRequestHandler("systemverilog/waveform/close", [this](const jsonrpc::Json& params) {
+        return handleWaveformClose(params);
     });
     server.registerRequestHandler("textDocument/hover", [this](const jsonrpc::Json& params) {
         return handleHover(params);
@@ -1114,6 +1134,42 @@ jsonrpc::Json ServerSession::handleBackwardCone(const jsonrpc::Json& params) {
     auto result = toConeTraceJson(trace);
     appendQueryCacheTelemetry(result, query_cache_stats);
     return result;
+}
+
+jsonrpc::Json ServerSession::handleWaveformOpen(const jsonrpc::Json& params) {
+    if (!initialized_) {
+        throw std::runtime_error("systemverilog/waveform/open received before initialize");
+    }
+
+    const auto source_it = params.find("source");
+    if (source_it != params.end() && !source_it->is_null()) {
+        if (!source_it->is_string()) {
+            throw std::runtime_error("Expected 'source' to be a string");
+        }
+        const auto source = source_it->get<std::string>();
+        if (source != "mock") {
+            throw std::runtime_error("Only mock waveform source is implemented");
+        }
+    }
+    if (params.contains("fstUri")) {
+        throw std::runtime_error("FST waveform parsing is not implemented");
+    }
+
+    return toWaveformSessionJson(waveform_service_.openMockSession());
+}
+
+jsonrpc::Json ServerSession::handleWaveformClose(const jsonrpc::Json& params) {
+    if (!initialized_) {
+        throw std::runtime_error("systemverilog/waveform/close received before initialize");
+    }
+
+    const auto session_id_it = params.find("sessionId");
+    if (session_id_it == params.end() || !session_id_it->is_string()) {
+        throw std::runtime_error("Expected 'sessionId' to be a string");
+    }
+
+    const auto closed = waveform_service_.closeSession(session_id_it->get<std::string>());
+    return jsonrpc::Json{{"closed", closed}};
 }
 
 jsonrpc::Json ServerSession::handleHover(const jsonrpc::Json& params) {
@@ -1730,6 +1786,7 @@ jsonrpc::Json ServerSession::handleRename(const jsonrpc::Json& params) {
 
 jsonrpc::Json ServerSession::handleShutdown(const jsonrpc::Json&) {
     stopBackgroundDiagnostics();
+    waveform_service_.stop();
     shutdown_requested_ = true;
     return nullptr;
 }
@@ -1890,6 +1947,7 @@ void ServerSession::handleDidChangeWatchedFiles(const jsonrpc::Json& params) {
 
 void ServerSession::handleExit(const jsonrpc::Json&) {
     stopBackgroundDiagnostics();
+    waveform_service_.stop();
     if (!server_) {
         return;
     }

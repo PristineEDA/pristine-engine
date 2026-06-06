@@ -230,6 +230,10 @@ add_library(
   src/lsp/Protocol.cpp
   src/server/ServerSession.cpp
   src/transport/StdioTransport.cpp
+  src/waveform/WaveformBinaryProtocol.cpp
+  src/waveform/WaveformMockGenerator.cpp
+  src/waveform/WaveformPipeService.cpp
+  src/waveform/WaveformViewportEncoder.cpp
   src/workspace/WorkspaceManager.cpp
   "${PRISTINE_VERSION_SOURCE}")
 

@@ -17,6 +17,7 @@ add_executable(
 	unit/SemanticWorkspaceTests.cpp
 	unit/SourceUtilTests.cpp
 	unit/SyntaxDocumentCacheTests.cpp
+	unit/WaveformProviderTests.cpp
 	unit/ServerLifecycleTests.cpp
 	unit/WorkspaceDiscoveryIndexTests.cpp)
 target_link_libraries(pristine_unit_tests PRIVATE pristine_core Catch2::Catch2WithMain)
@@ -28,6 +29,11 @@ find_package(Python3 COMPONENTS Interpreter REQUIRED)
 add_test(
 	NAME pristine_lsp_core_e2e
 	COMMAND Python3::Interpreter ${CMAKE_CURRENT_SOURCE_DIR}/e2e/lsp_core_smoke.py
+		$<TARGET_FILE:pristine-engine>)
+
+add_test(
+	NAME pristine_waveform_pipe_e2e
+	COMMAND Python3::Interpreter ${CMAKE_CURRENT_SOURCE_DIR}/e2e/waveform_pipe_smoke.py
 		$<TARGET_FILE:pristine-engine>)
 
 add_test(
