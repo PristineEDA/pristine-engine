@@ -30,6 +30,13 @@ WaveformViewportRequest smallViewport(std::uint32_t max_segments = 0) {
                                    .signal_ids = {"tb_top_module1-clk", "u_top_module1-counting"}};
 }
 
+std::uint32_t readSignalSegmentCount(const std::vector<std::uint8_t>& payload,
+                                     std::uint32_t signal_table_offset,
+                                     std::size_t table_index) {
+    const auto entry_offset = signal_table_offset + static_cast<std::uint32_t>(table_index) * 16U + 8U;
+    return readU32(payload.data(), payload.size(), entry_offset);
+}
+
 } // namespace
 
 TEST_CASE("Waveform binary frame roundtrips and rejects invalid magic", "[waveform][protocol]") {
@@ -142,6 +149,43 @@ TEST_CASE("Waveform viewport frame reports max segment truncation", "[waveform][
     CHECK(readU32(payload.data(), payload.size(), 48) == kWaveformFrameFlagTruncated);
     CHECK(readU32(payload.data(), payload.size(), 52) == 2);
     CHECK(readU32(payload.data(), payload.size(), 12) == 2);
+}
+
+TEST_CASE("Waveform dense viewport returns every requested signal without truncation",
+          "[waveform][viewport]") {
+    const auto data = makeMockWaveformDataSet();
+    auto request = smallViewport();
+    request.start_time = 0.0;
+    request.end_time = 200.0;
+    request.viewport_pixel_width = 1800.0F;
+    request.max_segments = 0;
+    request.signal_ids = {"dense-signal-107",
+                          "dense-signal-108",
+                          "dense-signal-109",
+                          "dense-signal-110",
+                          "dense-signal-111",
+                          "dense-signal-112",
+                          "dense-signal-113",
+                          "dense-signal-114",
+                          "dense-signal-115",
+                          "dense-signal-116",
+                          "dense-signal-117",
+                          "dense-signal-118",
+                          "dense-signal-119"};
+
+    const auto payload = encodeViewportFramePayload(data, request);
+    const auto signal_count = readU32(payload.data(), payload.size(), 8);
+    const auto segment_count = readU32(payload.data(), payload.size(), 12);
+    const auto signal_table_offset = readU32(payload.data(), payload.size(), 16);
+    const auto requested_signal_count = static_cast<std::uint32_t>(request.signal_ids.size());
+
+    REQUIRE(signal_count == requested_signal_count);
+    CHECK(readU32(payload.data(), payload.size(), 48) == 0);
+    CHECK(segment_count > requested_signal_count);
+
+    for (std::size_t index = 0; index < request.signal_ids.size(); ++index) {
+        CHECK(readSignalSegmentCount(payload, signal_table_offset, index) > 0);
+    }
 }
 
 } // namespace pristine::waveform
