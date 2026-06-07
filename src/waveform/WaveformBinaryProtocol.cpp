@@ -263,4 +263,38 @@ WaveformViewportRequest decodeViewportFrameRequestPayload(const std::vector<std:
     return result;
 }
 
+WaveformViewportRequestV2 decodeViewportFrameRequestPayloadV2(
+    const std::vector<std::uint8_t>& payload) {
+    const auto* bytes = payload.data();
+    const auto size = payload.size();
+    std::size_t offset = 0;
+    WaveformViewportRequestV2 result{};
+    result.prepared_start_time = readF64(bytes, size, offset);
+    offset += sizeof(double);
+    result.prepared_end_time = readF64(bytes, size, offset);
+    offset += sizeof(double);
+    result.viewport_start_time = readF64(bytes, size, offset);
+    offset += sizeof(double);
+    result.viewport_end_time = readF64(bytes, size, offset);
+    offset += sizeof(double);
+    result.viewport_pixel_width = readF32(bytes, size, offset);
+    offset += sizeof(float);
+    result.lane_height = readF32(bytes, size, offset);
+    offset += sizeof(float);
+    result.header_height = readF32(bytes, size, offset);
+    offset += sizeof(float);
+    result.max_segments = readU32(bytes, size, offset);
+    offset += sizeof(std::uint32_t);
+    const auto signal_count = readU32(bytes, size, offset);
+    offset += sizeof(std::uint32_t);
+    result.signal_ids.reserve(signal_count);
+    for (std::uint32_t index = 0; index < signal_count; ++index) {
+        result.signal_ids.push_back(readString(bytes, size, offset));
+    }
+    if (offset != size) {
+        throw std::runtime_error("Viewport v2 request payload has trailing bytes");
+    }
+    return result;
+}
+
 } // namespace pristine::waveform

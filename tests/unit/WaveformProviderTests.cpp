@@ -30,6 +30,37 @@ WaveformViewportRequest smallViewport(std::uint32_t max_segments = 0) {
                                    .signal_ids = {"tb_top_module1-clk", "u_top_module1-counting"}};
 }
 
+WaveformViewportRequestV2 preparedViewport(std::uint32_t max_segments = 0) {
+    return WaveformViewportRequestV2{.prepared_start_time = 0.0,
+                                     .prepared_end_time = 200.0,
+                                     .viewport_start_time = 40.0,
+                                     .viewport_end_time = 100.0,
+                                     .viewport_pixel_width = 500.0F,
+                                     .lane_height = 24.0F,
+                                     .header_height = 22.0F,
+                                     .max_segments = max_segments,
+                                     .signal_ids = {"tb_top_module1-clk",
+                                                    "u_top_module1-counting"}};
+}
+
+std::vector<std::uint8_t> encodeViewportFrameRequestPayloadV2ForTest(
+    const WaveformViewportRequestV2& request) {
+    std::vector<std::uint8_t> payload;
+    appendF64(payload, request.prepared_start_time);
+    appendF64(payload, request.prepared_end_time);
+    appendF64(payload, request.viewport_start_time);
+    appendF64(payload, request.viewport_end_time);
+    appendF32(payload, request.viewport_pixel_width);
+    appendF32(payload, request.lane_height);
+    appendF32(payload, request.header_height);
+    appendU32(payload, request.max_segments);
+    appendU32(payload, static_cast<std::uint32_t>(request.signal_ids.size()));
+    for (const auto& signal_id : request.signal_ids) {
+        appendString(payload, signal_id);
+    }
+    return payload;
+}
+
 std::uint32_t readSignalSegmentCount(const std::vector<std::uint8_t>& payload,
                                      std::uint32_t signal_table_offset,
                                      std::size_t table_index) {
@@ -142,6 +173,56 @@ TEST_CASE("Waveform viewport frame uses typed-array compatible column offsets",
     CHECK(payload.at(value_kind_offset) == static_cast<std::uint8_t>(WaveformValueKind::Low));
 }
 
+TEST_CASE("Waveform viewport v2 request decodes prepared and display ranges",
+          "[waveform][viewport]") {
+    const auto request = preparedViewport();
+    const auto decoded = decodeViewportFrameRequestPayloadV2(
+        encodeViewportFrameRequestPayloadV2ForTest(request));
+
+    CHECK(decoded.prepared_start_time == 0.0);
+    CHECK(decoded.prepared_end_time == 200.0);
+    CHECK(decoded.viewport_start_time == 40.0);
+    CHECK(decoded.viewport_end_time == 100.0);
+    CHECK(decoded.viewport_pixel_width == 500.0F);
+    CHECK(decoded.lane_height == 24.0F);
+    CHECK(decoded.header_height == 22.0F);
+    CHECK(decoded.max_segments == 0);
+    CHECK(decoded.signal_ids == request.signal_ids);
+}
+
+TEST_CASE("Waveform viewport v2 frame includes prepared range and time columns",
+          "[waveform][viewport]") {
+    const auto data = makeMockWaveformDataSet();
+    const auto request = preparedViewport();
+    const auto payload = encodeViewportFramePayloadV2(data, request);
+
+    REQUIRE(payload.size() > 96);
+    CHECK(payload[0] == 'P');
+    CHECK(payload[1] == 'W');
+    CHECK(payload[2] == 'V');
+    CHECK(payload[3] == 'F');
+    CHECK(readU16(payload.data(), payload.size(), 4) == 2);
+    CHECK(readU16(payload.data(), payload.size(), 6) == 96);
+    CHECK(readU32(payload.data(), payload.size(), 8) == 2);
+    const auto segment_count = readU32(payload.data(), payload.size(), 12);
+    REQUIRE(segment_count > 0);
+
+    const auto signal_table_offset = readU32(payload.data(), payload.size(), 16);
+    const auto time0_offset = readU32(payload.data(), payload.size(), 56);
+    const auto time1_offset = readU32(payload.data(), payload.size(), 60);
+
+    CHECK(time0_offset % 8U == 0);
+    CHECK(time1_offset % 8U == 0);
+    CHECK(readF64(payload.data(), payload.size(), 64) == request.prepared_start_time);
+    CHECK(readF64(payload.data(), payload.size(), 72) == request.prepared_end_time);
+    CHECK(readF64(payload.data(), payload.size(), 80) == request.viewport_start_time);
+    CHECK(readF64(payload.data(), payload.size(), 88) == request.viewport_end_time);
+    CHECK(readU32(payload.data(), payload.size(), 48) == 0);
+    CHECK(readSignalSegmentCount(payload, signal_table_offset, 0) > 0);
+    CHECK(readF64(payload.data(), payload.size(), time0_offset) == request.prepared_start_time);
+    CHECK(readF64(payload.data(), payload.size(), time1_offset) > request.prepared_start_time);
+}
+
 TEST_CASE("Waveform viewport frame reports max segment truncation", "[waveform][viewport]") {
     const auto data = makeMockWaveformDataSet();
     const auto payload = encodeViewportFramePayload(data, smallViewport(2));
@@ -149,6 +230,45 @@ TEST_CASE("Waveform viewport frame reports max segment truncation", "[waveform][
     CHECK(readU32(payload.data(), payload.size(), 48) == kWaveformFrameFlagTruncated);
     CHECK(readU32(payload.data(), payload.size(), 52) == 2);
     CHECK(readU32(payload.data(), payload.size(), 12) == 2);
+}
+
+TEST_CASE("Waveform dense viewport v2 returns every requested signal without truncation",
+          "[waveform][viewport]") {
+    const auto data = makeMockWaveformDataSet();
+    auto request = preparedViewport();
+    request.prepared_start_time = 0.0;
+    request.prepared_end_time = 200.0;
+    request.viewport_start_time = 0.0;
+    request.viewport_end_time = 200.0;
+    request.viewport_pixel_width = 1800.0F;
+    request.max_segments = 0;
+    request.signal_ids = {"dense-signal-107",
+                          "dense-signal-108",
+                          "dense-signal-109",
+                          "dense-signal-110",
+                          "dense-signal-111",
+                          "dense-signal-112",
+                          "dense-signal-113",
+                          "dense-signal-114",
+                          "dense-signal-115",
+                          "dense-signal-116",
+                          "dense-signal-117",
+                          "dense-signal-118",
+                          "dense-signal-119"};
+
+    const auto payload = encodeViewportFramePayloadV2(data, request);
+    const auto signal_count = readU32(payload.data(), payload.size(), 8);
+    const auto segment_count = readU32(payload.data(), payload.size(), 12);
+    const auto signal_table_offset = readU32(payload.data(), payload.size(), 16);
+    const auto requested_signal_count = static_cast<std::uint32_t>(request.signal_ids.size());
+
+    REQUIRE(signal_count == requested_signal_count);
+    CHECK(readU32(payload.data(), payload.size(), 48) == 0);
+    CHECK(segment_count > requested_signal_count);
+
+    for (std::size_t index = 0; index < request.signal_ids.size(); ++index) {
+        CHECK(readSignalSegmentCount(payload, signal_table_offset, index) > 0);
+    }
 }
 
 TEST_CASE("Waveform dense viewport returns every requested signal without truncation",

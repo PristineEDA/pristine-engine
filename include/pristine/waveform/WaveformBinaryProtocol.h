@@ -22,6 +22,8 @@ enum class WaveformMessageType : std::uint16_t {
     ViewportFrameResponse = 6,
     ErrorResponse = 7,
     Close = 8,
+    ViewportFrameRequestV2 = 9,
+    ViewportFrameResponseV2 = 10,
 };
 
 enum class WaveformErrorCode : std::uint32_t {
@@ -47,6 +49,8 @@ struct WaveformFrame {
 [[nodiscard]] std::vector<std::uint8_t> encodeErrorPayload(WaveformErrorCode code,
                                                            std::string_view message);
 [[nodiscard]] WaveformViewportRequest decodeViewportFrameRequestPayload(
+    const std::vector<std::uint8_t>& payload);
+[[nodiscard]] WaveformViewportRequestV2 decodeViewportFrameRequestPayloadV2(
     const std::vector<std::uint8_t>& payload);
 
 void appendString(std::vector<std::uint8_t>& output, std::string_view value);

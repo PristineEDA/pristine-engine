@@ -88,6 +88,16 @@ std::vector<std::uint8_t> handleRequest(const WaveformDataSet& data, const Wavef
                                                  .flags = flags,
                                                  .payload = payload});
             }
+            case WaveformMessageType::ViewportFrameRequestV2: {
+                const auto viewport_request = decodeViewportFrameRequestPayloadV2(request.payload);
+                const auto payload = encodeViewportFramePayloadV2(data, viewport_request);
+                const auto flags = readU32(payload.data(), payload.size(), 48);
+                return encodeFrame(WaveformFrame{.message_type =
+                                                     WaveformMessageType::ViewportFrameResponseV2,
+                                                 .request_id = request.request_id,
+                                                 .flags = flags,
+                                                 .payload = payload});
+            }
             case WaveformMessageType::Close:
                 return {};
             default:

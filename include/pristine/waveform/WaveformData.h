@@ -61,4 +61,16 @@ struct WaveformViewportRequest {
     std::vector<std::string> signal_ids;
 };
 
+struct WaveformViewportRequestV2 {
+    double prepared_start_time = 0.0;
+    double prepared_end_time = 0.0;
+    double viewport_start_time = 0.0;
+    double viewport_end_time = 0.0;
+    float viewport_pixel_width = 0.0F;
+    float lane_height = 0.0F;
+    float header_height = 0.0F;
+    std::uint32_t max_segments = 0;
+    std::vector<std::string> signal_ids;
+};
+
 } // namespace pristine::waveform
