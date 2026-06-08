@@ -1,6 +1,9 @@
 set(PRISTINE_DEPENDENCY_NAMES
     slang
     fmt
+    zlib
+    lz4
+    fastlz
     nlohmann_json
     catch2
     lsp_framework)
@@ -12,6 +15,20 @@ set(PRISTINE_DEP_slang_ARCHIVE_NAME "slang-v11.0.tar.gz")
 set(PRISTINE_DEP_fmt_URL "https://codeload.github.com/fmtlib/fmt/tar.gz/refs/tags/12.1.0")
 set(PRISTINE_DEP_fmt_SHA256 "EA7DE4299689E12B6DDDD392F9896F08FB0777AC7168897A244A6D6085043FEA")
 set(PRISTINE_DEP_fmt_ARCHIVE_NAME "fmt-12.1.0.tar.gz")
+
+set(PRISTINE_DEP_zlib_URL "https://github.com/madler/zlib/archive/refs/tags/v1.3.1.tar.gz")
+set(PRISTINE_DEP_zlib_SHA256 "17E88863F3600672AB49182F217281B6FC4D3C762BDE361935E436A95214D05C")
+set(PRISTINE_DEP_zlib_ARCHIVE_NAME "zlib-1.3.1.tar.gz")
+
+set(PRISTINE_DEP_lz4_URL "https://github.com/lz4/lz4/archive/refs/tags/v1.10.0.tar.gz")
+set(PRISTINE_DEP_lz4_SHA256 "537512904744B35E232912055CCF8EC66D768639FF3ABE5788D90D792EC5F48B")
+set(PRISTINE_DEP_lz4_ARCHIVE_NAME "lz4-1.10.0.tar.gz")
+set(PRISTINE_DEP_lz4_CMAKE_SUBDIR "build/cmake")
+
+set(PRISTINE_DEP_fastlz_URL "https://github.com/ariya/FastLZ/archive/b1342dabcf5257ab303743c9332fe75e9147a011.tar.gz")
+set(PRISTINE_DEP_fastlz_SHA256 "655F998DEEF53F4924CE8282A3B875AB43EE31189C3C04EFDD7C9D73811D7324")
+set(PRISTINE_DEP_fastlz_ARCHIVE_NAME "fastlz-b1342dabcf5257ab303743c9332fe75e9147a011.tar.gz")
+set(PRISTINE_DEP_fastlz_ALLOW_NO_CMAKE TRUE)
 
 set(PRISTINE_DEP_nlohmann_json_URL "https://codeload.github.com/nlohmann/json/tar.gz/refs/tags/v3.11.3")
 set(PRISTINE_DEP_nlohmann_json_SHA256 "0D8EF5AF7F9794E3263480193C491549B2BA6CC74BB018906202ADA498A79406")

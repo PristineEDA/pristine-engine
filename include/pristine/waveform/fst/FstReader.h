@@ -1,0 +1,104 @@
+#pragma once
+
+#include <cstdint>
+#include <filesystem>
+#include <optional>
+#include <string>
+#include <vector>
+
+namespace pristine::waveform::fst {
+
+enum class FstBlockType : std::uint8_t {
+    Header = 0,
+    ValueChangeData = 1,
+    Blackout = 2,
+    Geometry = 3,
+    Hierarchy = 4,
+    ValueChangeDataDynamicAlias = 5,
+    HierarchyLz4 = 6,
+    HierarchyLz4Duo = 7,
+    ValueChangeDataDynamicAlias2 = 8,
+    ZWrapper = 254,
+    Skip = 255,
+};
+
+enum class FstCompressionKind : std::uint8_t {
+    None = 0,
+    Zlib = 1,
+    Lz4 = 2,
+    FastLz = 3,
+    Unknown = 255,
+};
+
+struct FstHeader {
+    std::uint64_t start_time = 0;
+    std::uint64_t end_time = 0;
+    std::uint64_t memory_used_by_writer = 0;
+    std::uint64_t scope_count = 0;
+    std::uint64_t variable_count = 0;
+    std::uint64_t max_handle = 0;
+    std::uint64_t value_change_section_count = 0;
+    std::int8_t timescale = -9;
+    std::string version;
+    std::string date;
+    std::uint8_t file_type = 0;
+    std::uint64_t timezero = 0;
+};
+
+struct FstScope {
+    std::uint32_t index = 0;
+    std::uint32_t parent_index = 0;
+    std::uint8_t type = 0;
+    std::string name;
+    std::string component;
+    std::string path;
+};
+
+struct FstSignal {
+    std::uint32_t handle = 0;
+    std::uint32_t alias_handle = 0;
+    std::uint8_t var_type = 0;
+    std::uint8_t direction = 0;
+    std::uint32_t width = 1;
+    std::uint32_t scope_index = 0;
+    std::string name;
+    std::string path;
+};
+
+struct FstBlockIndexEntry {
+    FstBlockType type = FstBlockType::Skip;
+    std::uint64_t file_offset = 0;
+    std::uint64_t section_length = 0;
+    std::uint64_t payload_offset = 0;
+    std::uint64_t payload_size = 0;
+    std::uint64_t begin_time = 0;
+    std::uint64_t end_time = 0;
+    std::uint64_t memory_required_for_traversal = 0;
+    FstCompressionKind compression = FstCompressionKind::Unknown;
+};
+
+struct FstTransition {
+    std::uint32_t handle = 0;
+    std::uint64_t time = 0;
+    std::string value;
+};
+
+struct FstData {
+    std::filesystem::path file_path;
+    std::optional<std::filesystem::path> hierarchy_sidecar_path;
+    FstHeader header;
+    std::vector<FstScope> scopes;
+    std::vector<FstSignal> signals;
+    std::vector<FstBlockIndexEntry> value_blocks;
+    std::vector<FstTransition> transitions;
+};
+
+struct FstReadOptions {
+    std::optional<std::filesystem::path> workspace_root;
+    bool decode_transitions = true;
+};
+
+[[nodiscard]] FstData readFstFile(const std::filesystem::path& path,
+                                  const FstReadOptions& options = {});
+
+} // namespace pristine::waveform::fst

@@ -5,6 +5,7 @@ import socket
 import struct
 import subprocess
 import sys
+import tempfile
 import time
 from typing import BinaryIO
 
@@ -19,6 +20,8 @@ CATALOG_RESPONSE = 4
 VIEWPORT_FRAME_REQUEST = 5
 VIEWPORT_FRAME_RESPONSE = 6
 CLOSE = 8
+VIEWPORT_FRAME_REQUEST_V2 = 9
+VIEWPORT_FRAME_RESPONSE_V2 = 10
 
 
 def write_message(process: subprocess.Popen[bytes], message: dict) -> None:
@@ -100,11 +103,35 @@ def write_string(value: str) -> bytes:
     return struct.pack("<I", len(encoded)) + encoded
 
 
-def viewport_request_payload() -> bytes:
+def viewport_request_payload(signal_ids: list[str], start: float, end: float, max_segments: int) -> bytes:
     return (
-        struct.pack("<ddfffII", 0.0, 100.0, 500.0, 24.0, 22.0, 32, 2)
-        + write_string("tb_top_module1-clk")
-        + write_string("u_top_module1-counting")
+        struct.pack("<ddfffII", start, end, 500.0, 24.0, 22.0, max_segments, len(signal_ids))
+        + b"".join(write_string(signal_id) for signal_id in signal_ids)
+    )
+
+
+def viewport_request_payload_v2(
+    signal_ids: list[str],
+    prepared_start: float,
+    prepared_end: float,
+    viewport_start: float,
+    viewport_end: float,
+    max_segments: int,
+) -> bytes:
+    return (
+        struct.pack(
+            "<ddddfffII",
+            prepared_start,
+            prepared_end,
+            viewport_start,
+            viewport_end,
+            500.0,
+            24.0,
+            22.0,
+            max_segments,
+            len(signal_ids),
+        )
+        + b"".join(write_string(signal_id) for signal_id in signal_ids)
     )
 
 
@@ -126,92 +153,322 @@ def connect_pipe(kind: str, path: str) -> BinaryIO:
     raise RuntimeError(f"failed to connect waveform pipe {path}: {last_error}")
 
 
+def append_fst_varint(output: bytearray, value: int) -> None:
+    while value >> 7:
+        output.append((value & 0x7F) | 0x80)
+        value >>= 7
+    output.append(value & 0x7F)
+
+
+def append_null_string(output: bytearray, value: str) -> None:
+    output.extend(value.encode("utf-8"))
+    output.append(0)
+
+
+def append_fst_block(output: bytearray, block_type: int, payload: bytes | bytearray) -> None:
+    output.append(block_type)
+    output.extend(struct.pack(">Q", len(payload) + 8))
+    output.extend(payload)
+
+
+def write_tiny_fst_fixture(directory: pathlib.Path) -> pathlib.Path:
+    data = bytearray()
+    data.append(0)
+    data.extend(struct.pack(">Q", 329))
+    data.extend(struct.pack(">Q", 0))
+    data.extend(struct.pack(">Q", 40))
+    data.extend(struct.pack("d", 2.7182818284590452354))
+    data.extend(struct.pack(">Q", 0))
+    data.extend(struct.pack(">Q", 1))
+    data.extend(struct.pack(">Q", 2))
+    data.extend(struct.pack(">Q", 2))
+    data.extend(struct.pack(">Q", 1))
+    data.append(0xF7)  # int8 -9, nanoseconds.
+    data.extend(bytes(128))
+    data.extend(bytes(119))
+    data.append(0)
+    data.extend(struct.pack(">Q", 0))
+    assert len(data) == 330
+
+    hierarchy = bytearray()
+    hierarchy.append(254)
+    hierarchy.append(0)
+    append_null_string(hierarchy, "tb")
+    append_null_string(hierarchy, "")
+    hierarchy.append(16)
+    hierarchy.append(0)
+    append_null_string(hierarchy, "clk")
+    append_fst_varint(hierarchy, 1)
+    append_fst_varint(hierarchy, 0)
+    hierarchy.append(16)
+    hierarchy.append(0)
+    append_null_string(hierarchy, "data")
+    append_fst_varint(hierarchy, 4)
+    append_fst_varint(hierarchy, 0)
+    hierarchy.append(255)
+    append_fst_block(data, 4, hierarchy)
+
+    geometry_data = bytearray()
+    append_fst_varint(geometry_data, 1)
+    append_fst_varint(geometry_data, 4)
+    geometry = bytearray()
+    geometry.extend(struct.pack(">Q", len(geometry_data)))
+    geometry.extend(struct.pack(">Q", 2))
+    geometry.extend(geometry_data)
+    append_fst_block(data, 3, geometry)
+
+    value_payload = bytearray()
+    value_payload.extend(struct.pack(">Q", 0))
+    value_payload.extend(struct.pack(">Q", 40))
+    value_payload.extend(struct.pack(">Q", 0))
+
+    initial_frame = bytearray(b"0xxxx")
+    append_fst_varint(value_payload, len(initial_frame))
+    append_fst_varint(value_payload, len(initial_frame))
+    append_fst_varint(value_payload, 2)
+    value_payload.extend(initial_frame)
+
+    append_fst_varint(value_payload, 2)
+    value_payload.append(ord("Z"))
+
+    handle1_chain = bytearray()
+    append_fst_varint(handle1_chain, 0)
+    append_fst_varint(handle1_chain, 6)
+    append_fst_varint(handle1_chain, 8)
+
+    handle2_chain = bytearray()
+    append_fst_varint(handle2_chain, 0)
+    append_fst_varint(handle2_chain, 4)
+    handle2_chain.append(0x30)
+    append_fst_varint(handle2_chain, 5)
+    handle2_chain.extend(b"zzzz")
+
+    value_payload.extend(handle1_chain)
+    value_payload.extend(handle2_chain)
+
+    chain_index = bytearray()
+    append_fst_varint(chain_index, 3)
+    append_fst_varint(chain_index, 7)
+    value_payload.extend(chain_index)
+    value_payload.extend(struct.pack(">Q", len(chain_index)))
+
+    time_table = bytearray()
+    append_fst_varint(time_table, 0)
+    append_fst_varint(time_table, 10)
+    append_fst_varint(time_table, 5)
+    append_fst_varint(time_table, 5)
+    append_fst_varint(time_table, 10)
+    value_payload.extend(time_table)
+    value_payload.extend(struct.pack(">Q", len(time_table)))
+    value_payload.extend(struct.pack(">Q", len(time_table)))
+    value_payload.extend(struct.pack(">Q", 5))
+    append_fst_block(data, 1, value_payload)
+
+    path = directory / "tiny.fst"
+    path.write_bytes(data)
+    return path
+
+
+def assert_columnar_frame_v1(payload: bytes, expected_signal_count: int, max_segments: int) -> None:
+    assert payload[:4] == b"PWVF"
+    frame_version = struct.unpack_from("<H", payload, 4)[0]
+    signal_count = struct.unpack_from("<I", payload, 8)[0]
+    segment_count = struct.unpack_from("<I", payload, 12)[0]
+    offsets = struct.unpack_from("<IIIIIII", payload, 16)
+    assert frame_version == 1
+    assert signal_count == expected_signal_count
+    assert 0 < segment_count <= max_segments
+    assert all(offset % 4 == 0 for offset in offsets[:4] + offsets[5:6])
+
+
+def assert_columnar_frame_v2(payload: bytes, expected_signal_count: int, max_segments: int) -> None:
+    assert payload[:4] == b"PWVF"
+    frame_version, header_size = struct.unpack_from("<HH", payload, 4)
+    signal_count = struct.unpack_from("<I", payload, 8)[0]
+    segment_count = struct.unpack_from("<I", payload, 12)[0]
+    signal_table_offset, x0_offset, x1_offset, lane_y_offset = struct.unpack_from("<IIII", payload, 16)
+    value_kind_offset, label_index_offset, label_bytes_offset = struct.unpack_from("<III", payload, 32)
+    time0_offset, time1_offset = struct.unpack_from("<II", payload, 56)
+    prepared_start, prepared_end, viewport_start, viewport_end = struct.unpack_from("<dddd", payload, 64)
+    assert frame_version == 2
+    assert header_size == 96
+    assert signal_count == expected_signal_count
+    assert 0 < segment_count <= max_segments
+    assert signal_table_offset % 4 == 0
+    assert x0_offset % 4 == 0
+    assert x1_offset % 4 == 0
+    assert lane_y_offset % 4 == 0
+    assert label_index_offset % 4 == 0
+    assert label_bytes_offset % 4 == 0
+    assert time0_offset % 8 == 0
+    assert time1_offset % 8 == 0
+    assert value_kind_offset >= 96
+    assert prepared_start <= viewport_start < viewport_end <= prepared_end
+
+
+def exercise_pipe_session(
+    session: dict,
+    *,
+    expected_duration: float,
+    expected_group_count: int,
+    expected_signal_count: int,
+    signal_ids: list[str],
+    start: float,
+    end: float,
+    request_id_base: int,
+) -> None:
+    endpoint = session["endpoint"]
+    with connect_pipe(endpoint["kind"], endpoint["path"]) as pipe:
+        pipe.write(frame(HELLO, request_id_base))
+        pipe.flush()
+        message_type, request_id, _flags, payload = read_frame(pipe)
+        assert message_type == HELLO_RESPONSE
+        assert request_id == request_id_base
+        version, _reserved = struct.unpack_from("<HH", payload, 0)
+        duration = struct.unpack_from("<d", payload, 4)[0]
+        group_count, signal_count = struct.unpack_from("<II", payload, 12)
+        assert version == 1
+        assert duration == expected_duration
+        assert group_count == expected_group_count
+        assert signal_count == expected_signal_count
+
+        pipe.write(frame(CATALOG_REQUEST, request_id_base + 1))
+        pipe.flush()
+        message_type, request_id, _flags, payload = read_frame(pipe)
+        assert message_type == CATALOG_RESPONSE
+        assert request_id == request_id_base + 1
+        assert struct.unpack_from("<II", payload, 0) == (expected_group_count, expected_signal_count)
+
+        pipe.write(frame(VIEWPORT_FRAME_REQUEST, request_id_base + 2, viewport_request_payload(signal_ids, start, end, 32)))
+        pipe.flush()
+        message_type, request_id, flags, payload = read_frame(pipe)
+        assert message_type == VIEWPORT_FRAME_RESPONSE
+        assert request_id == request_id_base + 2
+        assert flags in (0, 1)
+        assert_columnar_frame_v1(payload, len(signal_ids), 32)
+
+        pipe.write(
+            frame(
+                VIEWPORT_FRAME_REQUEST_V2,
+                request_id_base + 3,
+                viewport_request_payload_v2(signal_ids, start, end, start, end, 32),
+            )
+        )
+        pipe.flush()
+        message_type, request_id, flags, payload = read_frame(pipe)
+        assert message_type == VIEWPORT_FRAME_RESPONSE_V2
+        assert request_id == request_id_base + 3
+        assert flags in (0, 1)
+        assert_columnar_frame_v2(payload, len(signal_ids), 32)
+
+        pipe.write(frame(CLOSE, request_id_base + 4))
+        pipe.flush()
+
+
 def main() -> int:
     if len(sys.argv) != 2:
         print("usage: waveform_pipe_smoke.py <pristine-engine>", file=sys.stderr)
         return 2
 
     server_path = pathlib.Path(sys.argv[1]).resolve()
-    process = subprocess.Popen(
-        [str(server_path), "--stdio"],
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
+    process: subprocess.Popen[bytes] | None = None
     try:
-        initialize = request(process, 1, "initialize", {"processId": None, "capabilities": {}})
-        provider = initialize["result"]["capabilities"]["experimental"]["pristineWaveformProvider"]
-        assert provider == {
-            "transport": "pipe",
-            "protocol": "pristine-waveform-columnar-v1",
-            "mock": True,
-        }
+        with tempfile.TemporaryDirectory(prefix="pristine-engine-waveform-e2e-") as temp_dir:
+            workspace = pathlib.Path(temp_dir).resolve()
+            workspace_uri = workspace.as_uri()
+            process = subprocess.Popen(
+                [str(server_path), "--stdio"],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
 
-        open_response = request(process, 2, "systemverilog/waveform/open", {"source": "mock"})
-        session = open_response["result"]
-        endpoint = session["endpoint"]
-        assert session["signalCount"] == 168
-        assert session["groupCount"] == 3
-        assert session["protocol"] == "pristine-waveform-columnar-v1"
+            initialize = request(
+                process,
+                1,
+                "initialize",
+                {
+                    "processId": None,
+                    "rootUri": workspace_uri,
+                    "workspaceFolders": [{"uri": workspace_uri, "name": "waveform-e2e"}],
+                    "capabilities": {},
+                },
+            )
+            provider = initialize["result"]["capabilities"]["experimental"]["pristineWaveformProvider"]
+            assert provider == {
+                "transport": "pipe",
+                "protocol": "pristine-waveform-columnar-v1",
+                "mock": True,
+                "sources": ["mock", "fst"],
+            }
 
-        with connect_pipe(endpoint["kind"], endpoint["path"]) as pipe:
-            pipe.write(frame(HELLO, 10))
-            pipe.flush()
-            message_type, request_id, _flags, payload = read_frame(pipe)
-            assert message_type == HELLO_RESPONSE
-            assert request_id == 10
-            version, _reserved = struct.unpack_from("<HH", payload, 0)
-            duration = struct.unpack_from("<d", payload, 4)[0]
-            group_count, signal_count = struct.unpack_from("<II", payload, 12)
-            assert version == 1
-            assert duration == 200.0
-            assert group_count == 3
-            assert signal_count == 168
+            open_response = request(process, 2, "systemverilog/waveform/open", {"source": "mock"})
+            session = open_response["result"]
+            assert session["signalCount"] == 168
+            assert session["groupCount"] == 3
+            assert session["protocol"] == "pristine-waveform-columnar-v1"
+            assert session["source"] == "mock"
+            exercise_pipe_session(
+                session,
+                expected_duration=200.0,
+                expected_group_count=3,
+                expected_signal_count=168,
+                signal_ids=["tb_top_module1-clk", "u_top_module1-counting"],
+                start=0.0,
+                end=100.0,
+                request_id_base=10,
+            )
 
-            pipe.write(frame(CATALOG_REQUEST, 11))
-            pipe.flush()
-            message_type, request_id, _flags, payload = read_frame(pipe)
-            assert message_type == CATALOG_RESPONSE
-            assert request_id == 11
-            assert struct.unpack_from("<II", payload, 0) == (3, 168)
+            close_response = request(
+                process,
+                3,
+                "systemverilog/waveform/close",
+                {"sessionId": session["sessionId"]},
+            )
+            assert close_response["result"]["closed"] is True
 
-            pipe.write(frame(VIEWPORT_FRAME_REQUEST, 12, viewport_request_payload()))
-            pipe.flush()
-            message_type, request_id, flags, payload = read_frame(pipe)
-            assert message_type == VIEWPORT_FRAME_RESPONSE
-            assert request_id == 12
-            assert flags in (0, 1)
-            assert payload[:4] == b"PWVF"
-            frame_version = struct.unpack_from("<H", payload, 4)[0]
-            signal_count = struct.unpack_from("<I", payload, 8)[0]
-            segment_count = struct.unpack_from("<I", payload, 12)[0]
-            offsets = struct.unpack_from("<IIIIIII", payload, 16)
-            assert frame_version == 1
-            assert signal_count == 2
-            assert 0 < segment_count <= 32
-            assert all(offset % 4 == 0 for offset in offsets[:4] + offsets[5:6])
+            fst_path = write_tiny_fst_fixture(workspace)
+            fst_open = request(
+                process,
+                4,
+                "systemverilog/waveform/open",
+                {"source": "fst", "fstUri": fst_path.as_uri()},
+            )
+            fst_session = fst_open["result"]
+            assert fst_session["source"] == "fst"
+            assert fst_session["fileUri"] == fst_path.as_uri()
+            assert fst_session["duration"] == 40.0
+            assert fst_session["groupCount"] == 1
+            assert fst_session["signalCount"] == 2
+            exercise_pipe_session(
+                fst_session,
+                expected_duration=40.0,
+                expected_group_count=1,
+                expected_signal_count=2,
+                signal_ids=["fst:1", "fst:2"],
+                start=0.0,
+                end=40.0,
+                request_id_base=20,
+            )
+            fst_close = request(
+                process,
+                5,
+                "systemverilog/waveform/close",
+                {"sessionId": fst_session["sessionId"]},
+            )
+            assert fst_close["result"]["closed"] is True
 
-            pipe.write(frame(CLOSE, 13))
-            pipe.flush()
-
-        close_response = request(
-            process,
-            3,
-            "systemverilog/waveform/close",
-            {"sessionId": session["sessionId"]},
-        )
-        assert close_response["result"]["closed"] is True
-
-        shutdown = request(process, 4, "shutdown", None)
-        assert shutdown["result"] is None
-        notify(process, "exit", None)
-        assert process.wait(timeout=5) == 0
+            shutdown = request(process, 6, "shutdown", None)
+            assert shutdown["result"] is None
+            notify(process, "exit", None)
+            assert process.wait(timeout=5) == 0
+            process = None
         return 0
     finally:
-        if process.poll() is None:
+        if process is not None and process.poll() is None:
             process.kill()
             process.wait(timeout=5)
-        if process.stderr is not None:
+        if process is not None and process.stderr is not None:
             stderr = process.stderr.read().decode("utf-8", errors="replace")
             if stderr:
                 print(stderr, file=sys.stderr)

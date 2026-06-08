@@ -1,8 +1,7 @@
 #include "pristine/waveform/WaveformPipeService.h"
 
 #include "pristine/waveform/WaveformBinaryProtocol.h"
-#include "pristine/waveform/WaveformMockGenerator.h"
-#include "pristine/waveform/WaveformViewportEncoder.h"
+#include "pristine/waveform/WaveformSource.h"
 
 #include <array>
 #include <algorithm>
@@ -64,23 +63,24 @@ std::string endpointPath(std::string_view session_id) {
 #endif
 }
 
-std::vector<std::uint8_t> handleRequest(const WaveformDataSet& data, const WaveformFrame& request) {
+std::vector<std::uint8_t> handleRequest(const WaveformSource& source,
+                                        const WaveformFrame& request) {
     try {
         switch (request.message_type) {
             case WaveformMessageType::Hello:
                 return encodeFrame(WaveformFrame{.message_type = WaveformMessageType::HelloResponse,
                                                  .request_id = request.request_id,
                                                  .flags = 0,
-                                                 .payload = encodeHelloResponsePayload(data)});
+                                                 .payload = source.encodeHelloResponse()});
             case WaveformMessageType::CatalogRequest:
                 return encodeFrame(WaveformFrame{.message_type =
                                                      WaveformMessageType::CatalogResponse,
                                                  .request_id = request.request_id,
                                                  .flags = 0,
-                                                 .payload = encodeCatalogResponsePayload(data)});
+                                                 .payload = source.encodeCatalogResponse()});
             case WaveformMessageType::ViewportFrameRequest: {
                 const auto viewport_request = decodeViewportFrameRequestPayload(request.payload);
-                const auto payload = encodeViewportFramePayload(data, viewport_request);
+                const auto payload = source.encodeViewportFrame(viewport_request);
                 const auto flags = readU32(payload.data(), payload.size(), 48);
                 return encodeFrame(WaveformFrame{.message_type =
                                                      WaveformMessageType::ViewportFrameResponse,
@@ -90,7 +90,7 @@ std::vector<std::uint8_t> handleRequest(const WaveformDataSet& data, const Wavef
             }
             case WaveformMessageType::ViewportFrameRequestV2: {
                 const auto viewport_request = decodeViewportFrameRequestPayloadV2(request.payload);
-                const auto payload = encodeViewportFramePayloadV2(data, viewport_request);
+                const auto payload = source.encodeViewportFrameV2(viewport_request);
                 const auto flags = readU32(payload.data(), payload.size(), 48);
                 return encodeFrame(WaveformFrame{.message_type =
                                                      WaveformMessageType::ViewportFrameResponseV2,
@@ -274,7 +274,7 @@ void closeNative(NativeHandle fd) {
 #endif
 
 void serveConnection(NativeHandle connection,
-                     const WaveformDataSet& data,
+                     const WaveformSource& source,
                      const WaveformPipeService& service,
                      std::string_view session_id) {
     while (!service.shouldStop(session_id)) {
@@ -286,7 +286,7 @@ void serveConnection(NativeHandle connection,
         if (request.message_type == WaveformMessageType::Close) {
             return;
         }
-        auto response = handleRequest(data, request);
+        auto response = handleRequest(source, request);
         if (response.empty() || !writeExact(connection, response)) {
             return;
         }
@@ -300,9 +300,16 @@ WaveformPipeService::~WaveformPipeService() {
 }
 
 WaveformSessionInfo WaveformPipeService::openMockSession() {
+    return openSession(makeMockWaveformSource());
+}
+
+WaveformSessionInfo WaveformPipeService::openSession(std::shared_ptr<WaveformSource> source) {
+    if (!source) {
+        throw std::runtime_error("Waveform source is null");
+    }
     stop();
 
-    auto data = makeMockWaveformDataSet();
+    const auto& data = source->dataSet();
     WaveformSessionInfo info{
         .session_id = std::to_string(next_session_number_++),
         .protocol = std::string(kWaveformProtocolName),
@@ -311,7 +318,9 @@ WaveformSessionInfo WaveformPipeService::openMockSession() {
         .duration = data.duration,
         .timescale_unit = data.timescale_unit,
         .group_count = data.groups.size(),
-        .signal_count = data.signals.size()};
+        .signal_count = data.signals.size(),
+        .source = std::string(source->sourceKind()),
+        .file_uri = source->fileUri()};
     info.endpoint.kind = endpointKind();
     info.endpoint.path = endpointPath(info.session_id);
 
@@ -324,7 +333,7 @@ WaveformSessionInfo WaveformPipeService::openMockSession() {
                           this,
                           info.session_id,
                           info.endpoint.path,
-                          std::move(data));
+                          std::move(source));
     return info;
 }
 
@@ -372,7 +381,7 @@ bool WaveformPipeService::shouldStop(std::string_view session_id) const {
 
 void WaveformPipeService::runSession(std::string session_id,
                                      std::string endpoint_path,
-                                     WaveformDataSet data) {
+                                     std::shared_ptr<WaveformSource> source) {
     while (!shouldStop(session_id)) {
         NativeHandle pipe = CreateNamedPipeA(endpoint_path.c_str(),
                                              PIPE_ACCESS_DUPLEX,
@@ -405,7 +414,7 @@ void WaveformPipeService::runSession(std::string session_id,
             closeNative(pipe);
             continue;
         }
-        serveConnection(pipe, data, *this, session_id);
+        serveConnection(pipe, *source, *this, session_id);
         closeNative(pipe);
     }
 }
@@ -427,7 +436,7 @@ void WaveformPipeService::wakeEndpoint(const std::string& endpoint_path) {
 
 void WaveformPipeService::runSession(std::string session_id,
                                      std::string endpoint_path,
-                                     WaveformDataSet data) {
+                                     std::shared_ptr<WaveformSource> source) {
     std::error_code remove_error;
     fs::remove(endpoint_path, remove_error);
 
@@ -464,7 +473,7 @@ void WaveformPipeService::runSession(std::string session_id,
             continue;
         }
         if (!shouldStop(session_id)) {
-            serveConnection(client, data, *this, session_id);
+            serveConnection(client, *source, *this, session_id);
         }
         closeNative(client);
     }

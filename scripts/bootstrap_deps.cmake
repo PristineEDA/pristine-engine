@@ -16,6 +16,9 @@ if(NOT DEFINED PRISTINE_COMPONENTS)
   set(PRISTINE_COMPONENTS
     slang
     fmt
+    zlib
+    lz4
+    fastlz
     nlohmann_json
     catch2)
 endif()
@@ -33,18 +36,35 @@ foreach(dependency_name IN LISTS PRISTINE_COMPONENTS)
   set(dependency_url "${PRISTINE_DEP_${dependency_name}_URL}")
   set(dependency_sha256 "${PRISTINE_DEP_${dependency_name}_SHA256}")
   set(dependency_archive_name "${PRISTINE_DEP_${dependency_name}_ARCHIVE_NAME}")
+  set(dependency_cmake_subdir_var "PRISTINE_DEP_${dependency_name}_CMAKE_SUBDIR")
+  set(dependency_allow_no_cmake_var "PRISTINE_DEP_${dependency_name}_ALLOW_NO_CMAKE")
+  set(dependency_cmake_subdir "")
+  set(dependency_allow_no_cmake FALSE)
+  if(DEFINED ${dependency_cmake_subdir_var})
+    set(dependency_cmake_subdir "${${dependency_cmake_subdir_var}}")
+  endif()
+  if(DEFINED ${dependency_allow_no_cmake_var})
+    set(dependency_allow_no_cmake "${${dependency_allow_no_cmake_var}}")
+  endif()
   set(archive_path "${PRISTINE_DEPS_DIR}/archives/${dependency_archive_name}")
   set(source_path "${PRISTINE_DEPS_DIR}/src/${dependency_name}")
+  if(dependency_cmake_subdir)
+    set(cmake_probe_path "${source_path}/${dependency_cmake_subdir}/CMakeLists.txt")
+  else()
+    set(cmake_probe_path "${source_path}/CMakeLists.txt")
+  endif()
   set(staging_path "${PRISTINE_DEPS_DIR}/staging/${dependency_name}")
 
-  if(EXISTS "${source_path}/CMakeLists.txt")
+  if(EXISTS "${cmake_probe_path}" OR (dependency_allow_no_cmake AND EXISTS "${source_path}"))
     message(STATUS "Dependency '${dependency_name}' already bootstrapped")
     continue()
   endif()
 
   if(EXISTS "${archive_path}")
     file(SHA256 "${archive_path}" archive_sha256)
-    if(NOT archive_sha256 STREQUAL dependency_sha256)
+    string(TOLOWER "${archive_sha256}" archive_sha256_lower)
+    string(TOLOWER "${dependency_sha256}" dependency_sha256_lower)
+    if(NOT archive_sha256_lower STREQUAL dependency_sha256_lower)
       file(REMOVE "${archive_path}")
     endif()
   endif()

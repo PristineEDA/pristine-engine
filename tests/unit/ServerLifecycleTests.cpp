@@ -237,6 +237,10 @@ TEST_CASE("ServerSession handles initialize-shutdown-exit", "[server][lifecycle]
               "pristineWaveformProvider").at("protocol") == "pristine-waveform-columnar-v1");
     CHECK(initialize_response.at("result").at("capabilities").at("experimental").at(
               "pristineWaveformProvider").at("mock") == true);
+    CHECK(initialize_response.at("result").at("capabilities").at("experimental").at(
+              "pristineWaveformProvider").at("sources").at(0) == "mock");
+    CHECK(initialize_response.at("result").at("capabilities").at("experimental").at(
+              "pristineWaveformProvider").at("sources").at(1) == "fst");
     CHECK(initialize_response.at("result").at("capabilities").at("textDocumentSync").at(
               "openClose") == true);
 
@@ -272,6 +276,7 @@ TEST_CASE("ServerSession opens and closes waveform pipe sessions", "[server][wav
     CHECK(result.at("timescaleUnit") == "ns");
     CHECK(result.at("groupCount") == 3);
     CHECK(result.at("signalCount") == 168);
+    CHECK(result.at("source") == "mock");
     CHECK(result.at("endpoint").at("path").get<std::string>().find("pristine-engine-waveform") !=
           std::string::npos);
 

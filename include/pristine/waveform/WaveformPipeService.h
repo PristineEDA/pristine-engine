@@ -2,12 +2,15 @@
 
 #include "pristine/waveform/WaveformData.h"
 
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
 #include <thread>
 
 namespace pristine::waveform {
+
+class WaveformSource;
 
 struct WaveformPipeEndpoint {
     std::string kind;
@@ -23,6 +26,8 @@ struct WaveformSessionInfo {
     std::string timescale_unit;
     std::size_t group_count = 0;
     std::size_t signal_count = 0;
+    std::string source;
+    std::optional<std::string> file_uri;
 };
 
 class WaveformPipeService {
@@ -34,12 +39,15 @@ public:
     WaveformPipeService& operator=(const WaveformPipeService&) = delete;
 
     [[nodiscard]] WaveformSessionInfo openMockSession();
+    [[nodiscard]] WaveformSessionInfo openSession(std::shared_ptr<WaveformSource> source);
     [[nodiscard]] bool closeSession(std::string_view session_id);
     void stop();
     [[nodiscard]] bool shouldStop(std::string_view session_id) const;
 
 private:
-    void runSession(std::string session_id, std::string endpoint_path, WaveformDataSet data);
+    void runSession(std::string session_id,
+                    std::string endpoint_path,
+                    std::shared_ptr<WaveformSource> source);
     void wakeEndpoint(const std::string& endpoint_path);
 
     mutable std::mutex mutex_;

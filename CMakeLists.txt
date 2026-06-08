@@ -4,7 +4,7 @@ project(
   pristine-engine
   VERSION 0.1.1
   DESCRIPTION "Standalone SystemVerilog language server"
-  LANGUAGES CXX)
+  LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -22,6 +22,18 @@ include(GNUInstallDirs)
 
 list(APPEND CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/cmake")
 include(Dependencies)
+
+set(PRISTINE_FASTLZ_SOURCE_DIR "${PRISTINE_DEPS_DIR}/src/fastlz")
+if(NOT EXISTS "${PRISTINE_FASTLZ_SOURCE_DIR}/fastlz.c")
+  message(
+    FATAL_ERROR
+      "Missing dependency 'fastlz' in ${PRISTINE_FASTLZ_SOURCE_DIR}. Run `cmake -DPRISTINE_ROOT_DIR=${PROJECT_SOURCE_DIR} -P ${PROJECT_SOURCE_DIR}/scripts/bootstrap_deps.cmake` first.")
+endif()
+add_library(fastlz_static STATIC "${PRISTINE_FASTLZ_SOURCE_DIR}/fastlz.c")
+target_include_directories(fastlz_static PUBLIC "${PRISTINE_FASTLZ_SOURCE_DIR}")
+if(MSVC)
+  target_compile_options(fastlz_static PRIVATE /wd4068)
+endif()
 
 set(PRISTINE_GENERATED_INCLUDE_DIR "${PROJECT_BINARY_DIR}/generated/include")
 set(PRISTINE_GENERATED_SOURCE_DIR "${PROJECT_BINARY_DIR}/generated/src")
@@ -182,8 +194,11 @@ add_custom_command(
   DEPENDS
     ${PROJECT_SOURCE_DIR}/cmake/attributions.cmake
     ${PROJECT_SOURCE_DIR}/scripts/generate-notice.cmake
+    ${PROJECT_SOURCE_DIR}/licenses/texts/BSD-2-Clause-LZ4.txt
     ${PROJECT_SOURCE_DIR}/licenses/texts/BSL-1.0.txt
+    ${PROJECT_SOURCE_DIR}/licenses/texts/FastLZ-MIT.txt
     ${PROJECT_SOURCE_DIR}/licenses/texts/MIT.txt
+    ${PROJECT_SOURCE_DIR}/licenses/texts/Zlib.txt
     ${PROJECT_SOURCE_DIR}/licenses/texts/fmt-license.txt
   COMMENT "Generating third-party notice files"
   VERBATIM)
@@ -200,8 +215,11 @@ add_custom_target(
     ${PROJECT_SOURCE_DIR}/NOTICE
     ${PROJECT_SOURCE_DIR}/cmake/attributions.cmake
     ${PROJECT_SOURCE_DIR}/scripts/generate-notice.cmake
+    ${PROJECT_SOURCE_DIR}/licenses/texts/BSD-2-Clause-LZ4.txt
     ${PROJECT_SOURCE_DIR}/licenses/texts/BSL-1.0.txt
+    ${PROJECT_SOURCE_DIR}/licenses/texts/FastLZ-MIT.txt
     ${PROJECT_SOURCE_DIR}/licenses/texts/MIT.txt
+    ${PROJECT_SOURCE_DIR}/licenses/texts/Zlib.txt
     ${PROJECT_SOURCE_DIR}/licenses/texts/fmt-license.txt
   COMMENT "Validating third-party notice files"
   VERBATIM)
@@ -231,15 +249,20 @@ add_library(
   src/server/ServerSession.cpp
   src/transport/StdioTransport.cpp
   src/waveform/WaveformBinaryProtocol.cpp
+  src/waveform/FstWaveformSource.cpp
   src/waveform/WaveformMockGenerator.cpp
   src/waveform/WaveformPipeService.cpp
+  src/waveform/WaveformSource.cpp
   src/waveform/WaveformViewportEncoder.cpp
+  src/waveform/fst/FstReader.cpp
   src/workspace/WorkspaceManager.cpp
   "${PRISTINE_VERSION_SOURCE}")
 
 target_include_directories(
   pristine_core PUBLIC "${PROJECT_SOURCE_DIR}/include" "${PRISTINE_GENERATED_INCLUDE_DIR}")
-target_link_libraries(pristine_core PUBLIC nlohmann_json::nlohmann_json slang::slang)
+target_link_libraries(
+  pristine_core PUBLIC nlohmann_json::nlohmann_json slang::slang zlibstatic lz4_static
+                       fastlz_static)
 
 if(MSVC)
   target_compile_options(pristine_core PRIVATE /W4 /permissive-)

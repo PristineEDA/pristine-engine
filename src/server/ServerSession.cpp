@@ -4,6 +4,7 @@
 
 #include "pristine/jsonrpc/JsonRpcServer.h"
 #include "pristine/lsp/Protocol.h"
+#include "pristine/waveform/FstWaveformSource.h"
 #include "../analysis/semantic/DebugTrace.h"
 
 #include <algorithm>
@@ -752,16 +753,60 @@ int parseMaxDepth(const jsonrpc::Json& params) {
 }
 
 jsonrpc::Json toWaveformSessionJson(const waveform::WaveformSessionInfo& info) {
-    return jsonrpc::Json{{"sessionId", info.session_id},
+    jsonrpc::Json result{{"sessionId", info.session_id},
                          {"protocol", info.protocol},
                          {"endpoint",
-                          jsonrpc::Json{{"kind", info.endpoint.kind},
-                                         {"path", info.endpoint.path}}},
+                          jsonrpc::Json{{"kind", info.endpoint.kind}, {"path", info.endpoint.path}}},
                          {"title", info.title},
                          {"duration", info.duration},
                          {"timescaleUnit", info.timescale_unit},
                          {"groupCount", info.group_count},
-                         {"signalCount", info.signal_count}};
+                         {"signalCount", info.signal_count},
+                         {"source", info.source}};
+    if (info.file_uri.has_value()) {
+        result["fileUri"] = *info.file_uri;
+    }
+    return result;
+}
+
+std::string parseWaveformSource(const jsonrpc::Json& params) {
+    const auto source_it = params.find("source");
+    if (source_it == params.end() || source_it->is_null()) {
+        return "mock";
+    }
+    if (!source_it->is_string()) {
+        throw std::runtime_error("Expected 'source' to be a string");
+    }
+    return source_it->get<std::string>();
+}
+
+std::string parseRequiredString(const jsonrpc::Json& params, std::string_view field_name) {
+    const auto it = params.find(std::string(field_name));
+    if (it == params.end() || !it->is_string()) {
+        throw std::runtime_error("Expected '" + std::string(field_name) + "' to be a string");
+    }
+    return it->get<std::string>();
+}
+
+bool isPathInsideRoot(const fs::path& path, const fs::path& root) {
+    std::error_code error;
+    const auto canonical_path = fs::weakly_canonical(path, error);
+    if (error) {
+        return false;
+    }
+    const auto canonical_root = fs::weakly_canonical(root, error);
+    if (error) {
+        return false;
+    }
+
+    auto root_it = canonical_root.begin();
+    auto path_it = canonical_path.begin();
+    for (; root_it != canonical_root.end(); ++root_it, ++path_it) {
+        if (path_it == canonical_path.end() || *root_it != *path_it) {
+            return false;
+        }
+    }
+    return true;
 }
 
 } // namespace
@@ -1141,21 +1186,32 @@ jsonrpc::Json ServerSession::handleWaveformOpen(const jsonrpc::Json& params) {
         throw std::runtime_error("systemverilog/waveform/open received before initialize");
     }
 
-    const auto source_it = params.find("source");
-    if (source_it != params.end() && !source_it->is_null()) {
-        if (!source_it->is_string()) {
-            throw std::runtime_error("Expected 'source' to be a string");
+    const auto source = parseWaveformSource(params);
+    if (source == "mock") {
+        if (params.contains("fstUri")) {
+            throw std::runtime_error("'fstUri' is only valid for source 'fst'");
         }
-        const auto source = source_it->get<std::string>();
-        if (source != "mock") {
-            throw std::runtime_error("Only mock waveform source is implemented");
-        }
+        return toWaveformSessionJson(waveform_service_.openMockSession());
     }
-    if (params.contains("fstUri")) {
-        throw std::runtime_error("FST waveform parsing is not implemented");
+    if (source != "fst") {
+        throw std::runtime_error("Unsupported waveform source: " + source);
     }
 
-    return toWaveformSessionJson(waveform_service_.openMockSession());
+    const auto fst_uri = parseRequiredString(params, "fstUri");
+    const auto fst_path = workspace::WorkspaceManager::pathFromFileUri(fst_uri);
+    if (!fst_path.has_value()) {
+        throw std::runtime_error("Expected 'fstUri' to be a file URI");
+    }
+    const auto& workspace_state = workspace_manager_.state();
+    if (!workspace_state.root_path.has_value()) {
+        throw std::runtime_error("FST waveform source requires an initialized workspace root");
+    }
+    if (!isPathInsideRoot(*fst_path, *workspace_state.root_path)) {
+        throw std::runtime_error("FST waveform file must be inside the workspace root");
+    }
+
+    return toWaveformSessionJson(waveform_service_.openSession(
+        waveform::openFstWaveformSource(*fst_path, fst_uri, workspace_state.root_path)));
 }
 
 jsonrpc::Json ServerSession::handleWaveformClose(const jsonrpc::Json& params) {

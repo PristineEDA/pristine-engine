@@ -1,15 +1,27 @@
 set(PRISTINE_DEPS_DIR "${PROJECT_SOURCE_DIR}/.deps" CACHE PATH "Local dependency source cache")
 
+include("${PROJECT_SOURCE_DIR}/cmake/DepsLock.cmake")
+
 function(pristine_require_dependency dependency_name)
   set(dependency_dir "${PRISTINE_DEPS_DIR}/src/${dependency_name}")
+  set(dependency_cmake_subdir_var "PRISTINE_DEP_${dependency_name}_CMAKE_SUBDIR")
+  set(dependency_cmake_subdir "")
+  if(DEFINED ${dependency_cmake_subdir_var})
+    set(dependency_cmake_subdir "${${dependency_cmake_subdir_var}}")
+  endif()
+  if(dependency_cmake_subdir)
+    set(dependency_cmake_dir "${dependency_dir}/${dependency_cmake_subdir}")
+  else()
+    set(dependency_cmake_dir "${dependency_dir}")
+  endif()
 
-  if(NOT EXISTS "${dependency_dir}/CMakeLists.txt")
+  if(NOT EXISTS "${dependency_cmake_dir}/CMakeLists.txt")
     message(
       FATAL_ERROR
         "Missing dependency '${dependency_name}' in ${dependency_dir}. Run `cmake -DPRISTINE_ROOT_DIR=${PROJECT_SOURCE_DIR} -P ${PROJECT_SOURCE_DIR}/scripts/bootstrap_deps.cmake` first.")
   endif()
 
-  add_subdirectory("${dependency_dir}" "${PROJECT_BINARY_DIR}/_deps/${dependency_name}" EXCLUDE_FROM_ALL)
+  add_subdirectory("${dependency_cmake_dir}" "${PROJECT_BINARY_DIR}/_deps/${dependency_name}" EXCLUDE_FROM_ALL)
 endfunction()
 
 set(pristine_fmt_dir "${PRISTINE_DEPS_DIR}/src/fmt")
@@ -28,6 +40,9 @@ set(SLANG_INCLUDE_PYLIB OFF CACHE BOOL "Don't build slang Python bindings" FORCE
 set(SLANG_INCLUDE_INSTALL OFF CACHE BOOL "Don't install slang separately" FORCE)
 set(SLANG_INCLUDE_TESTS OFF CACHE BOOL "Don't build slang tests" FORCE)
 set(SLANG_USE_MIMALLOC OFF CACHE BOOL "Don't let slang fetch mimalloc during configure" FORCE)
+set(ZLIB_BUILD_EXAMPLES OFF CACHE BOOL "Do not build zlib examples" FORCE)
+set(LZ4_BUILD_CLI OFF CACHE BOOL "Do not build LZ4 CLI" FORCE)
+set(LZ4_BUNDLED_MODE ON CACHE BOOL "Build LZ4 as a bundled dependency" FORCE)
 
 set(pristine_git_find_package_was_defined FALSE)
 if(DEFINED CMAKE_DISABLE_FIND_PACKAGE_Git)
@@ -47,6 +62,8 @@ else()
 endif()
 
 pristine_require_dependency(nlohmann_json)
+pristine_require_dependency(zlib)
+pristine_require_dependency(lz4)
 
 if(PRISTINE_BUILD_TESTS)
   pristine_require_dependency(catch2)

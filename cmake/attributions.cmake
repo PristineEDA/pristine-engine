@@ -84,6 +84,27 @@ pristine_register_notice_family(
   NOTE "slang currently builds against a vendored boost_unordered header when a suitable Boost package is not found. This section preserves the Boost Software License text for that bundled header code."
 )
 
+pristine_register_notice_family(
+  lz4-bsd-2-clause
+  TITLE "LZ4 lib BSD 2-Clause License"
+  SOURCE_PATH "${PRISTINE_ROOT_DIR}/licenses/texts/BSD-2-Clause-LZ4.txt"
+  NOTE "Only LZ4 lib sources are linked for FST value-chain decompression; LZ4 program/test/example sources are not linked into pristine-engine."
+)
+
+pristine_register_notice_family(
+  fastlz-mit
+  TITLE "FastLZ MIT License"
+  SOURCE_PATH "${PRISTINE_ROOT_DIR}/licenses/texts/FastLZ-MIT.txt"
+  NOTE "FastLZ is pinned for FST FastLZ value-chain decompression."
+)
+
+pristine_register_notice_family(
+  zlib
+  TITLE "zlib License"
+  SOURCE_PATH "${PRISTINE_ROOT_DIR}/licenses/texts/Zlib.txt"
+  NOTE "zlib is pinned for FST DEFLATE value-block support. This section preserves the upstream zlib license text."
+)
+
 pristine_register_attribution(
   slang
   NAME "slang"
@@ -121,6 +142,45 @@ pristine_register_attribution(
   RELATIONSHIP "direct dependency"
   FAMILY_IDS mit
   NOTES "Header-only JSON library linked into pristine_core."
+)
+
+pristine_register_attribution(
+  zlib
+  NAME "zlib"
+  VERSION "v1.3.1"
+  OWNER "Jean-loup Gailly, Mark Adler, and zlib contributors"
+  URL "https://github.com/madler/zlib/tree/v1.3.1"
+  LICENSE_LABEL "zlib"
+  SCOPE "redistributed"
+  RELATIONSHIP "direct dependency for FST DEFLATE waveform blocks"
+  FAMILY_IDS zlib
+  NOTES "Pinned in cmake/DepsLock.cmake and linked via zlibstatic for FST DEFLATE geometry, time table, initial frame, and value-chain blocks."
+)
+
+pristine_register_attribution(
+  lz4
+  NAME "LZ4"
+  VERSION "v1.10.0"
+  OWNER "Yann Collet and LZ4 contributors"
+  URL "https://github.com/lz4/lz4/tree/v1.10.0"
+  LICENSE_LABEL "BSD 2-Clause for lib sources"
+  SCOPE "redistributed"
+  RELATIONSHIP "direct dependency for FST LZ4 value-chain blocks"
+  FAMILY_IDS lz4-bsd-2-clause
+  NOTES "Pinned in cmake/DepsLock.cmake and linked via the bundled lz4_static target; only lib sources are linked."
+)
+
+pristine_register_attribution(
+  fastlz
+  NAME "FastLZ"
+  VERSION "commit b1342dabcf5257ab303743c9332fe75e9147a011"
+  OWNER "Ariya Hidayat and FastLZ contributors"
+  URL "https://github.com/ariya/FastLZ/tree/b1342dabcf5257ab303743c9332fe75e9147a011"
+  LICENSE_LABEL "MIT"
+  SCOPE "redistributed"
+  RELATIONSHIP "direct dependency for FST FastLZ value-chain blocks"
+  FAMILY_IDS fastlz-mit
+  NOTES "Pinned in cmake/DepsLock.cmake and linked via the local fastlz_static target."
 )
 
 pristine_register_attribution(
