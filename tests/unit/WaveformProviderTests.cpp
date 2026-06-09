@@ -907,17 +907,19 @@ TEST_CASE("FST reader exposes opt-in timing metrics", "[waveform][fst]") {
                                              .collect_metrics = true});
     REQUIRE(with_metrics.metrics.has_value());
     const auto& metrics = *with_metrics.metrics;
-    CHECK(metrics.file_bytes > 0);
-    CHECK(metrics.total_micros > 0);
-    CHECK(metrics.block_scan_micros > 0);
-    CHECK(metrics.hierarchy_parse_micros > 0);
-    CHECK(metrics.geometry_parse_micros > 0);
-    CHECK(metrics.value_decode_micros > 0);
-    CHECK(metrics.file_read_micros + metrics.header_parse_micros +
-              metrics.hierarchy_parse_micros + metrics.geometry_parse_micros +
-              metrics.value_block_index_micros + metrics.block_scan_micros +
-              metrics.value_decode_micros <=
-          metrics.total_micros);
+    CHECK(metrics.file_bytes == std::filesystem::file_size(fst_path));
+    CHECK(metrics.file_read_micros <= metrics.total_micros);
+    CHECK(metrics.header_parse_micros <= metrics.total_micros);
+    CHECK(metrics.sidecar_hierarchy_parse_micros <= metrics.total_micros);
+    CHECK(metrics.hierarchy_parse_micros <= metrics.total_micros);
+    CHECK(metrics.geometry_parse_micros <= metrics.total_micros);
+    CHECK(metrics.value_block_index_micros <= metrics.total_micros);
+    CHECK(metrics.block_scan_micros <= metrics.total_micros);
+    CHECK(metrics.value_decode_micros <= metrics.total_micros);
+    CHECK(metrics.hierarchy_parse_micros <= metrics.block_scan_micros);
+    CHECK(metrics.geometry_parse_micros <= metrics.block_scan_micros);
+    CHECK(metrics.value_block_index_micros <= metrics.block_scan_micros);
+    checkTinyFstTransitions(with_metrics);
 }
 
 TEST_CASE("FST reader inflates zlib LZ4 and FastLZ value blocks", "[waveform][fst]") {
