@@ -4,6 +4,7 @@ set(PRISTINE_DEPENDENCY_NAMES
     zlib
     lz4
     fastlz
+    wellen
     nlohmann_json
     catch2
     lsp_framework)
@@ -29,6 +30,11 @@ set(PRISTINE_DEP_fastlz_URL "https://github.com/ariya/FastLZ/archive/b1342dabcf5
 set(PRISTINE_DEP_fastlz_SHA256 "655F998DEEF53F4924CE8282A3B875AB43EE31189C3C04EFDD7C9D73811D7324")
 set(PRISTINE_DEP_fastlz_ARCHIVE_NAME "fastlz-b1342dabcf5257ab303743c9332fe75e9147a011.tar.gz")
 set(PRISTINE_DEP_fastlz_ALLOW_NO_CMAKE TRUE)
+
+set(PRISTINE_DEP_wellen_URL "https://codeload.github.com/ekiwi/wellen/tar.gz/44274b0cb6fcc988ff25d770984f4abdbccc4b7d")
+set(PRISTINE_DEP_wellen_SHA256 "D1E50C58A500F748D090F991ED29C0CA34A46ED3D6FD28D5C13C2113DDBD6384")
+set(PRISTINE_DEP_wellen_ARCHIVE_NAME "wellen-44274b0cb6fcc988ff25d770984f4abdbccc4b7d.tar.gz")
+set(PRISTINE_DEP_wellen_ALLOW_NO_CMAKE TRUE)
 
 set(PRISTINE_DEP_nlohmann_json_URL "https://codeload.github.com/nlohmann/json/tar.gz/refs/tags/v3.11.3")
 set(PRISTINE_DEP_nlohmann_json_SHA256 "0D8EF5AF7F9794E3263480193C491549B2BA6CC74BB018906202ADA498A79406")

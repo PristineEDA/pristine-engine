@@ -43,6 +43,7 @@ struct FstHeader {
     std::string date;
     std::uint8_t file_type = 0;
     std::uint64_t timezero = 0;
+    bool float_endian_matches_host = true;
 };
 
 struct FstScope {
@@ -63,6 +64,11 @@ struct FstSignal {
     std::uint32_t scope_index = 0;
     std::string name;
     std::string path;
+};
+
+struct FstSignalGeometry {
+    std::uint32_t length = 1;
+    bool is_real = false;
 };
 
 struct FstBlockIndexEntry {
@@ -89,6 +95,8 @@ struct FstData {
     FstHeader header;
     std::vector<FstScope> scopes;
     std::vector<FstSignal> signals;
+    std::vector<std::uint32_t> signal_widths_by_handle;
+    std::vector<FstSignalGeometry> signal_geometry_by_handle;
     std::vector<FstBlockIndexEntry> value_blocks;
     std::vector<FstTransition> transitions;
 };
@@ -96,6 +104,9 @@ struct FstData {
 struct FstReadOptions {
     std::optional<std::filesystem::path> workspace_root;
     bool decode_transitions = true;
+    std::optional<std::uint64_t> decode_start_time;
+    std::optional<std::uint64_t> decode_end_time;
+    std::vector<std::uint32_t> decode_signal_handles;
 };
 
 [[nodiscard]] FstData readFstFile(const std::filesystem::path& path,

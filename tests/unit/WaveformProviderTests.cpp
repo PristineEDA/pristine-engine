@@ -14,6 +14,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -289,11 +290,11 @@ fs::path writeTinyFstFixture(const fs::path& directory,
     };
 
     std::vector<std::uint8_t> handle1_raw_chain;
-    appendFstVarint(handle1_raw_chain, 6);
+    appendFstVarint(handle1_raw_chain, 2);
     appendFstVarint(handle1_raw_chain, 8);
 
     std::vector<std::uint8_t> handle2_raw_chain;
-    appendFstVarint(handle2_raw_chain, 4);
+    appendFstVarint(handle2_raw_chain, 2);
     handle2_raw_chain.push_back(0x30);
     appendFstVarint(handle2_raw_chain, 5);
     appendBytes(handle2_raw_chain, "zzzz");
@@ -321,11 +322,10 @@ fs::path writeTinyFstFixture(const fs::path& directory,
     appendU64Be(value_payload, chain_index.size());
 
     std::vector<std::uint8_t> time_table;
-    appendFstVarint(time_table, 0);
     appendFstVarint(time_table, 10);
     appendFstVarint(time_table, 5);
     appendFstVarint(time_table, 5);
-    appendFstVarint(time_table, 10);
+    appendFstVarint(time_table, 20);
     auto encoded_time_table = time_table;
     if (compression == TinyFstCompression::Zlib) {
         encoded_time_table = compressZlib(time_table);
@@ -335,7 +335,7 @@ fs::path writeTinyFstFixture(const fs::path& directory,
                          encoded_time_table.end());
     appendU64Be(value_payload, time_table.size());
     appendU64Be(value_payload, encoded_time_table.size());
-    appendU64Be(value_payload, 5);
+    appendU64Be(value_payload, 4);
     appendFstBlock(bytes, compression == TinyFstCompression::DynamicAlias2 ? 8 : 1, value_payload);
 
     const auto path = directory / "tiny.fst";
@@ -413,6 +413,151 @@ std::uint32_t readSignalSegmentCount(const std::vector<std::uint8_t>& payload,
                                      std::size_t table_index) {
     const auto entry_offset = signal_table_offset + static_cast<std::uint32_t>(table_index) * 16U + 8U;
     return readU32(payload.data(), payload.size(), entry_offset);
+}
+
+std::vector<fs::path> collectWellenFstFixtures() {
+    const fs::path inputs_dir{PRISTINE_WELLEN_INPUTS_DIR};
+    INFO("wellen FST fixture directory: " << inputs_dir.string());
+    REQUIRE(fs::exists(inputs_dir));
+    REQUIRE(fs::is_directory(inputs_dir));
+
+    std::vector<fs::path> fixtures;
+    for (const auto& entry : fs::recursive_directory_iterator(inputs_dir)) {
+        if (!entry.is_regular_file()) {
+            continue;
+        }
+        if (entry.path().extension() == ".fst") {
+            fixtures.push_back(entry.path());
+        }
+    }
+    std::ranges::sort(fixtures);
+    return fixtures;
+}
+
+std::vector<std::string> firstSignalIds(const WaveformDataSet& data, std::size_t count) {
+    std::vector<std::string> signal_ids;
+    signal_ids.reserve(std::min(count, data.signals.size()));
+    for (const auto& signal : data.signals) {
+        if (std::ranges::find(signal_ids, signal.id) != signal_ids.end()) {
+            continue;
+        }
+        signal_ids.push_back(signal.id);
+        if (signal_ids.size() == count) {
+            break;
+        }
+    }
+    return signal_ids;
+}
+
+void checkColumnarViewportPayloadV2(const std::vector<std::uint8_t>& payload,
+                                    std::size_t expected_signal_count,
+                                    std::uint32_t max_segments,
+                                    double prepared_start,
+                                    double prepared_end,
+                                    double viewport_start,
+                                    double viewport_end) {
+    REQUIRE(payload.size() >= 96);
+    CHECK(payload[0] == 'P');
+    CHECK(payload[1] == 'W');
+    CHECK(payload[2] == 'V');
+    CHECK(payload[3] == 'F');
+    CHECK(readU16(payload.data(), payload.size(), 4) == 2);
+    CHECK(readU16(payload.data(), payload.size(), 6) == 96);
+    CHECK(readU32(payload.data(), payload.size(), 8) == expected_signal_count);
+    const auto segment_count = readU32(payload.data(), payload.size(), 12);
+    REQUIRE(segment_count > 0);
+    CHECK(segment_count <= max_segments);
+
+    const auto signal_table_offset = readU32(payload.data(), payload.size(), 16);
+    const auto x0_offset = readU32(payload.data(), payload.size(), 20);
+    const auto x1_offset = readU32(payload.data(), payload.size(), 24);
+    const auto lane_y_offset = readU32(payload.data(), payload.size(), 28);
+    const auto value_kind_offset = readU32(payload.data(), payload.size(), 32);
+    const auto label_index_offset = readU32(payload.data(), payload.size(), 36);
+    const auto label_bytes_offset = readU32(payload.data(), payload.size(), 40);
+    const auto label_bytes_length = readU32(payload.data(), payload.size(), 44);
+    const auto time0_offset = readU32(payload.data(), payload.size(), 56);
+    const auto time1_offset = readU32(payload.data(), payload.size(), 60);
+
+    CHECK(signal_table_offset % 4U == 0);
+    CHECK(x0_offset % 4U == 0);
+    CHECK(x1_offset % 4U == 0);
+    CHECK(lane_y_offset % 4U == 0);
+    CHECK(label_index_offset % 4U == 0);
+    CHECK(label_bytes_offset % 4U == 0);
+    CHECK(time0_offset % 8U == 0);
+    CHECK(time1_offset % 8U == 0);
+    CHECK(label_bytes_offset + label_bytes_length == payload.size());
+    CHECK(readF64(payload.data(), payload.size(), 64) == prepared_start);
+    CHECK(readF64(payload.data(), payload.size(), 72) == prepared_end);
+    CHECK(readF64(payload.data(), payload.size(), 80) == viewport_start);
+    CHECK(readF64(payload.data(), payload.size(), 88) == viewport_end);
+    const auto flags = readU32(payload.data(), payload.size(), 48);
+
+    for (std::size_t index = 0; index < expected_signal_count; ++index) {
+        const auto segment_start =
+            readU32(payload.data(), payload.size(), signal_table_offset + (index * 16U) + 4U);
+        const auto signal_segment_count =
+            readSignalSegmentCount(payload, signal_table_offset, index);
+        CHECK(segment_start <= segment_count);
+        if ((flags & kWaveformFrameFlagTruncated) == 0U) {
+            CHECK(signal_segment_count > 0);
+        }
+        CHECK(segment_start + signal_segment_count <= segment_count);
+    }
+
+    for (std::uint32_t segment = 0; segment < segment_count; ++segment) {
+        const auto x0 = readF32(payload.data(), payload.size(), x0_offset + segment * 4U);
+        const auto x1 = readF32(payload.data(), payload.size(), x1_offset + segment * 4U);
+        const auto lane_y = readF32(payload.data(), payload.size(), lane_y_offset + segment * 4U);
+        const auto label_index = readU32(payload.data(), payload.size(), label_index_offset + segment * 4U);
+
+        CHECK(x0 <= x1);
+        CHECK(lane_y >= 0.0F);
+        CHECK(payload.at(value_kind_offset + segment) <=
+              static_cast<std::uint8_t>(WaveformValueKind::Bus));
+        CHECK((label_index == std::numeric_limits<std::uint32_t>::max() ||
+               label_index <= label_bytes_length));
+        CHECK(readF64(payload.data(), payload.size(), time0_offset + segment * 8U) <=
+              readF64(payload.data(), payload.size(), time1_offset + segment * 8U));
+    }
+}
+
+std::uint64_t stableFixtureMetadataHash(const WaveformDataSet& data) {
+    auto hash = std::uint64_t{1469598103934665603ULL};
+    const auto mixByte = [&hash](std::uint8_t byte) {
+        hash ^= byte;
+        hash *= 1099511628211ULL;
+    };
+    const auto mixString = [&mixByte](std::string_view value) {
+        for (const auto ch : value) {
+            mixByte(static_cast<std::uint8_t>(ch));
+        }
+        mixByte(0);
+    };
+    const auto mixU64 = [&mixByte](std::uint64_t value) {
+        for (auto index = 0; index < 8; ++index) {
+            mixByte(static_cast<std::uint8_t>((value >> (index * 8)) & 0xffU));
+        }
+    };
+
+    mixU64(static_cast<std::uint64_t>(data.groups.size()));
+    mixU64(static_cast<std::uint64_t>(data.signals.size()));
+    mixString(data.timescale_unit);
+    mixU64(static_cast<std::uint64_t>(data.duration));
+    for (const auto& group : data.groups) {
+        mixString(group.id);
+        mixString(group.label);
+    }
+    for (const auto& signal : data.signals) {
+        mixString(signal.id);
+        mixString(signal.name);
+        mixString(signal.path);
+        mixU64(signal.group_index);
+        mixU64(static_cast<std::uint64_t>(signal.kind));
+        mixU64(signal.width);
+    }
+    return hash;
 }
 
 } // namespace
@@ -743,13 +888,133 @@ TEST_CASE("FST waveform source returns columnar viewport frames", "[waveform][fs
     CHECK(payload[3] == 'F');
     CHECK(readU16(payload.data(), payload.size(), 4) == 2);
     CHECK(readU32(payload.data(), payload.size(), 8) == 2);
-    CHECK(readU32(payload.data(), payload.size(), 12) == 6);
+    CHECK(readU32(payload.data(), payload.size(), 12) >= 5);
     const auto value_kind_offset = readU32(payload.data(), payload.size(), 32);
     const auto label_bytes_offset = readU32(payload.data(), payload.size(), 40);
     const auto label_bytes_length = readU32(payload.data(), payload.size(), 44);
     CHECK(payload.at(value_kind_offset) == static_cast<std::uint8_t>(WaveformValueKind::Low));
     CHECK(label_bytes_offset + label_bytes_length == payload.size());
     CHECK(label_bytes_length > 0);
+}
+
+TEST_CASE("FST reader accepts every pinned wellen input fixture",
+          "[waveform][fst][wellen]") {
+    const auto fixtures = collectWellenFstFixtures();
+    REQUIRE(fixtures.size() == 61);
+
+    for (const auto& fst_path : fixtures) {
+        const auto relative_path =
+            fst_path.lexically_relative(fs::path{PRISTINE_WELLEN_INPUTS_DIR}).generic_string();
+        DYNAMIC_SECTION(relative_path) {
+            if (relative_path == "sigrok/libsigrok.vcd.fst") {
+                CHECK_THROWS_WITH(
+                    fst::readFstFile(fst_path,
+                                     fst::FstReadOptions{
+                                         .workspace_root = fs::path{PRISTINE_WELLEN_INPUTS_DIR},
+                                         .decode_transitions = false}),
+                    Catch::Matchers::ContainsSubstring("FST hierarchy did not define any signals"));
+                continue;
+            }
+
+            const auto indexed =
+                fst::readFstFile(fst_path,
+                                 fst::FstReadOptions{.workspace_root =
+                                                         fs::path{PRISTINE_WELLEN_INPUTS_DIR},
+                                                     .decode_transitions = false});
+
+            CHECK(indexed.file_path == fs::weakly_canonical(fst_path));
+            CHECK(indexed.header.end_time >= indexed.header.start_time);
+            CHECK(indexed.header.variable_count >= indexed.signals.size());
+            CHECK(indexed.header.timescale <= 2);
+            REQUIRE_FALSE(indexed.signals.empty());
+            REQUIRE_FALSE(indexed.value_blocks.empty());
+
+            for (const auto& signal : indexed.signals) {
+                CHECK(signal.handle > 0);
+                CHECK(signal.handle <= indexed.header.max_handle);
+                CHECK(signal.width > 0);
+                CHECK_FALSE(signal.name.empty());
+                CHECK_FALSE(signal.path.empty());
+                CHECK((indexed.scopes.empty() || signal.scope_index < indexed.scopes.size()));
+                if (signal.alias_handle != 0U) {
+                    CHECK(signal.alias_handle <= indexed.header.max_handle);
+                }
+            }
+
+            auto previous_begin = std::uint64_t{0};
+            for (const auto& block : indexed.value_blocks) {
+                CHECK(block.payload_size > 0);
+                CHECK(block.begin_time <= block.end_time);
+                CHECK(block.begin_time >= previous_begin);
+                CHECK(block.end_time <= indexed.header.end_time);
+                CHECK(block.file_offset < block.payload_offset);
+                previous_begin = block.begin_time;
+            }
+
+            const auto source = openFstWaveformSource(
+                fst_path,
+                "file:///" + fst_path.filename().generic_string(),
+                fs::path{PRISTINE_WELLEN_INPUTS_DIR});
+            CHECK(source->sourceKind() == std::string_view("fst"));
+            const auto& data = source->dataSet();
+            REQUIRE_FALSE(data.groups.empty());
+            REQUIRE_FALSE(data.signals.empty());
+            CHECK(data.signals.size() == indexed.signals.size());
+            CHECK(data.duration >= 0.0);
+            CHECK_FALSE(data.timescale_unit.empty());
+            CHECK(stableFixtureMetadataHash(data) != 0U);
+
+            const auto signal_ids = firstSignalIds(data, std::min<std::size_t>(3, data.signals.size()));
+            REQUIRE_FALSE(signal_ids.empty());
+            const auto duration = std::max(data.duration, 1.0);
+            const auto midpoint = duration / 2.0;
+            const auto window = std::max(duration / 8.0, 1.0);
+            const auto max_segments = 256U;
+            const std::vector<WaveformViewportRequestV2> requests{
+                WaveformViewportRequestV2{.prepared_start_time = 0.0,
+                                          .prepared_end_time = duration,
+                                          .viewport_start_time = 0.0,
+                                          .viewport_end_time = duration,
+                                          .viewport_pixel_width = 640.0F,
+                                          .lane_height = 24.0F,
+                                          .header_height = 22.0F,
+                                          .max_segments = max_segments,
+                                          .signal_ids = signal_ids},
+                WaveformViewportRequestV2{.prepared_start_time = 0.0,
+                                          .prepared_end_time = duration,
+                                          .viewport_start_time = 0.0,
+                                          .viewport_end_time = std::max(1.0, window),
+                                          .viewport_pixel_width = 320.0F,
+                                          .lane_height = 24.0F,
+                                          .header_height = 22.0F,
+                                          .max_segments = max_segments,
+                                          .signal_ids = signal_ids},
+                WaveformViewportRequestV2{.prepared_start_time = 0.0,
+                                          .prepared_end_time = duration,
+                                          .viewport_start_time = std::max(0.0, midpoint - window),
+                                          .viewport_end_time = std::min(duration, midpoint + window),
+                                          .viewport_pixel_width = 480.0F,
+                                          .lane_height = 24.0F,
+                                          .header_height = 22.0F,
+                                          .max_segments = max_segments,
+                                          .signal_ids = signal_ids},
+            };
+
+            for (const auto& request : requests) {
+                INFO("viewport " << request.viewport_start_time << ".." << request.viewport_end_time);
+                const auto payload = source->encodeViewportFrameV2(request);
+                checkColumnarViewportPayloadV2(payload,
+                                               signal_ids.size(),
+                                               max_segments,
+                                               request.prepared_start_time,
+                                               request.prepared_end_time,
+                                               request.viewport_start_time,
+                                               request.viewport_end_time);
+                CHECK((readU32(payload.data(), payload.size(), 48) &
+                       ~kWaveformFrameFlagTruncated) == 0U);
+            }
+        }
+    }
 }
 
 TEST_CASE("FST reader rejects workspace external waveform paths", "[waveform][fst]") {

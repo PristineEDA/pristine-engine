@@ -21,6 +21,8 @@ add_executable(
 	unit/ServerLifecycleTests.cpp
 	unit/WorkspaceDiscoveryIndexTests.cpp)
 target_link_libraries(pristine_unit_tests PRIVATE pristine_core Catch2::Catch2WithMain)
+target_compile_definitions(pristine_unit_tests
+	PRIVATE PRISTINE_WELLEN_INPUTS_DIR="${PROJECT_SOURCE_DIR}/.deps/src/wellen/wellen/inputs")
 
 add_test(NAME pristine_unit_tests COMMAND pristine_unit_tests)
 

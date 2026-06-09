@@ -5,7 +5,6 @@ import socket
 import struct
 import subprocess
 import sys
-import tempfile
 import time
 from typing import BinaryIO
 
@@ -269,6 +268,29 @@ def write_tiny_fst_fixture(directory: pathlib.Path) -> pathlib.Path:
     return path
 
 
+def find_repo_root(server_path: pathlib.Path) -> pathlib.Path:
+    for parent in [server_path.parent, *server_path.parents]:
+        if (parent / "AGENTS.md").is_file() and (parent / ".deps").is_dir():
+            return parent
+    raise AssertionError(f"could not locate pristine-engine repo root from {server_path}")
+
+
+def find_wellen_fixture(repo_root: pathlib.Path) -> pathlib.Path:
+    root = repo_root
+    inputs = root / ".deps" / "src" / "wellen" / "wellen" / "inputs"
+    if not inputs.is_dir():
+        raise AssertionError(f"missing pinned wellen FST fixture directory: {inputs}")
+
+    preferred = inputs / "systemc" / "waveform.vcd.fst"
+    if preferred.is_file():
+        return preferred.resolve()
+
+    fixtures = sorted(inputs.rglob("*.fst"))
+    if len(fixtures) != 61:
+        raise AssertionError(f"expected 61 wellen FST fixtures in {inputs}, found {len(fixtures)}")
+    return fixtures[0].resolve()
+
+
 def assert_columnar_frame_v1(payload: bytes, expected_signal_count: int, max_segments: int) -> None:
     assert payload[:4] == b"PWVF"
     frame_version = struct.unpack_from("<H", payload, 4)[0]
@@ -373,8 +395,15 @@ def main() -> int:
     server_path = pathlib.Path(sys.argv[1]).resolve()
     process: subprocess.Popen[bytes] | None = None
     try:
-        with tempfile.TemporaryDirectory(prefix="pristine-engine-waveform-e2e-") as temp_dir:
-            workspace = pathlib.Path(temp_dir).resolve()
+        temp_workspace: pathlib.Path | None = None
+        try:
+            workspace = find_repo_root(server_path).resolve()
+            temp_workspace = (
+                workspace
+                / "build"
+                / f"pristine-engine-waveform-e2e-{os.getpid()}-{int(time.time() * 1000)}"
+            )
+            temp_workspace.mkdir(parents=True, exist_ok=True)
             workspace_uri = workspace.as_uri()
             process = subprocess.Popen(
                 [str(server_path), "--stdio"],
@@ -427,7 +456,7 @@ def main() -> int:
             )
             assert close_response["result"]["closed"] is True
 
-            fst_path = write_tiny_fst_fixture(workspace)
+            fst_path = write_tiny_fst_fixture(temp_workspace)
             fst_open = request(
                 process,
                 4,
@@ -458,12 +487,52 @@ def main() -> int:
             )
             assert fst_close["result"]["closed"] is True
 
-            shutdown = request(process, 6, "shutdown", None)
+            wellen_fixture = find_wellen_fixture(workspace)
+            wellen_open = request(
+                process,
+                6,
+                "systemverilog/waveform/open",
+                {"source": "fst", "fstUri": wellen_fixture.as_uri()},
+            )
+            wellen_session = wellen_open["result"]
+            assert wellen_session["source"] == "fst"
+            assert wellen_session["fileUri"] == wellen_fixture.as_uri()
+            assert wellen_session["duration"] >= 0.0
+            assert wellen_session["groupCount"] > 0
+            assert wellen_session["signalCount"] > 0
+            exercise_pipe_session(
+                wellen_session,
+                expected_duration=wellen_session["duration"],
+                expected_group_count=wellen_session["groupCount"],
+                expected_signal_count=wellen_session["signalCount"],
+                signal_ids=["fst:1"],
+                start=0.0,
+                end=max(wellen_session["duration"], 1.0),
+                request_id_base=30,
+            )
+            wellen_close = request(
+                process,
+                7,
+                "systemverilog/waveform/close",
+                {"sessionId": wellen_session["sessionId"]},
+            )
+            assert wellen_close["result"]["closed"] is True
+
+            shutdown = request(process, 8, "shutdown", None)
             assert shutdown["result"] is None
             notify(process, "exit", None)
             assert process.wait(timeout=5) == 0
             process = None
-        return 0
+            return 0
+        finally:
+            if temp_workspace is not None:
+                for path in sorted(temp_workspace.rglob("*"), reverse=True):
+                    if path.is_file() or path.is_symlink():
+                        path.unlink()
+                    elif path.is_dir():
+                        path.rmdir()
+                if temp_workspace.exists():
+                    temp_workspace.rmdir()
     finally:
         if process is not None and process.poll() is None:
             process.kill()

@@ -8,6 +8,7 @@
 #include <iterator>
 #include <limits>
 #include <map>
+#include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <string_view>
@@ -30,8 +31,18 @@ constexpr std::uint8_t kAttrEndTag = 253;
 constexpr std::uint8_t kMaxScopeType = 22;
 constexpr std::uint8_t kMaxVarType = 29;
 constexpr std::uint8_t kVarTypeReal = 3;
+constexpr std::uint8_t kVarTypeRealParameter = 4;
+constexpr std::uint8_t kVarTypePort = 18;
+constexpr std::uint8_t kVarTypeRealTime = 20;
+constexpr std::uint8_t kVarTypeGenericString = 21;
+constexpr std::uint8_t kVarTypeShortReal = 29;
 constexpr double kFstDoubleEndianTest = 2.7182818284590452354;
 constexpr std::string_view kExtraValueChars = "xzhuwl-?";
+
+struct FstFileBytes {
+    std::filesystem::path path;
+    std::vector<std::uint8_t> bytes;
+};
 
 [[noreturn]] void fail(std::string_view message) {
     throw std::runtime_error(std::string("FST parse error: ") + std::string(message));
@@ -110,7 +121,7 @@ std::string fixedString(const std::vector<std::uint8_t>& bytes,
     return std::string(begin, nul);
 }
 
-bool headerEndianCheckMatches(const std::vector<std::uint8_t>& header) {
+bool headerFloatEndianMatchesHost(const std::vector<std::uint8_t>& header) {
     std::array<std::uint8_t, sizeof(double)> bytes{};
     std::copy_n(header.begin() + 25, bytes.size(), bytes.begin());
 
@@ -123,7 +134,10 @@ bool headerEndianCheckMatches(const std::vector<std::uint8_t>& header) {
     std::reverse(bytes.begin(), bytes.end());
     double reversed = 0.0;
     std::memcpy(&reversed, bytes.data(), sizeof(reversed));
-    return reversed == kFstDoubleEndianTest;
+    if (reversed == kFstDoubleEndianTest) {
+        return false;
+    }
+    fail("bad endian test");
 }
 
 FstHeader parseHeader(const std::vector<std::uint8_t>& bytes) {
@@ -137,11 +151,8 @@ FstHeader parseHeader(const std::vector<std::uint8_t>& bytes) {
     if (section_length < kFstHeaderSectionLength) {
         fail("unsupported short header");
     }
-    if (!headerEndianCheckMatches(bytes)) {
-        fail("bad endian test");
-    }
-
     FstHeader header{};
+    header.float_endian_matches_host = headerFloatEndianMatchesHost(bytes);
     header.start_time = readU64Be(bytes, 9);
     header.end_time = readU64Be(bytes, 17);
     header.memory_used_by_writer = readU64Be(bytes, 33);
@@ -270,6 +281,33 @@ std::vector<std::uint8_t> inflateZlib(const std::vector<std::uint8_t>& encoded,
     return decoded;
 }
 
+std::vector<std::uint8_t> inflateRawDeflate(const std::vector<std::uint8_t>& encoded,
+                                            std::size_t expected_size,
+                                            std::string_view label) {
+    if (expected_size > static_cast<std::size_t>(std::numeric_limits<uInt>::max()) ||
+        encoded.size() > static_cast<std::size_t>(std::numeric_limits<uInt>::max())) {
+        throw std::runtime_error(std::string(label) + " exceeds raw deflate range");
+    }
+    std::vector<std::uint8_t> decoded(expected_size);
+    z_stream stream{};
+    stream.next_in = const_cast<Bytef*>(encoded.data());
+    stream.avail_in = static_cast<uInt>(encoded.size());
+    stream.next_out = decoded.data();
+    stream.avail_out = static_cast<uInt>(decoded.size());
+    auto result = inflateInit2(&stream, -MAX_WBITS);
+    if (result != Z_OK) {
+        throw std::runtime_error(std::string("FST raw deflate init failed for ") +
+                                 std::string(label));
+    }
+    result = inflate(&stream, Z_FINISH);
+    const auto ended = inflateEnd(&stream);
+    if (result != Z_STREAM_END || ended != Z_OK || stream.total_out != decoded.size()) {
+        throw std::runtime_error(std::string("FST raw deflate failed for ") +
+                                 std::string(label));
+    }
+    return decoded;
+}
+
 std::vector<std::uint8_t> inflateLz4(const std::vector<std::uint8_t>& encoded,
                                      std::size_t expected_size,
                                      std::string_view label) {
@@ -308,6 +346,64 @@ std::vector<std::uint8_t> inflateFastLz(const std::vector<std::uint8_t>& encoded
                                  std::string(label));
     }
     return decoded;
+}
+
+FstFileBytes readFstBytes(const fs::path& path) {
+    std::ifstream input(path, std::ios::binary);
+    if (!input) {
+        throw std::runtime_error("Unable to open FST file: " + path.string());
+    }
+    std::vector<std::uint8_t> bytes{std::istreambuf_iterator<char>(input),
+                                    std::istreambuf_iterator<char>()};
+    if (bytes.empty()) {
+        fail("file is shorter than FST header");
+    }
+
+    if (bytes.front() != static_cast<std::uint8_t>(FstBlockType::ZWrapper)) {
+        return FstFileBytes{.path = path, .bytes = std::move(bytes)};
+    }
+    if (bytes.size() < 27U) {
+        fail("truncated gzip-wrapped FST file");
+    }
+    const auto section_length = readU64Be(bytes, 1);
+    const auto uncompressed_length = readU64Be(bytes, 9);
+    if (section_length == 0U) {
+        fail("gzip-wrapped FST file is not finished");
+    }
+    if (section_length > bytes.size() - 1U) {
+        fail("truncated gzip-wrapped FST block");
+    }
+    if (bytes[17] != 0x1fU || bytes[18] != 0x8bU || bytes[19] != 8U) {
+        fail("bad gzip wrapper header");
+    }
+    if (bytes[20] != 0U) {
+        fail("unsupported gzip wrapper flags");
+    }
+    const auto deflate_begin = std::size_t{27};
+    const auto deflate_end = 1U + static_cast<std::size_t>(section_length);
+    if (deflate_end < deflate_begin || deflate_end > bytes.size()) {
+        fail("truncated gzip wrapper body");
+    }
+    std::vector<std::uint8_t> encoded(bytes.begin() + static_cast<std::ptrdiff_t>(deflate_begin),
+                                      bytes.begin() + static_cast<std::ptrdiff_t>(deflate_end));
+    auto decoded = inflateRawDeflate(encoded,
+                                     static_cast<std::size_t>(uncompressed_length),
+                                     "FST gzip wrapper");
+    return FstFileBytes{.path = path, .bytes = std::move(decoded)};
+}
+
+std::vector<std::uint8_t> readRange(const FstFileBytes& file,
+                                    std::uint64_t offset,
+                                    std::uint64_t size) {
+    if (size > static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max())) {
+        fail("block payload is too large");
+    }
+    if (offset > file.bytes.size() || size > file.bytes.size() - offset) {
+        fail("truncated block payload");
+    }
+    return std::vector<std::uint8_t>(
+        file.bytes.begin() + static_cast<std::ptrdiff_t>(offset),
+        file.bytes.begin() + static_cast<std::ptrdiff_t>(offset + size));
 }
 
 std::string readNullString(const std::vector<std::uint8_t>& bytes, std::size_t& offset) {
@@ -350,12 +446,27 @@ std::string joinPath(const std::vector<std::string>& scopes, std::string_view le
 }
 
 void skipAttribute(const std::vector<std::uint8_t>& bytes, std::size_t& offset) {
-    // libfst encodes attributes as tag, subtype byte, attr name string, then a varint argument.
+    // libfst hierarchy attributes carry optional source, enum, VHDL, pack, and array metadata.
+    // The waveform catalog only needs scopes, signal names, handles, and widths, so consume the
+    // record exactly and leave richer metadata for a later catalog expansion.
     if (offset >= bytes.size()) {
         fail("truncated attribute");
     }
-    ++offset;
-    (void)readNullString(bytes, offset);
+    const auto attribute_type = bytes[offset++];
+    if (offset >= bytes.size()) {
+        fail("truncated attribute subtype");
+    }
+    const auto subtype = bytes[offset++];
+    if (attribute_type == 0U && (subtype == 4U || subtype == 5U)) {
+        (void)readVarint(bytes, offset);
+        if (offset >= bytes.size() || bytes[offset] != 0U) {
+            fail("unterminated source attribute");
+        }
+        ++offset;
+    }
+    else {
+        (void)readNullString(bytes, offset);
+    }
     (void)readVarint(bytes, offset);
 }
 
@@ -418,8 +529,15 @@ void parseHierarchyPayload(const std::vector<std::uint8_t>& payload, FstData& da
         auto name = readNullString(payload, offset);
         auto width = checkedU32(readVarint(payload, offset), "FST signal width");
         const auto alias = checkedU32(readVarint(payload, offset), "FST signal alias");
-        if (tag == kVarTypeReal) {
+        if (tag == kVarTypePort) {
+            width = width >= 2U ? (width - 2U) / 3U : 0U;
+        }
+        if (tag == kVarTypeReal || tag == kVarTypeRealParameter || tag == kVarTypeRealTime ||
+            tag == kVarTypeShortReal) {
             width = 8;
+        }
+        if (tag == kVarTypeGenericString) {
+            width = 0;
         }
         if (width == 0 || width == std::numeric_limits<std::uint32_t>::max()) {
             width = 1;
@@ -437,30 +555,6 @@ void parseHierarchyPayload(const std::vector<std::uint8_t>& payload, FstData& da
                                          .name = std::move(name),
                                          .path = std::move(path)});
     }
-}
-
-std::vector<std::uint8_t> readRange(const fs::path& path,
-                                    std::uint64_t offset,
-                                    std::uint64_t size) {
-    if (size > static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max())) {
-        fail("block payload is too large");
-    }
-    std::ifstream input(path, std::ios::binary);
-    if (!input) {
-        throw std::runtime_error("Unable to open FST file: " + path.string());
-    }
-    input.seekg(static_cast<std::streamoff>(offset), std::ios::beg);
-    if (!input) {
-        fail("unable to seek to block payload");
-    }
-    std::vector<std::uint8_t> bytes(static_cast<std::size_t>(size));
-    if (!bytes.empty()) {
-        input.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
-        if (input.gcount() != static_cast<std::streamsize>(bytes.size())) {
-            fail("truncated block payload");
-        }
-    }
-    return bytes;
 }
 
 void parseGeometryPayload(const std::vector<std::uint8_t>& payload, FstData& data) {
@@ -482,20 +576,35 @@ void parseGeometryPayload(const std::vector<std::uint8_t>& payload, FstData& dat
     }
 
     std::size_t offset = 0;
-    for (auto& signal : data.signals) {
-        if (signal.alias_handle != 0) {
-            continue;
-        }
+    data.signal_widths_by_handle.clear();
+    data.signal_geometry_by_handle.clear();
+    data.signal_widths_by_handle.reserve(static_cast<std::size_t>(max_handle));
+    data.signal_geometry_by_handle.reserve(static_cast<std::size_t>(max_handle));
+    for (std::uint64_t handle = 1; handle <= max_handle; ++handle) {
         if (offset >= geometry.size()) {
             break;
         }
-        const auto width = checkedU32(readVarint(geometry, offset), "FST geometry width");
-        if (width == std::numeric_limits<std::uint32_t>::max()) {
-            signal.width = 1;
+        const auto encoded = checkedU32(readVarint(geometry, offset), "FST geometry width");
+        auto signal_geometry = FstSignalGeometry{};
+        if (encoded == 0U) {
+            signal_geometry.length = 8U;
+            signal_geometry.is_real = true;
+        }
+        else if (encoded == std::numeric_limits<std::uint32_t>::max()) {
+            signal_geometry.length = 0U;
         }
         else {
-            signal.width = std::max(1U, width);
+            signal_geometry.length = encoded;
         }
+        data.signal_geometry_by_handle.push_back(signal_geometry);
+        data.signal_widths_by_handle.push_back(std::max(1U, signal_geometry.length));
+    }
+    for (auto& signal : data.signals) {
+        if (signal.handle == 0U ||
+            signal.handle > data.signal_widths_by_handle.size()) {
+            continue;
+        }
+        signal.width = std::max(1U, data.signal_widths_by_handle[signal.handle - 1U]);
     }
 }
 
@@ -545,6 +654,9 @@ std::string scalarValueFromVli(std::uint64_t vli) {
 }
 
 std::uint32_t signalWidthByIndex(const FstData& data, std::size_t index) {
+    if (index < data.signal_widths_by_handle.size()) {
+        return data.signal_widths_by_handle[index];
+    }
     const auto handle = static_cast<std::uint32_t>(index + 1U);
     const auto it = std::find_if(data.signals.begin(), data.signals.end(), [handle](const auto& signal) {
         return signal.handle == handle;
@@ -553,6 +665,37 @@ std::uint32_t signalWidthByIndex(const FstData& data, std::size_t index) {
         return 1;
     }
     return it->width;
+}
+
+FstSignalGeometry signalGeometryByIndex(const FstData& data, std::size_t index) {
+    if (index < data.signal_geometry_by_handle.size()) {
+        return data.signal_geometry_by_handle[index];
+    }
+    return FstSignalGeometry{.length = signalWidthByIndex(data, index), .is_real = false};
+}
+
+bool shouldDecodeSignal(const FstReadOptions& options, std::uint32_t handle) {
+    return options.decode_signal_handles.empty() ||
+           std::ranges::find(options.decode_signal_handles, handle) !=
+               options.decode_signal_handles.end();
+}
+
+std::string readRealValue(const std::vector<std::uint8_t>& bytes,
+                          std::size_t offset,
+                          bool endian_matches_host) {
+    if (offset > bytes.size() || bytes.size() - offset < sizeof(double)) {
+        fail("truncated FST real value");
+    }
+    std::array<std::uint8_t, sizeof(double)> raw{};
+    std::copy_n(bytes.begin() + static_cast<std::ptrdiff_t>(offset), raw.size(), raw.begin());
+    if (!endian_matches_host) {
+        std::reverse(raw.begin(), raw.end());
+    }
+    double value = 0.0;
+    std::memcpy(&value, raw.data(), sizeof(value));
+    std::ostringstream stream;
+    stream << value;
+    return stream.str();
 }
 
 std::vector<std::uint8_t> decodeFrameBytes(const std::vector<std::uint8_t>& payload,
@@ -600,14 +743,14 @@ struct ValueChainLocation {
 std::vector<ValueChainLocation> decodePlainChainLocations(const std::vector<std::uint8_t>& chain_index,
                                                           std::uint32_t max_handle,
                                                           std::size_t chain_end_offset) {
-    std::vector<ValueChainLocation> locations(max_handle + 1U);
-    std::vector<std::int32_t> alias_targets(max_handle + 1U, 0);
+    std::vector<ValueChainLocation> locations(max_handle);
+    std::vector<std::int32_t> alias_targets(max_handle, 0);
     std::size_t offset = 0;
     std::uint32_t index = 0;
     std::uint64_t previous_value = 0;
     std::uint32_t previous_index = std::numeric_limits<std::uint32_t>::max();
 
-    while (offset < chain_index.size() && index <= max_handle) {
+    while (offset < chain_index.size() && index < max_handle) {
         auto value = readVarint(chain_index, offset, 5);
         if (value == 0U) {
             value = readVarint(chain_index, offset, 5);
@@ -624,7 +767,7 @@ std::vector<ValueChainLocation> decodePlainChainLocations(const std::vector<std:
         }
         else {
             const auto loop_count = checkedU32(value >> 1U, "FST value-chain zero run");
-            if (loop_count > max_handle + 1U || index > max_handle + 1U - loop_count) {
+            if (loop_count > max_handle || index > max_handle - loop_count) {
                 fail("FST value-chain zero run exceeds max handle");
             }
             index += loop_count;
@@ -638,7 +781,7 @@ std::vector<ValueChainLocation> decodePlainChainLocations(const std::vector<std:
         }
         locations[previous_index].length = chain_end - locations[previous_index].offset;
     }
-    for (std::uint32_t idx = 0; idx <= max_handle; ++idx) {
+    for (std::uint32_t idx = 0; idx < max_handle; ++idx) {
         auto target = alias_targets[idx];
         if (target < 0 && locations[idx].offset == 0U) {
             target = -target;
@@ -655,15 +798,15 @@ std::vector<ValueChainLocation> decodeDynamicAlias2ChainLocations(
     const std::vector<std::uint8_t>& chain_index,
     std::uint32_t max_handle,
     std::size_t chain_end_offset) {
-    std::vector<ValueChainLocation> locations(max_handle + 1U);
-    std::vector<std::int32_t> alias_targets(max_handle + 1U, 0);
+    std::vector<ValueChainLocation> locations(max_handle);
+    std::vector<std::int32_t> alias_targets(max_handle, 0);
     std::size_t offset = 0;
     std::uint32_t index = 0;
     std::uint64_t previous_value = 0;
     std::uint32_t previous_index = std::numeric_limits<std::uint32_t>::max();
     std::int32_t previous_alias = 0;
 
-    while (offset < chain_index.size() && index <= max_handle) {
+    while (offset < chain_index.size() && index < max_handle) {
         if ((chain_index[offset] & 0x01U) != 0U) {
             const auto shifted_value = readSignedVarint(chain_index, offset, 10) >> 1;
             if (shifted_value > 0) {
@@ -686,7 +829,7 @@ std::vector<ValueChainLocation> decodeDynamicAlias2ChainLocations(
         else {
             const auto value = readVarint(chain_index, offset, 5);
             const auto loop_count = checkedU32(value >> 1U, "FST alias2 value-chain zero run");
-            if (loop_count > max_handle + 1U || index > max_handle + 1U - loop_count) {
+            if (loop_count > max_handle || index > max_handle - loop_count) {
                 fail("FST alias2 value-chain zero run exceeds max handle");
             }
             index += loop_count;
@@ -700,7 +843,7 @@ std::vector<ValueChainLocation> decodeDynamicAlias2ChainLocations(
         }
         locations[previous_index].length = chain_end - locations[previous_index].offset;
     }
-    for (std::uint32_t idx = 0; idx <= max_handle; ++idx) {
+    for (std::uint32_t idx = 0; idx < max_handle; ++idx) {
         auto target = alias_targets[idx];
         if (target < 0 && locations[idx].offset == 0U) {
             target = -target;
@@ -715,11 +858,10 @@ std::vector<ValueChainLocation> decodeDynamicAlias2ChainLocations(
 
 void decodeLibfstValueChangePayload(const std::vector<std::uint8_t>& payload,
                                     const FstBlockIndexEntry& entry,
+                                    std::size_t value_block_index,
                                     const std::vector<std::uint64_t>& time_table,
-                                    FstData& data) {
-    if (time_table.empty()) {
-        return;
-    }
+                                    FstData& data,
+                                    const FstReadOptions& options) {
     const auto table_meta_offset = payload.size() - 24U;
     const auto encoded_time_table_length = readU64Be(payload, table_meta_offset + 8U);
 
@@ -757,24 +899,40 @@ void decodeLibfstValueChangePayload(const std::vector<std::uint8_t>& payload,
     std::vector<std::size_t> remaining(max_handle + 1U, 0);
     std::vector<std::vector<std::uint8_t>> chains(max_handle + 1U);
 
-    std::size_t initial_offset = 0;
-    for (std::uint32_t index = 0; index < max_handle; ++index) {
-        const auto width = signalWidthByIndex(data, index);
-        if (width == 0) {
-            continue;
+    if (value_block_index == 0U && (time_table.empty() || time_table.front() > entry.begin_time)) {
+        std::size_t initial_offset = 0;
+        for (std::uint32_t index = 0; index < max_handle; ++index) {
+            if (!shouldDecodeSignal(options, index + 1U)) {
+                continue;
+            }
+            const auto geometry = signalGeometryByIndex(data, index);
+            if (geometry.length == 0U) {
+                continue;
+            }
+            if (initial_offset > initial_frame.size() ||
+                initial_frame.size() - initial_offset < geometry.length) {
+                fail("truncated FST initial frame signal value");
+            }
+            auto value = geometry.is_real
+                             ? readRealValue(initial_frame,
+                                             initial_offset,
+                                             data.header.float_endian_matches_host)
+                             : std::string(initial_frame.begin() +
+                                               static_cast<std::ptrdiff_t>(initial_offset),
+                                           initial_frame.begin() +
+                                               static_cast<std::ptrdiff_t>(initial_offset +
+                                                                          geometry.length));
+            data.transitions.push_back(FstTransition{.handle = index + 1U,
+                                                     .time = entry.begin_time,
+                                                     .value = std::move(value)});
+            initial_offset += geometry.length;
         }
-        if (initial_offset > initial_frame.size() || initial_frame.size() - initial_offset < width) {
-            fail("truncated FST initial frame signal value");
-        }
-        data.transitions.push_back(FstTransition{
-            .handle = index + 1U,
-            .time = entry.begin_time,
-            .value = std::string(initial_frame.begin() + static_cast<std::ptrdiff_t>(initial_offset),
-                                 initial_frame.begin() + static_cast<std::ptrdiff_t>(initial_offset + width))});
-        initial_offset += width;
     }
 
     for (std::uint32_t index = 0; index < max_handle; ++index) {
+        if (!shouldDecodeSignal(options, index + 1U)) {
+            continue;
+        }
         const auto location = chain_locations[index];
         if (location.offset == 0U || location.length == 0U) {
             continue;
@@ -824,9 +982,10 @@ void decodeLibfstValueChangePayload(const std::vector<std::uint8_t>& payload,
             continue;
         }
 
-        const auto width = signalWidthByIndex(data, index);
+        const auto geometry = signalGeometryByIndex(data, index);
         const auto vli = readVarintAtNoSkip(chains[index], 0);
-        const auto tdelta = width <= 1U ? vli >> (2U << (vli & 1U)) : vli >> 1U;
+        const auto tdelta = geometry.length == 1U ? vli >> (2U << (vli & 1U))
+                                                  : vli >> 1U;
         if (tdelta >= tc_head.size()) {
             fail("FST value-chain first time delta exceeds time table");
         }
@@ -839,22 +998,45 @@ void decodeLibfstValueChangePayload(const std::vector<std::uint8_t>& payload,
             const auto index = tc_head[time_index] - 1U;
             std::size_t skip = 0;
             const auto vli = readVarintAt(chains[index], heads[index], skip, 5);
-            const auto width = signalWidthByIndex(data, index);
+            const auto geometry = signalGeometryByIndex(data, index);
 
             std::string value;
-            if (width <= 1U) {
+            if (geometry.length == 1U) {
                 value = scalarValueFromVli(vli);
+            }
+            else if (geometry.length == 0U) {
+                std::size_t value_offset = heads[index] + skip;
+                const auto length = checkedU32(readVarint(chains[index], value_offset, 5),
+                                               "FST variable-length value length");
+                if (value_offset > chains[index].size() ||
+                    chains[index].size() - value_offset < length) {
+                    fail("truncated FST variable-length value");
+                }
+                value.assign(chains[index].begin() + static_cast<std::ptrdiff_t>(value_offset),
+                             chains[index].begin() +
+                                 static_cast<std::ptrdiff_t>(value_offset + length));
+                skip = value_offset + length - heads[index];
+            }
+            else if (geometry.is_real) {
+                if ((vli & 1U) == 0U) {
+                    fail("unsupported packed FST real value");
+                }
+                const auto value_offset = heads[index] + skip;
+                value = readRealValue(chains[index],
+                                      value_offset,
+                                      data.header.float_endian_matches_host);
+                skip += sizeof(double);
             }
             else {
                 std::size_t value_offset = heads[index] + skip;
                 if ((vli & 1U) == 0U) {
-                    const auto byte_count = (width + 7U) / 8U;
+                    const auto byte_count = (geometry.length + 7U) / 8U;
                     if (value_offset > chains[index].size() ||
                         chains[index].size() - value_offset < byte_count) {
                         fail("truncated packed FST vector value");
                     }
-                    value.reserve(width);
-                    for (std::uint32_t bit = 0; bit < width; ++bit) {
+                    value.reserve(geometry.length);
+                    for (std::uint32_t bit = 0; bit < geometry.length; ++bit) {
                         const auto byte = chains[index][value_offset + bit / 8U];
                         const auto mask = static_cast<std::uint8_t>(1U << (7U - (bit & 7U)));
                         value.push_back((byte & mask) != 0U ? '1' : '0');
@@ -863,19 +1045,22 @@ void decodeLibfstValueChangePayload(const std::vector<std::uint8_t>& payload,
                 }
                 else {
                     if (value_offset > chains[index].size() ||
-                        chains[index].size() - value_offset < width) {
+                        chains[index].size() - value_offset < geometry.length) {
                         fail("truncated FST vector value");
                     }
                     value.assign(chains[index].begin() + static_cast<std::ptrdiff_t>(value_offset),
                                  chains[index].begin() +
-                                     static_cast<std::ptrdiff_t>(value_offset + width));
-                    skip += width;
+                                     static_cast<std::ptrdiff_t>(value_offset + geometry.length));
+                    skip += geometry.length;
                 }
             }
 
             data.transitions.push_back(FstTransition{.handle = index + 1U,
                                                      .time = time_table[time_index],
                                                      .value = std::move(value)});
+            if (skip > remaining[index]) {
+                fail("FST value-chain skip exceeds remaining data");
+            }
             heads[index] += skip;
             remaining[index] -= skip;
 
@@ -883,8 +1068,9 @@ void decodeLibfstValueChangePayload(const std::vector<std::uint8_t>& payload,
             scatter[index] = 0;
             if (remaining[index] != 0U) {
                 const auto next_vli = readVarintAtNoSkip(chains[index], heads[index]);
-                const auto tdelta = width <= 1U ? next_vli >> (2U << (next_vli & 1U))
-                                                : next_vli >> 1U;
+                const auto tdelta = geometry.length == 1U
+                                        ? next_vli >> (2U << (next_vli & 1U))
+                                        : next_vli >> 1U;
                 if (time_index + tdelta >= tc_head.size()) {
                     fail("FST value-chain next time delta exceeds time table");
                 }
@@ -924,7 +1110,7 @@ void parseSimplePristineTransitionPayload(const std::vector<std::uint8_t>& paylo
 void parseValueBlockPayload(const std::vector<std::uint8_t>& payload,
                             FstBlockIndexEntry& entry,
                             FstData& data,
-                            bool decode_transitions) {
+                            const FstReadOptions& options) {
     if (payload.size() < 24) {
         fail("truncated value-change block");
     }
@@ -935,7 +1121,15 @@ void parseValueBlockPayload(const std::vector<std::uint8_t>& payload,
     if (entry.end_time < entry.begin_time) {
         fail("value-change block has reversed time range");
     }
-    if (!decode_transitions) {
+    if (!options.decode_transitions) {
+        return;
+    }
+    if (options.decode_end_time.has_value() &&
+        entry.begin_time > *options.decode_end_time) {
+        return;
+    }
+    if (options.decode_start_time.has_value() &&
+        entry.end_time < *options.decode_start_time) {
         return;
     }
     // Decode the libfst time table and value chains. DEFLATE geometry/time/frame data and
@@ -947,7 +1141,12 @@ void parseValueBlockPayload(const std::vector<std::uint8_t>& payload,
           payload[25] == 'S' &&
           payload[26] == 'T' &&
           payload[27] == 'V')) {
-        decodeLibfstValueChangePayload(payload, entry, time_table, data);
+        decodeLibfstValueChangePayload(payload,
+                                       entry,
+                                       data.value_blocks.size(),
+                                       time_table,
+                                       data,
+                                       options);
         return;
     }
     parseSimplePristineTransitionPayload(payload, data);
@@ -960,12 +1159,12 @@ void parseLz4HierarchyPayload(const std::vector<std::uint8_t>& payload,
 void parseGzipHierarchyPayload(const std::vector<std::uint8_t>& payload,
                                FstData& data);
 
-void parseBlock(const fs::path& path,
+void parseBlock(const FstFileBytes& file,
                 FstBlockIndexEntry& entry,
                 FstData& data,
                 const FstReadOptions& options) {
-    const auto payload = readRange(path, entry.payload_offset, entry.payload_size);
-        switch (entry.type) {
+    const auto payload = readRange(file, entry.payload_offset, entry.payload_size);
+    switch (entry.type) {
         case FstBlockType::Hierarchy:
             parseGzipHierarchyPayload(payload, data);
             break;
@@ -975,7 +1174,7 @@ void parseBlock(const fs::path& path,
         case FstBlockType::ValueChangeData:
         case FstBlockType::ValueChangeDataDynamicAlias:
         case FstBlockType::ValueChangeDataDynamicAlias2:
-            parseValueBlockPayload(payload, entry, data, options.decode_transitions);
+            parseValueBlockPayload(payload, entry, data, options);
             data.value_blocks.push_back(entry);
             break;
         case FstBlockType::HierarchyLz4:
@@ -984,36 +1183,24 @@ void parseBlock(const fs::path& path,
         case FstBlockType::HierarchyLz4Duo:
             parseLz4HierarchyPayload(payload, data, true);
             break;
-        case FstBlockType::ZWrapper:
-            fail("gzip-wrapped FST files are not supported");
         default:
             break;
     }
 }
 
-void scanBlocks(const fs::path& path, FstData& data, const FstReadOptions& options) {
-    std::ifstream input(path, std::ios::binary);
-    if (!input) {
-        throw std::runtime_error("Unable to open FST file: " + path.string());
-    }
-    input.seekg(0, std::ios::end);
-    const auto file_size = static_cast<std::uint64_t>(input.tellg());
+void scanBlocks(const FstFileBytes& file, FstData& data, const FstReadOptions& options) {
+    const auto file_size = static_cast<std::uint64_t>(file.bytes.size());
     if (file_size < kFstHeaderLength) {
         fail("file is shorter than FST header");
     }
 
     std::uint64_t offset = kFstHeaderLength;
     while (offset < file_size) {
-        input.seekg(static_cast<std::streamoff>(offset), std::ios::beg);
-        const auto raw_type = input.get();
-        if (raw_type == std::char_traits<char>::eof()) {
-            break;
-        }
-        const auto type = static_cast<FstBlockType>(static_cast<std::uint8_t>(raw_type));
+        const auto type = static_cast<FstBlockType>(file.bytes[static_cast<std::size_t>(offset)]);
         if (type == FstBlockType::Skip) {
             break;
         }
-        const auto section_length = readU64Be(input);
+        const auto section_length = readU64Be(file.bytes, static_cast<std::size_t>(offset + 1U));
         if (section_length < 8) {
             fail("invalid block length");
         }
@@ -1026,7 +1213,7 @@ void scanBlocks(const fs::path& path, FstData& data, const FstReadOptions& optio
                                  .section_length = section_length,
                                  .payload_offset = offset + 9U,
                                  .payload_size = section_length - 8U};
-        parseBlock(path, entry, data, options);
+        parseBlock(file, entry, data, options);
         offset += 1U + section_length;
     }
 }
@@ -1110,15 +1297,13 @@ FstData readFstFile(const std::filesystem::path& path, const FstReadOptions& opt
         throw std::runtime_error("Unable to resolve FST file: " + path.string());
     }
 
-    std::ifstream input(canonical_path, std::ios::binary);
-    if (!input) {
-        throw std::runtime_error("Unable to open FST file: " + canonical_path.string());
-    }
-    std::vector<std::uint8_t> header(kFstHeaderLength);
-    input.read(reinterpret_cast<char*>(header.data()), static_cast<std::streamsize>(header.size()));
-    if (input.gcount() != static_cast<std::streamsize>(header.size())) {
+    auto file = readFstBytes(canonical_path);
+    if (file.bytes.size() < kFstHeaderLength) {
         fail("truncated header");
     }
+    std::vector<std::uint8_t> header(file.bytes.begin(),
+                                    file.bytes.begin() +
+                                        static_cast<std::ptrdiff_t>(kFstHeaderLength));
 
     FstData data;
     data.file_path = canonical_path;
@@ -1129,7 +1314,16 @@ FstData readFstFile(const std::filesystem::path& path, const FstReadOptions& opt
         data.hierarchy_sidecar_path = sidecar;
         parseSidecarHierarchy(*sidecar, data);
     }
-    scanBlocks(canonical_path, data, options);
+    scanBlocks(file, data, options);
+    if (data.header.start_time == 0U && data.header.end_time == 0U &&
+        !data.value_blocks.empty()) {
+        data.header.start_time = data.value_blocks.front().begin_time;
+        data.header.end_time = data.value_blocks.front().end_time;
+        for (const auto& block : data.value_blocks) {
+            data.header.start_time = std::min(data.header.start_time, block.begin_time);
+            data.header.end_time = std::max(data.header.end_time, block.end_time);
+        }
+    }
 
     if (data.signals.empty() && data.header.variable_count != 0) {
         fail("FST hierarchy did not define any signals");

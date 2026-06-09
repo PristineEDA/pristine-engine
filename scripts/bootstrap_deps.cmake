@@ -19,6 +19,7 @@ if(NOT DEFINED PRISTINE_COMPONENTS)
     zlib
     lz4
     fastlz
+    wellen
     nlohmann_json
     catch2)
 endif()
