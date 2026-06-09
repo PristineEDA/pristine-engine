@@ -698,6 +698,35 @@ std::string readRealValue(const std::vector<std::uint8_t>& bytes,
     return stream.str();
 }
 
+std::string readInitialFrameValue(const std::vector<std::uint8_t>& bytes,
+                                  std::size_t& offset,
+                                  const FstSignalGeometry& geometry,
+                                  bool endian_matches_host) {
+    if (geometry.is_real) {
+        auto value = readRealValue(bytes, offset, endian_matches_host);
+        offset += sizeof(double);
+        return value;
+    }
+    if (geometry.length == 0U) {
+        const auto length = checkedU32(readVarint(bytes, offset, 5),
+                                       "FST initial variable-length value length");
+        if (offset > bytes.size() || bytes.size() - offset < length) {
+            fail("truncated FST initial variable-length signal value");
+        }
+        std::string value(bytes.begin() + static_cast<std::ptrdiff_t>(offset),
+                          bytes.begin() + static_cast<std::ptrdiff_t>(offset + length));
+        offset += length;
+        return value;
+    }
+    if (offset > bytes.size() || bytes.size() - offset < geometry.length) {
+        fail("truncated FST initial frame signal value");
+    }
+    std::string value(bytes.begin() + static_cast<std::ptrdiff_t>(offset),
+                      bytes.begin() + static_cast<std::ptrdiff_t>(offset + geometry.length));
+    offset += geometry.length;
+    return value;
+}
+
 std::vector<std::uint8_t> decodeFrameBytes(const std::vector<std::uint8_t>& payload,
                                            std::size_t& offset) {
     const auto frame_uncompressed_length = checkedU32(readVarint(payload, offset), "FST frame uncompressed length");
@@ -735,34 +764,90 @@ std::vector<std::uint8_t> decodeChainIndexBytes(const std::vector<std::uint8_t>&
         payload.begin() + static_cast<std::ptrdiff_t>(chain_length_offset));
 }
 
+enum class ValueChainLocationKind : std::uint8_t {
+    None,
+    Alias,
+    Offset,
+};
+
 struct ValueChainLocation {
+    ValueChainLocationKind kind = ValueChainLocationKind::None;
+    std::uint32_t alias_index = 0;
     std::uint32_t offset = 0;
     std::uint32_t length = 0;
 };
+
+void assignPreviousChainLength(std::vector<ValueChainLocation>& locations,
+                               std::uint32_t previous_index,
+                               std::uint32_t next_offset) {
+    if (previous_index == std::numeric_limits<std::uint32_t>::max()) {
+        return;
+    }
+    auto& previous = locations.at(previous_index);
+    if (previous.kind != ValueChainLocationKind::Offset) {
+        fail("FST value-chain previous entry is not an offset");
+    }
+    if (next_offset < previous.offset) {
+        fail("FST value-chain offset table is not monotonic");
+    }
+    previous.length = next_offset - previous.offset;
+}
+
+void finalizeChainLocations(std::vector<ValueChainLocation>& locations,
+                            std::uint32_t previous_index,
+                            std::size_t chain_end_offset,
+                            std::string_view label) {
+    const auto chain_end = checkedU32(chain_end_offset, "FST value-chain end offset");
+    assignPreviousChainLength(locations, previous_index, chain_end);
+
+    for (std::size_t index = 0; index < locations.size(); ++index) {
+        auto& location = locations[index];
+        if (location.kind != ValueChainLocationKind::Alias) {
+            continue;
+        }
+        if (location.alias_index >= locations.size()) {
+            fail(std::string(label) + " alias exceeds max handle");
+        }
+        const auto& target = locations[location.alias_index];
+        if (target.kind != ValueChainLocationKind::Offset) {
+            fail(std::string(label) + " alias does not target a value-chain offset");
+        }
+        location.kind = ValueChainLocationKind::Offset;
+        location.offset = target.offset;
+        location.length = target.length;
+    }
+}
 
 std::vector<ValueChainLocation> decodePlainChainLocations(const std::vector<std::uint8_t>& chain_index,
                                                           std::uint32_t max_handle,
                                                           std::size_t chain_end_offset) {
     std::vector<ValueChainLocation> locations(max_handle);
-    std::vector<std::int32_t> alias_targets(max_handle, 0);
     std::size_t offset = 0;
     std::uint32_t index = 0;
     std::uint64_t previous_value = 0;
     std::uint32_t previous_index = std::numeric_limits<std::uint32_t>::max();
 
-    while (offset < chain_index.size() && index < max_handle) {
+    while (offset < chain_index.size()) {
+        if (index >= max_handle) {
+            fail("FST value-chain table exceeds max handle");
+        }
         auto value = readVarint(chain_index, offset, 5);
         if (value == 0U) {
             value = readVarint(chain_index, offset, 5);
-            alias_targets[index] = -static_cast<std::int32_t>(checkedU32(value, "FST dynamic alias index"));
+            if (value == 0U) {
+                fail("FST value-chain alias index is zero");
+            }
+            locations[index].kind = ValueChainLocationKind::Alias;
+            locations[index].alias_index =
+                checkedU32(value - 1U, "FST dynamic alias index");
             ++index;
         }
         else if ((value & 1U) != 0U) {
             previous_value += value >> 1U;
-            locations[index].offset = checkedU32(previous_value, "FST value-chain offset");
-            if (previous_index != std::numeric_limits<std::uint32_t>::max()) {
-                locations[previous_index].length = locations[index].offset - locations[previous_index].offset;
-            }
+            const auto chain_offset = checkedU32(previous_value, "FST value-chain offset");
+            assignPreviousChainLength(locations, previous_index, chain_offset);
+            locations[index].kind = ValueChainLocationKind::Offset;
+            locations[index].offset = chain_offset;
             previous_index = index++;
         }
         else {
@@ -774,23 +859,7 @@ std::vector<ValueChainLocation> decodePlainChainLocations(const std::vector<std:
         }
     }
 
-    if (previous_index != std::numeric_limits<std::uint32_t>::max()) {
-        const auto chain_end = checkedU32(chain_end_offset, "FST value-chain end offset");
-        if (chain_end < locations[previous_index].offset) {
-            fail("FST value-chain end precedes last chain");
-        }
-        locations[previous_index].length = chain_end - locations[previous_index].offset;
-    }
-    for (std::uint32_t idx = 0; idx < max_handle; ++idx) {
-        auto target = alias_targets[idx];
-        if (target < 0 && locations[idx].offset == 0U) {
-            target = -target;
-            --target;
-            if (target >= 0 && static_cast<std::uint32_t>(target) < idx) {
-                locations[idx] = locations[static_cast<std::uint32_t>(target)];
-            }
-        }
-    }
+    finalizeChainLocations(locations, previous_index, chain_end_offset, "FST value-chain");
     return locations;
 }
 
@@ -799,31 +868,43 @@ std::vector<ValueChainLocation> decodeDynamicAlias2ChainLocations(
     std::uint32_t max_handle,
     std::size_t chain_end_offset) {
     std::vector<ValueChainLocation> locations(max_handle);
-    std::vector<std::int32_t> alias_targets(max_handle, 0);
     std::size_t offset = 0;
     std::uint32_t index = 0;
     std::uint64_t previous_value = 0;
     std::uint32_t previous_index = std::numeric_limits<std::uint32_t>::max();
-    std::int32_t previous_alias = 0;
+    std::uint32_t previous_alias = 0;
+    bool has_previous_alias = false;
 
-    while (offset < chain_index.size() && index < max_handle) {
+    while (offset < chain_index.size()) {
+        if (index >= max_handle) {
+            fail("FST alias2 value-chain table exceeds max handle");
+        }
         if ((chain_index[offset] & 0x01U) != 0U) {
             const auto shifted_value = readSignedVarint(chain_index, offset, 10) >> 1;
             if (shifted_value > 0) {
                 previous_value += static_cast<std::uint64_t>(shifted_value);
-                locations[index].offset = checkedU32(previous_value, "FST alias2 value-chain offset");
-                if (previous_index != std::numeric_limits<std::uint32_t>::max()) {
-                    locations[previous_index].length =
-                        locations[index].offset - locations[previous_index].offset;
-                }
+                const auto chain_offset = checkedU32(previous_value, "FST alias2 value-chain offset");
+                assignPreviousChainLength(locations, previous_index, chain_offset);
+                locations[index].kind = ValueChainLocationKind::Offset;
+                locations[index].offset = chain_offset;
                 previous_index = index++;
             }
             else if (shifted_value < 0) {
-                previous_alias = static_cast<std::int32_t>(shifted_value);
-                alias_targets[index++] = previous_alias;
+                const auto alias_value =
+                    static_cast<std::uint64_t>(-shifted_value - 1);
+                previous_alias = checkedU32(alias_value, "FST alias2 value-chain alias index");
+                has_previous_alias = true;
+                locations[index].kind = ValueChainLocationKind::Alias;
+                locations[index].alias_index = previous_alias;
+                ++index;
             }
             else {
-                alias_targets[index++] = previous_alias;
+                if (!has_previous_alias) {
+                    fail("FST alias2 repeats alias before defining one");
+                }
+                locations[index].kind = ValueChainLocationKind::Alias;
+                locations[index].alias_index = previous_alias;
+                ++index;
             }
         }
         else {
@@ -836,23 +917,7 @@ std::vector<ValueChainLocation> decodeDynamicAlias2ChainLocations(
         }
     }
 
-    if (previous_index != std::numeric_limits<std::uint32_t>::max()) {
-        const auto chain_end = checkedU32(chain_end_offset, "FST alias2 value-chain end offset");
-        if (chain_end < locations[previous_index].offset) {
-            fail("FST alias2 value-chain end precedes last chain");
-        }
-        locations[previous_index].length = chain_end - locations[previous_index].offset;
-    }
-    for (std::uint32_t idx = 0; idx < max_handle; ++idx) {
-        auto target = alias_targets[idx];
-        if (target < 0 && locations[idx].offset == 0U) {
-            target = -target;
-            --target;
-            if (target >= 0 && static_cast<std::uint32_t>(target) < idx) {
-                locations[idx] = locations[static_cast<std::uint32_t>(target)];
-            }
-        }
-    }
+    finalizeChainLocations(locations, previous_index, chain_end_offset, "FST alias2 value-chain");
     return locations;
 }
 
@@ -902,30 +967,16 @@ void decodeLibfstValueChangePayload(const std::vector<std::uint8_t>& payload,
     if (value_block_index == 0U && (time_table.empty() || time_table.front() > entry.begin_time)) {
         std::size_t initial_offset = 0;
         for (std::uint32_t index = 0; index < max_handle; ++index) {
-            if (!shouldDecodeSignal(options, index + 1U)) {
-                continue;
-            }
             const auto geometry = signalGeometryByIndex(data, index);
-            if (geometry.length == 0U) {
-                continue;
+            auto value = readInitialFrameValue(initial_frame,
+                                               initial_offset,
+                                               geometry,
+                                               data.header.float_endian_matches_host);
+            if (shouldDecodeSignal(options, index + 1U)) {
+                data.transitions.push_back(FstTransition{.handle = index + 1U,
+                                                         .time = entry.begin_time,
+                                                         .value = std::move(value)});
             }
-            if (initial_offset > initial_frame.size() ||
-                initial_frame.size() - initial_offset < geometry.length) {
-                fail("truncated FST initial frame signal value");
-            }
-            auto value = geometry.is_real
-                             ? readRealValue(initial_frame,
-                                             initial_offset,
-                                             data.header.float_endian_matches_host)
-                             : std::string(initial_frame.begin() +
-                                               static_cast<std::ptrdiff_t>(initial_offset),
-                                           initial_frame.begin() +
-                                               static_cast<std::ptrdiff_t>(initial_offset +
-                                                                          geometry.length));
-            data.transitions.push_back(FstTransition{.handle = index + 1U,
-                                                     .time = entry.begin_time,
-                                                     .value = std::move(value)});
-            initial_offset += geometry.length;
         }
     }
 
@@ -934,7 +985,7 @@ void decodeLibfstValueChangePayload(const std::vector<std::uint8_t>& payload,
             continue;
         }
         const auto location = chain_locations[index];
-        if (location.offset == 0U || location.length == 0U) {
+        if (location.kind != ValueChainLocationKind::Offset || location.length == 0U) {
             continue;
         }
         const auto chain_file_begin = pack_type_offset + location.offset;
@@ -952,28 +1003,38 @@ void decodeLibfstValueChangePayload(const std::vector<std::uint8_t>& payload,
         if (chain_begin > chain_file_end) {
             fail("FST value-chain length exceeds payload bounds");
         }
-        chains[index].assign(payload.begin() + static_cast<std::ptrdiff_t>(chain_begin),
-                             payload.begin() + static_cast<std::ptrdiff_t>(chain_file_end));
         if (decoded_length != 0U) {
             if (pack_type == 'Z') {
+                const auto zlib_end = chain_begin + location.length;
+                if (zlib_end > payload.size()) {
+                    fail("FST zlib value-chain length exceeds payload bounds");
+                }
+                chains[index].assign(payload.begin() + static_cast<std::ptrdiff_t>(chain_begin),
+                                     payload.begin() + static_cast<std::ptrdiff_t>(zlib_end));
                 chains[index] = inflateZlib(chains[index],
                                             decoded_length,
                                             "FST value-chain");
             }
             else if (pack_type == '4') {
+                chains[index].assign(payload.begin() + static_cast<std::ptrdiff_t>(chain_begin),
+                                     payload.begin() + static_cast<std::ptrdiff_t>(chain_file_end));
                 chains[index] = inflateLz4(chains[index],
                                            decoded_length,
                                            "FST LZ4 value-chain");
             }
             else {
+                chains[index].assign(payload.begin() + static_cast<std::ptrdiff_t>(chain_begin),
+                                     payload.begin() + static_cast<std::ptrdiff_t>(chain_file_end));
                 chains[index] = inflateFastLz(chains[index],
                                               decoded_length,
                                               "FST FastLZ value-chain");
             }
         }
-        else if (pack_type != 'Z') {
+        else {
             // libfst can store uncompressed chains even when the section pack type is LZ4/FastLZ
             // if compression would not reduce the data.
+            chains[index].assign(payload.begin() + static_cast<std::ptrdiff_t>(chain_begin),
+                                 payload.begin() + static_cast<std::ptrdiff_t>(chain_file_end));
             chains[index].shrink_to_fit();
         }
         heads[index] = 0;
@@ -1107,10 +1168,8 @@ void parseSimplePristineTransitionPayload(const std::vector<std::uint8_t>& paylo
     }
 }
 
-void parseValueBlockPayload(const std::vector<std::uint8_t>& payload,
-                            FstBlockIndexEntry& entry,
-                            FstData& data,
-                            const FstReadOptions& options) {
+void parseValueBlockIndexPayload(const std::vector<std::uint8_t>& payload,
+                                 FstBlockIndexEntry& entry) {
     if (payload.size() < 24) {
         fail("truncated value-change block");
     }
@@ -1121,15 +1180,30 @@ void parseValueBlockPayload(const std::vector<std::uint8_t>& payload,
     if (entry.end_time < entry.begin_time) {
         fail("value-change block has reversed time range");
     }
+}
+
+bool valueBlockIntersectsDecodeWindow(const FstBlockIndexEntry& entry,
+                                      const FstReadOptions& options) {
     if (!options.decode_transitions) {
-        return;
+        return false;
     }
     if (options.decode_end_time.has_value() &&
         entry.begin_time > *options.decode_end_time) {
-        return;
+        return false;
     }
     if (options.decode_start_time.has_value() &&
         entry.end_time < *options.decode_start_time) {
+        return false;
+    }
+    return true;
+}
+
+void decodeValueBlockPayload(const std::vector<std::uint8_t>& payload,
+                             const FstBlockIndexEntry& entry,
+                             FstData& data,
+                             const FstReadOptions& options,
+                             std::size_t relevant_value_block_index) {
+    if (!valueBlockIntersectsDecodeWindow(entry, options)) {
         return;
     }
     // Decode the libfst time table and value chains. DEFLATE geometry/time/frame data and
@@ -1143,7 +1217,7 @@ void parseValueBlockPayload(const std::vector<std::uint8_t>& payload,
           payload[27] == 'V')) {
         decodeLibfstValueChangePayload(payload,
                                        entry,
-                                       data.value_blocks.size(),
+                                       relevant_value_block_index,
                                        time_table,
                                        data,
                                        options);
@@ -1161,8 +1235,7 @@ void parseGzipHierarchyPayload(const std::vector<std::uint8_t>& payload,
 
 void parseBlock(const FstFileBytes& file,
                 FstBlockIndexEntry& entry,
-                FstData& data,
-                const FstReadOptions& options) {
+                FstData& data) {
     const auto payload = readRange(file, entry.payload_offset, entry.payload_size);
     switch (entry.type) {
         case FstBlockType::Hierarchy:
@@ -1174,7 +1247,7 @@ void parseBlock(const FstFileBytes& file,
         case FstBlockType::ValueChangeData:
         case FstBlockType::ValueChangeDataDynamicAlias:
         case FstBlockType::ValueChangeDataDynamicAlias2:
-            parseValueBlockPayload(payload, entry, data, options);
+            parseValueBlockIndexPayload(payload, entry);
             data.value_blocks.push_back(entry);
             break;
         case FstBlockType::HierarchyLz4:
@@ -1188,7 +1261,7 @@ void parseBlock(const FstFileBytes& file,
     }
 }
 
-void scanBlocks(const FstFileBytes& file, FstData& data, const FstReadOptions& options) {
+void scanBlocks(const FstFileBytes& file, FstData& data) {
     const auto file_size = static_cast<std::uint64_t>(file.bytes.size());
     if (file_size < kFstHeaderLength) {
         fail("file is shorter than FST header");
@@ -1213,8 +1286,26 @@ void scanBlocks(const FstFileBytes& file, FstData& data, const FstReadOptions& o
                                  .section_length = section_length,
                                  .payload_offset = offset + 9U,
                                  .payload_size = section_length - 8U};
-        parseBlock(file, entry, data, options);
+        parseBlock(file, entry, data);
         offset += 1U + section_length;
+    }
+}
+
+void decodeValueBlocks(const FstFileBytes& file, FstData& data, const FstReadOptions& options) {
+    if (!options.decode_transitions) {
+        return;
+    }
+    std::size_t relevant_value_block_index = 0;
+    for (const auto& entry : data.value_blocks) {
+        if (!valueBlockIntersectsDecodeWindow(entry, options)) {
+            continue;
+        }
+        const auto payload = readRange(file, entry.payload_offset, entry.payload_size);
+        decodeValueBlockPayload(payload,
+                                entry,
+                                data,
+                                options,
+                                relevant_value_block_index++);
     }
 }
 
@@ -1314,7 +1405,7 @@ FstData readFstFile(const std::filesystem::path& path, const FstReadOptions& opt
         data.hierarchy_sidecar_path = sidecar;
         parseSidecarHierarchy(*sidecar, data);
     }
-    scanBlocks(file, data, options);
+    scanBlocks(file, data);
     if (data.header.start_time == 0U && data.header.end_time == 0U &&
         !data.value_blocks.empty()) {
         data.header.start_time = data.value_blocks.front().begin_time;
@@ -1328,6 +1419,7 @@ FstData readFstFile(const std::filesystem::path& path, const FstReadOptions& opt
     if (data.signals.empty() && data.header.variable_count != 0) {
         fail("FST hierarchy did not define any signals");
     }
+    decodeValueBlocks(file, data, options);
     return data;
 }
 

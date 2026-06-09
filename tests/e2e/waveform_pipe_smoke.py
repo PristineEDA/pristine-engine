@@ -275,20 +275,28 @@ def find_repo_root(server_path: pathlib.Path) -> pathlib.Path:
     raise AssertionError(f"could not locate pristine-engine repo root from {server_path}")
 
 
-def find_wellen_fixture(repo_root: pathlib.Path) -> pathlib.Path:
+def find_wellen_fixtures(repo_root: pathlib.Path) -> list[pathlib.Path]:
     root = repo_root
     inputs = root / ".deps" / "src" / "wellen" / "wellen" / "inputs"
     if not inputs.is_dir():
         raise AssertionError(f"missing pinned wellen FST fixture directory: {inputs}")
 
-    preferred = inputs / "systemc" / "waveform.vcd.fst"
-    if preferred.is_file():
-        return preferred.resolve()
-
     fixtures = sorted(inputs.rglob("*.fst"))
     if len(fixtures) != 61:
         raise AssertionError(f"expected 61 wellen FST fixtures in {inputs}, found {len(fixtures)}")
-    return fixtures[0].resolve()
+
+    representative = [
+        inputs / "ghdl" / "alu.vcd.fst",
+        inputs / "nvc" / "shortstring.fst",
+        inputs / "verilator" / "swerv1.vcd.fst",
+        inputs / "vivado" / "iladata.vcd.fst",
+        inputs / "systemc" / "waveform.vcd.fastlz.fst",
+        inputs / "systemc" / "waveform.vcd.dual_lz4.fst",
+    ]
+    missing = [path for path in representative if not path.is_file()]
+    if missing:
+        raise AssertionError(f"missing representative wellen FST fixtures: {missing}")
+    return [path.resolve() for path in representative]
 
 
 def assert_columnar_frame_v1(payload: bytes, expected_signal_count: int, max_segments: int) -> None:
@@ -487,38 +495,39 @@ def main() -> int:
             )
             assert fst_close["result"]["closed"] is True
 
-            wellen_fixture = find_wellen_fixture(workspace)
-            wellen_open = request(
-                process,
-                6,
-                "systemverilog/waveform/open",
-                {"source": "fst", "fstUri": wellen_fixture.as_uri()},
-            )
-            wellen_session = wellen_open["result"]
-            assert wellen_session["source"] == "fst"
-            assert wellen_session["fileUri"] == wellen_fixture.as_uri()
-            assert wellen_session["duration"] >= 0.0
-            assert wellen_session["groupCount"] > 0
-            assert wellen_session["signalCount"] > 0
-            exercise_pipe_session(
-                wellen_session,
-                expected_duration=wellen_session["duration"],
-                expected_group_count=wellen_session["groupCount"],
-                expected_signal_count=wellen_session["signalCount"],
-                signal_ids=["fst:1"],
-                start=0.0,
-                end=max(wellen_session["duration"], 1.0),
-                request_id_base=30,
-            )
-            wellen_close = request(
-                process,
-                7,
-                "systemverilog/waveform/close",
-                {"sessionId": wellen_session["sessionId"]},
-            )
-            assert wellen_close["result"]["closed"] is True
+            for index, wellen_fixture in enumerate(find_wellen_fixtures(workspace)):
+                request_base = 6 + index * 2
+                wellen_open = request(
+                    process,
+                    request_base,
+                    "systemverilog/waveform/open",
+                    {"source": "fst", "fstUri": wellen_fixture.as_uri()},
+                )
+                wellen_session = wellen_open["result"]
+                assert wellen_session["source"] == "fst"
+                assert wellen_session["fileUri"] == wellen_fixture.as_uri()
+                assert wellen_session["duration"] >= 0.0
+                assert wellen_session["groupCount"] > 0
+                assert wellen_session["signalCount"] > 0
+                exercise_pipe_session(
+                    wellen_session,
+                    expected_duration=wellen_session["duration"],
+                    expected_group_count=wellen_session["groupCount"],
+                    expected_signal_count=wellen_session["signalCount"],
+                    signal_ids=["fst:1"],
+                    start=0.0,
+                    end=max(wellen_session["duration"], 1.0),
+                    request_id_base=30 + index * 10,
+                )
+                wellen_close = request(
+                    process,
+                    request_base + 1,
+                    "systemverilog/waveform/close",
+                    {"sessionId": wellen_session["sessionId"]},
+                )
+                assert wellen_close["result"]["closed"] is True
 
-            shutdown = request(process, 8, "shutdown", None)
+            shutdown = request(process, 18, "shutdown", None)
             assert shutdown["result"] is None
             notify(process, "exit", None)
             assert process.wait(timeout=5) == 0

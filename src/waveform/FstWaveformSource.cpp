@@ -262,20 +262,13 @@ private:
             }
         }
 
-        auto decoded = catalog_;
-        try {
-            fst::FstReadOptions options{.workspace_root = workspace_root_,
-                                        .decode_transitions = true,
-                                        .decode_start_time = start_time,
-                                        .decode_end_time = end_time,
-                                        .decode_signal_handles = key.handles};
-            auto fst_data = fst::readFstFile(path_, options);
-            decoded = toWaveformDataSet(fst_data);
-        }
-        catch (const std::exception&) {
-            // Keep pipe sessions robust while the FST value-change decoder is still being
-            // expanded for rarer libfst chain variants; the catalog/index path remains valid.
-        }
+        fst::FstReadOptions options{.workspace_root = workspace_root_,
+                                    .decode_transitions = true,
+                                    .decode_start_time = start_time,
+                                    .decode_end_time = end_time,
+                                    .decode_signal_handles = key.handles};
+        auto fst_data = fst::readFstFile(path_, options);
+        auto decoded = toWaveformDataSet(fst_data);
         {
             std::lock_guard lock(cache_mutex_);
             cache_key_ = key;

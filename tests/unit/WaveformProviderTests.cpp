@@ -8,13 +8,16 @@
 #include <catch2/matchers/catch_matchers_string.hpp>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <limits>
+#include <map>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -346,6 +349,33 @@ fs::path writeTinyFstFixture(const fs::path& directory,
     return path;
 }
 
+fs::path writeMalformedValueChainFstFixture(const fs::path& directory) {
+    const auto path = writeTinyFstFixture(directory);
+    std::ifstream input(path, std::ios::binary);
+    REQUIRE(input.good());
+    std::vector<std::uint8_t> bytes{std::istreambuf_iterator<char>(input),
+                                    std::istreambuf_iterator<char>()};
+
+    const std::array<std::uint8_t, 7> marker{
+        static_cast<std::uint8_t>('0'),
+        static_cast<std::uint8_t>('x'),
+        static_cast<std::uint8_t>('x'),
+        static_cast<std::uint8_t>('x'),
+        static_cast<std::uint8_t>('x'),
+        2,
+        static_cast<std::uint8_t>('Z'),
+    };
+    const auto marker_it = std::search(bytes.begin(), bytes.end(), marker.begin(), marker.end());
+    REQUIRE(marker_it != bytes.end());
+    *(marker_it + 6) = static_cast<std::uint8_t>('?');
+
+    std::ofstream output(path, std::ios::binary | std::ios::trunc);
+    output.write(reinterpret_cast<const char*>(bytes.data()),
+                 static_cast<std::streamsize>(bytes.size()));
+    REQUIRE(output.good());
+    return path;
+}
+
 void checkTinyFstTransitions(const fst::FstData& data) {
     REQUIRE(data.transitions.size() == 6);
     CHECK(data.transitions.at(0).handle == 1);
@@ -558,6 +588,47 @@ std::uint64_t stableFixtureMetadataHash(const WaveformDataSet& data) {
         mixU64(signal.width);
     }
     return hash;
+}
+
+std::uint64_t stableTransitionHash(const fst::FstData& data) {
+    auto hash = std::uint64_t{1469598103934665603ULL};
+    const auto mixByte = [&hash](std::uint8_t byte) {
+        hash ^= byte;
+        hash *= 1099511628211ULL;
+    };
+    const auto mixString = [&mixByte](std::string_view value) {
+        for (const auto ch : value) {
+            mixByte(static_cast<std::uint8_t>(ch));
+        }
+        mixByte(0);
+    };
+    const auto mixU64 = [&mixByte](std::uint64_t value) {
+        for (auto index = 0; index < 8; ++index) {
+            mixByte(static_cast<std::uint8_t>((value >> (index * 8)) & 0xffU));
+        }
+    };
+
+    mixU64(static_cast<std::uint64_t>(data.transitions.size()));
+    for (const auto& transition : data.transitions) {
+        mixU64(transition.handle);
+        mixU64(transition.time);
+        mixString(transition.value);
+    }
+    return hash;
+}
+
+const std::map<std::string_view, std::pair<std::size_t, std::uint64_t>>&
+representativeWellenTransitionHashes() {
+    static const auto hashes =
+        std::map<std::string_view, std::pair<std::size_t, std::uint64_t>>{
+            {"ghdl/alu.vcd.fst", {680, 394239890973221823ULL}},
+            {"nvc/shortstring.fst", {7, 1755474278674332489ULL}},
+            {"verilator/swerv1.vcd.fst", {549563, 8755835360983595790ULL}},
+            {"vivado/iladata.vcd.fst", {2174, 9461535144536318154ULL}},
+            {"systemc/waveform.vcd.fastlz.fst", {64646, 14006478930873879508ULL}},
+            {"systemc/waveform.vcd.dual_lz4.fst", {64646, 14006478930873879508ULL}},
+        };
+    return hashes;
 }
 
 } // namespace
@@ -897,6 +968,27 @@ TEST_CASE("FST waveform source returns columnar viewport frames", "[waveform][fs
     CHECK(label_bytes_length > 0);
 }
 
+TEST_CASE("FST waveform source propagates decode errors instead of placeholder frames",
+          "[waveform][fst]") {
+    const auto workspace = uniqueTempDir("fst-source-decode-failure");
+    const auto fst_path = writeMalformedValueChainFstFixture(workspace);
+    const auto source = openFstWaveformSource(fst_path, "file:///malformed.fst", workspace);
+
+    REQUIRE_FALSE(source->dataSet().signals.empty());
+
+    const auto request = WaveformViewportRequestV2{.prepared_start_time = 0.0,
+                                                   .prepared_end_time = 40.0,
+                                                   .viewport_start_time = 0.0,
+                                                   .viewport_end_time = 40.0,
+                                                   .viewport_pixel_width = 320.0F,
+                                                   .lane_height = 24.0F,
+                                                   .header_height = 22.0F,
+                                                   .max_segments = 16,
+                                                   .signal_ids = {"fst:1"}};
+    CHECK_THROWS_WITH(source->encodeViewportFrameV2(request),
+                      Catch::Matchers::ContainsSubstring("unsupported FST value-chain pack type"));
+}
+
 TEST_CASE("FST reader accepts every pinned wellen input fixture",
           "[waveform][fst][wellen]") {
     const auto fixtures = collectWellenFstFixtures();
@@ -921,6 +1013,11 @@ TEST_CASE("FST reader accepts every pinned wellen input fixture",
                                  fst::FstReadOptions{.workspace_root =
                                                          fs::path{PRISTINE_WELLEN_INPUTS_DIR},
                                                      .decode_transitions = false});
+            const auto decoded =
+                fst::readFstFile(fst_path,
+                                 fst::FstReadOptions{.workspace_root =
+                                                         fs::path{PRISTINE_WELLEN_INPUTS_DIR},
+                                                     .decode_transitions = true});
 
             CHECK(indexed.file_path == fs::weakly_canonical(fst_path));
             CHECK(indexed.header.end_time >= indexed.header.start_time);
@@ -928,6 +1025,18 @@ TEST_CASE("FST reader accepts every pinned wellen input fixture",
             CHECK(indexed.header.timescale <= 2);
             REQUIRE_FALSE(indexed.signals.empty());
             REQUIRE_FALSE(indexed.value_blocks.empty());
+            CHECK(decoded.signals.size() == indexed.signals.size());
+            CHECK(decoded.value_blocks.size() == indexed.value_blocks.size());
+            REQUIRE_FALSE(decoded.transitions.empty());
+            const auto transition_hash = stableTransitionHash(decoded);
+            CHECK(transition_hash != 0U);
+            if (const auto hash_it = representativeWellenTransitionHashes().find(relative_path);
+                hash_it != representativeWellenTransitionHashes().end()) {
+                INFO("representative transition count: " << decoded.transitions.size());
+                INFO("representative transition hash: " << transition_hash);
+                CHECK(decoded.transitions.size() == hash_it->second.first);
+                CHECK(transition_hash == hash_it->second.second);
+            }
 
             for (const auto& signal : indexed.signals) {
                 CHECK(signal.handle > 0);
