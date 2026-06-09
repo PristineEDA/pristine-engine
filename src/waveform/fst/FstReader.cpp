@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstring>
 #include <fstream>
@@ -42,6 +43,35 @@ constexpr std::string_view kExtraValueChars = "xzhuwl-?";
 struct FstFileBytes {
     std::filesystem::path path;
     std::vector<std::uint8_t> bytes;
+};
+
+using Clock = std::chrono::steady_clock;
+
+std::uint64_t elapsedMicros(Clock::time_point start, Clock::time_point end) {
+    return static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::microseconds>(end - start).count());
+}
+
+class ScopedMetric {
+public:
+    explicit ScopedMetric(std::uint64_t* target) : target_(target) {
+        if (target_ != nullptr) {
+            start_ = Clock::now();
+        }
+    }
+
+    ScopedMetric(const ScopedMetric&) = delete;
+    ScopedMetric& operator=(const ScopedMetric&) = delete;
+
+    ~ScopedMetric() {
+        if (target_ != nullptr) {
+            *target_ += elapsedMicros(start_, Clock::now());
+        }
+    }
+
+private:
+    std::uint64_t* target_ = nullptr;
+    Clock::time_point start_{};
 };
 
 [[noreturn]] void fail(std::string_view message) {
@@ -1235,33 +1265,45 @@ void parseGzipHierarchyPayload(const std::vector<std::uint8_t>& payload,
 
 void parseBlock(const FstFileBytes& file,
                 FstBlockIndexEntry& entry,
-                FstData& data) {
+                FstData& data,
+                FstReadMetrics* metrics) {
     const auto payload = readRange(file, entry.payload_offset, entry.payload_size);
     switch (entry.type) {
-        case FstBlockType::Hierarchy:
+        case FstBlockType::Hierarchy: {
+            ScopedMetric metric(metrics == nullptr ? nullptr : &metrics->hierarchy_parse_micros);
             parseGzipHierarchyPayload(payload, data);
             break;
-        case FstBlockType::Geometry:
+        }
+        case FstBlockType::Geometry: {
+            ScopedMetric metric(metrics == nullptr ? nullptr : &metrics->geometry_parse_micros);
             parseGeometryPayload(payload, data);
             break;
+        }
         case FstBlockType::ValueChangeData:
         case FstBlockType::ValueChangeDataDynamicAlias:
-        case FstBlockType::ValueChangeDataDynamicAlias2:
+        case FstBlockType::ValueChangeDataDynamicAlias2: {
+            ScopedMetric metric(metrics == nullptr ? nullptr : &metrics->value_block_index_micros);
             parseValueBlockIndexPayload(payload, entry);
             data.value_blocks.push_back(entry);
             break;
-        case FstBlockType::HierarchyLz4:
+        }
+        case FstBlockType::HierarchyLz4: {
+            ScopedMetric metric(metrics == nullptr ? nullptr : &metrics->hierarchy_parse_micros);
             parseLz4HierarchyPayload(payload, data, false);
             break;
-        case FstBlockType::HierarchyLz4Duo:
+        }
+        case FstBlockType::HierarchyLz4Duo: {
+            ScopedMetric metric(metrics == nullptr ? nullptr : &metrics->hierarchy_parse_micros);
             parseLz4HierarchyPayload(payload, data, true);
             break;
+        }
         default:
             break;
     }
 }
 
-void scanBlocks(const FstFileBytes& file, FstData& data) {
+void scanBlocks(const FstFileBytes& file, FstData& data, FstReadMetrics* metrics) {
+    ScopedMetric metric(metrics == nullptr ? nullptr : &metrics->block_scan_micros);
     const auto file_size = static_cast<std::uint64_t>(file.bytes.size());
     if (file_size < kFstHeaderLength) {
         fail("file is shorter than FST header");
@@ -1286,15 +1328,19 @@ void scanBlocks(const FstFileBytes& file, FstData& data) {
                                  .section_length = section_length,
                                  .payload_offset = offset + 9U,
                                  .payload_size = section_length - 8U};
-        parseBlock(file, entry, data);
+        parseBlock(file, entry, data, metrics);
         offset += 1U + section_length;
     }
 }
 
-void decodeValueBlocks(const FstFileBytes& file, FstData& data, const FstReadOptions& options) {
+void decodeValueBlocks(const FstFileBytes& file,
+                       FstData& data,
+                       const FstReadOptions& options,
+                       FstReadMetrics* metrics) {
     if (!options.decode_transitions) {
         return;
     }
+    ScopedMetric metric(metrics == nullptr ? nullptr : &metrics->value_decode_micros);
     std::size_t relevant_value_block_index = 0;
     for (const auto& entry : data.value_blocks) {
         if (!valueBlockIntersectsDecodeWindow(entry, options)) {
@@ -1380,6 +1426,9 @@ void parseLz4HierarchyPayload(const std::vector<std::uint8_t>& payload,
 } // namespace
 
 FstData readFstFile(const std::filesystem::path& path, const FstReadOptions& options) {
+    auto metrics = FstReadMetrics{};
+    auto* metrics_ptr = options.collect_metrics ? &metrics : nullptr;
+    const auto total_start = options.collect_metrics ? Clock::now() : Clock::time_point{};
     validateWorkspacePath(path, options, "FST file");
 
     std::error_code error;
@@ -1388,7 +1437,12 @@ FstData readFstFile(const std::filesystem::path& path, const FstReadOptions& opt
         throw std::runtime_error("Unable to resolve FST file: " + path.string());
     }
 
+    const auto file_read_start = options.collect_metrics ? Clock::now() : Clock::time_point{};
     auto file = readFstBytes(canonical_path);
+    if (metrics_ptr != nullptr) {
+        metrics_ptr->file_read_micros = elapsedMicros(file_read_start, Clock::now());
+        metrics_ptr->file_bytes = static_cast<std::uint64_t>(file.bytes.size());
+    }
     if (file.bytes.size() < kFstHeaderLength) {
         fail("truncated header");
     }
@@ -1398,14 +1452,23 @@ FstData readFstFile(const std::filesystem::path& path, const FstReadOptions& opt
 
     FstData data;
     data.file_path = canonical_path;
+    const auto header_parse_start = options.collect_metrics ? Clock::now() : Clock::time_point{};
     data.header = parseHeader(header);
+    if (metrics_ptr != nullptr) {
+        metrics_ptr->header_parse_micros = elapsedMicros(header_parse_start, Clock::now());
+    }
 
     const auto sidecar = sidecarPath(canonical_path, options);
     if (sidecar.has_value()) {
         data.hierarchy_sidecar_path = sidecar;
+        const auto sidecar_parse_start = options.collect_metrics ? Clock::now() : Clock::time_point{};
         parseSidecarHierarchy(*sidecar, data);
+        if (metrics_ptr != nullptr) {
+            metrics_ptr->sidecar_hierarchy_parse_micros =
+                elapsedMicros(sidecar_parse_start, Clock::now());
+        }
     }
-    scanBlocks(file, data);
+    scanBlocks(file, data, metrics_ptr);
     if (data.header.start_time == 0U && data.header.end_time == 0U &&
         !data.value_blocks.empty()) {
         data.header.start_time = data.value_blocks.front().begin_time;
@@ -1419,7 +1482,11 @@ FstData readFstFile(const std::filesystem::path& path, const FstReadOptions& opt
     if (data.signals.empty() && data.header.variable_count != 0) {
         fail("FST hierarchy did not define any signals");
     }
-    decodeValueBlocks(file, data, options);
+    decodeValueBlocks(file, data, options, metrics_ptr);
+    if (metrics_ptr != nullptr) {
+        metrics_ptr->total_micros = elapsedMicros(total_start, Clock::now());
+        data.metrics = metrics;
+    }
     return data;
 }
 

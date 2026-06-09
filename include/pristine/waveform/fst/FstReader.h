@@ -89,6 +89,19 @@ struct FstTransition {
     std::string value;
 };
 
+struct FstReadMetrics {
+    std::uint64_t file_bytes = 0;
+    std::uint64_t file_read_micros = 0;
+    std::uint64_t header_parse_micros = 0;
+    std::uint64_t sidecar_hierarchy_parse_micros = 0;
+    std::uint64_t hierarchy_parse_micros = 0;
+    std::uint64_t geometry_parse_micros = 0;
+    std::uint64_t value_block_index_micros = 0;
+    std::uint64_t block_scan_micros = 0;
+    std::uint64_t value_decode_micros = 0;
+    std::uint64_t total_micros = 0;
+};
+
 struct FstData {
     std::filesystem::path file_path;
     std::optional<std::filesystem::path> hierarchy_sidecar_path;
@@ -99,11 +112,13 @@ struct FstData {
     std::vector<FstSignalGeometry> signal_geometry_by_handle;
     std::vector<FstBlockIndexEntry> value_blocks;
     std::vector<FstTransition> transitions;
+    std::optional<FstReadMetrics> metrics;
 };
 
 struct FstReadOptions {
     std::optional<std::filesystem::path> workspace_root;
     bool decode_transitions = true;
+    bool collect_metrics = false;
     std::optional<std::uint64_t> decode_start_time;
     std::optional<std::uint64_t> decode_end_time;
     std::vector<std::uint32_t> decode_signal_handles;

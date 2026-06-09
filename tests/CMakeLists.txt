@@ -51,6 +51,15 @@ if(PRISTINE_BUILD_PERF_TESTS)
 	add_executable(pristine_perf_tests perf/SemanticPerfSmoke.cpp)
 	target_link_libraries(pristine_perf_tests PRIVATE pristine_core)
 
+	add_executable(pristine_wellen_fst_perf perf/WellenFstPerf.cpp)
+	target_link_libraries(pristine_wellen_fst_perf PRIVATE pristine_core)
+	add_test(
+		NAME pristine_wellen_fst_perf
+		COMMAND pristine_wellen_fst_perf
+			${PROJECT_SOURCE_DIR}/.deps/src/wellen/wellen/inputs)
+	set_tests_properties(pristine_wellen_fst_perf PROPERTIES
+		LABELS "perf;waveform;fst")
+
 	add_executable(pristine_rtl_e2e_stress perf/RtlE2eDesignStress.cpp)
 	target_link_libraries(pristine_rtl_e2e_stress PRIVATE pristine_core)
 	add_test(
