@@ -119,19 +119,6 @@ std::uint64_t readU64Be(const std::vector<std::uint8_t>& bytes, std::size_t offs
     return value;
 }
 
-std::uint64_t readU64Be(std::istream& input) {
-    std::array<std::uint8_t, sizeof(std::uint64_t)> bytes{};
-    input.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
-    if (input.gcount() != static_cast<std::streamsize>(bytes.size())) {
-        fail("truncated uint64");
-    }
-    std::uint64_t value = 0;
-    for (const auto byte : bytes) {
-        value = (value << 8U) | static_cast<std::uint64_t>(byte);
-    }
-    return value;
-}
-
 std::uint32_t checkedU32(std::uint64_t value, std::string_view field) {
     if (value > std::numeric_limits<std::uint32_t>::max()) {
         throw std::runtime_error(std::string(field) + " exceeds uint32 range");

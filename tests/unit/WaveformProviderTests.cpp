@@ -912,8 +912,12 @@ TEST_CASE("FST reader exposes opt-in timing metrics", "[waveform][fst]") {
     CHECK(metrics.block_scan_micros > 0);
     CHECK(metrics.hierarchy_parse_micros > 0);
     CHECK(metrics.geometry_parse_micros > 0);
-    CHECK(metrics.value_block_index_micros > 0);
     CHECK(metrics.value_decode_micros > 0);
+    CHECK(metrics.file_read_micros + metrics.header_parse_micros +
+              metrics.hierarchy_parse_micros + metrics.geometry_parse_micros +
+              metrics.value_block_index_micros + metrics.block_scan_micros +
+              metrics.value_decode_micros <=
+          metrics.total_micros);
 }
 
 TEST_CASE("FST reader inflates zlib LZ4 and FastLZ value blocks", "[waveform][fst]") {

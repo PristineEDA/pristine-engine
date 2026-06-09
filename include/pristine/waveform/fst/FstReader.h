@@ -116,12 +116,12 @@ struct FstData {
 };
 
 struct FstReadOptions {
-    std::optional<std::filesystem::path> workspace_root;
+    std::optional<std::filesystem::path> workspace_root = std::nullopt;
     bool decode_transitions = true;
     bool collect_metrics = false;
-    std::optional<std::uint64_t> decode_start_time;
-    std::optional<std::uint64_t> decode_end_time;
-    std::vector<std::uint32_t> decode_signal_handles;
+    std::optional<std::uint64_t> decode_start_time = std::nullopt;
+    std::optional<std::uint64_t> decode_end_time = std::nullopt;
+    std::vector<std::uint32_t> decode_signal_handles = {};
 };
 
 [[nodiscard]] FstData readFstFile(const std::filesystem::path& path,
