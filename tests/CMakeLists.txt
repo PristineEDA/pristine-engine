@@ -83,6 +83,26 @@ if(PRISTINE_BUILD_PERF_TESTS)
 		LABELS "perf;rtl-e2e;smoke;lsp")
 
 	add_test(
+		NAME pristine_rtl_e2e_large_workspace
+		COMMAND Python3::Interpreter ${CMAKE_CURRENT_SOURCE_DIR}/perf/run_lsp_large_workspace_baseline.py
+			$<TARGET_FILE:pristine_rtl_e2e_lsp_stress>
+			$<TARGET_FILE:pristine-engine>
+			${CMAKE_CURRENT_BINARY_DIR})
+	set_tests_properties(pristine_rtl_e2e_large_workspace PROPERTIES
+		LABELS "perf;rtl-e2e;lsp;large-workspace;debug-order"
+		TIMEOUT 180)
+
+	add_test(
+		NAME pristine_rtl_e2e_real_retrosoc
+		COMMAND Python3::Interpreter ${CMAKE_CURRENT_SOURCE_DIR}/perf/run_rtl_e2e_real_retrosoc.py
+			$<TARGET_FILE:pristine_rtl_e2e_lsp_stress>
+			$<TARGET_FILE:pristine-engine>
+			${CMAKE_CURRENT_BINARY_DIR})
+	set_tests_properties(pristine_rtl_e2e_real_retrosoc PROPERTIES
+		LABELS "perf;rtl-e2e;lsp;real;retrosoc;required"
+		TIMEOUT 240)
+
+	add_test(
 		NAME pristine_rtl_e2e_lsp_stress
 		COMMAND Python3::Interpreter ${CMAKE_CURRENT_SOURCE_DIR}/perf/run_rtl_e2e_lsp_stress.py
 			$<TARGET_FILE:pristine_rtl_e2e_lsp_stress>

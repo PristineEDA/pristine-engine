@@ -109,7 +109,15 @@ jobs:
             deps-${{ runner.os }}-${{ matrix.arch }}-
 
       - name: Bootstrap dependencies
-        run: cmake -DPRISTINE_ROOT_DIR=. -P scripts/bootstrap_deps.cmake
+        run: cmake -DPRISTINE_ROOT_DIR=. -DPRISTINE_COMPONENTS="slang;fmt;zlib;lz4;fastlz;wellen;nlohmann_json;catch2;lsp_framework" -P scripts/bootstrap_deps.cmake
+
+      - name: Cache RTL E2E corpus
+        uses: actions/cache@v4
+        with:
+          path: .cache/rtl-e2e
+          key: rtl-e2e-${{ runner.os }}-${{ matrix.arch }}-retrosoc-76651fd
+          restore-keys: |
+            rtl-e2e-${{ runner.os }}-${{ matrix.arch }}-retrosoc-
 
       - name: Install clang on Ubuntu 22.04
         if: runner.os == 'Linux' && matrix.runs_on == 'ubuntu-22.04'
@@ -185,6 +193,7 @@ jobs:
           if ('${{ steps.compiler.outputs.cxx }}') {
             $args += "-DCMAKE_CXX_COMPILER=${{ steps.compiler.outputs.cxx }}"
           }
+          $args += '-DPRISTINE_BUILD_PERF_TESTS=ON'
           cmake @args
 
       - name: Validate notice files
@@ -195,6 +204,9 @@ jobs:
 
       - name: Run unit tests
         run: ctest --test-dir build/dev --output-on-failure
+
+      - name: Run required RTL E2E gates
+        run: ctest --test-dir build/dev -R "pristine_rtl_e2e_large_workspace|pristine_rtl_e2e_real_retrosoc" --output-on-failure
 
       - name: Smoke test server version
         run: |

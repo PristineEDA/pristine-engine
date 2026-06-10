@@ -1477,8 +1477,62 @@ TEST_CASE("ServerSession keeps cold large-workspace hover on the syntax fast pat
     CHECK(hover_value.find("ready") != std::string::npos);
 
     const auto diagnostics = findNotifications(transport, "textDocument/publishDiagnostics");
-    REQUIRE(diagnostics.size() == 1);
+    REQUIRE_FALSE(diagnostics.empty());
     CHECK(diagnostics.front().at("params").at("uri") == top_uri);
+}
+
+TEST_CASE("ServerSession keeps foreground hover responsive while background diagnostics are pending",
+          "[server][hover][diagnostics][perf]") {
+    jsonrpc::JsonRpcServer rpc_server;
+    ServerSession session{"pristine-engine", kTestServerVersion};
+    session.bind(rpc_server);
+
+    TempWorkspace workspace;
+    for (int index = 0; index < 140; ++index) {
+        workspace.writeFile("rtl/filler_" + std::to_string(index) + ".sv",
+                            "module filler_" + std::to_string(index) + "; endmodule\n");
+    }
+
+    const auto top_text = std::string("module top;\n  logic ready;\nendmodule\n");
+    const auto changed_text = std::string("module top;\n  logic ready;\n  logic done;\nendmodule\n");
+    const auto top_path = workspace.writeFile("rtl/top.sv", top_text);
+    const auto top_uri = toFileUri(top_path);
+
+    const auto initialize_message =
+        std::string(R"({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"rootUri":")") +
+        toFileUri(workspace.root()) + R"("}})";
+    const auto open_message =
+        std::string(R"({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":")") +
+        top_uri + R"(","languageId":"systemverilog","version":1,"text":)" +
+        jsonrpc::Json(top_text).dump() + R"(}}})";
+    const auto change_message =
+        std::string(R"({"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":{"uri":")") +
+        top_uri + R"(","version":2},"contentChanges":[{"text":)" + jsonrpc::Json(changed_text).dump() +
+        R"(}]}})";
+    const auto hover_message =
+        std::string(R"({"jsonrpc":"2.0","id":2,"method":"textDocument/hover","params":{"textDocument":{"uri":")") +
+        top_uri + R"("},"position":{"line":2,"character":8}}})";
+
+    WaitingTransport transport{{initialize_message, open_message, change_message, hover_message}, 4};
+
+    const int exit_code = rpc_server.run(transport);
+
+    CHECK(exit_code == 0);
+    const auto hover_response = findResponse(transport, 2);
+    REQUIRE(hover_response.has_value());
+    CHECK(hover_response->at("result").at("contents").at("kind") == "markdown");
+    const auto hover_value = hover_response->at("result").at("contents").at("value").get<std::string>();
+    CHECK(hover_value.find("done") != std::string::npos);
+
+    const auto diagnostics = findNotifications(transport, "textDocument/publishDiagnostics");
+    REQUIRE_FALSE(diagnostics.empty());
+    CHECK(std::none_of(diagnostics.begin(), diagnostics.end(), [](const jsonrpc::Json& notification) {
+        const auto& items = notification.at("params").at("diagnostics");
+        return std::any_of(items.begin(), items.end(), [](const jsonrpc::Json& item) {
+            const auto code_it = item.find("code");
+            return code_it != item.end() && *code_it == "unresolvedModule";
+        });
+    }));
 }
 
 TEST_CASE("ServerSession handles Tier 1 LSP navigation and completion", "[server][lsp-core]") {

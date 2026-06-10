@@ -19,6 +19,7 @@
 #include <string_view>
 #include <stdexcept>
 #include <system_error>
+#include <thread>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -53,6 +54,9 @@ struct Metrics {
     std::string corpus_root;
     std::string corpus_commit;
     std::string server_path;
+    int server_exit_code = 0;
+    std::string stderr_tail;
+    std::string debug_trace_path;
     size_t file_count = 0;
     size_t byte_count = 0;
     size_t opened_file_count = 0;
@@ -124,7 +128,9 @@ struct Metrics {
     bool truncated = false;
     size_t messages_count = 0;
     size_t diagnostics_notification_count = 0;
+    bool syntax_diagnostics_published = false;
     bool semantic_diagnostics_published = false;
+    std::string background_diagnostics_skipped_reason;
     bool trace_enabled = false;
     std::string trace_path;
 };
@@ -308,6 +314,25 @@ SourceFile makeProbeSource(const fs::path& root, const std::string& requested_to
          << "endmodule\n";
     const auto path = root / "__pristine_lsp_probe.sv";
     return SourceFile{.path = path, .uri = fileUriFor(path), .text = text.str()};
+}
+
+std::string environmentValue(const char* name) {
+#if defined(_WIN32)
+    char* value = nullptr;
+    size_t size = 0;
+    if (_dupenv_s(&value, &size, name) != 0 || value == nullptr) {
+        return {};
+    }
+    std::string result(value);
+    std::free(value);
+    return result;
+#else
+    const char* value = std::getenv(name);
+    if (value == nullptr) {
+        return {};
+    }
+    return value;
+#endif
 }
 
 std::optional<std::string> firstModuleName(std::string_view text) {
@@ -876,6 +901,10 @@ public:
         return diagnostics_notification_count_;
     }
 
+    void passiveDiagnosticsWait(std::chrono::milliseconds timeout) {
+        std::this_thread::sleep_for(timeout);
+    }
+
     bool waitForDiagnosticsNotificationCount(size_t target_count,
                                              std::chrono::milliseconds timeout,
                                              const std::string& opened_uri) {
@@ -931,6 +960,9 @@ std::string summaryJson(const Metrics& metrics) {
         << "\"corpusRoot\":" << jsonString(metrics.corpus_root) << ","
         << "\"corpusCommit\":" << jsonString(metrics.corpus_commit) << ","
         << "\"serverPath\":" << jsonString(metrics.server_path) << ","
+        << "\"serverExitCode\":" << metrics.server_exit_code << ","
+        << "\"stderrTail\":" << jsonString(metrics.stderr_tail) << ","
+        << "\"debugTracePath\":" << jsonString(metrics.debug_trace_path) << ","
         << "\"fileCount\":" << metrics.file_count << ","
         << "\"byteCount\":" << metrics.byte_count << ","
         << "\"openedFileCount\":" << metrics.opened_file_count << ","
@@ -947,6 +979,8 @@ std::string summaryJson(const Metrics& metrics) {
         << "\"hoverMicros\":" << metrics.hover_micros << ","
         << "\"semanticDiagnosticsPublished\":" << boolJson(metrics.semantic_diagnostics_published) << ","
         << "\"semanticDiagnosticsMicros\":" << metrics.semantic_diagnostics_micros << ","
+        << "\"backgroundDiagnosticsSkippedReason\":"
+        << jsonString(metrics.background_diagnostics_skipped_reason) << ","
         << "\"moduleHierarchyColdMicros\":" << metrics.hierarchy_cold_micros << ","
         << "\"moduleHierarchyWarmMicros\":" << metrics.hierarchy_warm_micros << ","
         << "\"schematicMicros\":" << metrics.schematic_micros << ","
@@ -1022,6 +1056,7 @@ std::string summaryJson(const Metrics& metrics) {
         << "\"truncated\":" << boolJson(metrics.truncated) << ","
         << "\"messagesCount\":" << metrics.messages_count << ","
         << "\"diagnosticsNotificationCount\":" << metrics.diagnostics_notification_count << ","
+        << "\"syntaxDiagnosticsPublished\":" << boolJson(metrics.syntax_diagnostics_published) << ","
         << "\"traceEnabled\":" << boolJson(metrics.trace_enabled) << ","
         << "\"tracePath\":" << jsonString(metrics.trace_path) << "}";
     return out.str();
@@ -1092,10 +1127,10 @@ Args parseArgs(int argc, char** argv) {
     }
 
     if (args.server.empty() || args.root.empty() || args.log_dir.empty()) {
-        throw std::runtime_error("Usage: pristine_rtl_e2e_lsp_stress --server <path> --root <path> --log-dir <path> [--mode probe|real] [--corpus <name>] [--top <module>] [--max-depth <n>] [--trace] [--trace-file <path>] [--no-trace]");
+        throw std::runtime_error("Usage: pristine_rtl_e2e_lsp_stress --server <path> --root <path> --log-dir <path> [--mode probe|real|large-workspace] [--corpus <name>] [--top <module>] [--max-depth <n>] [--trace] [--trace-file <path>] [--no-trace]");
     }
-    if (args.mode != "probe" && args.mode != "real") {
-        throw std::runtime_error("--mode must be 'probe' or 'real'");
+    if (args.mode != "probe" && args.mode != "real" && args.mode != "large-workspace") {
+        throw std::runtime_error("--mode must be 'probe', 'real', or 'large-workspace'");
     }
     if (args.trace && args.trace_file.empty()) {
         args.trace_file = args.log_dir / "lsp-trace.jsonl";
@@ -1137,8 +1172,8 @@ int main(int argc, char** argv) {
         auto selected_top = args.top_module;
         writeStage(operation_log, "open-source-select:begin", args.mode);
         start = Clock::now();
-        auto opened_source = args.mode == "real" ? selectRealSource(args.root, selected_top)
-                                                 : makeProbeSource(args.root, args.top_module);
+        auto opened_source = args.mode == "probe" ? makeProbeSource(args.root, args.top_module)
+                                                  : selectRealSource(args.root, selected_top);
         const auto client_open_file_select_micros = elapsedMicros(start, Clock::now());
         writeOperation(operation_log, "client/openFileSelect", client_open_file_select_micros);
         writeStage(operation_log,
@@ -1151,6 +1186,10 @@ int main(int argc, char** argv) {
         metrics.corpus_root = fs::absolute(args.root).lexically_normal().string();
         metrics.corpus_commit = gitHeadFor(args.root);
         metrics.server_path = fs::absolute(args.server).lexically_normal().string();
+        if (const auto debug_trace_path = environmentValue("PRISTINE_DEBUG_TRACE_FILE");
+            !debug_trace_path.empty()) {
+            metrics.debug_trace_path = fs::absolute(debug_trace_path).lexically_normal().string();
+        }
         metrics.file_count = workspace_stats.file_count;
         metrics.byte_count = workspace_stats.byte_count;
         metrics.opened_file_count = 1;
@@ -1158,9 +1197,9 @@ int main(int argc, char** argv) {
         metrics.opened_source_path = fs::absolute(opened_source.path).lexically_normal().string();
         metrics.top_module = args.top_module.empty()
                                  ? std::string{}
-                                 : (args.mode == "real"
-                                        ? selected_top
-                                        : sanitizedIdentifier(args.top_module, "rtl_e2e_probe_top"));
+                                 : (args.mode == "probe"
+                                        ? sanitizedIdentifier(args.top_module, "rtl_e2e_probe_top")
+                                        : selected_top);
         metrics.client_workspace_discovery_micros = client_workspace_discovery_micros;
         metrics.client_open_file_select_micros = client_open_file_select_micros;
         metrics.trace_enabled = args.trace;
@@ -1192,7 +1231,7 @@ int main(int argc, char** argv) {
         metrics.did_open_probe_micros = elapsedMicros(start, Clock::now());
         metrics.did_open_all_micros = metrics.did_open_probe_micros;
         writeOperation(operation_log,
-                       metrics.mode == "real" ? "textDocument/didOpen:real" : "textDocument/didOpen:probe",
+                       "textDocument/didOpen:" + metrics.mode,
                        metrics.did_open_probe_micros);
         writeStage(operation_log, "didOpen:end", std::to_string(metrics.did_open_probe_micros) + "us");
 
@@ -1229,13 +1268,21 @@ int main(int argc, char** argv) {
         writeStage(operation_log, "hover:end", std::to_string(metrics.hover_micros) + "us");
 
         writeStage(operation_log, "semanticDiagnostics:begin");
-        const auto diagnostics_start_count = client.diagnosticsNotificationCount();
         start = Clock::now();
-        metrics.semantic_diagnostics_published =
-            client.waitForDiagnosticsNotificationCount(diagnostics_start_count + 1,
-                                                       std::chrono::milliseconds(2000),
-                                                       opened_source.uri);
+        if (args.mode == "large-workspace") {
+            client.passiveDiagnosticsWait(std::chrono::milliseconds(2000));
+            metrics.semantic_diagnostics_published = client.diagnosticsNotificationCount() >= 2;
+        }
+        else {
+            metrics.semantic_diagnostics_published =
+                client.waitForDiagnosticsNotificationCount(2,
+                                                           std::chrono::milliseconds(2000),
+                                                           opened_source.uri);
+        }
         metrics.semantic_diagnostics_micros = elapsedMicros(start, Clock::now());
+        if (!metrics.semantic_diagnostics_published) {
+            metrics.background_diagnostics_skipped_reason = "timeout";
+        }
         writeOperation(operation_log, "semanticDiagnostics:wait", metrics.semantic_diagnostics_micros);
         writeStage(operation_log,
                    "semanticDiagnostics:end",
@@ -1284,6 +1331,13 @@ int main(int argc, char** argv) {
         writeOperation(operation_log, "shutdown", metrics.shutdown_micros);
         writeStage(operation_log, "shutdown:end", std::to_string(metrics.shutdown_micros) + "us");
         metrics.diagnostics_notification_count = client.diagnosticsNotificationCount();
+        metrics.syntax_diagnostics_published = metrics.diagnostics_notification_count > 0;
+        if (metrics.diagnostics_notification_count >= 2) {
+            metrics.semantic_diagnostics_published = true;
+            if (metrics.background_diagnostics_skipped_reason == "timeout") {
+                metrics.background_diagnostics_skipped_reason.clear();
+            }
+        }
         metrics.total_micros = elapsedMicros(total_start, Clock::now());
 
         const auto summary = summaryJson(metrics);

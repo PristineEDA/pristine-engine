@@ -28,6 +28,10 @@ def env_value(name: str, legacy_name: str | None = None, default: str | None = N
     return default
 
 
+def truthy_env(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 class CommandFailure(RuntimeError):
     def __init__(self, command: list[str], output: str):
         super().__init__(f"{command!r} failed\n{output}")
@@ -115,6 +119,7 @@ def main() -> int:
     expected = env_value("RTL_E2E_EXPECTED_COMMIT", "RETROSOC_EXPECTED_COMMIT", corpus["commit"])
     repo_url = env_value("RTL_E2E_REPO_URL", "RETROSOC_REPO_URL", corpus["repo_url"])
     explicit_root = env_value("RTL_E2E_ROOT", "RETROSOC_ROOT")
+    required = truthy_env("RTL_E2E_REQUIRED")
 
     try:
         if explicit_root:
@@ -139,10 +144,19 @@ def main() -> int:
         print(checkout)
         return 0
     except (OSError, RuntimeError) as exc:
+        default_cache = repo_root / ".cache" / "rtl-e2e" / corpus_name
+        cache_root = Path(env_value("RTL_E2E_CACHE_DIR", "RETROSOC_CACHE_DIR", str(default_cache))).resolve()
+        details = (
+            f"corpus={corpus_name} repo={repo_url} expectedCommit={expected} "
+            f"cacheRoot={cache_root}"
+        )
         if explicit_root:
-            print(f"ERROR: {exc}", file=sys.stderr)
+            print(f"ERROR: {details} explicitRoot={Path(explicit_root).resolve()} {exc}", file=sys.stderr)
             return 1
-        print(f"SKIP: {exc}")
+        if required:
+            print(f"ERROR: required RTL E2E corpus unavailable: {details} {exc}", file=sys.stderr)
+            return 1
+        print(f"SKIP: {details} {exc}")
         return 77
 
 

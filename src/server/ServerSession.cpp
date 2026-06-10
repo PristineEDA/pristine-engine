@@ -27,7 +27,6 @@ namespace {
 
 namespace fs = std::filesystem;
 constexpr size_t kSyntaxFirstDiagnosticsDocumentThreshold = 128;
-constexpr size_t kBackgroundDiagnosticsColdSnapshotDocumentLimit = 192;
 
 jsonrpc::Json toRangeJson(const analysis::ParseRange& range) {
     return jsonrpc::Json{{"start",
@@ -816,10 +815,45 @@ bool isPathInsideRoot(const fs::path& path, const fs::path& root) {
     return true;
 }
 
+void addIndexedSourcePath(std::vector<fs::path>& paths, const fs::path& path) {
+    const auto normalized = fs::absolute(path).lexically_normal();
+    paths.push_back(normalized);
+    std::sort(paths.begin(), paths.end());
+    paths.erase(std::unique(paths.begin(), paths.end()), paths.end());
+}
+
+void removeIndexedSourcePath(std::vector<fs::path>& paths, const fs::path& path) {
+    const auto normalized = fs::absolute(path).lexically_normal();
+    paths.erase(std::remove(paths.begin(), paths.end(), normalized), paths.end());
+}
+
+analysis::SemanticEngineConfig semanticConfigForWorkspace(const workspace::State& state) {
+    std::vector<analysis::SemanticEngineConfig::IndexConfig> semantic_index_config;
+    semantic_index_config.reserve(state.config.index.size());
+    for (const auto& index_config : state.config.index) {
+        semantic_index_config.push_back(
+            analysis::SemanticEngineConfig::IndexConfig{.dirs = index_config.dirs,
+                                                        .exclude_dirs = index_config.exclude_dirs});
+    }
+
+    return analysis::SemanticEngineConfig{.build = state.config.build,
+                                          .build_pattern = state.config.build_pattern,
+                                          .build_relative_paths = state.config.build_relative_paths,
+                                          .flags = state.config.flags,
+                                          .workspace_root_uri =
+                                              state.root_path.has_value()
+                                                  ? std::optional<std::string>{toFileUri(*state.root_path)}
+                                                  : std::optional<std::string>{},
+                                          .top_modules = state.config.top_modules,
+                                          .index = std::move(semantic_index_config)};
+}
+
 } // namespace
 
 ServerSession::ServerSession(std::string server_name, std::string server_version) :
-    server_name_(std::move(server_name)), server_version_(std::move(server_version)) {}
+    server_name_(std::move(server_name)), server_version_(std::move(server_version)) {
+    diagnostics_thread_ = std::thread([this]() { backgroundDiagnosticsLoop(); });
+}
 
 ServerSession::~ServerSession() {
     stopBackgroundDiagnostics();
@@ -946,29 +980,10 @@ void ServerSession::bind(jsonrpc::JsonRpcServer& server) {
 jsonrpc::Json ServerSession::handleInitialize(const jsonrpc::Json& params) {
     PRISTINE_DEBUG_TRACE_SCOPE_SIMPLE("server.initialize");
     workspace_manager_.initialize(lsp::parseInitializeParams(params));
-    const auto& workspace_config = workspace_manager_.state().config;
-    std::vector<analysis::SemanticEngineConfig::IndexConfig> semantic_index_config;
-    semantic_index_config.reserve(workspace_config.index.size());
-    for (const auto& index_config : workspace_config.index) {
-        semantic_index_config.push_back(
-            analysis::SemanticEngineConfig::IndexConfig{.dirs = index_config.dirs,
-                                                        .exclude_dirs = index_config.exclude_dirs});
-    }
     {
         std::lock_guard semantic_lock(semantic_mutex_);
         semantic_workspace_.clear();
-        semantic_workspace_.configureSemanticEngine(
-            analysis::SemanticEngineConfig{.build = workspace_config.build,
-                                           .build_pattern = workspace_config.build_pattern,
-                                           .build_relative_paths = workspace_config.build_relative_paths,
-                                           .flags = workspace_config.flags,
-                                           .workspace_root_uri =
-                                               workspace_manager_.state().root_path.has_value()
-                                                   ? std::optional<std::string>{toFileUri(
-                                                         *workspace_manager_.state().root_path)}
-                                                   : std::optional<std::string>{},
-                                           .top_modules = workspace_config.top_modules,
-                                           .index = std::move(semantic_index_config)});
+        semantic_workspace_.configureSemanticEngine(semanticConfigForWorkspace(workspace_manager_.state()));
         if (const auto& root_path = workspace_manager_.state().root_path) {
             semantic_workspace_.setWorkspaceRoot(toFileUri(*root_path));
         }
@@ -978,6 +993,7 @@ jsonrpc::Json ServerSession::handleInitialize(const jsonrpc::Json& params) {
         semantic_generation_cache_.store(semantic_workspace_.engineGeneration(), std::memory_order_relaxed);
     }
     syntax_cache_.clear();
+    indexed_source_paths_ = workspace_manager_.sourceFilesForIndex();
     indexWorkspaceSources();
     initialized_ = true;
     shutdown_requested_ = false;
@@ -1990,10 +2006,12 @@ void ServerSession::handleDidChangeWatchedFiles(const jsonrpc::Json& params) {
 
         if (change.type == lsp::FileChangeType::Deleted) {
             invalidateSyntaxCache(change.uri);
+            removeIndexedSourcePath(indexed_source_paths_, *path);
             removeSemanticDocument(change.uri);
             continue;
         }
 
+        addIndexedSourcePath(indexed_source_paths_, *path);
         if (const auto* document = document_store_.find(change.uri)) {
             updateSemanticDocument(document->uri,
                                    document->text,
@@ -2007,6 +2025,7 @@ void ServerSession::handleDidChangeWatchedFiles(const jsonrpc::Json& params) {
         std::error_code error;
         if (!fs::exists(*path, error) || !fs::is_regular_file(*path, error)) {
             invalidateSyntaxCache(change.uri);
+            removeIndexedSourcePath(indexed_source_paths_, *path);
             removeSemanticDocument(change.uri);
             continue;
         }
@@ -2014,6 +2033,7 @@ void ServerSession::handleDidChangeWatchedFiles(const jsonrpc::Json& params) {
         const auto text = readFileText(*path);
         if (!text.has_value()) {
             invalidateSyntaxCache(change.uri);
+            removeIndexedSourcePath(indexed_source_paths_, *path);
             removeSemanticDocument(change.uri);
             continue;
         }
@@ -2039,7 +2059,7 @@ void ServerSession::handleExit(const jsonrpc::Json&) {
 
 void ServerSession::indexWorkspaceSources() {
     PRISTINE_DEBUG_TRACE_SCOPE_SIMPLE("server.indexWorkspaceSources");
-    for (const auto& path : workspace_manager_.sourceFilesForIndex()) {
+    for (const auto& path : indexed_source_paths_) {
         const auto text = readFileText(path);
         if (!text.has_value()) {
             continue;
@@ -2157,9 +2177,8 @@ void ServerSession::publishDiagnostics(std::string_view uri) {
                               jsonrpc::Json{{"uri", document_uri},
                                             {"diagnostics", std::move(diagnostics)}});
     if (syntax_first) {
-        const bool allow_cold_snapshot_build =
-            semantic_document_count <= kBackgroundDiagnosticsColdSnapshotDocumentLimit;
-        scheduleSemanticDiagnosticsPublish(allow_cold_snapshot_build);
+        (void)semantic_document_count;
+        scheduleSemanticDiagnosticsPublish(true);
     }
 }
 
@@ -2184,89 +2203,159 @@ void ServerSession::publishDiagnostics(std::string_view uri,
 }
 
 void ServerSession::scheduleSemanticDiagnosticsPublish(bool allow_cold_snapshot_build) {
-    struct OpenDocument {
-        std::string uri;
-        int version = -1;
-    };
-
-    std::vector<OpenDocument> open_documents;
+    BackgroundDiagnosticsJob job;
+    job.allow_cold_snapshot_build = allow_cold_snapshot_build;
+    job.config = semanticConfigForWorkspace(workspace_manager_.state());
+    job.indexed_source_paths = indexed_source_paths_;
+    job.workspace_root_uri = workspace_manager_.state().root_path.has_value()
+                                 ? toFileUri(*workspace_manager_.state().root_path)
+                                 : std::string{};
     {
         std::lock_guard state_lock(state_mutex_);
         for (const auto& [uri, document] : document_store_.documents()) {
-            open_documents.push_back(OpenDocument{.uri = uri, .version = document.version});
+            job.open_documents.push_back(BackgroundDiagnosticsDocument{.uri = uri,
+                                                                       .text = document.text,
+                                                                       .version = document.version,
+                                                                       .dirty = document.dirty});
         }
     }
-    std::sort(open_documents.begin(), open_documents.end(), [](const OpenDocument& lhs,
-                                                               const OpenDocument& rhs) {
+    std::sort(job.open_documents.begin(), job.open_documents.end(), [](const auto& lhs,
+                                                                       const auto& rhs) {
         return lhs.uri < rhs.uri;
     });
-    if (open_documents.empty()) {
+    if (job.open_documents.empty()) {
         return;
     }
+    std::set<std::string> open_document_uris;
+    for (const auto& document : job.open_documents) {
+        open_document_uris.insert(document.uri);
+    }
+    job.indexed_source_paths.erase(
+        std::remove_if(job.indexed_source_paths.begin(),
+                       job.indexed_source_paths.end(),
+                       [&](const fs::path& path) {
+                           return open_document_uris.contains(toFileUri(path));
+                       }),
+        job.indexed_source_paths.end());
 
-    std::uint64_t semantic_generation = 0;
     {
         std::lock_guard semantic_lock(semantic_mutex_);
-        semantic_generation = semantic_workspace_.engineGeneration();
+        job.semantic_generation = semantic_workspace_.engineGeneration();
+        job.workspace_had_fresh_snapshot = semantic_workspace_.engineHasFreshSnapshot();
     }
 
-    std::uint64_t request_generation = 0;
-    std::thread previous_thread;
     {
         std::lock_guard background_lock(background_mutex_);
-        request_generation = ++diagnostics_request_generation_;
         diagnostics_stop_requested_ = false;
-        if (diagnostics_thread_.joinable()) {
-            previous_thread = std::move(diagnostics_thread_);
-        }
+        job.request_generation = ++diagnostics_request_generation_;
+        pending_diagnostics_job_ = std::move(job);
     }
-    if (previous_thread.joinable()) {
-        previous_thread.join();
-    }
+    background_cv_.notify_one();
+}
 
-    std::thread next_thread([this,
-                             request_generation,
-                             semantic_generation,
-                             allow_cold_snapshot_build,
-                             open_documents = std::move(open_documents)]() {
+void ServerSession::backgroundDiagnosticsLoop() {
+    while (true) {
+        BackgroundDiagnosticsJob job;
+        {
+            std::unique_lock background_lock(background_mutex_);
+            background_cv_.wait(background_lock, [this]() {
+                return diagnostics_stop_requested_ || pending_diagnostics_job_.has_value();
+            });
+            if (diagnostics_stop_requested_) {
+                return;
+            }
+            job = std::move(*pending_diagnostics_job_);
+            pending_diagnostics_job_.reset();
+        }
+
         try {
             PRISTINE_DEBUG_TRACE_SCOPE_SIMPLE("server.backgroundDiagnostics");
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
-            for (const auto& document : open_documents) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            {
+                std::lock_guard background_lock(background_mutex_);
+                if (diagnostics_stop_requested_ ||
+                    job.request_generation != diagnostics_request_generation_) {
+                    analysis::semantic::debugTraceInstant("server.backgroundDiagnostics.skip",
+                                                          "stale-before-build");
+                    continue;
+                }
+            }
+            if (!job.allow_cold_snapshot_build && !job.workspace_had_fresh_snapshot) {
+                analysis::semantic::debugTraceInstant("server.backgroundDiagnostics.skip",
+                                                      "large-workspace-cold-snapshot");
+                continue;
+            }
+
+            analysis::SemanticWorkspace background_workspace;
+            background_workspace.configureSemanticEngine(job.config);
+            background_workspace.setWorkspaceRoot(job.workspace_root_uri);
+            for (const auto& path : job.indexed_source_paths) {
+                const auto text = readFileText(path);
+                if (!text.has_value()) {
+                    continue;
+                }
+                background_workspace.updateDocument(toFileUri(path), *text);
                 {
                     std::lock_guard background_lock(background_mutex_);
                     if (diagnostics_stop_requested_ ||
-                        request_generation != diagnostics_request_generation_) {
-                        return;
+                        job.request_generation != diagnostics_request_generation_) {
+                        analysis::semantic::debugTraceInstant("server.backgroundDiagnostics.skip",
+                                                              "stale-during-index");
+                        break;
+                    }
+                }
+            }
+            {
+                std::lock_guard background_lock(background_mutex_);
+                if (diagnostics_stop_requested_ ||
+                    job.request_generation != diagnostics_request_generation_) {
+                    continue;
+                }
+            }
+            for (const auto& document : job.open_documents) {
+                background_workspace.updateDocument(document.uri,
+                                                    document.text,
+                                                    analysis::SemanticDocumentState{
+                                                        .version = document.version,
+                                                        .is_open = true,
+                                                        .dirty = document.dirty,
+                                                        .invalidate_dependents = true});
+                {
+                    std::lock_guard background_lock(background_mutex_);
+                    if (diagnostics_stop_requested_ ||
+                        job.request_generation != diagnostics_request_generation_) {
+                        analysis::semantic::debugTraceInstant("server.backgroundDiagnostics.skip",
+                                                              "stale-during-open-documents");
+                        break;
+                    }
+                }
+            }
+
+            for (const auto& document : job.open_documents) {
+                {
+                    std::lock_guard background_lock(background_mutex_);
+                    if (diagnostics_stop_requested_ ||
+                        job.request_generation != diagnostics_request_generation_) {
+                        analysis::semantic::debugTraceInstant("server.backgroundDiagnostics.skip",
+                                                              "stale-before-publish");
+                        break;
                     }
                 }
 
-                std::vector<analysis::SemanticEngineDiagnostic> diagnostics;
-                {
-                    std::unique_lock<std::mutex> semantic_lock(semantic_mutex_, std::try_to_lock);
-                    if (!semantic_lock.owns_lock()) {
-                        analysis::semantic::debugTraceInstant("server.backgroundDiagnostics.skip",
-                                                              "semantic-busy");
-                        return;
-                    }
-                    if (!allow_cold_snapshot_build && !semantic_workspace_.engineHasFreshSnapshot()) {
-                        analysis::semantic::debugTraceInstant("server.backgroundDiagnostics.skip",
-                                                              "large-workspace-cold-snapshot");
-                        return;
-                    }
-                    diagnostics = semantic_workspace_.engineDiagnosticsFor(document.uri);
-                }
+                auto diagnostics = background_workspace.engineDiagnosticsFor(document.uri);
 
                 {
                     std::lock_guard background_lock(background_mutex_);
                     if (diagnostics_stop_requested_ ||
-                        request_generation != diagnostics_request_generation_) {
-                        return;
+                        job.request_generation != diagnostics_request_generation_) {
+                        break;
                     }
                 }
                 {
                     std::lock_guard semantic_lock(semantic_mutex_);
-                    if (semantic_workspace_.engineGeneration() != semantic_generation) {
+                    if (semantic_workspace_.engineGeneration() != job.semantic_generation) {
+                        analysis::semantic::debugTraceInstant("server.backgroundDiagnostics.skip",
+                                                              "semantic-generation-changed");
                         continue;
                     }
                 }
@@ -2274,6 +2363,8 @@ void ServerSession::scheduleSemanticDiagnosticsPublish(bool allow_cold_snapshot_
                     std::lock_guard state_lock(state_mutex_);
                     const auto* current_document = document_store_.find(document.uri);
                     if (!current_document || current_document->version != document.version) {
+                        analysis::semantic::debugTraceInstant("server.backgroundDiagnostics.skip",
+                                                              "document-stale-or-closed");
                         continue;
                     }
                 }
@@ -2286,25 +2377,19 @@ void ServerSession::scheduleSemanticDiagnosticsPublish(bool allow_cold_snapshot_
         catch (...) {
             analysis::semantic::debugTraceInstant("server.backgroundDiagnostics.error", "unknown");
         }
-    });
-    {
-        std::lock_guard background_lock(background_mutex_);
-        diagnostics_thread_ = std::move(next_thread);
     }
 }
 
 void ServerSession::stopBackgroundDiagnostics() {
-    std::thread previous_thread;
     {
         std::lock_guard background_lock(background_mutex_);
         diagnostics_stop_requested_ = true;
+        pending_diagnostics_job_.reset();
         ++diagnostics_request_generation_;
-        if (diagnostics_thread_.joinable()) {
-            previous_thread = std::move(diagnostics_thread_);
-        }
     }
-    if (previous_thread.joinable()) {
-        previous_thread.join();
+    background_cv_.notify_one();
+    if (diagnostics_thread_.joinable()) {
+        diagnostics_thread_.join();
     }
 }
 

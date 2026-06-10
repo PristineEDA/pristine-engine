@@ -74,6 +74,8 @@ def main() -> int:
         assert no_trace_summary["queryCacheEntries"] >= 1
         assert no_trace_summary["queryCacheModuleHierarchyEntries"] >= 1
         assert no_trace_summary["queryCacheSchematicEntries"] >= 1
+        assert no_trace_summary["syntaxDiagnosticsPublished"] is True
+        assert "backgroundDiagnosticsSkippedReason" in no_trace_summary
         assert no_trace_summary["traceEnabled"] is False
         assert no_trace_summary["tracePath"] == ""
         assert (no_trace_dir / "summary.json").exists()
@@ -102,6 +104,8 @@ def main() -> int:
         assert trace_summary["queryCacheHits"] >= 1
         assert trace_summary["queryCacheMisses"] >= 1
         assert trace_summary["queryCacheEntries"] >= 1
+        assert trace_summary["syntaxDiagnosticsPublished"] is True
+        assert "backgroundDiagnosticsSkippedReason" in trace_summary
         assert trace_summary["traceEnabled"] is True
         assert Path(trace_summary["tracePath"]) == trace_file.resolve()
         assert trace_file.exists()
@@ -113,6 +117,9 @@ def main() -> int:
         assert any('"method":"textDocument/hover"' in line for line in trace_lines)
         assert any('"method":"systemverilog/moduleHierarchy"' in line for line in trace_lines)
         assert any('"method":"systemverilog/schematic"' in line for line in trace_lines)
+        assert not any('"method":"workspace/symbol"' in line for line in trace_lines)
+        assert not any('"method":"systemverilog/backwardCone"' in line for line in trace_lines)
+        assert not any('"method":"textDocument/completion"' in line for line in trace_lines)
 
         print(json.dumps(trace_summary, separators=(",", ":")))
     return 0
