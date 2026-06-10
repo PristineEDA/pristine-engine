@@ -877,10 +877,11 @@ public:
     }
 
     bool waitForDiagnosticsNotificationCount(size_t target_count,
-                                             std::chrono::milliseconds timeout) {
+                                             std::chrono::milliseconds timeout,
+                                             const std::string& opened_uri) {
         const auto deadline = Clock::now() + timeout;
         while (Clock::now() < deadline) {
-            (void)request("workspace/symbol", workspaceSymbolParams("__rtl_e2e_diag_wait__"));
+            (void)request("textDocument/documentSymbol", textDocumentParams(opened_uri));
             if (diagnostics_notification_count_ >= target_count) {
                 return true;
             }
@@ -1232,7 +1233,8 @@ int main(int argc, char** argv) {
         start = Clock::now();
         metrics.semantic_diagnostics_published =
             client.waitForDiagnosticsNotificationCount(diagnostics_start_count + 1,
-                                                       std::chrono::milliseconds(2000));
+                                                       std::chrono::milliseconds(2000),
+                                                       opened_source.uri);
         metrics.semantic_diagnostics_micros = elapsedMicros(start, Clock::now());
         writeOperation(operation_log, "semanticDiagnostics:wait", metrics.semantic_diagnostics_micros);
         writeStage(operation_log,

@@ -107,6 +107,17 @@ std::optional<jsonrpc::Json> findResponse(const ScriptedTransport& transport, in
     return std::nullopt;
 }
 
+std::optional<jsonrpc::Json> findResponse(const WaitingTransport& transport, int id) {
+    for (const auto& payload : transport.outputs()) {
+        const auto message = jsonrpc::Json::parse(payload);
+        const auto id_it = message.find("id");
+        if (id_it != message.end() && id_it->is_number_integer() && id_it->get<int>() == id) {
+            return message;
+        }
+    }
+    return std::nullopt;
+}
+
 std::vector<jsonrpc::Json> findNotifications(const ScriptedTransport& transport,
                                              std::string_view method) {
     std::vector<jsonrpc::Json> result;
@@ -1425,6 +1436,49 @@ TEST_CASE("ServerSession returns hover for declaration symbols", "[server][hover
     CHECK(hover_response.at("result").at("range").at("start").at("line") == 1);
     CHECK(hover_response.at("result").at("range").at("start").at("character") == 8);
     CHECK(hover_response.at("result").at("range").at("end").at("character") == 13);
+}
+
+TEST_CASE("ServerSession keeps cold large-workspace hover on the syntax fast path",
+          "[server][hover][diagnostics][perf]") {
+    jsonrpc::JsonRpcServer rpc_server;
+    ServerSession session{"pristine-engine", kTestServerVersion};
+    session.bind(rpc_server);
+
+    TempWorkspace workspace;
+    for (int index = 0; index < 193; ++index) {
+        workspace.writeFile("rtl/filler_" + std::to_string(index) + ".sv",
+                            "module filler_" + std::to_string(index) + "; endmodule\n");
+    }
+
+    const auto top_text = std::string("module top;\n  logic ready;\nendmodule\n");
+    const auto top_path = workspace.writeFile("rtl/top.sv", top_text);
+    const auto top_uri = toFileUri(top_path);
+
+    const auto initialize_message =
+        std::string(R"({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"rootUri":")") +
+        toFileUri(workspace.root()) + R"("}})";
+    const auto open_message =
+        std::string(R"({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":")") +
+        top_uri + R"(","languageId":"systemverilog","version":1,"text":)" +
+        jsonrpc::Json(top_text).dump() + R"(}}})";
+    const auto hover_message =
+        std::string(R"({"jsonrpc":"2.0","id":2,"method":"textDocument/hover","params":{"textDocument":{"uri":")") +
+        top_uri + R"("},"position":{"line":1,"character":8}}})";
+
+    WaitingTransport transport{{initialize_message, open_message, hover_message}, 3};
+
+    const int exit_code = rpc_server.run(transport);
+
+    CHECK(exit_code == 0);
+    const auto hover_response = findResponse(transport, 2);
+    REQUIRE(hover_response.has_value());
+    CHECK(hover_response->at("result").at("contents").at("kind") == "markdown");
+    const auto hover_value = hover_response->at("result").at("contents").at("value").get<std::string>();
+    CHECK(hover_value.find("ready") != std::string::npos);
+
+    const auto diagnostics = findNotifications(transport, "textDocument/publishDiagnostics");
+    REQUIRE(diagnostics.size() == 1);
+    CHECK(diagnostics.front().at("params").at("uri") == top_uri);
 }
 
 TEST_CASE("ServerSession handles Tier 1 LSP navigation and completion", "[server][lsp-core]") {

@@ -17,9 +17,9 @@
     "maxDepth": 8
   },
   "expected": {
-    "partial": true,
     "modules": [
-      "top"
+      "top",
+      "child"
     ],
     "cells": [
       {
@@ -27,9 +27,6 @@
         "name": "u_child",
         "type": "child"
       }
-    ],
-    "messagesContain": [
-      "No schematic data found"
     ]
   }
 }

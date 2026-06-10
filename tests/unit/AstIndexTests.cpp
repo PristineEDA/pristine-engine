@@ -556,6 +556,12 @@ TEST_CASE("AstIndex promotes generated module instances into schematic cells",
     REQUIRE(output.data != nullptr);
 
     const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
+    REQUIRE(view.module_signatures_by_name.contains("leaf"));
+    CHECK(std::any_of(view.module_signatures_by_name.at("leaf").definition.port_details.begin(),
+                      view.module_signatures_by_name.at("leaf").definition.port_details.end(),
+                      [](const SchematicPort& port) {
+                          return port.name == "clk" && port.direction == "input";
+                      }));
     REQUIRE(view.module_signatures_by_name.contains("top"));
     const auto& top = view.module_signatures_by_name.at("top");
     CHECK(std::any_of(top.definition.instances.begin(),

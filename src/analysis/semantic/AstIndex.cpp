@@ -1,6 +1,7 @@
 #include "AstIndex.h"
 
 #include "CompletionProvider.h"
+#include "DebugTrace.h"
 #include "pristine/analysis/SourceUtil.h"
 
 #include "slang/ast/ASTVisitor.h"
@@ -1646,6 +1647,342 @@ void upsertAstModuleSignature(SnapshotData& data,
     data.ast_module_signatures_by_name[name] = std::move(signature);
 }
 
+bool moduleNameReferencedByIndexedInstance(const SnapshotData& data, std::string_view name) {
+    return std::any_of(data.module_instances_by_uri.begin(),
+                       data.module_instances_by_uri.end(),
+                       [&](const auto& entry) {
+                           return std::any_of(entry.second.begin(),
+                                              entry.second.end(),
+                                              [&](const SnapshotModuleInstance& instance) {
+                                                  return instance.module_name == name;
+                                              });
+                       });
+}
+
+std::string tokenDirection(std::string_view value) {
+    std::string normalized(value);
+    std::transform(normalized.begin(), normalized.end(), normalized.begin(), [](unsigned char ch) {
+        return static_cast<char>(std::tolower(ch));
+    });
+    if (normalized == "input") {
+        return "input";
+    }
+    if (normalized == "output") {
+        return "output";
+    }
+    if (normalized == "inout") {
+        return "inout";
+    }
+    return "inout";
+}
+
+std::string portHeaderDirection(const slang::syntax::PortHeaderSyntax& header) {
+    switch (header.kind) {
+        case slang::syntax::SyntaxKind::VariablePortHeader: {
+            const auto& declaration = header.as<slang::syntax::VariablePortHeaderSyntax>();
+            return tokenDirection(declaration.direction.valueText());
+        }
+        case slang::syntax::SyntaxKind::NetPortHeader: {
+            const auto& declaration = header.as<slang::syntax::NetPortHeaderSyntax>();
+            return tokenDirection(declaration.direction.valueText());
+        }
+        default:
+            return "inout";
+    }
+}
+
+std::string portHeaderWidthText(const slang::syntax::PortHeaderSyntax& header) {
+    switch (header.kind) {
+        case slang::syntax::SyntaxKind::VariablePortHeader: {
+            const auto& declaration = header.as<slang::syntax::VariablePortHeaderSyntax>();
+            return normalizedTypeDisplay(declaration.dataType->toString());
+        }
+        case slang::syntax::SyntaxKind::NetPortHeader: {
+            const auto& declaration = header.as<slang::syntax::NetPortHeaderSyntax>();
+            return normalizedTypeDisplay(declaration.dataType->toString());
+        }
+        default:
+            return {};
+    }
+}
+
+void appendOrUpdatePort(std::vector<SchematicPort>& result, SchematicPort port) {
+    const auto existing = std::find_if(result.begin(), result.end(), [&](const SchematicPort& candidate) {
+        return candidate.name == port.name;
+    });
+    if (existing == result.end()) {
+        result.push_back(std::move(port));
+        return;
+    }
+    if (existing->direction == "inout" && port.direction != "inout") {
+        existing->direction = std::move(port.direction);
+    }
+    if (existing->width_text.empty() && !port.width_text.empty()) {
+        existing->width_text = std::move(port.width_text);
+    }
+    existing->range = port.range;
+    existing->selection_range = port.selection_range;
+}
+
+void appendPortDeclarators(std::vector<SchematicPort>& result,
+                           const slang::SourceManager& source_manager,
+                           const slang::syntax::PortHeaderSyntax& header,
+                           const slang::syntax::SeparatedSyntaxList<slang::syntax::DeclaratorSyntax>& declarators) {
+    const auto direction = portHeaderDirection(header);
+    const auto width_text = portHeaderWidthText(header);
+    for (const auto* declarator : declarators) {
+        if (declarator == nullptr || declarator->name.valueText().empty()) {
+            continue;
+        }
+        appendOrUpdatePort(result,
+                           SchematicPort{.name = std::string(declarator->name.valueText()),
+                                         .direction = direction,
+                                         .width_text = width_text,
+                                         .range = sourceRangeForSourceRange(source_manager,
+                                                                           declarator->sourceRange()),
+                                         .selection_range = sourceRangeForSourceRange(source_manager,
+                                                                                      declarator->name.range())});
+    }
+}
+
+std::vector<SchematicPort> headerSchematicPortsForDefinition(
+    const slang::SourceManager& source_manager,
+    const slang::syntax::ModuleDeclarationSyntax& declaration) {
+    std::vector<SchematicPort> result;
+    if (declaration.header == nullptr || declaration.header->ports == nullptr) {
+        return result;
+    }
+    if (declaration.header->ports->kind == slang::syntax::SyntaxKind::AnsiPortList) {
+        const auto& ports = declaration.header->ports->as<slang::syntax::AnsiPortListSyntax>();
+        for (const auto* port : ports.ports) {
+            if (port == nullptr) {
+                continue;
+            }
+            switch (port->kind) {
+                case slang::syntax::SyntaxKind::ImplicitAnsiPort: {
+                    const auto& ansi_port = port->as<slang::syntax::ImplicitAnsiPortSyntax>();
+                    if (ansi_port.declarator == nullptr || ansi_port.header == nullptr ||
+                        ansi_port.declarator->name.valueText().empty()) {
+                        break;
+                    }
+                    appendOrUpdatePort(result,
+                                       SchematicPort{
+                                           .name = std::string(ansi_port.declarator->name.valueText()),
+                                           .direction = portHeaderDirection(*ansi_port.header),
+                                           .width_text = portHeaderWidthText(*ansi_port.header),
+                                           .range = sourceRangeForSourceRange(source_manager,
+                                                                             ansi_port.sourceRange()),
+                                           .selection_range = sourceRangeForSourceRange(
+                                               source_manager,
+                                               ansi_port.declarator->name.range())});
+                    break;
+                }
+                case slang::syntax::SyntaxKind::ExplicitAnsiPort: {
+                    const auto& ansi_port = port->as<slang::syntax::ExplicitAnsiPortSyntax>();
+                    if (ansi_port.name.valueText().empty()) {
+                        break;
+                    }
+                    appendOrUpdatePort(result,
+                                       SchematicPort{.name = std::string(ansi_port.name.valueText()),
+                                                     .direction = tokenDirection(ansi_port.direction.valueText()),
+                                                     .width_text = {},
+                                                     .range = sourceRangeForSourceRange(source_manager,
+                                                                                       ansi_port.sourceRange()),
+                                                     .selection_range = sourceRangeForSourceRange(
+                                                         source_manager,
+                                                         ansi_port.name.range())});
+                    break;
+                }
+                case slang::syntax::SyntaxKind::PortDeclaration: {
+                    const auto& port_declaration = port->as<slang::syntax::PortDeclarationSyntax>();
+                    if (port_declaration.header != nullptr) {
+                        appendPortDeclarators(result,
+                                              source_manager,
+                                              *port_declaration.header,
+                                              port_declaration.declarators);
+                    }
+                    break;
+                }
+                default:
+                    break;
+            }
+        }
+    }
+    else if (declaration.header->ports->kind == slang::syntax::SyntaxKind::NonAnsiPortList) {
+        const auto& ports = declaration.header->ports->as<slang::syntax::NonAnsiPortListSyntax>();
+        for (const auto* port : ports.ports) {
+            if (port == nullptr) {
+                continue;
+            }
+            switch (port->kind) {
+                case slang::syntax::SyntaxKind::ExplicitNonAnsiPort: {
+                    const auto& non_ansi_port = port->as<slang::syntax::ExplicitNonAnsiPortSyntax>();
+                    if (non_ansi_port.name.valueText().empty()) {
+                        break;
+                    }
+                    appendOrUpdatePort(result,
+                                       SchematicPort{.name = std::string(non_ansi_port.name.valueText()),
+                                                     .direction = "inout",
+                                                     .width_text = {},
+                                                     .range = sourceRangeForSourceRange(source_manager,
+                                                                                       non_ansi_port.sourceRange()),
+                                                     .selection_range = sourceRangeForSourceRange(
+                                                         source_manager,
+                                                         non_ansi_port.name.range())});
+                    break;
+                }
+                case slang::syntax::SyntaxKind::ImplicitNonAnsiPort: {
+                    const auto& non_ansi_port = port->as<slang::syntax::ImplicitNonAnsiPortSyntax>();
+                    if (non_ansi_port.expr == nullptr) {
+                        break;
+                    }
+                    auto name = normalizedTypeDisplay(non_ansi_port.expr->toString());
+                    if (name.empty()) {
+                        break;
+                    }
+                    appendOrUpdatePort(result,
+                                       SchematicPort{.name = std::move(name),
+                                                     .direction = "inout",
+                                                     .width_text = {},
+                                                     .range = sourceRangeForSourceRange(source_manager,
+                                                                                       non_ansi_port.sourceRange()),
+                                                     .selection_range = sourceRangeForSourceRange(
+                                                         source_manager,
+                                                         non_ansi_port.expr->sourceRange())});
+                    break;
+                }
+                default:
+                    break;
+            }
+        }
+    }
+    return result;
+}
+
+std::optional<SchematicPort> parameterPortForDefinition(
+    const slang::SourceManager& source_manager,
+    const slang::ast::DefinitionSymbol::ParameterDecl& parameter) {
+    if (!parameter.isPortParam || parameter.name.empty() || !parameter.location.valid()) {
+        return std::nullopt;
+    }
+    ParseRange range = sourceRangeForSourceRange(
+        source_manager,
+        slang::SourceRange(parameter.location, parameter.location + parameter.name.size()));
+    if (parameter.hasSyntax) {
+        if (parameter.isTypeParam && parameter.typeDecl != nullptr) {
+            range = sourceRangeForSourceRange(source_manager, parameter.typeDecl->sourceRange());
+        }
+        else if (!parameter.isTypeParam && parameter.valueDecl != nullptr) {
+            range = sourceRangeForSourceRange(source_manager, parameter.valueDecl->sourceRange());
+        }
+    }
+    return SchematicPort{.name = std::string(parameter.name),
+                         .direction = "parameter",
+                         .width_text = parameter.isTypeParam ? "type" : "",
+                         .range = range,
+                         .selection_range = sourceRangeForSourceRange(
+                             source_manager,
+                             slang::SourceRange(parameter.location,
+                                                parameter.location + parameter.name.size()))};
+}
+
+std::optional<SemanticModuleSignature> moduleSignatureSkeletonForAstDefinition(
+    const slang::SourceManager& source_manager,
+    const slang::ast::DefinitionSymbol& definition) {
+    const auto* syntax = definition.getSyntax();
+    if (syntax == nullptr ||
+        (syntax->kind != slang::syntax::SyntaxKind::ModuleDeclaration &&
+         syntax->kind != slang::syntax::SyntaxKind::InterfaceDeclaration)) {
+        return std::nullopt;
+    }
+    const auto& declaration = syntax->as<slang::syntax::ModuleDeclarationSyntax>();
+    if (declaration.header == nullptr || declaration.header->name.valueText().empty()) {
+        return std::nullopt;
+    }
+    const auto location = locationForSourceRange(source_manager, declaration.header->name.range());
+    const auto range_location = locationForSourceRange(source_manager, declaration.sourceRange());
+    if (!location.has_value() || !range_location.has_value()) {
+        return std::nullopt;
+    }
+
+    ModuleDefinition module;
+    module.name = std::string(declaration.header->name.valueText());
+    module.kind = std::string(definition.getKindString());
+    module.range = range_location->range;
+    module.selection_range = location->range;
+    module.port_details = headerSchematicPortsForDefinition(source_manager, declaration);
+    for (const auto& port : module.port_details) {
+        module.ports.push_back(port.name);
+    }
+    for (const auto& parameter : definition.parameters) {
+        if (auto port = parameterPortForDefinition(source_manager, parameter)) {
+            module.parameter_details.push_back(std::move(*port));
+        }
+    }
+
+    ModuleSchematic schematic;
+    schematic.name = module.name;
+    schematic.range = module.range;
+    schematic.selection_range = module.selection_range;
+    schematic.ports = module.port_details;
+    return SemanticModuleSignature{.definition = std::move(module),
+                                   .schematic = std::move(schematic),
+                                   .uri = range_location->uri};
+}
+
+void upsertAstModuleSignatureSkeleton(SnapshotData& data,
+                                      const slang::SourceManager& source_manager,
+                                      const slang::ast::DefinitionSymbol& definition) {
+    auto signature = moduleSignatureSkeletonForAstDefinition(source_manager, definition);
+    if (!signature.has_value()) {
+        return;
+    }
+
+    const auto name = signature->definition.name;
+    data.modules_by_name[name] = signature->definition;
+    if (!signature->uri.empty()) {
+        data.module_uris_by_name[name] = signature->uri;
+    }
+
+    const auto entry = SnapshotModuleEntry{.uri = signature->uri,
+                                          .definition = signature->definition};
+    const auto entry_it = std::find_if(data.module_entries.begin(),
+                                       data.module_entries.end(),
+                                       [&](const SnapshotModuleEntry& existing) {
+                                           return existing.definition.name == name;
+                                       });
+    if (entry_it == data.module_entries.end()) {
+        data.module_entries.push_back(entry);
+    }
+    else {
+        *entry_it = entry;
+    }
+
+    data.ast_module_signatures_by_name[name] = std::move(*signature);
+}
+
+void upsertMissingAstModuleSignatureSkeletonsFromDefinitions(
+    SnapshotData& data,
+    const slang::SourceManager& source_manager,
+    const std::unordered_map<std::string, SemanticEngineDocument>&) {
+    if (!data.compilation) {
+        return;
+    }
+    for (const auto* symbol : data.compilation->getDefinitions()) {
+        if (symbol == nullptr || symbol->name.empty() ||
+            symbol->kind != slang::ast::SymbolKind::Definition) {
+            continue;
+        }
+        const auto& definition = symbol->as<slang::ast::DefinitionSymbol>();
+        const auto name = std::string(definition.name);
+        if (data.ast_module_signatures_by_name.contains(name) ||
+            !moduleNameReferencedByIndexedInstance(data, name)) {
+            continue;
+        }
+        upsertAstModuleSignatureSkeleton(data, source_manager, definition);
+    }
+}
+
 void upsertAstContinuousAssignment(SnapshotData& data,
                                    const slang::SourceManager& source_manager,
                                    const std::unordered_map<std::string, SemanticEngineDocument>& documents,
@@ -2254,6 +2591,16 @@ struct SemanticIndexVisitor
         source_manager(source_manager),
         documents(documents) {}
 
+    bool isClassOwnedSubroutine(const slang::ast::Symbol& symbol) const {
+        if (symbol.kind != slang::ast::SymbolKind::Subroutine &&
+            symbol.kind != slang::ast::SymbolKind::MethodPrototype) {
+            return false;
+        }
+        const auto* parent_scope = symbol.getParentScope();
+        return parent_scope != nullptr &&
+               parent_scope->asSymbol().kind == slang::ast::SymbolKind::ClassType;
+    }
+
     template<typename T>
     void handle(const T& symbol)
         requires std::is_base_of_v<slang::ast::Symbol, T>
@@ -2267,6 +2614,9 @@ struct SemanticIndexVisitor
         }
         if constexpr (std::is_same_v<T, slang::ast::ContinuousAssignSymbol>) {
             upsertAstContinuousAssignment(data, source_manager, documents, symbol);
+        }
+        if (isClassOwnedSubroutine(symbol)) {
+            return;
         }
         this->visitDefault(symbol);
     }
@@ -2693,23 +3043,63 @@ void buildAstIndexes(SnapshotData& data,
     }
 
     const auto& root = data.compilation->getRoot();
-    collectSyntaxModuleCandidates(data, *data.source_manager);
-    SemanticIndexVisitor visitor(data, *data.source_manager, documents);
-    root.visit(visitor);
-    for (const auto* definition : data.compilation->getDefinitions()) {
-        if (definition != nullptr) {
-            insertSymbol(data, *data.source_manager, *definition);
+    {
+        PRISTINE_DEBUG_TRACE_SCOPE_SIMPLE("astIndex.collectSyntaxModuleCandidates");
+        collectSyntaxModuleCandidates(data, *data.source_manager);
+    }
+    {
+        PRISTINE_DEBUG_TRACE_SCOPE_SIMPLE("astIndex.visitRoot");
+        SemanticIndexVisitor visitor(data, *data.source_manager, documents);
+        root.visit(visitor);
+    }
+    {
+        PRISTINE_DEBUG_TRACE_SCOPE_SIMPLE("astIndex.insertDefinitions");
+        for (const auto* definition : data.compilation->getDefinitions()) {
+            if (definition != nullptr) {
+                insertSymbol(data, *data.source_manager, *definition);
+            }
         }
     }
-    indexInterfaceMemberCompletions(data, *data.source_manager);
-    updateModuleInstanceTargets(data);
-    sortModuleInstances(data);
-    attachInstancesToModuleDefinitions(data);
-    addDeclarationReferences(data);
-    addModuleInstantiationReferences(data, documents);
-    buildAssignmentEdges(data);
-    buildTypeReferences(data, documents);
-    sortSnapshotIndexes(data);
+    {
+        PRISTINE_DEBUG_TRACE_SCOPE_SIMPLE("astIndex.upsertDefinitionSkeletons");
+        upsertMissingAstModuleSignatureSkeletonsFromDefinitions(data, *data.source_manager, documents);
+    }
+    {
+        PRISTINE_DEBUG_TRACE_SCOPE_SIMPLE("astIndex.indexInterfaceMemberCompletions");
+        indexInterfaceMemberCompletions(data, *data.source_manager);
+    }
+    {
+        PRISTINE_DEBUG_TRACE_SCOPE_SIMPLE("astIndex.updateModuleInstanceTargets");
+        updateModuleInstanceTargets(data);
+    }
+    {
+        PRISTINE_DEBUG_TRACE_SCOPE_SIMPLE("astIndex.sortModuleInstances");
+        sortModuleInstances(data);
+    }
+    {
+        PRISTINE_DEBUG_TRACE_SCOPE_SIMPLE("astIndex.attachInstancesToModuleDefinitions");
+        attachInstancesToModuleDefinitions(data);
+    }
+    {
+        PRISTINE_DEBUG_TRACE_SCOPE_SIMPLE("astIndex.addDeclarationReferences");
+        addDeclarationReferences(data);
+    }
+    {
+        PRISTINE_DEBUG_TRACE_SCOPE_SIMPLE("astIndex.addModuleInstantiationReferences");
+        addModuleInstantiationReferences(data, documents);
+    }
+    {
+        PRISTINE_DEBUG_TRACE_SCOPE_SIMPLE("astIndex.buildAssignmentEdges");
+        buildAssignmentEdges(data);
+    }
+    {
+        PRISTINE_DEBUG_TRACE_SCOPE_SIMPLE("astIndex.buildTypeReferences");
+        buildTypeReferences(data, documents);
+    }
+    {
+        PRISTINE_DEBUG_TRACE_SCOPE_SIMPLE("astIndex.sortSnapshotIndexes");
+        sortSnapshotIndexes(data);
+    }
 }
 
 std::optional<std::string> findDefinitionSymbolId(const SnapshotData& data,

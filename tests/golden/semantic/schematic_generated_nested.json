@@ -1,5 +1,5 @@
 {
-  "name": "schematic reports generated nested cells as partial design data",
+  "name": "schematic expands generated nested child cells",
   "config": {
     "topModules": [
       "top"
@@ -17,19 +17,22 @@
     "maxDepth": 8
   },
   "expected": {
-    "partial": true,
     "modules": [
-      "top"
+      "top",
+      "mid",
+      "leaf"
     ],
     "cells": [
       {
         "module": "top",
         "name": "u_mid",
         "type": "mid"
+      },
+      {
+        "module": "mid",
+        "name": "u_leaf",
+        "type": "leaf"
       }
-    ],
-    "messagesContain": [
-      "No schematic data found"
     ]
   }
 }

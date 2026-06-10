@@ -27,6 +27,7 @@ namespace {
 
 namespace fs = std::filesystem;
 constexpr size_t kSyntaxFirstDiagnosticsDocumentThreshold = 128;
+constexpr size_t kBackgroundDiagnosticsColdSnapshotDocumentLimit = 192;
 
 jsonrpc::Json toRangeJson(const analysis::ParseRange& range) {
     return jsonrpc::Json{{"start",
@@ -72,6 +73,12 @@ jsonrpc::Json makeDiagnosticJson(const analysis::ParseRange& range,
                          {"code", std::string(code)},
                          {"source", std::string(source)},
                          {"message", std::move(message)}};
+}
+
+jsonrpc::Json toHoverResultJson(const analysis::HoverResult& hover) {
+    return jsonrpc::Json{{"contents", jsonrpc::Json{{"kind", "markdown"},
+                                                     {"value", hover.contents}}},
+                         {"range", toRangeJson(hover.range)}};
 }
 
 jsonrpc::Json toInlayHintJson(const analysis::SemanticInlayHint& hint) {
@@ -1240,6 +1247,25 @@ jsonrpc::Json ServerSession::handleHover(const jsonrpc::Json& params) {
         return nullptr;
     }
 
+    bool use_syntax_hover = false;
+    {
+        std::lock_guard semantic_lock(semantic_mutex_);
+        use_syntax_hover =
+            semantic_workspace_.documentCount() > kSyntaxFirstDiagnosticsDocumentThreshold &&
+            !semantic_workspace_.engineHasFreshSnapshot();
+    }
+    if (use_syntax_hover) {
+        analysis::semantic::debugTraceInstant("server.hover.syntaxFastPath", document->uri);
+        const auto syntax_hover = compilation_service_.hover(document->text,
+                                                             document->uri,
+                                                             hover.position.line,
+                                                             hover.position.character);
+        if (!syntax_hover.has_value()) {
+            return nullptr;
+        }
+        return toHoverResultJson(*syntax_hover);
+    }
+
     analysis::SemanticHoverResult semantic_result;
     {
         std::lock_guard semantic_lock(semantic_mutex_);
@@ -2095,9 +2121,11 @@ void ServerSession::publishDiagnostics(std::string_view uri) {
 
     jsonrpc::Json diagnostics = jsonrpc::Json::array();
     bool syntax_first = false;
+    size_t semantic_document_count = 0;
     {
         std::lock_guard semantic_lock(semantic_mutex_);
-        syntax_first = semantic_workspace_.documentCount() > kSyntaxFirstDiagnosticsDocumentThreshold &&
+        semantic_document_count = semantic_workspace_.documentCount();
+        syntax_first = semantic_document_count > kSyntaxFirstDiagnosticsDocumentThreshold &&
                        !semantic_workspace_.engineHasFreshSnapshot();
     }
     if (syntax_first) {
@@ -2129,7 +2157,9 @@ void ServerSession::publishDiagnostics(std::string_view uri) {
                               jsonrpc::Json{{"uri", document_uri},
                                             {"diagnostics", std::move(diagnostics)}});
     if (syntax_first) {
-        scheduleSemanticDiagnosticsPublish();
+        const bool allow_cold_snapshot_build =
+            semantic_document_count <= kBackgroundDiagnosticsColdSnapshotDocumentLimit;
+        scheduleSemanticDiagnosticsPublish(allow_cold_snapshot_build);
     }
 }
 
@@ -2153,7 +2183,7 @@ void ServerSession::publishDiagnostics(std::string_view uri,
                                             {"diagnostics", std::move(diagnostics_json)}});
 }
 
-void ServerSession::scheduleSemanticDiagnosticsPublish() {
+void ServerSession::scheduleSemanticDiagnosticsPublish(bool allow_cold_snapshot_build) {
     struct OpenDocument {
         std::string uri;
         int version = -1;
@@ -2197,6 +2227,7 @@ void ServerSession::scheduleSemanticDiagnosticsPublish() {
     std::thread next_thread([this,
                              request_generation,
                              semantic_generation,
+                             allow_cold_snapshot_build,
                              open_documents = std::move(open_documents)]() {
         try {
             PRISTINE_DEBUG_TRACE_SCOPE_SIMPLE("server.backgroundDiagnostics");
@@ -2212,7 +2243,17 @@ void ServerSession::scheduleSemanticDiagnosticsPublish() {
 
                 std::vector<analysis::SemanticEngineDiagnostic> diagnostics;
                 {
-                    std::lock_guard semantic_lock(semantic_mutex_);
+                    std::unique_lock<std::mutex> semantic_lock(semantic_mutex_, std::try_to_lock);
+                    if (!semantic_lock.owns_lock()) {
+                        analysis::semantic::debugTraceInstant("server.backgroundDiagnostics.skip",
+                                                              "semantic-busy");
+                        return;
+                    }
+                    if (!allow_cold_snapshot_build && !semantic_workspace_.engineHasFreshSnapshot()) {
+                        analysis::semantic::debugTraceInstant("server.backgroundDiagnostics.skip",
+                                                              "large-workspace-cold-snapshot");
+                        return;
+                    }
                     diagnostics = semantic_workspace_.engineDiagnosticsFor(document.uri);
                 }
 

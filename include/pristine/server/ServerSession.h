@@ -78,7 +78,7 @@ private:
     void removeSemanticDocument(std::string_view uri);
     void publishDiagnostics(std::string_view uri);
     void publishDiagnostics(std::string_view uri, std::vector<analysis::SemanticEngineDiagnostic> diagnostics);
-    void scheduleSemanticDiagnosticsPublish();
+    void scheduleSemanticDiagnosticsPublish(bool allow_cold_snapshot_build = true);
     void stopBackgroundDiagnostics();
     void clearDiagnostics(std::string_view uri);
     const std::vector<analysis::DocumentSymbol>& cachedDocumentSymbols(const document::TextDocument& document);
