@@ -2057,6 +2057,76 @@ std::vector<ModuleInstantiation> instancesForModule(const SnapshotData& data,
     return result;
 }
 
+std::string schematicKindForInstance(const SnapshotData& data, std::string_view module_name) {
+    const auto module_it = data.modules_by_name.find(std::string(module_name));
+    if (module_it == data.modules_by_name.end()) {
+        return "module";
+    }
+    auto kind = module_it->second.kind;
+    std::transform(kind.begin(), kind.end(), kind.begin(), [](unsigned char value) {
+        return static_cast<char>(std::tolower(value));
+    });
+    return kind.find("interface") != std::string::npos ? "interface" : "module";
+}
+
+void sortSchematicCells(ModuleSchematic& schematic) {
+    std::sort(schematic.cells.begin(), schematic.cells.end(), [](const SchematicCell& lhs, const SchematicCell& rhs) {
+        const auto lhs_key = rangeKey(lhs.selection_range);
+        const auto rhs_key = rangeKey(rhs.selection_range);
+        if (lhs_key != rhs_key) {
+            return lhs_key < rhs_key;
+        }
+        if (lhs.name != rhs.name) {
+            return lhs.name < rhs.name;
+        }
+        if (lhs.type != rhs.type) {
+            return lhs.type < rhs.type;
+        }
+        return lhs.kind < rhs.kind;
+    });
+}
+
+void appendMissingSchematicCellsForInstances(const SnapshotData& data, SemanticModuleSignature& signature) {
+    if (signature.uri.empty()) {
+        return;
+    }
+    const auto instances_it = data.module_instances_by_uri.find(signature.uri);
+    if (instances_it == data.module_instances_by_uri.end()) {
+        return;
+    }
+
+    bool inserted = false;
+    for (const auto& instance : instances_it->second) {
+        if (!rangeContainsRange(signature.definition.range, instance.selection_range)) {
+            continue;
+        }
+        const auto duplicate = std::any_of(signature.schematic.cells.begin(),
+                                           signature.schematic.cells.end(),
+                                           [&](const SchematicCell& cell) {
+                                               return cell.name == instance.instance_name &&
+                                                      cell.type == instance.module_name &&
+                                                      rangeKey(cell.selection_range) ==
+                                                          rangeKey(instance.selection_range);
+                                           });
+        if (duplicate) {
+            continue;
+        }
+
+        signature.schematic.cells.push_back(SchematicCell{.id = instance.instance_name,
+                                                          .name = instance.instance_name,
+                                                          .type = instance.module_name,
+                                                          .kind = schematicKindForInstance(data,
+                                                                                           instance.module_name),
+                                                          .range = instance.range,
+                                                          .selection_range = instance.selection_range,
+                                                          .connections = {}});
+        inserted = true;
+    }
+    if (inserted) {
+        sortSchematicCells(signature.schematic);
+    }
+}
+
 void updateModuleInstanceTargets(SnapshotData& data) {
     for (auto& [_, instances] : data.module_instances_by_uri) {
         for (auto& module_instance : instances) {
@@ -2129,6 +2199,7 @@ void sortModuleInstances(SnapshotData& data) {
 void attachInstancesToModuleDefinitions(SnapshotData& data) {
     for (auto& [name, signature] : data.ast_module_signatures_by_name) {
         signature.definition.instances = instancesForModule(data, signature.definition, signature.uri);
+        appendMissingSchematicCellsForInstances(data, signature);
         data.modules_by_name[name] = signature.definition;
         const auto entry_it = std::find_if(data.module_entries.begin(),
                                            data.module_entries.end(),

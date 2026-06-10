@@ -20,6 +20,16 @@
     "partial": true,
     "modules": [
       "top"
+    ],
+    "cells": [
+      {
+        "module": "top",
+        "name": "u_child",
+        "type": "child"
+      }
+    ],
+    "messagesContain": [
+      "No schematic data found"
     ]
   }
 }

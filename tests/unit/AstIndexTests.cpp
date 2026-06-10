@@ -532,6 +532,44 @@ TEST_CASE("AstIndex attaches self-cycle and unresolved instance candidates to mo
     CHECK(top.instances[1].instance_name == "u_missing");
 }
 
+TEST_CASE("AstIndex promotes generated module instances into schematic cells",
+          "[analysis][semantic][ast-index][schematic][generate][no-fallback]") {
+    SnapshotBuildInput input{.generation = 38,
+                             .documents = {{"file:///workspace/generated.sv",
+                                            SemanticEngineDocument{
+                                                .uri = "file:///workspace/generated.sv",
+                                                .text = "module leaf(input logic clk);\n"
+                                                        "endmodule\n"
+                                                        "module top;\n"
+                                                        "  logic clk;\n"
+                                                        "  genvar i;\n"
+                                                        "  generate\n"
+                                                        "    for (i = 0; i < 1; i = i + 1) begin : g\n"
+                                                        "      leaf u_leaf(.clk(clk));\n"
+                                                        "    end\n"
+                                                        "  endgenerate\n"
+                                                        "endmodule\n",
+                                                .version = 1,
+                                                .is_open = true}}}};
+
+    auto output = SnapshotBuilder{}.build(std::move(input));
+    REQUIRE(output.data != nullptr);
+
+    const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
+    REQUIRE(view.module_signatures_by_name.contains("top"));
+    const auto& top = view.module_signatures_by_name.at("top");
+    CHECK(std::any_of(top.definition.instances.begin(),
+                      top.definition.instances.end(),
+                      [](const ModuleInstantiation& instance) {
+                          return instance.module_name == "leaf" && instance.instance_name == "u_leaf";
+                      }));
+    CHECK(std::any_of(top.schematic.cells.begin(),
+                      top.schematic.cells.end(),
+                      [](const SchematicCell& cell) {
+                          return cell.name == "u_leaf" && cell.type == "leaf" && cell.kind == "module";
+                      }));
+}
+
 TEST_CASE("AstIndex derives primitive and assignment schematic cells from slang AST",
           "[analysis][semantic][ast-index][schematic][no-fallback]") {
     SnapshotBuildInput input{.generation = 34,
