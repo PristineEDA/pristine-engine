@@ -48,6 +48,10 @@ Current implemented LSP surface:
 - `systemverilog/moduleHierarchy`
 - `systemverilog/schematic`
 - `systemverilog/backwardCone`
+- `systemverilog/waveform/open`
+- `systemverilog/waveform/close`
+- `systemverilog/layout/open`
+- `systemverilog/layout/close`
 
 Current behavior follows a split-provider SemanticEngine single-fact-source model:
 
@@ -58,6 +62,7 @@ Current behavior follows a split-provider SemanticEngine single-fact-source mode
 - Pristine integration readiness is documented in `docs/pristine-integration.md`; `systemverilog/moduleHierarchy` and `systemverilog/schematic` are Pristine-consumable custom requests for hierarchy tree and schematic canvas integration, with `roots/messages/unresolved/partial/truncated` and `rootModuleId/modules/messages/unresolved/partial/truncated` as the externally visible contract
 - `systemverilog/outline` is an opened-document syntax fast-path request for file navigation after `didOpen`; it converts `CompilationService::documentSymbols()` into stable preorder ids, readable kinds, optional tree/flat lists, depth/limit metadata, and messages without triggering `SemanticEngine` full snapshots, `AstIndex`, `WorkspaceDiscoveryIndex`, or `DesignGraphProvider`
 - waveform integration is split into LSP control-plane requests and an out-of-band local pipe data plane: `systemverilog/waveform/open` starts mock or FST-backed waveform sessions and returns endpoint metadata, while render-ready waveform payloads are sent through `pristine-waveform-columnar-v1` binary frames over the pipe; waveform data must not be serialized onto existing LSP stdio. FST-backed sessions synchronously parse the header/hierarchy/geometry/value-block index at open time, decode zlib/LZ4/FastLZ value-change compression through pinned deps, keep FST files and `.fst.hier` sidecars inside the workspace root, and leave viewport data on the pipe protocol. Wellen `wellen/inputs` FST files are a pinned untracked fixture-only dependency under `.deps/src/wellen`; do not copy those waveform fixtures into `tests/` or commit them to git
+- LEF/DEF physical-layout integration follows the same control/data split as waveform: `systemverilog/layout/open` validates workspace-contained `lefUris` plus optional `defUri`, starts a `lefdef` layout session, and returns endpoint metadata; catalog and render-ready geometry payloads are sent through `pristine-layout-columnar-v1` binary frames over the pipe. LEF/DEF parsing, value-type layout data, catalog/geometry columnar encoding, and named-pipe / Unix-domain-socket serving are owned by `src/layout/*`; `ServerSession` only validates file URIs, starts/closes sessions, and serializes session metadata. `cibyr/lefdef` and `IHP-GmbH/IHP-Open-PDK` are pinned optional corpus dependencies under `.deps/src/lefdef` and `.deps/src/ihp-open-pdk`; do not copy either corpus into `tests/` or commit it to git
 - RTL E2E LSP stress is the real language-service closure path for Pristine outline/hierarchy/schematic integration: it uses an lsp-framework client to drive `pristine-engine --stdio`, send `didOpen`, `systemverilog/outline`, `textDocument/hover`, `systemverilog/moduleHierarchy`, and `systemverilog/schematic`, and record operation timings/logs; `pristine_rtl_e2e_real_retrosoc` is a required gate that opens the default retroSoC corpus in real mode, while `probe` and other corpus modes remain available for additional exploratory coverage. The client records source-discovery/open-file-selection timing, optional discovery-closure root/candidate/selected/missing/deduped/build/query/cache-hit telemetry from hierarchy/schematic responses, optional JSONL protocol tracing, and optional Debug server phase tracing through `RTL_E2E_SERVER_DEBUG_TRACE` / `RTL_E2E_SERVER_DEBUG_TRACE_FILE`
 - current deepening work is complex SystemVerilog provider completeness plus validation scale-out: package import/export and wildcard import resolution, typedef alias chains, AST-backed parameter override inlay labels, struct/enum/class/interface/modport members, class property/method member completion facts, array-of-struct member completion facts, interface instance member completion facts, modport-restricted interface port member completion facts, typed member completion resolve documentation, nested function/task signature help, function/nested-call selection ranges, interface/modport schematic graph endpoints, interface modport instance type inlay labels, parameterized cross-module backward cone, parameterized width-assignment backward cone, generated scopes, parameterized instances, port/param bindings, assignment width/type facts, macro define quickfixes, second-instance missing-port quickfixes, diagnostics publish/clear, package-export discovery closure and closure metrics, watched-file/document add/change/delete affected rebuild coverage for workspace symbols and Pristine-facing hierarchy/schematic custom requests, config-filter invalidation coverage, unresolved hierarchy/schematic message dedupe, hierarchy subtree memoization, fixture-driven differential coverage, syntax/query-cache metrics and affected-rebuild baselines, background full-diagnostics publishing, slang-server v0.2.5 attribution coverage, and clang/GCC-oriented non-Windows validation. Typedef alias-chain, package-qualified alias-chain, interface modport port typeDefinition, parameter override inlay labels, array-of-struct member completion, class member completion, interface instance member completion, modport-restricted interface port member completion, typed member completion resolve docs, nested function/task signature help, function/nested-call selection ranges, interface/modport schematic net endpoints, interface modport instance type inlay labels, parameterized cross-module backward cone, parameterized width-assignment backward cone, generated schematic root cells and generated child schematic expansion, macro define code actions, second-instance missing-port code actions, diagnostics publish/clear, no-config multi-root moduleHierarchy inference, visible query-cache stats telemetry for hierarchy/schematic/cone plus RTL E2E summaries, opened-document syntax document-symbol caching, and syntax-cache telemetry in outline/RTL E2E summaries are now positive AstIndex/provider/golden/e2e or focused-unit assertions and should stay AST-backed or syntax-fast-path scoped as appropriate; topModules visible-query cache invalidation is covered by focused affected-rebuild unit assertions; next focus is generated hierarchy/cone edge coverage, generated schematic port/net fidelity, affected rebuild/cache matrix expansion, constant/type hints, hierarchical completion, missing import/package ambiguity thickness, and background diagnostics traceability
 - recent debt cleanup renamed the already-positive parameterized backward cone, interface outgoing call hierarchy, array-of-struct member completion, interface member completion resolve, parameter override inlay, interface modport typeDefinition, package-qualified alias-chain typeDefinition, and macro define code-action golden fixtures to non-debt filenames; nested function, multi-argument task signature-help, parameterized width-assignment backward cone, function/nested-call selection range, and second-instance missing-port code action fixtures are now positive AST-backed/provider assertions; there are no remaining `*debt*.json` semantic golden filenames, so future debt fixtures must use explicit `unresolved` / `partial` / `messages` expectations and be converted when the capability lands
@@ -76,6 +81,7 @@ Current behavior follows a split-provider SemanticEngine single-fact-source mode
 - `SemanticWorkspace` is a facade and document-state adapter around `SemanticEngine`; do not add diagnostics, symbol-resolution, or LSP-visible semantic query rules there
 - `ServerSession` should route LSP requests and serialize responses; it should not grow new SystemVerilog semantic rules
 - `ServerSession` may own waveform control-plane routing (`systemverilog/waveform/open` and `systemverilog/waveform/close`) but must not own waveform dataset generation, binary protocol framing, viewport-to-column encoding, or pipe I/O rules; keep those in `src/waveform/*`
+- `ServerSession` may own layout control-plane routing (`systemverilog/layout/open` and `systemverilog/layout/close`) but must not own LEF/DEF parser rules, layout dataset generation, binary protocol framing, geometry column encoding, or pipe I/O rules; keep those in `src/layout/*`
 
 The server resolves the workspace root from `initialize` and loads a minimal `.slang/server.json` when present.
 
@@ -105,8 +111,10 @@ Use the nearest owning layer instead of patching around it from a wrapper.
 - workspace root resolution and `.slang/server.json` loading: `src/workspace/WorkspaceManager.cpp`
 - stdio transport and JSON-RPC framing: `src/transport/StdioTransport.cpp`, `src/jsonrpc/MessageStream.cpp`, `src/jsonrpc/JsonRpcServer.cpp`
 - waveform mock dataset generation, FST-backed source adaptation, binary envelope/framing, columnar viewport encoding, and local named-pipe / Unix-domain-socket session serving: `src/waveform/*`; this subsystem is independent from SystemVerilog semantic providers and owns waveform query/encoding rules. FST parser internals live under `src/waveform/fst/*`; the libfst reader source is the behavior authority, and Tim Hutt's unofficial spec is only a navigation aid when it does not conflict with libfst
+- LEF/DEF physical-layout parsing, value-type layout data, binary envelope/framing, catalog/geometry columnar encoding, and local named-pipe / Unix-domain-socket session serving: `src/layout/*` and `include/pristine/layout/*`; this subsystem is independent from SystemVerilog semantic providers and owns physical-layout query/encoding rules
 - process entry point, CLI switches, Windows stdio mode, and version output: `src/main.cpp`
 - unit coverage for framing, lifecycle, sync, workspace, diagnostics, UTF-16, symbols, hover, AST identity, navigation/completion, design hierarchy, schematic, call hierarchy, backward cone, and JSON semantic golden request shapes: `tests/unit`
+- focused LEF/DEF layout parser, data aggregation, binary protocol, and layout control-plane coverage: `tests/unit/LayoutProviderTests.cpp`, `tests/unit/ServerLifecycleTests.cpp`, `tests/e2e/layout_pipe_smoke.py`, `tests/e2e/lefdef_corpus.py`, and `tests/e2e/ihp_lef_corpus.py`
 - JSON semantic golden fixtures for observable provider behavior, currently 260+ fixtures covering hover, definition/typeDefinition, references, rename, completion/resolve, signatureHelp, inlayHint, semanticTokens, selectionRange, diagnostics, codeAction, workspace/symbol, moduleHierarchy, schematic, backwardCone, and callHierarchy: `tests/golden/semantic`
 - subprocess LSP smoke coverage for core LSP plus `systemverilog/*`: `tests/e2e`
 - opt-in fixture-driven differential coverage against a local `slang-server v0.2.5` checkout: `tests/differential`; `pristine_differential_slang_server` skips unless `SLANG_SERVER_ROOT` points at a local slang-server tree with a built binary, and rewritten fixtures should compare only capabilities exposed by both servers unless the fixture is explicitly pristine-only
@@ -120,6 +128,9 @@ Use the nearest owning layer instead of patching around it from a wrapper.
 - Preserve the waveform architecture split: LSP stdio is control plane only; waveform bytes use the dedicated local pipe service. Do not send waveform binary payloads, JSON waveform dumps, or render frames through `StdioTransport` / JSON-RPC.
 - FST parsing, hierarchy restoration, block indexing, value decoding, viewport caching, and columnar frame encoding belong in `src/waveform/*` / `src/waveform/fst/*`; do not add FST parser or waveform encoding rules to `ServerSession.cpp`. `ServerSession` may validate `source` / `fstUri`, enforce workspace-root path boundaries, start/close sessions, and serialize session metadata only.
 - FST parser behavior is measured against libfst first, with the pinned wellen FST corpus as the default regression fixture set. If a wellen fixture fails to parse, catalog, or emit a valid viewport frame, treat that as an implementation gap in `src/waveform/fst/*` unless libfst itself rejects the file.
+- Preserve the layout architecture split: LSP stdio is control plane only; LEF/DEF catalog and geometry bytes use the dedicated local pipe service. Do not send layout binary payloads, JSON geometry dumps, or render frames through `StdioTransport` / JSON-RPC.
+- LEF/DEF parsing, recovery diagnostics, layout data normalization, catalog encoding, geometry filtering/truncation, and columnar frame encoding belong in `src/layout/*`; do not add LEF/DEF grammar or physical-layout encoding rules to `ServerSession.cpp`. `ServerSession` may validate `lefUris` / `defUri`, enforce workspace-root path boundaries, start/close sessions, and serialize session metadata only.
+- LEF/DEF corpus validation is fixture-driven and opt-in. `cibyr/lefdef` and `IHP-Open-PDK` live under `.deps/src/lefdef` and `.deps/src/ihp-open-pdk` when bootstrapped; missing corpora should skip, not fail, and their files must not be copied into the repository.
 - Do not add new SystemVerilog semantic logic to `ServerSession.cpp`; put it in `SemanticEngine` or the nearest analysis-layer helper.
 - Do not use string matching as the primary semantic authority when slang AST lookup / symbol identity can answer the question.
 - Semantic lookup, sorting, and dedupe behavior must be deterministic across platform/compiler STL implementations; when multiple AST symbols share a source range, define an explicit tie-break such as declaration, typed symbol, narrower range, then stable id.
@@ -145,6 +156,7 @@ Use the nearest owning layer instead of patching around it from a wrapper.
 - Do not add diagnostics or symbol-resolution rules to `SemanticWorkspace`; keep those rules in `SemanticEngine` or a `src/analysis/semantic/*` helper owned by it.
 - Do not add semantic document rules to `SemanticWorkspace`; it is document sync, include stale tracking, workspace/config adaptation, and `SemanticEngine` facade only.
 - Frontend-facing waveform payloads should stay columnar binary and typed-array-friendly. Prefer fixed headers plus offset/count fields for `Uint32Array`, `Float32Array`, `Float64Array`, and `Uint8Array` views; avoid per-segment JSON objects or string-heavy payloads. Keep bus labels in a lazy string table. FST value-change blocks should be decoded lazily by intersecting block time ranges and requested signals; do not convert whole FST files into mock-style full transition vectors except for tiny focused fixtures or explicit test helpers.
+- Frontend-facing layout payloads should stay columnar binary and typed-array-friendly. Prefer fixed headers plus offset/count fields for `Uint32Array`, `Float64Array`, and `Uint8Array` views; keep layer/macro/net labels in a lazy string table, and keep large geometry responses filtered and truncatable instead of serializing per-shape JSON over LSP.
 - Completion item `data` must be generated by the analysis layer and resolved through the `CompletionProvider` query path behind `SemanticEngine::resolveCompletion`; do not infer completion docs, snippets, ports, or macro bodies in `ServerSession`.
 - Completion context detection for package `::`, hierarchical `.`, macro, and module-instantiation positions plus completion item/doc/snippet construction and resolve behavior belongs in `CompletionProvider`; do not duplicate that logic in `SemanticEngine` or `ServerSession`.
 - CompletionProvider-owned member qualifier parsing must handle array element and hierarchical selectors, and module-port completion must use provider-owned connected named-port exclusion instead of ad hoc scans in `SemanticEngine` or `ServerSession`.
@@ -200,6 +212,13 @@ Bootstrap dependencies:
 cmake -DPRISTINE_ROOT_DIR=. -P scripts/bootstrap_deps.cmake
 ```
 
+Bootstrap optional LEF/DEF parser corpora:
+
+```powershell
+cmake -DPRISTINE_COMPONENTS=lefdef -P scripts/bootstrap_deps.cmake
+cmake -DPRISTINE_COMPONENTS=ihp_open_pdk -P scripts/bootstrap_deps.cmake
+```
+
 Configure and build the development preset:
 
 ```powershell
@@ -239,6 +258,23 @@ ctest --test-dir build/dev --output-on-failure
 ```
 
 Add or update focused semantic unit tests for AST-backed diagnostics, lookup, hover, definition, references, rename, completion, completion resolve, signature help, inlay hints, semantic tokens, selection ranges, module hierarchy, call hierarchy, schematic, backward cone, and code action behavior as appropriate. Golden semantic cases live under `tests/golden/semantic` as JSON fixtures and subprocess LSP smoke tests should change with externally observable semantic behavior, including semantic diagnostics publication, completion resolve data, unresolved, partial, truncated, bad syntax recovery, missing include, broken build config, cyclic hierarchy, large result caps, and no-fallback regression shapes when relevant. When removing workspace semantic-model or syntax/text semantic APIs, validate the closest `AstIndex` / provider unit coverage plus an LSP-facing smoke for the changed result shape. When migrating graph/schematic/cone facts, include an AST-derived schematic/cone case that would fail if syntax schematic or identifier extraction were used. After splitting `SemanticEngine` helpers, run the nearest semantic unit tests plus the LSP e2e smoke that exercises the affected provider. For workspace-wide indexing, query cache, affected rebuild, or invalidation changes, include a performance baseline plan covering initialize, didOpen, didChange, didSave, diagnostics, completion, resolveCompletion, signatureHelp, inlayHint, semanticTokens, references, rename, workspace/symbol, moduleHierarchy, schematic, backwardCone, and codeAction on small and large synthetic workspaces.
+
+For LEF/DEF layout changes, keep validation in the layout subsystem and pipe e2e path:
+
+```powershell
+cmake --build --preset dev --target pristine-engine pristine_unit_tests
+build\dev\tests\pristine_unit_tests.exe "[layout]"
+build\dev\tests\pristine_unit_tests.exe "[server][layout]"
+python tests\e2e\layout_pipe_smoke.py build\dev\pristine-engine.exe
+```
+
+If `.deps/src/lefdef` or `.deps/src/ihp-open-pdk` exists, also run:
+
+```powershell
+ctest --test-dir build/dev -R "pristine_(lefdef|ihp_lef)_corpus" --output-on-failure
+```
+
+The corpus tests must skip cleanly when the optional corpora are absent. Treat parser crashes, fatal diagnostics on common LEF/DEF constructs, unstable aggregate counts, or geometry/catalog frame failures as `src/layout/*` implementation gaps.
 
 For changes touching diagnostics, snapshot construction, `AstIndex`, query cache, background workers, or `ServerSession` request ordering, add or update a large-workspace request-order regression. At minimum cover `didOpen -> syntax diagnostics -> outline/documentSymbol -> hover -> background full diagnostics` and a stale `didChange` or `didClose` guard. The fixed reproducible baseline is `pristine_rtl_e2e_large_workspace`: it generates a 300-file RTL corpus, runs the Debug `pristine-engine --stdio` binary through the Pristine request order, records protocol/debug traces, and must not touch the network. E2E diagnostics wait loops must not use `workspace/symbol`, hierarchy, schematic, cone, completion, or other deep semantic requests as a heartbeat; use passive notification reads or syntax-fast-path requests such as `textDocument/documentSymbol` / `systemverilog/outline`.
 
@@ -342,6 +378,7 @@ cmake --build --preset dev
 - `SLANG_USE_MIMALLOC` is forced `OFF` in `cmake/Dependencies.cmake` so a clean build tree does not trigger a remote `mimalloc` fetch during configure.
 - If `mimalloc` is ever re-enabled, convert it into a pinned local dependency first and update the redistributed notice scope in the same change.
 - `lsp-framework` is an opt-in test/perf dependency for the retroSoC LSP stress client. It is not installed or redistributed with `pristine-engine`; if that scope changes, update attribution, license text, and NOTICE in the same change.
+- `cibyr/lefdef` and `IHP-Open-PDK` are opt-in layout parser corpus dependencies. They are not installed or redistributed with `pristine-engine`; if code or fixture content is copied from either source into this repository, update attribution, license text, and NOTICE in the same change.
 
 ## Notice Workflow
 
@@ -356,6 +393,10 @@ Current redistributed scope:
 - `slang`
 - `fmt`
 - `nlohmann/json`
+- `zlib`
+- `LZ4`
+- `FastLZ`
+- `slang-server` copied differential reference material, when present
 - the vendored `boost_unordered` header used by `slang` when no suitable Boost package is found
 
 Installed notice destination:
@@ -419,6 +460,8 @@ The current repository state has been locally verified on Windows with:
 - notice validation
 - `pristine-engine --version`
 - unit tests passing
+- LEF/DEF layout slice verified with `pristine_unit_tests.exe "[layout]"`, `pristine_unit_tests.exe "[server][layout]"`, `tests/e2e/layout_pipe_smoke.py`, and optional `lefdef` / `IHP-Open-PDK` corpus scripts skipping cleanly when `.deps` corpora are absent
+- full Debug unit suite last observed passing with 3,523,469 assertions in 303 test cases
 
 ## Likely Near-Term Work
 

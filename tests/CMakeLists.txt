@@ -7,6 +7,7 @@ add_executable(
 	unit/DiagnosticProviderTests.cpp
 	unit/DesignGraphProviderTests.cpp
 	unit/GoldenSemanticTests.cpp
+	unit/LayoutProviderTests.cpp
 	unit/MessageStreamTests.cpp
 	unit/NavigationProviderTests.cpp
 	unit/ProviderCompletenessMatrixTests.cpp
@@ -37,6 +38,31 @@ add_test(
 	NAME pristine_waveform_pipe_e2e
 	COMMAND Python3::Interpreter ${CMAKE_CURRENT_SOURCE_DIR}/e2e/waveform_pipe_smoke.py
 		$<TARGET_FILE:pristine-engine>)
+
+add_test(
+	NAME pristine_layout_pipe_e2e
+	COMMAND Python3::Interpreter ${CMAKE_CURRENT_SOURCE_DIR}/e2e/layout_pipe_smoke.py
+		$<TARGET_FILE:pristine-engine>)
+
+add_test(
+	NAME pristine_ihp_lef_corpus
+	COMMAND Python3::Interpreter ${CMAKE_CURRENT_SOURCE_DIR}/e2e/ihp_lef_corpus.py
+		$<TARGET_FILE:pristine-engine>
+		${PROJECT_SOURCE_DIR}/.deps/src/ihp-open-pdk)
+set_tests_properties(pristine_ihp_lef_corpus PROPERTIES
+	LABELS "layout;lef;ihp"
+	SKIP_RETURN_CODE 77
+	SKIP_REGULAR_EXPRESSION "SKIP:")
+
+add_test(
+	NAME pristine_lefdef_corpus
+	COMMAND Python3::Interpreter ${CMAKE_CURRENT_SOURCE_DIR}/e2e/lefdef_corpus.py
+		$<TARGET_FILE:pristine-engine>
+		${PROJECT_SOURCE_DIR}/.deps/src/lefdef)
+set_tests_properties(pristine_lefdef_corpus PROPERTIES
+	LABELS "layout;lefdef"
+	SKIP_RETURN_CODE 77
+	SKIP_REGULAR_EXPRESSION "SKIP:")
 
 add_test(
 	NAME pristine_differential_slang_server

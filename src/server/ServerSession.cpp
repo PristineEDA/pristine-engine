@@ -3,6 +3,7 @@
 #include <nlohmann/json.hpp>
 
 #include "pristine/jsonrpc/JsonRpcServer.h"
+#include "pristine/layout/LayoutSource.h"
 #include "pristine/lsp/Protocol.h"
 #include "pristine/waveform/FstWaveformSource.h"
 #include "../analysis/semantic/DebugTrace.h"
@@ -775,6 +776,46 @@ jsonrpc::Json toWaveformSessionJson(const waveform::WaveformSessionInfo& info) {
     return result;
 }
 
+jsonrpc::Json toLayoutBoundsJson(const layout::LayoutRect& bounds,
+                                 std::uint32_t units_per_micron) {
+    const auto scale = units_per_micron == 0 ? 1.0 : static_cast<double>(units_per_micron);
+    return jsonrpc::Json{{"x0", static_cast<double>(bounds.x0) / scale},
+                         {"y0", static_cast<double>(bounds.y0) / scale},
+                         {"x1", static_cast<double>(bounds.x1) / scale},
+                         {"y1", static_cast<double>(bounds.y1) / scale}};
+}
+
+jsonrpc::Json toLayoutSessionJson(const layout::LayoutSessionInfo& info) {
+    jsonrpc::Json messages = jsonrpc::Json::array();
+    for (const auto& message : info.messages) {
+        messages.push_back(message);
+    }
+    jsonrpc::Json file_uris = jsonrpc::Json::array();
+    for (const auto& uri : info.file_uris) {
+        file_uris.push_back(uri);
+    }
+    jsonrpc::Json result{{"sessionId", info.session_id},
+                         {"protocol", info.protocol},
+                         {"endpoint",
+                          jsonrpc::Json{{"kind", info.endpoint.kind}, {"path", info.endpoint.path}}},
+                         {"title", info.title},
+                         {"lefCount", info.lef_count},
+                         {"defPresent", info.def_present},
+                         {"unitsPerMicron", info.units_per_micron},
+                         {"bbox",
+                          info.bounds.has_value()
+                              ? toLayoutBoundsJson(*info.bounds, info.units_per_micron)
+                              : jsonrpc::Json(nullptr)},
+                         {"layerCount", info.layer_count},
+                         {"macroCount", info.macro_count},
+                         {"componentCount", info.component_count},
+                         {"netCount", info.net_count},
+                         {"diagnosticCount", info.diagnostic_count},
+                         {"messages", std::move(messages)},
+                         {"fileUris", std::move(file_uris)}};
+    return result;
+}
+
 std::string parseWaveformSource(const jsonrpc::Json& params) {
     const auto source_it = params.find("source");
     if (source_it == params.end() || source_it->is_null()) {
@@ -792,6 +833,23 @@ std::string parseRequiredString(const jsonrpc::Json& params, std::string_view fi
         throw std::runtime_error("Expected '" + std::string(field_name) + "' to be a string");
     }
     return it->get<std::string>();
+}
+
+std::vector<std::string> parseRequiredStringArray(const jsonrpc::Json& params,
+                                                  std::string_view field_name) {
+    const auto it = params.find(std::string(field_name));
+    if (it == params.end() || !it->is_array()) {
+        throw std::runtime_error("Expected '" + std::string(field_name) + "' to be an array");
+    }
+    std::vector<std::string> result;
+    for (const auto& value : *it) {
+        if (!value.is_string()) {
+            throw std::runtime_error("Expected '" + std::string(field_name) +
+                                     "' entries to be strings");
+        }
+        result.push_back(value.get<std::string>());
+    }
+    return result;
 }
 
 bool isPathInsideRoot(const fs::path& path, const fs::path& root) {
@@ -858,6 +916,7 @@ ServerSession::ServerSession(std::string server_name, std::string server_version
 ServerSession::~ServerSession() {
     stopBackgroundDiagnostics();
     waveform_service_.stop();
+    layout_service_.stop();
 }
 
 void ServerSession::bind(jsonrpc::JsonRpcServer& server) {
@@ -886,6 +945,12 @@ void ServerSession::bind(jsonrpc::JsonRpcServer& server) {
     });
     server.registerRequestHandler("systemverilog/waveform/close", [this](const jsonrpc::Json& params) {
         return handleWaveformClose(params);
+    });
+    server.registerRequestHandler("systemverilog/layout/open", [this](const jsonrpc::Json& params) {
+        return handleLayoutOpen(params);
+    });
+    server.registerRequestHandler("systemverilog/layout/close", [this](const jsonrpc::Json& params) {
+        return handleLayoutClose(params);
     });
     server.registerRequestHandler("textDocument/hover", [this](const jsonrpc::Json& params) {
         return handleHover(params);
@@ -1248,6 +1313,71 @@ jsonrpc::Json ServerSession::handleWaveformClose(const jsonrpc::Json& params) {
     }
 
     const auto closed = waveform_service_.closeSession(session_id_it->get<std::string>());
+    return jsonrpc::Json{{"closed", closed}};
+}
+
+jsonrpc::Json ServerSession::handleLayoutOpen(const jsonrpc::Json& params) {
+    if (!initialized_) {
+        throw std::runtime_error("systemverilog/layout/open received before initialize");
+    }
+
+    const auto lef_uris = parseRequiredStringArray(params, "lefUris");
+    const auto def_uri = jsonStringField(params, "defUri");
+    const auto title = jsonStringField(params, "title").value_or("");
+    if (lef_uris.empty() && !def_uri.has_value()) {
+        throw std::runtime_error("Layout open requires at least one LEF URI or a DEF URI");
+    }
+
+    const auto& workspace_state = workspace_manager_.state();
+    if (!workspace_state.root_path.has_value()) {
+        throw std::runtime_error("Layout source requires an initialized workspace root");
+    }
+
+    std::vector<fs::path> lef_paths;
+    lef_paths.reserve(lef_uris.size());
+    for (const auto& uri : lef_uris) {
+        const auto path = workspace::WorkspaceManager::pathFromFileUri(uri);
+        if (!path.has_value()) {
+            throw std::runtime_error("Expected LEF URI to be a file URI");
+        }
+        if (!isPathInsideRoot(*path, *workspace_state.root_path)) {
+            throw std::runtime_error("LEF file must be inside the workspace root");
+        }
+        lef_paths.push_back(*path);
+    }
+
+    std::optional<fs::path> def_path;
+    if (def_uri.has_value()) {
+        auto path = workspace::WorkspaceManager::pathFromFileUri(*def_uri);
+        if (!path.has_value()) {
+            throw std::runtime_error("Expected 'defUri' to be a file URI");
+        }
+        if (!isPathInsideRoot(*path, *workspace_state.root_path)) {
+            throw std::runtime_error("DEF file must be inside the workspace root");
+        }
+        def_path = *path;
+    }
+
+    auto source = layout::openLefDefLayoutSource(lef_paths,
+                                                lef_uris,
+                                                def_path,
+                                                def_uri,
+                                                title);
+    return toLayoutSessionJson(
+        layout_service_.openSession(std::move(source), lef_uris.size(), def_uri.has_value()));
+}
+
+jsonrpc::Json ServerSession::handleLayoutClose(const jsonrpc::Json& params) {
+    if (!initialized_) {
+        throw std::runtime_error("systemverilog/layout/close received before initialize");
+    }
+
+    const auto session_id_it = params.find("sessionId");
+    if (session_id_it == params.end() || !session_id_it->is_string()) {
+        throw std::runtime_error("Expected 'sessionId' to be a string");
+    }
+
+    const auto closed = layout_service_.closeSession(session_id_it->get<std::string>());
     return jsonrpc::Json{{"closed", closed}};
 }
 
@@ -1885,6 +2015,7 @@ jsonrpc::Json ServerSession::handleRename(const jsonrpc::Json& params) {
 jsonrpc::Json ServerSession::handleShutdown(const jsonrpc::Json&) {
     stopBackgroundDiagnostics();
     waveform_service_.stop();
+    layout_service_.stop();
     shutdown_requested_ = true;
     return nullptr;
 }
@@ -2050,6 +2181,7 @@ void ServerSession::handleDidChangeWatchedFiles(const jsonrpc::Json& params) {
 void ServerSession::handleExit(const jsonrpc::Json&) {
     stopBackgroundDiagnostics();
     waveform_service_.stop();
+    layout_service_.stop();
     if (!server_) {
         return;
     }

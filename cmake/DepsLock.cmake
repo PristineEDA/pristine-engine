@@ -5,6 +5,8 @@ set(PRISTINE_DEPENDENCY_NAMES
     lz4
     fastlz
     wellen
+    lefdef
+    ihp_open_pdk
     nlohmann_json
     catch2
     lsp_framework)
@@ -35,6 +37,17 @@ set(PRISTINE_DEP_wellen_URL "https://codeload.github.com/ekiwi/wellen/tar.gz/442
 set(PRISTINE_DEP_wellen_SHA256 "D1E50C58A500F748D090F991ED29C0CA34A46ED3D6FD28D5C13C2113DDBD6384")
 set(PRISTINE_DEP_wellen_ARCHIVE_NAME "wellen-44274b0cb6fcc988ff25d770984f4abdbccc4b7d.tar.gz")
 set(PRISTINE_DEP_wellen_ALLOW_NO_CMAKE TRUE)
+
+set(PRISTINE_DEP_lefdef_URL "https://github.com/cibyr/lefdef/archive/6486f8a975e95f946ac5d1dccf9878beb48c6b38.tar.gz")
+set(PRISTINE_DEP_lefdef_SHA256 "37052B2FCCD602FBEE31BF6C40709FA646CFFB1CE5C5F786DBB924AFFCB8751E")
+set(PRISTINE_DEP_lefdef_ARCHIVE_NAME "lefdef-6486f8a975e95f946ac5d1dccf9878beb48c6b38.tar.gz")
+set(PRISTINE_DEP_lefdef_ALLOW_NO_CMAKE TRUE)
+
+set(PRISTINE_DEP_ihp_open_pdk_URL "https://github.com/IHP-GmbH/IHP-Open-PDK/archive/ee974c3adc69d0f36adbf20577079f0df419d702.tar.gz")
+set(PRISTINE_DEP_ihp_open_pdk_SHA256 "43B2F5B1CDA24834FCF1D5647E3785C2275570FAE3E2C40C0E692529D17CB31B")
+set(PRISTINE_DEP_ihp_open_pdk_ARCHIVE_NAME "ihp-open-pdk-ee974c3adc69d0f36adbf20577079f0df419d702.tar.gz")
+set(PRISTINE_DEP_ihp_open_pdk_ALLOW_NO_CMAKE TRUE)
+set(PRISTINE_DEP_ihp_open_pdk_SOURCE_DIR_NAME "ihp-open-pdk")
 
 set(PRISTINE_DEP_nlohmann_json_URL "https://codeload.github.com/nlohmann/json/tar.gz/refs/tags/v3.11.3")
 set(PRISTINE_DEP_nlohmann_json_SHA256 "0D8EF5AF7F9794E3263480193C491549B2BA6CC74BB018906202ADA498A79406")

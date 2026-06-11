@@ -245,6 +245,10 @@ add_library(
   src/document/DocumentStore.cpp
   src/jsonrpc/JsonRpcServer.cpp
   src/jsonrpc/MessageStream.cpp
+  src/layout/LayoutBinaryProtocol.cpp
+  src/layout/LayoutParser.cpp
+  src/layout/LayoutPipeService.cpp
+  src/layout/LayoutSource.cpp
   src/lsp/Protocol.cpp
   src/server/ServerSession.cpp
   src/transport/StdioTransport.cpp

@@ -4,6 +4,7 @@
 #include "pristine/analysis/SemanticWorkspace.h"
 #include "pristine/analysis/SyntaxDocumentCache.h"
 #include "pristine/document/DocumentStore.h"
+#include "pristine/layout/LayoutPipeService.h"
 #include "pristine/waveform/WaveformPipeService.h"
 #include "pristine/workspace/WorkspaceManager.h"
 
@@ -45,6 +46,8 @@ private:
     jsonrpc::Json handleBackwardCone(const jsonrpc::Json& params);
     jsonrpc::Json handleWaveformOpen(const jsonrpc::Json& params);
     jsonrpc::Json handleWaveformClose(const jsonrpc::Json& params);
+    jsonrpc::Json handleLayoutOpen(const jsonrpc::Json& params);
+    jsonrpc::Json handleLayoutClose(const jsonrpc::Json& params);
     jsonrpc::Json handleHover(const jsonrpc::Json& params);
     jsonrpc::Json handleDefinition(const jsonrpc::Json& params);
     jsonrpc::Json handleTypeDefinition(const jsonrpc::Json& params);
@@ -98,6 +101,7 @@ private:
     analysis::SyntaxDocumentCache syntax_cache_;
     analysis::SemanticWorkspace semantic_workspace_;
     waveform::WaveformPipeService waveform_service_;
+    layout::LayoutPipeService layout_service_;
     document::DocumentStore document_store_;
     workspace::WorkspaceManager workspace_manager_;
     std::vector<std::filesystem::path> indexed_source_paths_;

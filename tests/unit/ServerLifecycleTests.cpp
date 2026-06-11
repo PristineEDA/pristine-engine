@@ -252,6 +252,12 @@ TEST_CASE("ServerSession handles initialize-shutdown-exit", "[server][lifecycle]
               "pristineWaveformProvider").at("sources").at(0) == "mock");
     CHECK(initialize_response.at("result").at("capabilities").at("experimental").at(
               "pristineWaveformProvider").at("sources").at(1) == "fst");
+    CHECK(initialize_response.at("result").at("capabilities").at("experimental").at(
+              "pristineLayoutProvider").at("transport") == "pipe");
+    CHECK(initialize_response.at("result").at("capabilities").at("experimental").at(
+              "pristineLayoutProvider").at("protocol") == "pristine-layout-columnar-v1");
+    CHECK(initialize_response.at("result").at("capabilities").at("experimental").at(
+              "pristineLayoutProvider").at("sources").at(0) == "lefdef");
     CHECK(initialize_response.at("result").at("capabilities").at("textDocumentSync").at(
               "openClose") == true);
 
@@ -289,6 +295,89 @@ TEST_CASE("ServerSession opens and closes waveform pipe sessions", "[server][wav
     CHECK(result.at("signalCount") == 168);
     CHECK(result.at("source") == "mock");
     CHECK(result.at("endpoint").at("path").get<std::string>().find("pristine-engine-waveform") !=
+          std::string::npos);
+
+    const auto close_response = parseOutput(transport, 2);
+    CHECK(close_response.at("id") == 3);
+    CHECK(close_response.at("result").at("closed") == true);
+}
+
+TEST_CASE("ServerSession opens and closes layout pipe sessions", "[server][layout]") {
+    TempWorkspace workspace;
+    const auto lef = workspace.writeFile("stdcells.lef",
+                                         R"(VERSION 5.8 ;
+UNITS DATABASE MICRONS 1000 ;
+LAYER M1 TYPE ROUTING ; END M1
+MACRO invx1
+  SIZE 1 BY 2 ;
+  PIN A
+    DIRECTION INPUT ;
+    PORT LAYER M1 ; RECT 0 0 1 1 ; END
+  END A
+END invx1
+END LIBRARY
+)");
+    const auto def = workspace.writeFile("top.def",
+                                         R"(VERSION 5.8 ;
+DESIGN top ;
+UNITS DISTANCE MICRONS 1000 ;
+DIEAREA ( 0 0 ) ( 1000 1000 ) ;
+COMPONENTS 1 ;
+  - U1 invx1 + PLACED ( 10 20 ) N ;
+END COMPONENTS
+END DESIGN
+)");
+
+    jsonrpc::JsonRpcServer rpc_server;
+    ServerSession session{"pristine-engine", kTestServerVersion};
+    session.bind(rpc_server);
+
+    const auto root_uri = toFileUri(workspace.root());
+    const auto lef_uri = toFileUri(lef);
+    const auto def_uri = toFileUri(def);
+    ScriptedTransport transport{
+        jsonrpc::Json{{"jsonrpc", "2.0"},
+                      {"id", 1},
+                      {"method", "initialize"},
+                      {"params",
+                       jsonrpc::Json{{"rootUri", root_uri},
+                                     {"workspaceFolders",
+                                      jsonrpc::Json::array(
+                                          {jsonrpc::Json{{"uri", root_uri}, {"name", "layout"}}})}}}}
+            .dump(),
+        jsonrpc::Json{{"jsonrpc", "2.0"},
+                      {"id", 2},
+                      {"method", "systemverilog/layout/open"},
+                      {"params",
+                       jsonrpc::Json{{"lefUris", jsonrpc::Json::array({lef_uri})},
+                                     {"defUri", def_uri},
+                                     {"title", "tiny-layout"}}}}
+            .dump(),
+        R"({"jsonrpc":"2.0","id":3,"method":"systemverilog/layout/close","params":{"sessionId":"1"}})",
+        R"({"jsonrpc":"2.0","id":4,"method":"shutdown","params":null})",
+        R"({"jsonrpc":"2.0","method":"exit","params":null})"};
+
+    const int exit_code = rpc_server.run(transport);
+
+    REQUIRE(exit_code == 0);
+    REQUIRE(transport.outputs().size() == 4);
+
+    const auto open_response = parseOutput(transport, 1);
+    CHECK(open_response.at("id") == 2);
+    const auto& result = open_response.at("result");
+    CHECK(result.at("sessionId") == "1");
+    CHECK(result.at("protocol") == "pristine-layout-columnar-v1");
+    CHECK(result.at("title") == "tiny-layout");
+    CHECK(result.at("lefCount") == 1);
+    CHECK(result.at("defPresent") == true);
+    CHECK(result.at("unitsPerMicron") == 1000);
+    CHECK(result.at("layerCount") == 1);
+    CHECK(result.at("macroCount") == 1);
+    CHECK(result.at("componentCount") == 1);
+    CHECK(result.at("netCount") == 0);
+    CHECK(result.at("diagnosticCount").get<std::size_t>() >= 0);
+    CHECK(result.at("fileUris").size() == 2);
+    CHECK(result.at("endpoint").at("path").get<std::string>().find("pristine-engine-layout") !=
           std::string::npos);
 
     const auto close_response = parseOutput(transport, 2);
