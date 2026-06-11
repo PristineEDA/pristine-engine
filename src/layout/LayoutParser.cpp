@@ -27,7 +27,7 @@ enum class TokenKind {
 
 struct Token {
     TokenKind kind = TokenKind::End;
-    std::string text;
+    std::string text{};
     double number = 0.0;
     std::size_t line = 1;
     std::size_t column = 1;

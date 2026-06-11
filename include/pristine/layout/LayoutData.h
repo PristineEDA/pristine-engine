@@ -61,8 +61,8 @@ struct LayoutShape {
     std::uint32_t owner_index = 0;
     std::uint32_t layer_index = 0;
     std::uint32_t flags = 0;
-    LayoutRect rect;
-    LayoutPolygon polygon;
+    LayoutRect rect{};
+    LayoutPolygon polygon{};
 };
 
 enum class LayoutLayerKind : std::uint16_t {
@@ -75,25 +75,25 @@ enum class LayoutLayerKind : std::uint16_t {
 };
 
 struct LayoutLayer {
-    std::string name;
+    std::string name{};
     LayoutLayerKind kind = LayoutLayerKind::Unknown;
-    std::optional<double> pitch;
-    std::optional<double> width;
-    std::optional<double> spacing;
+    std::optional<double> pitch{};
+    std::optional<double> width{};
+    std::optional<double> spacing{};
 };
 
 struct LayoutViaShape {
     std::uint32_t layer_index = 0;
-    LayoutRect rect;
+    LayoutRect rect{};
 };
 
 struct LayoutVia {
-    std::string name;
-    std::vector<LayoutViaShape> shapes;
+    std::string name{};
+    std::vector<LayoutViaShape> shapes{};
 };
 
 struct LayoutSite {
-    std::string name;
+    std::string name{};
     double width = 0.0;
     double height = 0.0;
 };
@@ -107,36 +107,36 @@ enum class LayoutPinDirection : std::uint16_t {
 };
 
 struct LayoutPort {
-    std::vector<LayoutShape> shapes;
+    std::vector<LayoutShape> shapes{};
 };
 
 struct LayoutPin {
-    std::string name;
+    std::string name{};
     LayoutPinDirection direction = LayoutPinDirection::Unknown;
-    std::string use;
-    std::vector<LayoutPort> ports;
+    std::string use{};
+    std::vector<LayoutPort> ports{};
 };
 
 struct LayoutMacro {
-    std::string name;
-    std::string class_name;
+    std::string name{};
+    std::string class_name{};
     double origin_x = 0.0;
     double origin_y = 0.0;
     double size_x = 0.0;
     double size_y = 0.0;
-    std::vector<LayoutPin> pins;
-    std::vector<LayoutShape> obstructions;
+    std::vector<LayoutPin> pins{};
+    std::vector<LayoutShape> obstructions{};
 };
 
 struct LayoutLefLibrary {
-    std::string version;
+    std::string version{};
     std::uint32_t units_per_micron = 1000;
-    std::optional<double> manufacturing_grid;
-    std::vector<LayoutLayer> layers;
-    std::vector<LayoutVia> vias;
-    std::vector<LayoutSite> sites;
-    std::vector<LayoutMacro> macros;
-    std::vector<LayoutDiagnostic> diagnostics;
+    std::optional<double> manufacturing_grid{};
+    std::vector<LayoutLayer> layers{};
+    std::vector<LayoutVia> vias{};
+    std::vector<LayoutSite> sites{};
+    std::vector<LayoutMacro> macros{};
+    std::vector<LayoutDiagnostic> diagnostics{};
 };
 
 enum class LayoutPlacementStatus : std::uint16_t {
@@ -148,72 +148,72 @@ enum class LayoutPlacementStatus : std::uint16_t {
 };
 
 struct LayoutComponent {
-    std::string name;
-    std::string macro_name;
+    std::string name{};
+    std::string macro_name{};
     LayoutPlacementStatus status = LayoutPlacementStatus::Unknown;
     std::int64_t x = 0;
     std::int64_t y = 0;
-    std::string orientation;
+    std::string orientation{};
 };
 
 struct LayoutDefPin {
-    std::string name;
-    std::string net_name;
+    std::string name{};
+    std::string net_name{};
     LayoutPlacementStatus status = LayoutPlacementStatus::Unknown;
     std::int64_t x = 0;
     std::int64_t y = 0;
-    std::string orientation;
-    std::vector<LayoutShape> shapes;
+    std::string orientation{};
+    std::vector<LayoutShape> shapes{};
 };
 
 struct LayoutNetConnection {
-    std::string instance;
-    std::string pin;
+    std::string instance{};
+    std::string pin{};
 };
 
 struct LayoutNet {
-    std::string name;
-    std::vector<LayoutNetConnection> connections;
-    std::vector<LayoutShape> shapes;
+    std::string name{};
+    std::vector<LayoutNetConnection> connections{};
+    std::vector<LayoutShape> shapes{};
     bool special = false;
 };
 
 struct LayoutDefDesign {
-    std::string version;
-    std::string design_name;
+    std::string version{};
+    std::string design_name{};
     std::uint32_t units_per_micron = 1000;
-    std::optional<LayoutRect> die_area;
-    std::vector<LayoutLayer> layers;
-    std::vector<LayoutComponent> components;
-    std::vector<LayoutDefPin> pins;
-    std::vector<LayoutNet> nets;
-    std::vector<LayoutShape> blockages;
-    std::vector<LayoutDiagnostic> diagnostics;
+    std::optional<LayoutRect> die_area{};
+    std::vector<LayoutLayer> layers{};
+    std::vector<LayoutComponent> components{};
+    std::vector<LayoutDefPin> pins{};
+    std::vector<LayoutNet> nets{};
+    std::vector<LayoutShape> blockages{};
+    std::vector<LayoutDiagnostic> diagnostics{};
 };
 
 struct LayoutDataSet {
-    std::string id;
-    std::string title;
+    std::string id{};
+    std::string title{};
     std::uint32_t units_per_micron = 1000;
-    std::optional<LayoutRect> bounds;
-    std::vector<LayoutLayer> layers;
-    std::vector<LayoutVia> vias;
-    std::vector<LayoutSite> sites;
-    std::vector<LayoutMacro> macros;
-    std::vector<LayoutComponent> components;
-    std::vector<LayoutDefPin> pins;
-    std::vector<LayoutNet> nets;
-    std::vector<LayoutShape> shapes;
-    std::vector<LayoutDiagnostic> diagnostics;
-    std::vector<std::string> file_uris;
+    std::optional<LayoutRect> bounds{};
+    std::vector<LayoutLayer> layers{};
+    std::vector<LayoutVia> vias{};
+    std::vector<LayoutSite> sites{};
+    std::vector<LayoutMacro> macros{};
+    std::vector<LayoutComponent> components{};
+    std::vector<LayoutDefPin> pins{};
+    std::vector<LayoutNet> nets{};
+    std::vector<LayoutShape> shapes{};
+    std::vector<LayoutDiagnostic> diagnostics{};
+    std::vector<std::string> file_uris{};
 };
 
 struct LayoutGeometryRequest {
     bool has_bbox = false;
-    LayoutRect bbox;
+    LayoutRect bbox{};
     std::uint32_t max_shapes = 0;
-    std::vector<std::uint32_t> layer_indices;
-    std::vector<LayoutShapeKind> shape_kinds;
+    std::vector<std::uint32_t> layer_indices{};
+    std::vector<LayoutShapeKind> shape_kinds{};
 };
 
 template<typename T>

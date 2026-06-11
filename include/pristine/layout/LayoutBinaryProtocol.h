@@ -34,7 +34,7 @@ struct LayoutFrame {
     LayoutMessageType message_type = LayoutMessageType::Hello;
     std::uint32_t request_id = 0;
     std::uint32_t flags = 0;
-    std::vector<std::uint8_t> payload;
+    std::vector<std::uint8_t> payload{};
 };
 
 [[nodiscard]] std::vector<std::uint8_t> encodeFrame(const LayoutFrame& frame);

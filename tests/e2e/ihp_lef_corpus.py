@@ -1,4 +1,5 @@
 import json
+import os
 import pathlib
 import subprocess
 import sys
@@ -61,6 +62,9 @@ def main() -> int:
     server_path = pathlib.Path(sys.argv[1]).resolve()
     ihp_root = pathlib.Path(sys.argv[2]).resolve()
     if not ihp_root.is_dir():
+        if os.environ.get("PRISTINE_REQUIRE_IHP_OPEN_PDK"):
+            print(f"ERROR: required IHP Open PDK checkout is missing at {ihp_root}", file=sys.stderr)
+            return 1
         print(f"SKIP: missing optional IHP Open PDK checkout at {ihp_root}")
         return 77
 

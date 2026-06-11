@@ -14,26 +14,26 @@ namespace pristine::layout {
 class LayoutSource;
 
 struct LayoutPipeEndpoint {
-    std::string kind;
-    std::string path;
+    std::string kind{};
+    std::string path{};
 };
 
 struct LayoutSessionInfo {
-    std::string session_id;
-    std::string protocol;
-    LayoutPipeEndpoint endpoint;
-    std::string title;
+    std::string session_id{};
+    std::string protocol{};
+    LayoutPipeEndpoint endpoint{};
+    std::string title{};
     std::size_t lef_count = 0;
     bool def_present = false;
     std::uint32_t units_per_micron = 1000;
-    std::optional<LayoutRect> bounds;
+    std::optional<LayoutRect> bounds{};
     std::size_t layer_count = 0;
     std::size_t macro_count = 0;
     std::size_t component_count = 0;
     std::size_t net_count = 0;
     std::size_t diagnostic_count = 0;
-    std::vector<std::string> messages;
-    std::vector<std::string> file_uris;
+    std::vector<std::string> messages{};
+    std::vector<std::string> file_uris{};
 };
 
 class LayoutPipeService {
