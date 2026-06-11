@@ -367,6 +367,27 @@ jobs:
             Set-Content -Encoding ascii 'SHA256SUMS.txt'
           Pop-Location
 
+      - name: Write release notes
+        run: |
+          $notesDir = Join-Path $PWD 'release'
+          New-Item -ItemType Directory -Force -Path $notesDir | Out-Null
+          $notes = @(
+            '## Highlights'
+            ''
+            '- Expanded the AST-backed SystemVerilog semantic engine and split-provider coverage for more complete, deterministic language-service results.'
+            '- Improved hierarchy, schematic, backward cone, and call hierarchy behavior for Pristine-facing design exploration flows.'
+            '- Extended completion, signature help, inlay hint, diagnostics, and code-action support across packages, typedefs, interfaces, modports, classes, parameters, macros, and generated scopes.'
+            '- Added waveform/FST pipe support improvements, viewport v2 payload handling, FST read metrics, and stronger malformed-data handling.'
+            '- Added layout pipe/session support with IHP Open PDK validation coverage.'
+            '- Added syntax/query cache telemetry, RTL E2E stress tooling, and broader unit, golden, differential, and performance coverage.'
+            '- Updated CI to use clang on Ubuntu 22.04 and tightened version metadata and release validation.'
+            ''
+            '## Artifacts'
+            ''
+            'Release packages are provided per platform with SHA256 checksums in `SHA256SUMS.txt`.'
+          )
+          ($notes -join "`n") + "`n" | Set-Content -Encoding utf8 (Join-Path $notesDir 'release-notes.md')
+
       - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -374,8 +395,12 @@ jobs:
           $tagName = '${{ github.ref_name }}'
           $version = '${{ steps.release-version.outputs.version }}'
           $assets = @(Get-ChildItem -Path 'release/packages' -File | Sort-Object Name | ForEach-Object { $_.FullName })
+          $notesFile = Join-Path $PWD 'release/release-notes.md'
           if ($assets.Count -eq 0) {
             throw 'No release assets were packaged'
+          }
+          if (-not (Test-Path -LiteralPath $notesFile)) {
+            throw "Release notes file was not generated: $notesFile"
           }
 
           & gh release view $tagName *> $null
@@ -383,9 +408,12 @@ jobs:
 
           if ($releaseExists) {
             & gh release upload $tagName $assets --clobber
+            if ($LASTEXITCODE -eq 0) {
+              & gh release edit $tagName --notes-file $notesFile --title "pristine-engine $version"
+            }
           }
           else {
-            & gh release create $tagName $assets --verify-tag --generate-notes --title "pristine-engine $version"
+            & gh release create $tagName $assets --verify-tag --notes-file $notesFile --title "pristine-engine $version"
           }
 
           if ($LASTEXITCODE -ne 0) {
