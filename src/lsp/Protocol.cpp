@@ -92,7 +92,7 @@ Json makeInitializeResult(std::string_view server_name, std::string_view server_
                           {"sources", Json::array({"mock", "fst"})}}},
                     {"pristineLayoutProvider",
                      Json{{"transport", "pipe"},
-                          {"protocol", "pristine-layout-columnar-v1"},
+                          {"protocol", "pristine-layout-columnar-v2"},
                           {"sources", Json::array({"lefdef"})}}}}},
               {"textDocumentSync",
                Json{{"openClose", true}, {"change", 2}, {"save", Json{{"includeText", false}}}}},

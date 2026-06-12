@@ -255,7 +255,7 @@ TEST_CASE("ServerSession handles initialize-shutdown-exit", "[server][lifecycle]
     CHECK(initialize_response.at("result").at("capabilities").at("experimental").at(
               "pristineLayoutProvider").at("transport") == "pipe");
     CHECK(initialize_response.at("result").at("capabilities").at("experimental").at(
-              "pristineLayoutProvider").at("protocol") == "pristine-layout-columnar-v1");
+              "pristineLayoutProvider").at("protocol") == "pristine-layout-columnar-v2");
     CHECK(initialize_response.at("result").at("capabilities").at("experimental").at(
               "pristineLayoutProvider").at("sources").at(0) == "lefdef");
     CHECK(initialize_response.at("result").at("capabilities").at("textDocumentSync").at(
@@ -366,7 +366,7 @@ END DESIGN
     CHECK(open_response.at("id") == 2);
     const auto& result = open_response.at("result");
     CHECK(result.at("sessionId") == "1");
-    CHECK(result.at("protocol") == "pristine-layout-columnar-v1");
+    CHECK(result.at("protocol") == "pristine-layout-columnar-v2");
     CHECK(result.at("title") == "tiny-layout");
     CHECK(result.at("lefCount") == 1);
     CHECK(result.at("defPresent") == true);

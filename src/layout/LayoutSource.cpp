@@ -115,6 +115,7 @@ void appendLef(LayoutDataSet& data, const LayoutLefLibrary& lef) {
                     }
                     shape.owner_kind = LayoutOwnerKind::Pin;
                     shape.owner_index = static_cast<std::uint32_t>(pin_index);
+                    shape.macro_index = macro_index;
                     appendShape(data, shape);
                 }
             }
@@ -125,6 +126,7 @@ void appendLef(LayoutDataSet& data, const LayoutLefLibrary& lef) {
             }
             shape.owner_kind = LayoutOwnerKind::Obstruction;
             shape.owner_index = macro_index;
+            shape.macro_index = macro_index;
             appendShape(data, shape);
         }
         data.macros.push_back(std::move(macro));

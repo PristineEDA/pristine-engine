@@ -8,6 +8,8 @@
 
 namespace pristine::layout {
 
+inline constexpr std::uint32_t kNoLayoutMacroIndex = 0xffffffffU;
+
 enum class LayoutDiagnosticSeverity : std::uint8_t {
     Warning = 1,
     Error = 2,
@@ -59,6 +61,7 @@ struct LayoutShape {
     LayoutShapeKind kind = LayoutShapeKind::Rect;
     LayoutOwnerKind owner_kind = LayoutOwnerKind::Unknown;
     std::uint32_t owner_index = 0;
+    std::uint32_t macro_index = kNoLayoutMacroIndex;
     std::uint32_t layer_index = 0;
     std::uint32_t flags = 0;
     LayoutRect rect{};

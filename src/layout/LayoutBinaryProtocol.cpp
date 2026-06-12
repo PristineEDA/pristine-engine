@@ -372,6 +372,7 @@ std::vector<std::uint8_t> encodeGeometryResponsePayload(const LayoutDataSet& dat
         appendU16(result, static_cast<std::uint16_t>(shape->kind));
         appendU16(result, static_cast<std::uint16_t>(shape->owner_kind));
         appendU32(result, shape->owner_index);
+        appendU32(result, shape->macro_index);
         appendU32(result, shape->flags);
         appendU32(result, static_cast<std::uint32_t>(polygon_x.size()));
         appendU32(result, static_cast<std::uint32_t>(shape->polygon.points.size()));

@@ -163,6 +163,7 @@ TEST_CASE("Layout source aggregates LEF DEF data and encodes catalog geometry", 
     const auto catalog = source->encodeCatalogResponse();
     REQUIRE(catalog.size() > 80);
     CHECK(std::string(reinterpret_cast<const char*>(catalog.data()), 4) == "PLCT");
+    CHECK(readU16(catalog.data(), catalog.size(), 4) == kLayoutProtocolVersion);
     CHECK(readU32(catalog.data(), catalog.size(), 8) == 2000);
     CHECK(readU32(catalog.data(), catalog.size(), 12) == 1);
 
@@ -170,12 +171,43 @@ TEST_CASE("Layout source aggregates LEF DEF data and encodes catalog geometry", 
         geometryRequest(3)));
     REQUIRE(geometry.size() > 96);
     CHECK(std::string(reinterpret_cast<const char*>(geometry.data()), 4) == "PLGE");
+    CHECK(readU16(geometry.data(), geometry.size(), 4) == kLayoutProtocolVersion);
     CHECK(readU32(geometry.data(), geometry.size(), 12) == 3);
     CHECK(readU32(geometry.data(), geometry.size(), 20) == kLayoutFrameFlagTruncated);
+    const auto shape_table_offset = readU32(geometry.data(), geometry.size(), 24);
+    constexpr std::uint32_t kShapeTableStrideV2 = 28;
+    REQUIRE(shape_table_offset + (3U * kShapeTableStrideV2) <= geometry.size());
+    CHECK(readU16(geometry.data(), geometry.size(), shape_table_offset + 6) ==
+          static_cast<std::uint16_t>(LayoutOwnerKind::Pin));
+    CHECK(readU32(geometry.data(), geometry.size(), shape_table_offset + 8) == 0);
+    CHECK(readU32(geometry.data(), geometry.size(), shape_table_offset + 12) == 0);
+    CHECK(readU16(geometry.data(), geometry.size(), shape_table_offset + kShapeTableStrideV2 + 6) ==
+          static_cast<std::uint16_t>(LayoutOwnerKind::Pin));
+    CHECK(readU32(geometry.data(), geometry.size(), shape_table_offset + kShapeTableStrideV2 + 12) ==
+          0);
+    CHECK(readU16(geometry.data(), geometry.size(), shape_table_offset + (2U * kShapeTableStrideV2) + 6) ==
+          static_cast<std::uint16_t>(LayoutOwnerKind::Obstruction));
+    CHECK(readU32(geometry.data(),
+                  geometry.size(),
+                  shape_table_offset + (2U * kShapeTableStrideV2) + 12) == 0);
 
     std::error_code error;
     std::filesystem::remove(lef_path, error);
     std::filesystem::remove(def_path, error);
+}
+
+TEST_CASE("Layout binary protocol rejects legacy v1 frames", "[layout][protocol]") {
+    std::vector<std::uint8_t> frame;
+    frame.insert(frame.end(), {'P', 'L', 'D', '1'});
+    appendU16(frame, 1);
+    appendU16(frame, static_cast<std::uint16_t>(LayoutMessageType::Hello));
+    appendU32(frame, 1);
+    appendU32(frame, 0);
+    appendU32(frame, 0);
+    appendU32(frame, 0);
+
+    CHECK_THROWS_WITH(decodeFrame(frame),
+                      Catch::Matchers::ContainsSubstring("Unsupported layout frame version"));
 }
 
 TEST_CASE("Layout geometry request rejects trailing bytes", "[layout][protocol]") {

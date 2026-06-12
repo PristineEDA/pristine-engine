@@ -10,7 +10,9 @@ from typing import BinaryIO
 
 
 FRAME_HEADER = struct.Struct("<4sHHIIII")
-PROTOCOL_VERSION = 1
+PROTOCOL_VERSION = 2
+SHAPE_TABLE_STRIDE_V2 = 28
+NO_MACRO_INDEX = 0xFFFFFFFF
 
 HELLO = 1
 HELLO_RESPONSE = 2
@@ -203,7 +205,15 @@ def exercise_layout_pipe(session: dict) -> None:
         assert flags == 0
         assert payload[:4] == b"PLGE"
         assert struct.unpack_from("<I", payload, 8)[0] == 1000
-        assert struct.unpack_from("<I", payload, 12)[0] >= 3
+        shape_count = struct.unpack_from("<I", payload, 12)[0]
+        assert shape_count >= 3
+        shape_table_offset = struct.unpack_from("<I", payload, 24)[0]
+        macro_indices = [
+            struct.unpack_from("<I", payload, shape_table_offset + index * SHAPE_TABLE_STRIDE_V2 + 12)[0]
+            for index in range(shape_count)
+        ]
+        assert 0 in macro_indices
+        assert NO_MACRO_INDEX in macro_indices
 
         pipe.write(frame(CLOSE, 13))
         pipe.flush()
@@ -242,7 +252,7 @@ def main() -> int:
         provider = initialize["result"]["capabilities"]["experimental"]["pristineLayoutProvider"]
         assert provider == {
             "transport": "pipe",
-            "protocol": "pristine-layout-columnar-v1",
+            "protocol": "pristine-layout-columnar-v2",
             "sources": ["lefdef"],
         }
 
@@ -253,7 +263,7 @@ def main() -> int:
             {"lefUris": [lef.as_uri()], "defUri": deffile.as_uri(), "title": "tiny-layout"},
         )
         session = open_response["result"]
-        assert session["protocol"] == "pristine-layout-columnar-v1"
+        assert session["protocol"] == "pristine-layout-columnar-v2"
         assert session["lefCount"] == 1
         assert session["defPresent"] is True
         assert session["layerCount"] == 1

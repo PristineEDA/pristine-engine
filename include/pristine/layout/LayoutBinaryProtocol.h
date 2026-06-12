@@ -8,8 +8,8 @@
 
 namespace pristine::layout {
 
-inline constexpr std::string_view kLayoutProtocolName = "pristine-layout-columnar-v1";
-inline constexpr std::uint16_t kLayoutProtocolVersion = 1;
+inline constexpr std::string_view kLayoutProtocolName = "pristine-layout-columnar-v2";
+inline constexpr std::uint16_t kLayoutProtocolVersion = 2;
 inline constexpr std::uint32_t kLayoutFrameFlagTruncated = 1U;
 
 enum class LayoutMessageType : std::uint16_t {
