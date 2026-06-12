@@ -21,6 +21,11 @@ constexpr std::uint16_t kCatalogHeaderSize = 80;
 constexpr std::uint16_t kGeometryHeaderSize = 96;
 constexpr std::size_t kMaxPayloadSize = 128U * 1024U * 1024U;
 
+struct LayoutCatalogPinShapeRange {
+    std::uint32_t first_shape_index = kNoLayoutMacroIndex;
+    std::uint32_t shape_count = 0;
+};
+
 void requireAvailable(std::size_t size, std::size_t offset, std::size_t length) {
     if (offset > size || length > size - offset) {
         throw std::runtime_error("Layout binary payload is truncated");
@@ -81,6 +86,32 @@ bool containsKind(const LayoutGeometryRequest& request, LayoutShapeKind kind) {
     return request.shape_kinds.empty() ||
            std::find(request.shape_kinds.begin(), request.shape_kinds.end(), kind) !=
                request.shape_kinds.end();
+}
+
+std::vector<std::vector<LayoutCatalogPinShapeRange>> buildPinShapeRanges(const LayoutDataSet& data) {
+    std::vector<std::vector<LayoutCatalogPinShapeRange>> ranges;
+    ranges.reserve(data.macros.size());
+    for (const auto& macro : data.macros) {
+        ranges.emplace_back(macro.pins.size());
+    }
+    for (std::size_t shape_index = 0; shape_index < data.shapes.size(); ++shape_index) {
+        const auto& shape = data.shapes[shape_index];
+        if (shape.owner_kind != LayoutOwnerKind::Pin ||
+            shape.macro_index == kNoLayoutMacroIndex ||
+            shape.macro_index >= ranges.size() ||
+            shape.owner_index >= ranges[shape.macro_index].size()) {
+            continue;
+        }
+        auto& range = ranges[shape.macro_index][shape.owner_index];
+        if (range.shape_count == 0) {
+            if (shape_index > std::numeric_limits<std::uint32_t>::max()) {
+                throw std::runtime_error("Layout shape index exceeds uint32 range");
+            }
+            range.first_shape_index = static_cast<std::uint32_t>(shape_index);
+        }
+        ++range.shape_count;
+    }
+    return ranges;
 }
 
 } // namespace
@@ -240,6 +271,14 @@ std::vector<std::uint8_t> encodeHelloResponsePayload(const LayoutDataSet& data) 
 std::vector<std::uint8_t> encodeCatalogResponsePayload(const LayoutDataSet& data) {
     std::vector<std::uint8_t> result(kCatalogHeaderSize, 0);
     std::vector<std::uint8_t> strings;
+    const auto pin_shape_ranges = buildPinShapeRanges(data);
+    std::size_t pin_count = 0;
+    for (const auto& macro : data.macros) {
+        pin_count += macro.pins.size();
+    }
+    if (pin_count > std::numeric_limits<std::uint32_t>::max()) {
+        throw std::runtime_error("Layout pin count exceeds uint32 range");
+    }
 
     const auto layer_offset = static_cast<std::uint32_t>(result.size());
     for (const auto& layer : data.layers) {
@@ -260,6 +299,29 @@ std::vector<std::uint8_t> encodeCatalogResponsePayload(const LayoutDataSet& data
         appendF64(result, macro.size_x);
         appendF64(result, macro.size_y);
         appendCount(result, macro.pins.size());
+    }
+
+    const auto pin_offset = static_cast<std::uint32_t>(result.size());
+    for (std::size_t macro_index = 0; macro_index < data.macros.size(); ++macro_index) {
+        const auto& macro = data.macros[macro_index];
+        if (macro_index > std::numeric_limits<std::uint32_t>::max()) {
+            throw std::runtime_error("Layout macro index exceeds uint32 range");
+        }
+        for (std::size_t pin_index = 0; pin_index < macro.pins.size(); ++pin_index) {
+            const auto& pin = macro.pins[pin_index];
+            if (pin_index > std::numeric_limits<std::uint32_t>::max()) {
+                throw std::runtime_error("Layout pin index exceeds uint32 range");
+            }
+            const auto& range = pin_shape_ranges[macro_index][pin_index];
+            appendU32(result, static_cast<std::uint32_t>(macro_index));
+            appendU32(result, static_cast<std::uint32_t>(pin_index));
+            appendU32(result, appendTableString(strings, pin.name));
+            appendU32(result, appendTableString(strings, pin.use));
+            appendU16(result, static_cast<std::uint16_t>(pin.direction));
+            appendU16(result, 0);
+            appendU32(result, range.first_shape_index);
+            appendU32(result, range.shape_count);
+        }
     }
 
     const auto via_offset = static_cast<std::uint32_t>(result.size());
@@ -331,6 +393,8 @@ std::vector<std::uint8_t> encodeCatalogResponsePayload(const LayoutDataSet& data
     writeHeaderU32(string_offset);
     writeHeaderU32(static_cast<std::uint32_t>(strings.size()));
     writeHeaderU32(data.bounds.has_value() ? 1U : 0U);
+    writeHeaderU32(static_cast<std::uint32_t>(pin_count));
+    writeHeaderU32(pin_offset);
 
     return result;
 }

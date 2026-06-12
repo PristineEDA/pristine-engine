@@ -44,6 +44,22 @@ MACRO invx1
         POLYGON 0.4 0.4 0.6 0.4 0.6 0.6 ;
     END
   END A
+  PIN VDD
+    DIRECTION INOUT ;
+    USE POWER ;
+    PORT
+      LAYER M1 ;
+        RECT 0.0 3.6 1.44 3.78 ;
+    END
+  END VDD
+  PIN VSS
+    DIRECTION INOUT ;
+    USE GROUND ;
+    PORT
+      LAYER M1 ;
+        RECT 0.0 0.0 1.44 0.18 ;
+    END
+  END VSS
   OBS
     LAYER M1 ;
       RECT 0 0 1.44 0.1 ;
@@ -88,6 +104,16 @@ std::vector<std::uint8_t> geometryRequest(std::uint32_t max_shapes) {
     return payload;
 }
 
+std::string readTableString(const std::vector<std::uint8_t>& payload,
+                            std::uint32_t string_table_offset,
+                            std::uint32_t string_offset) {
+    const auto offset = static_cast<std::size_t>(string_table_offset) + string_offset;
+    const auto size = readU32(payload.data(), payload.size(), offset);
+    const auto begin = offset + sizeof(std::uint32_t);
+    REQUIRE(begin + size <= payload.size());
+    return std::string(reinterpret_cast<const char*>(payload.data() + begin), size);
+}
+
 } // namespace
 
 TEST_CASE("LEF parser captures layers macros pins vias and geometry", "[layout][lef]") {
@@ -102,8 +128,12 @@ TEST_CASE("LEF parser captures layers macros pins vias and geometry", "[layout][
     CHECK(result.value.vias[0].shapes.size() == 1);
     REQUIRE(result.value.macros.size() == 1);
     CHECK(result.value.macros[0].name == "invx1");
-    CHECK(result.value.macros[0].pins.size() == 1);
+    CHECK(result.value.macros[0].pins.size() == 3);
     CHECK(result.value.macros[0].pins[0].direction == LayoutPinDirection::Input);
+    CHECK(result.value.macros[0].pins[1].name == "VDD");
+    CHECK(result.value.macros[0].pins[1].use == "POWER");
+    CHECK(result.value.macros[0].pins[2].name == "VSS");
+    CHECK(result.value.macros[0].pins[2].use == "GROUND");
     REQUIRE(result.value.macros[0].pins[0].ports.size() == 1);
     CHECK(result.value.macros[0].pins[0].ports[0].shapes.size() == 2);
     CHECK(result.value.macros[0].obstructions.size() == 1);
@@ -142,6 +172,7 @@ TEST_CASE("Layout source aggregates LEF DEF data and encodes catalog geometry", 
     CHECK(data.units_per_micron == 2000);
     CHECK(data.layers.size() == 1);
     CHECK(data.macros.size() == 1);
+    CHECK(data.macros[0].pins.size() == 3);
     CHECK(data.components.size() == 1);
     CHECK(data.nets.size() == 1);
     CHECK(data.bounds.has_value());
@@ -164,8 +195,57 @@ TEST_CASE("Layout source aggregates LEF DEF data and encodes catalog geometry", 
     REQUIRE(catalog.size() > 80);
     CHECK(std::string(reinterpret_cast<const char*>(catalog.data()), 4) == "PLCT");
     CHECK(readU16(catalog.data(), catalog.size(), 4) == kLayoutProtocolVersion);
+    CHECK(readU16(catalog.data(), catalog.size(), 6) == 80);
     CHECK(readU32(catalog.data(), catalog.size(), 8) == 2000);
     CHECK(readU32(catalog.data(), catalog.size(), 12) == 1);
+    const auto pin_count = readU32(catalog.data(), catalog.size(), 72);
+    const auto pin_table_offset = readU32(catalog.data(), catalog.size(), 76);
+    const auto string_table_offset = readU32(catalog.data(), catalog.size(), 60);
+    REQUIRE(pin_count == 3);
+    REQUIRE(pin_table_offset > 0);
+    constexpr std::uint32_t kPinTableStride = 28;
+    REQUIRE(pin_table_offset + (pin_count * kPinTableStride) <= catalog.size());
+    CHECK(readU32(catalog.data(), catalog.size(), pin_table_offset + 0) == 0);
+    CHECK(readU32(catalog.data(), catalog.size(), pin_table_offset + 4) == 0);
+    CHECK(readTableString(catalog,
+                          string_table_offset,
+                          readU32(catalog.data(), catalog.size(), pin_table_offset + 8)) == "A");
+    CHECK(readTableString(catalog,
+                          string_table_offset,
+                          readU32(catalog.data(), catalog.size(), pin_table_offset + 12)) ==
+          "SIGNAL");
+    CHECK(readU16(catalog.data(), catalog.size(), pin_table_offset + 16) ==
+          static_cast<std::uint16_t>(LayoutPinDirection::Input));
+    CHECK(readU32(catalog.data(), catalog.size(), pin_table_offset + 20) == 0);
+    CHECK(readU32(catalog.data(), catalog.size(), pin_table_offset + 24) == 2);
+    CHECK(readTableString(catalog,
+                          string_table_offset,
+                          readU32(catalog.data(),
+                                  catalog.size(),
+                                  pin_table_offset + kPinTableStride + 8)) == "VDD");
+    CHECK(readTableString(catalog,
+                          string_table_offset,
+                          readU32(catalog.data(),
+                                  catalog.size(),
+                                  pin_table_offset + kPinTableStride + 12)) == "POWER");
+    CHECK(readU16(catalog.data(), catalog.size(), pin_table_offset + kPinTableStride + 16) ==
+          static_cast<std::uint16_t>(LayoutPinDirection::Inout));
+    CHECK(readU32(catalog.data(), catalog.size(), pin_table_offset + kPinTableStride + 20) == 2);
+    CHECK(readU32(catalog.data(), catalog.size(), pin_table_offset + kPinTableStride + 24) == 1);
+    CHECK(readTableString(catalog,
+                          string_table_offset,
+                          readU32(catalog.data(),
+                                  catalog.size(),
+                                  pin_table_offset + (2U * kPinTableStride) + 8)) == "VSS");
+    CHECK(readTableString(catalog,
+                          string_table_offset,
+                          readU32(catalog.data(),
+                                  catalog.size(),
+                                  pin_table_offset + (2U * kPinTableStride) + 12)) == "GROUND");
+    CHECK(readU32(catalog.data(), catalog.size(), pin_table_offset + (2U * kPinTableStride) + 20) ==
+          3);
+    CHECK(readU32(catalog.data(), catalog.size(), pin_table_offset + (2U * kPinTableStride) + 24) ==
+          1);
 
     const auto geometry = source->encodeGeometryResponse(decodeGeometryRequestPayload(
         geometryRequest(3)));
@@ -181,15 +261,36 @@ TEST_CASE("Layout source aggregates LEF DEF data and encodes catalog geometry", 
           static_cast<std::uint16_t>(LayoutOwnerKind::Pin));
     CHECK(readU32(geometry.data(), geometry.size(), shape_table_offset + 8) == 0);
     CHECK(readU32(geometry.data(), geometry.size(), shape_table_offset + 12) == 0);
+    CHECK(readTableString(catalog,
+                          string_table_offset,
+                          readU32(catalog.data(),
+                                  catalog.size(),
+                                  pin_table_offset +
+                                      (readU32(geometry.data(), geometry.size(), shape_table_offset + 8) *
+                                       kPinTableStride) +
+                                      8)) == "A");
     CHECK(readU16(geometry.data(), geometry.size(), shape_table_offset + kShapeTableStrideV2 + 6) ==
           static_cast<std::uint16_t>(LayoutOwnerKind::Pin));
     CHECK(readU32(geometry.data(), geometry.size(), shape_table_offset + kShapeTableStrideV2 + 12) ==
           0);
     CHECK(readU16(geometry.data(), geometry.size(), shape_table_offset + (2U * kShapeTableStrideV2) + 6) ==
-          static_cast<std::uint16_t>(LayoutOwnerKind::Obstruction));
+          static_cast<std::uint16_t>(LayoutOwnerKind::Pin));
+    CHECK(readU32(geometry.data(),
+                  geometry.size(),
+                  shape_table_offset + (2U * kShapeTableStrideV2) + 8) == 1);
     CHECK(readU32(geometry.data(),
                   geometry.size(),
                   shape_table_offset + (2U * kShapeTableStrideV2) + 12) == 0);
+    CHECK(readTableString(catalog,
+                          string_table_offset,
+                          readU32(catalog.data(),
+                                  catalog.size(),
+                                  pin_table_offset +
+                                      (readU32(geometry.data(),
+                                               geometry.size(),
+                                               shape_table_offset + (2U * kShapeTableStrideV2) + 8) *
+                                       kPinTableStride) +
+                                      8)) == "VDD");
 
     std::error_code error;
     std::filesystem::remove(lef_path, error);

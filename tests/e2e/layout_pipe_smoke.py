@@ -12,6 +12,7 @@ from typing import BinaryIO
 FRAME_HEADER = struct.Struct("<4sHHIIII")
 PROTOCOL_VERSION = 2
 SHAPE_TABLE_STRIDE_V2 = 28
+PIN_TABLE_STRIDE = 28
 NO_MACRO_INDEX = 0xFFFFFFFF
 
 HELLO = 1
@@ -142,11 +143,28 @@ MACRO invx1
   SIZE 1.0 BY 2.0 ;
   PIN A
     DIRECTION INPUT ;
+    USE SIGNAL ;
     PORT
       LAYER M1 ;
         RECT 0 0 0.2 0.2 ;
     END
   END A
+  PIN VDD
+    DIRECTION INOUT ;
+    USE POWER ;
+    PORT
+      LAYER M1 ;
+        RECT 0 1.8 1.0 2.0 ;
+    END
+  END VDD
+  PIN VSS
+    DIRECTION INOUT ;
+    USE GROUND ;
+    PORT
+      LAYER M1 ;
+        RECT 0 0 1.0 0.2 ;
+    END
+  END VSS
   OBS
     LAYER M1 ;
       RECT 0.8 0 1.0 2.0 ;
@@ -193,9 +211,50 @@ def exercise_layout_pipe(session: dict) -> None:
         assert message_type == CATALOG_RESPONSE
         assert request_id == 11
         assert payload[:4] == b"PLCT"
+        assert struct.unpack_from("<H", payload, 4)[0] == PROTOCOL_VERSION
+        assert struct.unpack_from("<H", payload, 6)[0] == 80
         assert struct.unpack_from("<I", payload, 8)[0] == 1000
         assert struct.unpack_from("<I", payload, 12)[0] == 1
         assert struct.unpack_from("<I", payload, 16)[0] == 1
+        pin_count = struct.unpack_from("<I", payload, 72)[0]
+        pin_table_offset = struct.unpack_from("<I", payload, 76)[0]
+        string_table_offset = struct.unpack_from("<I", payload, 60)[0]
+        assert pin_count == 3
+
+        def table_string(offset: int) -> str:
+            start = string_table_offset + offset
+            size = struct.unpack_from("<I", payload, start)[0]
+            begin = start + 4
+            return payload[begin : begin + size].decode("utf-8")
+
+        pins = {}
+        for index in range(pin_count):
+            row = pin_table_offset + index * PIN_TABLE_STRIDE
+            macro_index, pin_index, name_offset, use_offset = struct.unpack_from("<IIII", payload, row)
+            direction = struct.unpack_from("<H", payload, row + 16)[0]
+            first_shape, shape_count = struct.unpack_from("<II", payload, row + 20)
+            pins[(macro_index, pin_index)] = {
+                "name": table_string(name_offset),
+                "use": table_string(use_offset),
+                "direction": direction,
+                "first_shape": first_shape,
+                "shape_count": shape_count,
+            }
+        assert pins[(0, 0)] == {
+            "name": "A",
+            "use": "SIGNAL",
+            "direction": 1,
+            "first_shape": 0,
+            "shape_count": 1,
+        }
+        assert pins[(0, 1)]["name"] == "VDD"
+        assert pins[(0, 1)]["use"] == "POWER"
+        assert pins[(0, 1)]["direction"] == 3
+        assert pins[(0, 1)]["shape_count"] == 1
+        assert pins[(0, 2)]["name"] == "VSS"
+        assert pins[(0, 2)]["use"] == "GROUND"
+        assert pins[(0, 2)]["direction"] == 3
+        assert pins[(0, 2)]["shape_count"] == 1
 
         pipe.write(frame(GEOMETRY_REQUEST, 12, geometry_payload(64)))
         pipe.flush()
@@ -214,6 +273,11 @@ def exercise_layout_pipe(session: dict) -> None:
         ]
         assert 0 in macro_indices
         assert NO_MACRO_INDEX in macro_indices
+        first_owner_kind = struct.unpack_from("<H", payload, shape_table_offset + 6)[0]
+        first_owner_index = struct.unpack_from("<I", payload, shape_table_offset + 8)[0]
+        first_macro_index = struct.unpack_from("<I", payload, shape_table_offset + 12)[0]
+        assert first_owner_kind == 4
+        assert pins[(first_macro_index, first_owner_index)]["name"] == "A"
 
         pipe.write(frame(CLOSE, 13))
         pipe.flush()
