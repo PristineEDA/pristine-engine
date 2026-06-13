@@ -23,6 +23,7 @@ struct LayoutSessionInfo {
     std::string protocol{};
     LayoutPipeEndpoint endpoint{};
     std::string title{};
+    std::string source{};
     std::size_t lef_count = 0;
     bool def_present = false;
     std::uint32_t units_per_micron = 1000;
@@ -31,6 +32,9 @@ struct LayoutSessionInfo {
     std::size_t macro_count = 0;
     std::size_t component_count = 0;
     std::size_t net_count = 0;
+    std::size_t cell_count = 0;
+    std::size_t reference_count = 0;
+    std::size_t element_count = 0;
     std::size_t diagnostic_count = 0;
     std::vector<std::string> messages{};
     std::vector<std::string> file_uris{};

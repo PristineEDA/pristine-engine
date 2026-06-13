@@ -182,16 +182,9 @@ add_custom_command(
   COMMENT "Generating pristine version sources"
   VERBATIM)
 
-set(PRISTINE_NOTICE_OUTPUTS
-    "${PROJECT_SOURCE_DIR}/ATTRIBUTIONS.md"
-    "${PROJECT_SOURCE_DIR}/NOTICE")
 set(PRISTINE_NOTICE_INSTALL_DIR "${CMAKE_INSTALL_DATADIR}/pristine-engine/licenses")
 
-add_custom_command(
-  OUTPUT ${PRISTINE_NOTICE_OUTPUTS}
-  COMMAND ${CMAKE_COMMAND} -DPRISTINE_ROOT_DIR=${PROJECT_SOURCE_DIR} -P
-          ${PROJECT_SOURCE_DIR}/scripts/generate-notice.cmake
-  DEPENDS
+set(PRISTINE_NOTICE_DEPENDS
     ${PROJECT_SOURCE_DIR}/cmake/attributions.cmake
     ${PROJECT_SOURCE_DIR}/scripts/generate-notice.cmake
     ${PROJECT_SOURCE_DIR}/licenses/texts/BSD-2-Clause-LZ4.txt
@@ -199,11 +192,15 @@ add_custom_command(
     ${PROJECT_SOURCE_DIR}/licenses/texts/FastLZ-MIT.txt
     ${PROJECT_SOURCE_DIR}/licenses/texts/MIT.txt
     ${PROJECT_SOURCE_DIR}/licenses/texts/Zlib.txt
-    ${PROJECT_SOURCE_DIR}/licenses/texts/fmt-license.txt
+    ${PROJECT_SOURCE_DIR}/licenses/texts/fmt-license.txt)
+
+add_custom_target(
+  pristine_generate_notice
+  COMMAND ${CMAKE_COMMAND} -DPRISTINE_ROOT_DIR=${PROJECT_SOURCE_DIR} -P
+          ${PROJECT_SOURCE_DIR}/scripts/generate-notice.cmake
+  DEPENDS ${PRISTINE_NOTICE_DEPENDS}
   COMMENT "Generating third-party notice files"
   VERBATIM)
-
-add_custom_target(pristine_generate_notice DEPENDS ${PRISTINE_NOTICE_OUTPUTS})
 
 add_custom_target(
   pristine_validate_notice
@@ -213,14 +210,7 @@ add_custom_target(
   DEPENDS
     ${PROJECT_SOURCE_DIR}/ATTRIBUTIONS.md
     ${PROJECT_SOURCE_DIR}/NOTICE
-    ${PROJECT_SOURCE_DIR}/cmake/attributions.cmake
-    ${PROJECT_SOURCE_DIR}/scripts/generate-notice.cmake
-    ${PROJECT_SOURCE_DIR}/licenses/texts/BSD-2-Clause-LZ4.txt
-    ${PROJECT_SOURCE_DIR}/licenses/texts/BSL-1.0.txt
-    ${PROJECT_SOURCE_DIR}/licenses/texts/FastLZ-MIT.txt
-    ${PROJECT_SOURCE_DIR}/licenses/texts/MIT.txt
-    ${PROJECT_SOURCE_DIR}/licenses/texts/Zlib.txt
-    ${PROJECT_SOURCE_DIR}/licenses/texts/fmt-license.txt
+    ${PRISTINE_NOTICE_DEPENDS}
   COMMENT "Validating third-party notice files"
   VERBATIM)
 

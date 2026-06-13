@@ -9,6 +9,7 @@
 namespace pristine::layout {
 
 inline constexpr std::uint32_t kNoLayoutMacroIndex = 0xffffffffU;
+inline constexpr std::uint32_t kNoLayoutIndex = 0xffffffffU;
 
 enum class LayoutDiagnosticSeverity : std::uint8_t {
     Warning = 1,
@@ -42,6 +43,8 @@ enum class LayoutShapeKind : std::uint16_t {
     Rect = 1,
     Polygon = 2,
     Placement = 3,
+    Path = 4,
+    Text = 5,
 };
 
 enum class LayoutOwnerKind : std::uint16_t {
@@ -55,6 +58,9 @@ enum class LayoutOwnerKind : std::uint16_t {
     Net = 7,
     Blockage = 8,
     SpecialNet = 9,
+    GdsCell = 10,
+    GdsElement = 11,
+    GdsReference = 12,
 };
 
 struct LayoutShape {
@@ -194,6 +200,66 @@ struct LayoutDefDesign {
     std::vector<LayoutDiagnostic> diagnostics{};
 };
 
+enum class LayoutGdsElementKind : std::uint16_t {
+    Unknown = 0,
+    Boundary = 1,
+    Path = 2,
+    Sref = 3,
+    Aref = 4,
+    Text = 5,
+};
+
+struct LayoutGdsTransform {
+    bool reflected = false;
+    double magnification = 1.0;
+    double angle = 0.0;
+};
+
+struct LayoutGdsElement {
+    LayoutGdsElementKind kind = LayoutGdsElementKind::Unknown;
+    std::uint32_t cell_index = kNoLayoutIndex;
+    std::uint32_t layer = 0;
+    std::uint32_t datatype = 0;
+    std::uint32_t texttype = 0;
+    std::uint32_t reference_index = kNoLayoutIndex;
+    std::vector<LayoutPoint> points{};
+    std::string text{};
+};
+
+struct LayoutGdsReference {
+    LayoutGdsElementKind kind = LayoutGdsElementKind::Sref;
+    std::uint32_t parent_cell_index = kNoLayoutIndex;
+    std::uint32_t target_cell_index = kNoLayoutIndex;
+    std::string target_name{};
+    LayoutGdsTransform transform{};
+    LayoutPoint origin{};
+    std::uint32_t columns = 1;
+    std::uint32_t rows = 1;
+    LayoutPoint column_vector{};
+    LayoutPoint row_vector{};
+};
+
+struct LayoutGdsCell {
+    std::string name{};
+    std::vector<std::uint32_t> element_indices{};
+    std::vector<std::uint32_t> reference_indices{};
+    std::optional<LayoutRect> bounds{};
+    bool is_top = false;
+};
+
+struct LayoutGdsLibrary {
+    std::uint16_t version = 0;
+    std::string name{};
+    double user_unit_meters = 0.0;
+    double database_unit_meters = 0.0;
+    std::uint32_t units_per_micron = 1000;
+    std::uint32_t top_cell_index = kNoLayoutIndex;
+    std::vector<LayoutGdsCell> cells{};
+    std::vector<LayoutGdsElement> elements{};
+    std::vector<LayoutGdsReference> references{};
+    std::vector<LayoutDiagnostic> diagnostics{};
+};
+
 struct LayoutDataSet {
     std::string id{};
     std::string title{};
@@ -209,6 +275,7 @@ struct LayoutDataSet {
     std::vector<LayoutShape> shapes{};
     std::vector<LayoutDiagnostic> diagnostics{};
     std::vector<std::string> file_uris{};
+    std::optional<LayoutGdsLibrary> gds{};
 };
 
 struct LayoutGeometryRequest {

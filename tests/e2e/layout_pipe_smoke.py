@@ -11,8 +11,10 @@ from typing import BinaryIO
 
 FRAME_HEADER = struct.Struct("<4sHHIIII")
 PROTOCOL_VERSION = 2
+PROTOCOL_VERSION_V3 = 3
 SHAPE_TABLE_STRIDE_V2 = 28
 PIN_TABLE_STRIDE = 28
+GDS_CELL_STRIDE = 56
 NO_MACRO_INDEX = 0xFFFFFFFF
 
 HELLO = 1
@@ -72,8 +74,14 @@ def notify(process: subprocess.Popen[bytes], method: str, params: dict | None) -
     write_message(process, message)
 
 
-def frame(message_type: int, request_id: int, payload: bytes = b"", flags: int = 0) -> bytes:
-    return FRAME_HEADER.pack(b"PLD1", PROTOCOL_VERSION, message_type, request_id, flags, len(payload), 0) + payload
+def frame(
+    message_type: int,
+    request_id: int,
+    payload: bytes = b"",
+    flags: int = 0,
+    version: int = PROTOCOL_VERSION,
+) -> bytes:
+    return FRAME_HEADER.pack(b"PLD1", version, message_type, request_id, flags, len(payload), 0) + payload
 
 
 def read_exact(stream: BinaryIO, size: int) -> bytes:
@@ -88,12 +96,12 @@ def read_exact(stream: BinaryIO, size: int) -> bytes:
     return b"".join(chunks)
 
 
-def read_frame(stream: BinaryIO) -> tuple[int, int, int, bytes]:
+def read_frame(stream: BinaryIO, expected_version: int = PROTOCOL_VERSION) -> tuple[int, int, int, bytes]:
     header = read_exact(stream, FRAME_HEADER.size)
     magic, version, message_type, request_id, flags, payload_size, _reserved = FRAME_HEADER.unpack(header)
     if magic != b"PLD1":
         raise AssertionError(f"bad layout frame magic: {magic!r}")
-    if version != PROTOCOL_VERSION:
+    if version != expected_version:
         raise AssertionError(f"bad layout protocol version: {version}")
     return message_type, request_id, flags, read_exact(stream, payload_size)
 
@@ -194,6 +202,81 @@ END DESIGN
     return lef, deffile
 
 
+def gds_record(record_type: int, data_type: int, payload: bytes = b"") -> bytes:
+    return struct.pack(">HBB", len(payload) + 4, record_type, data_type) + payload
+
+
+def gds_i2(*values: int) -> bytes:
+    return b"".join(struct.pack(">H", value) for value in values)
+
+
+def gds_i4(*values: int) -> bytes:
+    return b"".join(struct.pack(">i", value) for value in values)
+
+
+def gds_string(value: str) -> bytes:
+    payload = value.encode("ascii")
+    if len(payload) % 2:
+        payload += b"\0"
+    return payload
+
+
+def gds_real8_bits(value: float) -> int:
+    if value == 0:
+        return 0
+    sign = 0x80 if value < 0 else 0
+    value = abs(value)
+    exponent = 64
+    while value >= 1.0:
+        value /= 16.0
+        exponent += 1
+    while value < 0.0625:
+        value *= 16.0
+        exponent -= 1
+    mantissa = round(value * (1 << 56))
+    if mantissa >= (1 << 56):
+        mantissa >>= 4
+        exponent += 1
+    return ((sign | exponent) << 56) | (mantissa & 0x00FFFFFFFFFFFFFF)
+
+
+def gds_real8(*values: float) -> bytes:
+    return b"".join(gds_real8_bits(value).to_bytes(8, "big") for value in values)
+
+
+def write_gds_workspace(root: pathlib.Path) -> pathlib.Path:
+    gds = root / "tiny.gds"
+    records = [
+        gds_record(0x00, 0x02, gds_i2(600)),
+        gds_record(0x01, 0x02, gds_i2(*([0] * 12))),
+        gds_record(0x02, 0x06, gds_string("TINY")),
+        gds_record(0x03, 0x05, gds_real8(1.0e-6, 1.0e-9)),
+        gds_record(0x05, 0x02, gds_i2(*([0] * 12))),
+        gds_record(0x06, 0x06, gds_string("LEAF")),
+        gds_record(0x08, 0x00),
+        gds_record(0x0D, 0x02, gds_i2(1)),
+        gds_record(0x0E, 0x02, gds_i2(0)),
+        gds_record(0x10, 0x03, gds_i4(0, 0, 10, 0, 10, 10, 0, 10, 0, 0)),
+        gds_record(0x11, 0x00),
+        gds_record(0x07, 0x00),
+        gds_record(0x05, 0x02, gds_i2(*([0] * 12))),
+        gds_record(0x06, 0x06, gds_string("TOP")),
+        gds_record(0x0A, 0x00),
+        gds_record(0x12, 0x06, gds_string("LEAF")),
+        gds_record(0x10, 0x03, gds_i4(100, 200)),
+        gds_record(0x11, 0x00),
+        gds_record(0x0B, 0x00),
+        gds_record(0x12, 0x06, gds_string("LEAF")),
+        gds_record(0x13, 0x02, gds_i2(2, 1)),
+        gds_record(0x10, 0x03, gds_i4(200, 300, 250, 300, 200, 350)),
+        gds_record(0x11, 0x00),
+        gds_record(0x07, 0x00),
+        gds_record(0x04, 0x00),
+    ]
+    gds.write_bytes(b"".join(records))
+    return gds
+
+
 def exercise_layout_pipe(session: dict) -> None:
     with connect_pipe(session["endpoint"]["kind"], session["endpoint"]["path"]) as pipe:
         pipe.write(frame(HELLO, 10))
@@ -283,6 +366,62 @@ def exercise_layout_pipe(session: dict) -> None:
         pipe.flush()
 
 
+def exercise_gds_pipe(session: dict) -> None:
+    with connect_pipe(session["endpoint"]["kind"], session["endpoint"]["path"]) as pipe:
+        pipe.write(frame(HELLO, 20, version=PROTOCOL_VERSION_V3))
+        pipe.flush()
+        message_type, request_id, _flags, payload = read_frame(pipe, PROTOCOL_VERSION_V3)
+        assert message_type == HELLO_RESPONSE
+        assert request_id == 20
+        assert struct.unpack_from("<H", payload, 0)[0] == PROTOCOL_VERSION_V3
+        assert struct.unpack_from("<I", payload, 8)[0] >= 1
+        assert struct.unpack_from("<I", payload, 12)[0] == 2
+
+        pipe.write(frame(CATALOG_REQUEST, 21, version=PROTOCOL_VERSION_V3))
+        pipe.flush()
+        message_type, request_id, _flags, payload = read_frame(pipe, PROTOCOL_VERSION_V3)
+        assert message_type == CATALOG_RESPONSE
+        assert request_id == 21
+        assert payload[:4] == b"PLCT"
+        assert struct.unpack_from("<H", payload, 4)[0] == PROTOCOL_VERSION_V3
+        assert struct.unpack_from("<H", payload, 6)[0] == 128
+        assert struct.unpack_from("<I", payload, 16)[0] == 2
+        assert struct.unpack_from("<I", payload, 20)[0] == 2
+        assert struct.unpack_from("<I", payload, 24)[0] == 3
+        cell_offset = struct.unpack_from("<I", payload, 36)[0]
+        string_table_offset = struct.unpack_from("<I", payload, 56)[0]
+
+        def table_string(offset: int) -> str:
+            start = string_table_offset + offset
+            size = struct.unpack_from("<I", payload, start)[0]
+            begin = start + 4
+            return payload[begin : begin + size].decode("utf-8")
+
+        assert table_string(struct.unpack_from("<I", payload, cell_offset)[0]) == "LEAF"
+        top_row = cell_offset + GDS_CELL_STRIDE
+        assert table_string(struct.unpack_from("<I", payload, top_row)[0]) == "TOP"
+        assert struct.unpack_from("<I", payload, top_row + 20)[0] == 1
+
+        pipe.write(frame(GEOMETRY_REQUEST, 22, geometry_payload(16), version=PROTOCOL_VERSION_V3))
+        pipe.flush()
+        message_type, request_id, flags, payload = read_frame(pipe, PROTOCOL_VERSION_V3)
+        assert message_type == GEOMETRY_RESPONSE
+        assert request_id == 22
+        assert flags == 0
+        assert payload[:4] == b"PLGE"
+        assert struct.unpack_from("<H", payload, 4)[0] == PROTOCOL_VERSION_V3
+        assert struct.unpack_from("<I", payload, 12)[0] >= 2
+        shape_table_offset = struct.unpack_from("<I", payload, 24)[0]
+        owner_kinds = [
+            struct.unpack_from("<H", payload, shape_table_offset + index * SHAPE_TABLE_STRIDE_V2 + 6)[0]
+            for index in range(struct.unpack_from("<I", payload, 12)[0])
+        ]
+        assert 11 in owner_kinds
+
+        pipe.write(frame(CLOSE, 23, version=PROTOCOL_VERSION_V3))
+        pipe.flush()
+
+
 def main() -> int:
     if len(sys.argv) != 2:
         print("usage: layout_pipe_smoke.py <pristine-engine>", file=sys.stderr)
@@ -295,6 +434,7 @@ def main() -> int:
     try:
         temp_workspace.mkdir(parents=True, exist_ok=True)
         lef, deffile = write_layout_workspace(temp_workspace)
+        gds = write_gds_workspace(temp_workspace)
         workspace_uri = temp_workspace.as_uri()
         process = subprocess.Popen(
             [str(server_path), "--stdio"],
@@ -314,11 +454,10 @@ def main() -> int:
             },
         )
         provider = initialize["result"]["capabilities"]["experimental"]["pristineLayoutProvider"]
-        assert provider == {
-            "transport": "pipe",
-            "protocol": "pristine-layout-columnar-v2",
-            "sources": ["lefdef"],
-        }
+        assert provider["transport"] == "pipe"
+        assert provider["protocol"] == "pristine-layout-columnar-v2"
+        assert provider["protocols"] == ["pristine-layout-columnar-v2", "pristine-layout-columnar-v3"]
+        assert provider["sources"] == ["lefdef", "gds"]
 
         open_response = request(
             process,
@@ -328,6 +467,7 @@ def main() -> int:
         )
         session = open_response["result"]
         assert session["protocol"] == "pristine-layout-columnar-v2"
+        assert session["source"] == "lefdef"
         assert session["lefCount"] == 1
         assert session["defPresent"] is True
         assert session["layerCount"] == 1
@@ -344,7 +484,30 @@ def main() -> int:
         )
         assert close_response["result"]["closed"] is True
 
-        shutdown = request(process, 4, "shutdown", None)
+        gds_open_response = request(
+            process,
+            4,
+            "systemverilog/layout/open",
+            {"gdsUri": gds.as_uri(), "title": "tiny-gds"},
+        )
+        gds_session = gds_open_response["result"]
+        assert gds_session["protocol"] == "pristine-layout-columnar-v3"
+        assert gds_session["source"] == "gds"
+        assert gds_session["cellCount"] == 2
+        assert gds_session["referenceCount"] == 2
+        assert gds_session["elementCount"] == 3
+        assert gds_session["layerCount"] >= 1
+        exercise_gds_pipe(gds_session)
+
+        gds_close_response = request(
+            process,
+            5,
+            "systemverilog/layout/close",
+            {"sessionId": gds_session["sessionId"]},
+        )
+        assert gds_close_response["result"]["closed"] is True
+
+        shutdown = request(process, 6, "shutdown", None)
         assert shutdown["result"] is None
         notify(process, "exit", None)
         assert process.wait(timeout=5) == 0

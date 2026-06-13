@@ -797,8 +797,9 @@ jsonrpc::Json toLayoutSessionJson(const layout::LayoutSessionInfo& info) {
     jsonrpc::Json result{{"sessionId", info.session_id},
                          {"protocol", info.protocol},
                          {"endpoint",
-                          jsonrpc::Json{{"kind", info.endpoint.kind}, {"path", info.endpoint.path}}},
+                         jsonrpc::Json{{"kind", info.endpoint.kind}, {"path", info.endpoint.path}}},
                          {"title", info.title},
+                         {"source", info.source},
                          {"lefCount", info.lef_count},
                          {"defPresent", info.def_present},
                          {"unitsPerMicron", info.units_per_micron},
@@ -810,6 +811,9 @@ jsonrpc::Json toLayoutSessionJson(const layout::LayoutSessionInfo& info) {
                          {"macroCount", info.macro_count},
                          {"componentCount", info.component_count},
                          {"netCount", info.net_count},
+                         {"cellCount", info.cell_count},
+                         {"referenceCount", info.reference_count},
+                         {"elementCount", info.element_count},
                          {"diagnosticCount", info.diagnostic_count},
                          {"messages", std::move(messages)},
                          {"fileUris", std::move(file_uris)}};
@@ -1321,16 +1325,36 @@ jsonrpc::Json ServerSession::handleLayoutOpen(const jsonrpc::Json& params) {
         throw std::runtime_error("systemverilog/layout/open received before initialize");
     }
 
-    const auto lef_uris = parseRequiredStringArray(params, "lefUris");
+    std::vector<std::string> lef_uris;
+    const auto lef_uris_it = params.find("lefUris");
+    if (lef_uris_it != params.end()) {
+        lef_uris = parseRequiredStringArray(params, "lefUris");
+    }
     const auto def_uri = jsonStringField(params, "defUri");
+    const auto gds_uri = jsonStringField(params, "gdsUri");
     const auto title = jsonStringField(params, "title").value_or("");
-    if (lef_uris.empty() && !def_uri.has_value()) {
-        throw std::runtime_error("Layout open requires at least one LEF URI or a DEF URI");
+    if (gds_uri.has_value() && (!lef_uris.empty() || def_uri.has_value())) {
+        throw std::runtime_error("Layout open does not support mixing GDS with LEF/DEF inputs");
+    }
+    if (!gds_uri.has_value() && lef_uris.empty() && !def_uri.has_value()) {
+        throw std::runtime_error("Layout open requires at least one LEF URI, a DEF URI, or a GDS URI");
     }
 
     const auto& workspace_state = workspace_manager_.state();
     if (!workspace_state.root_path.has_value()) {
         throw std::runtime_error("Layout source requires an initialized workspace root");
+    }
+
+    if (gds_uri.has_value()) {
+        auto path = workspace::WorkspaceManager::pathFromFileUri(*gds_uri);
+        if (!path.has_value()) {
+            throw std::runtime_error("Expected 'gdsUri' to be a file URI");
+        }
+        if (!isPathInsideRoot(*path, *workspace_state.root_path)) {
+            throw std::runtime_error("GDS file must be inside the workspace root");
+        }
+        auto source = layout::openGdsLayoutSource(*path, *gds_uri, title);
+        return toLayoutSessionJson(layout_service_.openSession(std::move(source), 0, false));
     }
 
     std::vector<fs::path> lef_paths;

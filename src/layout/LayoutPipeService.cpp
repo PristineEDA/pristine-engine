@@ -61,17 +61,28 @@ std::string endpointPath(std::string_view session_id) {
 }
 
 std::vector<std::uint8_t> handleRequest(const LayoutSource& source, const LayoutFrame& request) {
+    if (request.version != source.protocolVersion()) {
+        return encodeFrame(LayoutFrame{.message_type = LayoutMessageType::ErrorResponse,
+                                       .request_id = request.request_id,
+                                       .flags = 0,
+                                       .version = source.protocolVersion(),
+                                       .payload = encodeErrorPayload(
+                                           LayoutErrorCode::UnsupportedVersion,
+                                           "Unsupported layout frame version for active session")});
+    }
     try {
         switch (request.message_type) {
             case LayoutMessageType::Hello:
                 return encodeFrame(LayoutFrame{.message_type = LayoutMessageType::HelloResponse,
                                                .request_id = request.request_id,
                                                .flags = 0,
+                                               .version = source.protocolVersion(),
                                                .payload = source.encodeHelloResponse()});
             case LayoutMessageType::CatalogRequest:
                 return encodeFrame(LayoutFrame{.message_type = LayoutMessageType::CatalogResponse,
                                                .request_id = request.request_id,
                                                .flags = 0,
+                                               .version = source.protocolVersion(),
                                                .payload = source.encodeCatalogResponse()});
             case LayoutMessageType::GeometryRequest: {
                 const auto geometry_request = decodeGeometryRequestPayload(request.payload);
@@ -81,6 +92,7 @@ std::vector<std::uint8_t> handleRequest(const LayoutSource& source, const Layout
                                                    LayoutMessageType::GeometryResponse,
                                                .request_id = request.request_id,
                                                .flags = flags,
+                                               .version = source.protocolVersion(),
                                                .payload = payload});
             }
             case LayoutMessageType::Close:
@@ -89,6 +101,7 @@ std::vector<std::uint8_t> handleRequest(const LayoutSource& source, const Layout
                 return encodeFrame(LayoutFrame{.message_type = LayoutMessageType::ErrorResponse,
                                                .request_id = request.request_id,
                                                .flags = 0,
+                                               .version = source.protocolVersion(),
                                                .payload = encodeErrorPayload(
                                                    LayoutErrorCode::UnknownMessage,
                                                    "Unknown layout message type")});
@@ -98,6 +111,7 @@ std::vector<std::uint8_t> handleRequest(const LayoutSource& source, const Layout
         return encodeFrame(LayoutFrame{.message_type = LayoutMessageType::ErrorResponse,
                                        .request_id = request.request_id,
                                        .flags = 0,
+                                       .version = source.protocolVersion(),
                                        .payload = encodeErrorPayload(LayoutErrorCode::InvalidRequest,
                                                                      error.what())});
     }
@@ -292,9 +306,10 @@ LayoutSessionInfo LayoutPipeService::openSession(std::shared_ptr<LayoutSource> s
 
     const auto& data = source->dataSet();
     LayoutSessionInfo info{.session_id = std::to_string(next_session_number_++),
-                           .protocol = std::string(kLayoutProtocolName),
+                           .protocol = std::string(source->protocolName()),
                            .endpoint = LayoutPipeEndpoint{},
                            .title = data.title,
+                           .source = std::string(source->sourceKind()),
                            .lef_count = lef_count,
                            .def_present = def_present,
                            .units_per_micron = data.units_per_micron,
@@ -303,6 +318,9 @@ LayoutSessionInfo LayoutPipeService::openSession(std::shared_ptr<LayoutSource> s
                            .macro_count = data.macros.size(),
                            .component_count = data.components.size(),
                            .net_count = data.nets.size(),
+                           .cell_count = data.gds.has_value() ? data.gds->cells.size() : 0U,
+                           .reference_count = data.gds.has_value() ? data.gds->references.size() : 0U,
+                           .element_count = data.gds.has_value() ? data.gds->elements.size() : 0U,
                            .diagnostic_count = data.diagnostics.size(),
                            .file_uris = data.file_uris};
     info.endpoint.kind = endpointKind();

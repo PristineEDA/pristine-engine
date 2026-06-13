@@ -4,6 +4,7 @@
 
 #include <filesystem>
 #include <string_view>
+#include <vector>
 
 namespace pristine::layout {
 
@@ -11,7 +12,10 @@ namespace pristine::layout {
                                                      std::string_view file_name = {});
 [[nodiscard]] ParseResult<LayoutDefDesign> parseDef(std::string_view text,
                                                     std::string_view file_name = {});
+[[nodiscard]] ParseResult<LayoutGdsLibrary> parseGds(const std::vector<std::uint8_t>& bytes,
+                                                     std::string_view file_name = {});
 [[nodiscard]] ParseResult<LayoutLefLibrary> parseLefFile(const std::filesystem::path& path);
 [[nodiscard]] ParseResult<LayoutDefDesign> parseDefFile(const std::filesystem::path& path);
+[[nodiscard]] ParseResult<LayoutGdsLibrary> parseGdsFile(const std::filesystem::path& path);
 
 } // namespace pristine::layout

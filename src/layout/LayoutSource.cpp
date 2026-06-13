@@ -4,10 +4,13 @@
 #include "pristine/layout/LayoutParser.h"
 
 #include <algorithm>
+#include <cmath>
 #include <filesystem>
+#include <limits>
 #include <map>
 #include <memory>
 #include <optional>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -17,15 +20,21 @@ namespace {
 
 class DataSetLayoutSource final : public LayoutSource {
 public:
-    DataSetLayoutSource(LayoutDataSet data, std::string source_kind) :
-        data_(std::move(data)), source_kind_(std::move(source_kind)) {}
+    DataSetLayoutSource(LayoutDataSet data,
+                        std::string source_kind,
+                        std::uint16_t protocol_version = kLayoutProtocolVersion) :
+        data_(std::move(data)),
+        source_kind_(std::move(source_kind)),
+        protocol_version_(protocol_version) {}
 
     const LayoutDataSet& dataSet() const override { return data_; }
     std::string_view sourceKind() const override { return source_kind_; }
+    std::uint16_t protocolVersion() const override { return protocol_version_; }
 
 private:
     LayoutDataSet data_;
     std::string source_kind_;
+    std::uint16_t protocol_version_ = kLayoutProtocolVersion;
 };
 
 std::uint32_t findOrAddLayer(LayoutDataSet& data, const LayoutLayer& layer) {
@@ -81,6 +90,155 @@ LayoutRect shapeBounds(const LayoutShape& shape) {
 void appendShape(LayoutDataSet& data, LayoutShape shape) {
     expandBounds(data.bounds, shapeBounds(shape));
     data.shapes.push_back(std::move(shape));
+}
+
+std::uint32_t findOrAddGdsLayer(LayoutDataSet& data,
+                                std::uint32_t layer,
+                                std::uint32_t datatype) {
+    const auto name = "GDS:" + std::to_string(layer) + "/" + std::to_string(datatype);
+    for (std::size_t index = 0; index < data.layers.size(); ++index) {
+        if (data.layers[index].name == name) {
+            return static_cast<std::uint32_t>(index);
+        }
+    }
+    data.layers.push_back(LayoutLayer{.name = name, .kind = LayoutLayerKind::Unknown});
+    return static_cast<std::uint32_t>(data.layers.size() - 1U);
+}
+
+struct GdsAffineTransform {
+    double a = 1.0;
+    double b = 0.0;
+    double c = 0.0;
+    double d = 1.0;
+    double tx = 0.0;
+    double ty = 0.0;
+};
+
+LayoutPoint applyTransform(const GdsAffineTransform& transform, const LayoutPoint& point) {
+    return LayoutPoint{.x = static_cast<std::int64_t>(
+                           std::llround(transform.a * static_cast<double>(point.x) +
+                                        transform.c * static_cast<double>(point.y) + transform.tx)),
+                       .y = static_cast<std::int64_t>(
+                           std::llround(transform.b * static_cast<double>(point.x) +
+                                        transform.d * static_cast<double>(point.y) + transform.ty))};
+}
+
+GdsAffineTransform composeTransforms(const GdsAffineTransform& parent,
+                                     const GdsAffineTransform& child) {
+    return GdsAffineTransform{.a = parent.a * child.a + parent.c * child.b,
+                              .b = parent.b * child.a + parent.d * child.b,
+                              .c = parent.a * child.c + parent.c * child.d,
+                              .d = parent.b * child.c + parent.d * child.d,
+                              .tx = parent.a * child.tx + parent.c * child.ty + parent.tx,
+                              .ty = parent.b * child.tx + parent.d * child.ty + parent.ty};
+}
+
+GdsAffineTransform referenceTransform(const LayoutGdsReference& reference,
+                                      std::uint32_t column,
+                                      std::uint32_t row) {
+    constexpr double kPi = 3.14159265358979323846;
+    const auto magnification = reference.transform.magnification == 0.0
+        ? 1.0
+        : reference.transform.magnification;
+    const auto radians = reference.transform.angle * kPi / 180.0;
+    const auto cos_angle = std::cos(radians);
+    const auto sin_angle = std::sin(radians);
+    const auto reflect = reference.transform.reflected ? -1.0 : 1.0;
+    const auto dx = static_cast<double>(reference.column_vector.x) * static_cast<double>(column) +
+                    static_cast<double>(reference.row_vector.x) * static_cast<double>(row);
+    const auto dy = static_cast<double>(reference.column_vector.y) * static_cast<double>(column) +
+                    static_cast<double>(reference.row_vector.y) * static_cast<double>(row);
+    return GdsAffineTransform{.a = magnification * cos_angle,
+                              .b = magnification * sin_angle,
+                              .c = -magnification * sin_angle * reflect,
+                              .d = magnification * cos_angle * reflect,
+                              .tx = static_cast<double>(reference.origin.x) + dx,
+                              .ty = static_cast<double>(reference.origin.y) + dy};
+}
+
+LayoutShapeKind shapeKindForGdsElement(const LayoutGdsElement& element) {
+    switch (element.kind) {
+        case LayoutGdsElementKind::Boundary:
+            return LayoutShapeKind::Polygon;
+        case LayoutGdsElementKind::Path:
+            return LayoutShapeKind::Path;
+        case LayoutGdsElementKind::Text:
+            return LayoutShapeKind::Text;
+        case LayoutGdsElementKind::Sref:
+        case LayoutGdsElementKind::Aref:
+        case LayoutGdsElementKind::Unknown:
+            return LayoutShapeKind::Polygon;
+    }
+    return LayoutShapeKind::Polygon;
+}
+
+void appendGdsElementShape(LayoutDataSet& data,
+                           const LayoutGdsElement& element,
+                           const GdsAffineTransform& transform,
+                           std::uint32_t element_index) {
+    if (element.kind == LayoutGdsElementKind::Sref || element.kind == LayoutGdsElementKind::Aref ||
+        element.points.empty()) {
+        return;
+    }
+
+    LayoutShape shape{.kind = shapeKindForGdsElement(element),
+                      .owner_kind = LayoutOwnerKind::GdsElement,
+                      .owner_index = element_index,
+                      .macro_index = element.cell_index,
+                      .layer_index = findOrAddGdsLayer(data, element.layer, element.datatype),
+                      .flags = element.texttype};
+    shape.polygon.points.reserve(element.points.size());
+    for (const auto& point : element.points) {
+        shape.polygon.points.push_back(applyTransform(transform, point));
+    }
+    if (!shape.polygon.points.empty()) {
+        shape.rect = shapeBounds(shape);
+    }
+    appendShape(data, std::move(shape));
+}
+
+void flattenGdsCell(LayoutDataSet& data,
+                    const LayoutGdsLibrary& gds,
+                    std::uint32_t cell_index,
+                    const GdsAffineTransform& transform,
+                    std::set<std::uint32_t>& stack) {
+    if (cell_index >= gds.cells.size()) {
+        return;
+    }
+    if (!stack.insert(cell_index).second) {
+        data.diagnostics.push_back(LayoutDiagnostic{.severity = LayoutDiagnosticSeverity::Warning,
+                                                    .message = "GDS reference cycle while flattening cell '" +
+                                                               gds.cells[cell_index].name + "'"});
+        return;
+    }
+    const auto& cell = gds.cells[cell_index];
+    for (const auto element_index : cell.element_indices) {
+        if (element_index >= gds.elements.size()) {
+            continue;
+        }
+        appendGdsElementShape(data, gds.elements[element_index], transform, element_index);
+    }
+    for (const auto reference_index : cell.reference_indices) {
+        if (reference_index >= gds.references.size()) {
+            continue;
+        }
+        const auto& reference = gds.references[reference_index];
+        if (reference.target_cell_index >= gds.cells.size()) {
+            continue;
+        }
+        const auto columns = std::max<std::uint32_t>(reference.columns, 1U);
+        const auto rows = std::max<std::uint32_t>(reference.rows, 1U);
+        for (std::uint32_t column = 0; column < columns; ++column) {
+            for (std::uint32_t row = 0; row < rows; ++row) {
+                flattenGdsCell(data,
+                               gds,
+                               reference.target_cell_index,
+                               composeTransforms(transform, referenceTransform(reference, column, row)),
+                               stack);
+            }
+        }
+    }
+    stack.erase(cell_index);
 }
 
 void appendLef(LayoutDataSet& data, const LayoutLefLibrary& lef) {
@@ -214,19 +372,35 @@ std::string defaultTitle(const std::vector<std::filesystem::path>& lef_paths,
     return "layout";
 }
 
+std::string defaultGdsTitle(const std::filesystem::path& gds_path, std::string title) {
+    if (!title.empty()) {
+        return title;
+    }
+    return gds_path.filename().generic_string();
+}
+
 } // namespace
 
+std::uint16_t LayoutSource::protocolVersion() const {
+    return kLayoutProtocolVersion;
+}
+
+std::string_view LayoutSource::protocolName() const {
+    return protocolVersion() == kLayoutProtocolVersionV3 ? kLayoutProtocolNameV3
+                                                         : kLayoutProtocolName;
+}
+
 std::vector<std::uint8_t> LayoutSource::encodeHelloResponse() const {
-    return encodeHelloResponsePayload(dataSet());
+    return encodeHelloResponsePayload(dataSet(), protocolVersion());
 }
 
 std::vector<std::uint8_t> LayoutSource::encodeCatalogResponse() const {
-    return encodeCatalogResponsePayload(dataSet());
+    return encodeCatalogResponsePayload(dataSet(), protocolVersion());
 }
 
 std::vector<std::uint8_t> LayoutSource::encodeGeometryResponse(
     const LayoutGeometryRequest& request) const {
-    return encodeGeometryResponsePayload(dataSet(), request);
+    return encodeGeometryResponsePayload(dataSet(), request, protocolVersion());
 }
 
 std::shared_ptr<LayoutSource> makeDataSetLayoutSource(LayoutDataSet data, std::string source_kind) {
@@ -264,6 +438,30 @@ std::shared_ptr<LayoutSource> openLefDefLayoutSource(
     }
 
     return makeDataSetLayoutSource(std::move(data), "lefdef");
+}
+
+std::shared_ptr<LayoutSource> openGdsLayoutSource(const std::filesystem::path& gds_path,
+                                                  std::string gds_uri,
+                                                  std::string title) {
+    auto result = parseGdsFile(gds_path);
+    LayoutDataSet data;
+    data.id = "gds-layout";
+    data.title = defaultGdsTitle(gds_path, std::move(title));
+    data.units_per_micron = result.value.units_per_micron;
+    data.file_uris.push_back(std::move(gds_uri));
+    data.diagnostics = result.value.diagnostics;
+    data.gds = std::move(result.value);
+    if (data.gds.has_value() && data.gds->top_cell_index < data.gds->cells.size()) {
+        std::set<std::uint32_t> stack;
+        flattenGdsCell(data,
+                       *data.gds,
+                       data.gds->top_cell_index,
+                       GdsAffineTransform{},
+                       stack);
+    }
+    return std::make_shared<DataSetLayoutSource>(std::move(data),
+                                                 "gds",
+                                                 kLayoutProtocolVersionV3);
 }
 
 } // namespace pristine::layout

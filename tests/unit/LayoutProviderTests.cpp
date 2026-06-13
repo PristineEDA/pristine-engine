@@ -5,9 +5,11 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
 
+#include <cmath>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <initializer_list>
 #include <string>
 #include <vector>
 
@@ -114,6 +116,150 @@ std::string readTableString(const std::vector<std::uint8_t>& payload,
     return std::string(reinterpret_cast<const char*>(payload.data() + begin), size);
 }
 
+void appendBeU16(std::vector<std::uint8_t>& bytes, std::uint16_t value) {
+    bytes.push_back(static_cast<std::uint8_t>((value >> 8U) & 0xffU));
+    bytes.push_back(static_cast<std::uint8_t>(value & 0xffU));
+}
+
+void appendBeI32(std::vector<std::uint8_t>& bytes, std::int32_t value) {
+    const auto raw = static_cast<std::uint32_t>(value);
+    bytes.push_back(static_cast<std::uint8_t>((raw >> 24U) & 0xffU));
+    bytes.push_back(static_cast<std::uint8_t>((raw >> 16U) & 0xffU));
+    bytes.push_back(static_cast<std::uint8_t>((raw >> 8U) & 0xffU));
+    bytes.push_back(static_cast<std::uint8_t>(raw & 0xffU));
+}
+
+void appendGdsRecord(std::vector<std::uint8_t>& bytes,
+                     std::uint8_t record_type,
+                     std::uint8_t data_type,
+                     const std::vector<std::uint8_t>& payload = {}) {
+    appendBeU16(bytes, static_cast<std::uint16_t>(payload.size() + 4U));
+    bytes.push_back(record_type);
+    bytes.push_back(data_type);
+    bytes.insert(bytes.end(), payload.begin(), payload.end());
+}
+
+std::vector<std::uint8_t> gdsInt2(std::initializer_list<std::uint16_t> values) {
+    std::vector<std::uint8_t> payload;
+    for (const auto value : values) {
+        appendBeU16(payload, value);
+    }
+    return payload;
+}
+
+std::vector<std::uint8_t> gdsInt4(std::initializer_list<std::int32_t> values) {
+    std::vector<std::uint8_t> payload;
+    for (const auto value : values) {
+        appendBeI32(payload, value);
+    }
+    return payload;
+}
+
+std::vector<std::uint8_t> gdsString(std::string_view value) {
+    std::vector<std::uint8_t> payload(value.begin(), value.end());
+    if ((payload.size() % 2U) != 0U) {
+        payload.push_back(0);
+    }
+    return payload;
+}
+
+std::uint64_t gdsReal8Bits(double value) {
+    if (value == 0.0) {
+        return 0;
+    }
+    std::uint64_t sign = 0;
+    if (value < 0.0) {
+        sign = 0x80ULL;
+        value = -value;
+    }
+    int exponent = 64;
+    while (value >= 1.0) {
+        value /= 16.0;
+        ++exponent;
+    }
+    while (value < 0.0625) {
+        value *= 16.0;
+        --exponent;
+    }
+    auto mantissa = static_cast<std::uint64_t>(
+        std::llround(value * static_cast<double>(1ULL << 56U)));
+    if (mantissa >= (1ULL << 56U)) {
+        mantissa >>= 4U;
+        ++exponent;
+    }
+    return ((sign | static_cast<std::uint64_t>(exponent)) << 56U) |
+           (mantissa & 0x00ffffffffffffffULL);
+}
+
+std::vector<std::uint8_t> gdsReal8(std::initializer_list<double> values) {
+    std::vector<std::uint8_t> payload;
+    for (const auto value : values) {
+        const auto bits = gdsReal8Bits(value);
+        for (int shift = 56; shift >= 0; shift -= 8) {
+            payload.push_back(static_cast<std::uint8_t>((bits >> shift) & 0xffULL));
+        }
+    }
+    return payload;
+}
+
+std::vector<std::uint8_t> tinyGds() {
+    std::vector<std::uint8_t> bytes;
+    appendGdsRecord(bytes, 0x00, 0x02, gdsInt2({600}));
+    appendGdsRecord(bytes, 0x01, 0x02, gdsInt2({0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}));
+    appendGdsRecord(bytes, 0x02, 0x06, gdsString("TINY"));
+    appendGdsRecord(bytes, 0x03, 0x05, gdsReal8({1.0e-6, 1.0e-9}));
+    appendGdsRecord(bytes, 0x05, 0x02, gdsInt2({0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}));
+    appendGdsRecord(bytes, 0x06, 0x06, gdsString("LEAF"));
+    appendGdsRecord(bytes, 0x08, 0x00);
+    appendGdsRecord(bytes, 0x0d, 0x02, gdsInt2({1}));
+    appendGdsRecord(bytes, 0x0e, 0x02, gdsInt2({0}));
+    appendGdsRecord(bytes, 0x10, 0x03, gdsInt4({0, 0, 10, 0, 10, 10, 0, 10, 0, 0}));
+    appendGdsRecord(bytes, 0x11, 0x00);
+    appendGdsRecord(bytes, 0x09, 0x00);
+    appendGdsRecord(bytes, 0x0d, 0x02, gdsInt2({2}));
+    appendGdsRecord(bytes, 0x0e, 0x02, gdsInt2({1}));
+    appendGdsRecord(bytes, 0x10, 0x03, gdsInt4({0, 20, 20, 20}));
+    appendGdsRecord(bytes, 0x11, 0x00);
+    appendGdsRecord(bytes, 0x0c, 0x00);
+    appendGdsRecord(bytes, 0x0d, 0x02, gdsInt2({3}));
+    appendGdsRecord(bytes, 0x16, 0x02, gdsInt2({7}));
+    appendGdsRecord(bytes, 0x10, 0x03, gdsInt4({5, 5}));
+    appendGdsRecord(bytes, 0x19, 0x06, gdsString("label"));
+    appendGdsRecord(bytes, 0x11, 0x00);
+    appendGdsRecord(bytes, 0x07, 0x00);
+    appendGdsRecord(bytes, 0x05, 0x02, gdsInt2({0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}));
+    appendGdsRecord(bytes, 0x06, 0x06, gdsString("TOP"));
+    appendGdsRecord(bytes, 0x0a, 0x00);
+    appendGdsRecord(bytes, 0x12, 0x06, gdsString("LEAF"));
+    appendGdsRecord(bytes, 0x10, 0x03, gdsInt4({100, 200}));
+    appendGdsRecord(bytes, 0x11, 0x00);
+    appendGdsRecord(bytes, 0x0b, 0x00);
+    appendGdsRecord(bytes, 0x12, 0x06, gdsString("LEAF"));
+    appendGdsRecord(bytes, 0x13, 0x02, gdsInt2({2, 1}));
+    appendGdsRecord(bytes, 0x10, 0x03, gdsInt4({200, 300, 250, 300, 200, 350}));
+    appendGdsRecord(bytes, 0x11, 0x00);
+    appendGdsRecord(bytes, 0x07, 0x00);
+    appendGdsRecord(bytes, 0x04, 0x00);
+    return bytes;
+}
+
+std::vector<std::uint8_t> missingTargetGds() {
+    std::vector<std::uint8_t> bytes;
+    appendGdsRecord(bytes, 0x00, 0x02, gdsInt2({600}));
+    appendGdsRecord(bytes, 0x01, 0x02, gdsInt2({0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}));
+    appendGdsRecord(bytes, 0x02, 0x06, gdsString("BROKEN"));
+    appendGdsRecord(bytes, 0x03, 0x05, gdsReal8({1.0e-6, 1.0e-9}));
+    appendGdsRecord(bytes, 0x05, 0x02, gdsInt2({0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}));
+    appendGdsRecord(bytes, 0x06, 0x06, gdsString("TOP"));
+    appendGdsRecord(bytes, 0x0a, 0x00);
+    appendGdsRecord(bytes, 0x12, 0x06, gdsString("MISSING"));
+    appendGdsRecord(bytes, 0x10, 0x03, gdsInt4({0, 0}));
+    appendGdsRecord(bytes, 0x11, 0x00);
+    appendGdsRecord(bytes, 0x07, 0x00);
+    appendGdsRecord(bytes, 0x04, 0x00);
+    return bytes;
+}
+
 } // namespace
 
 TEST_CASE("LEF parser captures layers macros pins vias and geometry", "[layout][lef]") {
@@ -156,6 +302,98 @@ TEST_CASE("DEF parser captures components pins nets blockages and units", "[layo
     CHECK(result.value.nets[0].connections.size() == 1);
     CHECK(result.value.nets[0].shapes.size() == 1);
     CHECK(result.value.blockages.size() == 1);
+}
+
+TEST_CASE("GDS parser captures hierarchy elements references and source v3 catalog",
+          "[layout][gds][protocol]") {
+    const auto gds_path = std::filesystem::temp_directory_path() / "pristine-layout-tiny.gds";
+    {
+        std::ofstream output(gds_path, std::ios::binary);
+        const auto bytes = tinyGds();
+        output.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+    }
+
+    auto parsed = parseGdsFile(gds_path);
+    CHECK(parsed.value.version == 600);
+    CHECK(parsed.value.name == "TINY");
+    CHECK(parsed.value.units_per_micron == 1000);
+    REQUIRE(parsed.value.cells.size() == 2);
+    CHECK(parsed.value.cells[0].name == "LEAF");
+    CHECK(parsed.value.cells[1].name == "TOP");
+    CHECK(parsed.value.top_cell_index == 1);
+    CHECK(parsed.value.cells[1].is_top);
+    CHECK(parsed.value.elements.size() == 5);
+    REQUIRE(parsed.value.references.size() == 2);
+    CHECK(parsed.value.references[0].target_cell_index == 0);
+    CHECK(parsed.value.references[1].kind == LayoutGdsElementKind::Aref);
+    CHECK(parsed.value.references[1].columns == 2);
+
+    auto source = openGdsLayoutSource(gds_path, "file:///tiny.gds", "tiny-gds");
+    CHECK(source->sourceKind() == "gds");
+    CHECK(source->protocolVersion() == kLayoutProtocolVersionV3);
+    const auto& data = source->dataSet();
+    CHECK(data.title == "tiny-gds");
+    REQUIRE(data.gds.has_value());
+    CHECK(data.gds->cells.size() == 2);
+    CHECK(data.shapes.size() >= 6);
+    REQUIRE(data.bounds.has_value());
+    CHECK(data.bounds->x0 == 0);
+    CHECK(data.bounds->y0 == 0);
+    CHECK(data.bounds->x1 >= 260);
+    CHECK(data.bounds->y1 >= 310);
+
+    const auto frame = encodeFrame(LayoutFrame{.message_type = LayoutMessageType::Hello,
+                                               .request_id = 7,
+                                               .flags = 0,
+                                               .version = kLayoutProtocolVersionV3});
+    const auto decoded = decodeFrame(frame);
+    CHECK(decoded.version == kLayoutProtocolVersionV3);
+    CHECK(decoded.message_type == LayoutMessageType::Hello);
+
+    const auto hello = source->encodeHelloResponse();
+    CHECK(readU16(hello.data(), hello.size(), 0) == kLayoutProtocolVersionV3);
+    CHECK(readU32(hello.data(), hello.size(), 12) == 2);
+
+    const auto catalog = source->encodeCatalogResponse();
+    CHECK(std::string(reinterpret_cast<const char*>(catalog.data()), 4) == "PLCT");
+    CHECK(readU16(catalog.data(), catalog.size(), 4) == kLayoutProtocolVersionV3);
+    CHECK(readU16(catalog.data(), catalog.size(), 6) == 128);
+    CHECK(readU32(catalog.data(), catalog.size(), 12) == 3);
+    CHECK(readU32(catalog.data(), catalog.size(), 16) == 2);
+    CHECK(readU32(catalog.data(), catalog.size(), 20) == 2);
+    CHECK(readU32(catalog.data(), catalog.size(), 24) == 5);
+    const auto cell_offset = readU32(catalog.data(), catalog.size(), 36);
+    const auto string_offset = readU32(catalog.data(), catalog.size(), 56);
+    CHECK(readTableString(catalog,
+                          string_offset,
+                          readU32(catalog.data(), catalog.size(), cell_offset)) == "LEAF");
+    constexpr std::uint32_t kGdsCellStride = 56;
+    CHECK(readTableString(catalog,
+                          string_offset,
+                          readU32(catalog.data(), catalog.size(), cell_offset + kGdsCellStride)) ==
+          "TOP");
+    CHECK(readU32(catalog.data(), catalog.size(), cell_offset + kGdsCellStride + 20) == 1);
+
+    const auto geometry = source->encodeGeometryResponse(decodeGeometryRequestPayload(
+        geometryRequest(2)));
+    CHECK(readU16(geometry.data(), geometry.size(), 4) == kLayoutProtocolVersionV3);
+    CHECK(readU32(geometry.data(), geometry.size(), 12) == 2);
+    CHECK(readU32(geometry.data(), geometry.size(), 20) == kLayoutFrameFlagTruncated);
+
+    std::error_code error;
+    std::filesystem::remove(gds_path, error);
+}
+
+TEST_CASE("GDS parser reports recoverable and hard malformed input", "[layout][gds]") {
+    auto parsed = parseGds(missingTargetGds(), "broken.gds");
+    CHECK_FALSE(parsed.value.cells.empty());
+    REQUIRE_FALSE(parsed.value.diagnostics.empty());
+    CHECK(parsed.value.diagnostics.front().message.find("MISSING") != std::string::npos);
+
+    const std::vector<std::uint8_t> truncated{0, 8, 0, 2, 0};
+    auto failed = parseGds(truncated, "truncated.gds");
+    REQUIRE_FALSE(failed.value.diagnostics.empty());
+    CHECK(failed.value.diagnostics.front().severity == LayoutDiagnosticSeverity::Error);
 }
 
 TEST_CASE("Layout source aggregates LEF DEF data and encodes catalog geometry", "[layout][protocol]") {

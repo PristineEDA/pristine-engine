@@ -3,11 +3,16 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <cstdint>
 #include <fstream>
+#include <iterator>
+#include <limits>
+#include <map>
 #include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 namespace pristine::layout {
 namespace {
@@ -462,6 +467,593 @@ LayoutPlacementStatus parsePlacementStatus(std::string_view value) {
     }
     return LayoutPlacementStatus::Unknown;
 }
+
+constexpr std::uint8_t kGdsNoData = 0x00;
+constexpr std::uint8_t kGdsBitArray = 0x01;
+constexpr std::uint8_t kGdsInt2 = 0x02;
+constexpr std::uint8_t kGdsInt4 = 0x03;
+constexpr std::uint8_t kGdsReal8 = 0x05;
+constexpr std::uint8_t kGdsString = 0x06;
+
+enum class GdsRecordType : std::uint8_t {
+    Header = 0x00,
+    BgnLib = 0x01,
+    LibName = 0x02,
+    Units = 0x03,
+    EndLib = 0x04,
+    BgnStr = 0x05,
+    StrName = 0x06,
+    EndStr = 0x07,
+    Boundary = 0x08,
+    Path = 0x09,
+    Sref = 0x0a,
+    Aref = 0x0b,
+    Text = 0x0c,
+    Layer = 0x0d,
+    Datatype = 0x0e,
+    Width = 0x0f,
+    Xy = 0x10,
+    EndEl = 0x11,
+    Sname = 0x12,
+    ColRow = 0x13,
+    TextType = 0x16,
+    Presentation = 0x17,
+    String = 0x19,
+    Strans = 0x1a,
+    Mag = 0x1b,
+    Angle = 0x1c,
+};
+
+struct GdsRecord {
+    GdsRecordType type = GdsRecordType::Header;
+    std::uint8_t data_type = kGdsNoData;
+    std::size_t data_offset = 0;
+    std::size_t data_size = 0;
+    std::size_t offset = 0;
+};
+
+std::string gdsRecordName(GdsRecordType type) {
+    switch (type) {
+        case GdsRecordType::Header:
+            return "HEADER";
+        case GdsRecordType::BgnLib:
+            return "BGNLIB";
+        case GdsRecordType::LibName:
+            return "LIBNAME";
+        case GdsRecordType::Units:
+            return "UNITS";
+        case GdsRecordType::EndLib:
+            return "ENDLIB";
+        case GdsRecordType::BgnStr:
+            return "BGNSTR";
+        case GdsRecordType::StrName:
+            return "STRNAME";
+        case GdsRecordType::EndStr:
+            return "ENDSTR";
+        case GdsRecordType::Boundary:
+            return "BOUNDARY";
+        case GdsRecordType::Path:
+            return "PATH";
+        case GdsRecordType::Sref:
+            return "SREF";
+        case GdsRecordType::Aref:
+            return "AREF";
+        case GdsRecordType::Text:
+            return "TEXT";
+        case GdsRecordType::Layer:
+            return "LAYER";
+        case GdsRecordType::Datatype:
+            return "DATATYPE";
+        case GdsRecordType::Width:
+            return "WIDTH";
+        case GdsRecordType::Xy:
+            return "XY";
+        case GdsRecordType::EndEl:
+            return "ENDEL";
+        case GdsRecordType::Sname:
+            return "SNAME";
+        case GdsRecordType::ColRow:
+            return "COLROW";
+        case GdsRecordType::TextType:
+            return "TEXTTYPE";
+        case GdsRecordType::Presentation:
+            return "PRESENTATION";
+        case GdsRecordType::String:
+            return "STRING";
+        case GdsRecordType::Strans:
+            return "STRANS";
+        case GdsRecordType::Mag:
+            return "MAG";
+        case GdsRecordType::Angle:
+            return "ANGLE";
+    }
+    return "UNKNOWN";
+}
+
+class GdsParser final {
+public:
+    GdsParser(const std::vector<std::uint8_t>& bytes, std::string_view file_name) :
+        bytes_(bytes), file_name_(file_name) {}
+
+    ParseResult<LayoutGdsLibrary> parse() {
+        try {
+            while (offset_ < bytes_.size()) {
+                const auto record = nextRecord();
+                handleRecord(record);
+            }
+            if (current_cell_.has_value()) {
+                warning("GDS ended before ENDSTR for cell '" + library_.cells[*current_cell_].name + "'",
+                        bytes_.size());
+                current_cell_.reset();
+            }
+            if (current_element_.has_value()) {
+                warning("GDS ended before ENDEL for an element", bytes_.size());
+                finishElement(bytes_.size());
+            }
+        }
+        catch (const std::exception& error) {
+            addDiagnostic(LayoutDiagnosticSeverity::Error, error.what(), offset_);
+        }
+
+        resolveReferences();
+        inferTopCell();
+        library_.diagnostics.insert(library_.diagnostics.end(), diagnostics_.begin(), diagnostics_.end());
+        return ParseResult<LayoutGdsLibrary>{.value = std::move(library_),
+                                             .diagnostics = std::move(diagnostics_)};
+    }
+
+private:
+    GdsRecord nextRecord() {
+        if (bytes_.size() - offset_ < 4U) {
+            throw std::runtime_error("Truncated GDS record header");
+        }
+        const auto record_offset = offset_;
+        const auto length = readU16(record_offset);
+        if (length < 4U) {
+            throw std::runtime_error("Invalid GDS record length");
+        }
+        if (length > bytes_.size() - offset_) {
+            throw std::runtime_error("Truncated GDS record payload");
+        }
+        const auto record_type = static_cast<GdsRecordType>(bytes_[offset_ + 2U]);
+        const auto data_type = bytes_[offset_ + 3U];
+        offset_ += length;
+        return GdsRecord{.type = record_type,
+                         .data_type = data_type,
+                         .data_offset = record_offset + 4U,
+                         .data_size = length - 4U,
+                         .offset = record_offset};
+    }
+
+    void handleRecord(const GdsRecord& record) {
+        switch (record.type) {
+            case GdsRecordType::Header:
+                if (const auto values = int2Values(record); !values.empty()) {
+                    library_.version = values.front();
+                }
+                return;
+            case GdsRecordType::LibName:
+                library_.name = stringValue(record);
+                return;
+            case GdsRecordType::Units:
+                parseUnits(record);
+                return;
+            case GdsRecordType::BgnStr:
+                startCell(record.offset);
+                return;
+            case GdsRecordType::StrName:
+                setCurrentCellName(stringValue(record), record.offset);
+                return;
+            case GdsRecordType::EndStr:
+                current_cell_.reset();
+                return;
+            case GdsRecordType::Boundary:
+                startElement(LayoutGdsElementKind::Boundary, record.offset);
+                return;
+            case GdsRecordType::Path:
+                startElement(LayoutGdsElementKind::Path, record.offset);
+                return;
+            case GdsRecordType::Sref:
+                startElement(LayoutGdsElementKind::Sref, record.offset);
+                return;
+            case GdsRecordType::Aref:
+                startElement(LayoutGdsElementKind::Aref, record.offset);
+                return;
+            case GdsRecordType::Text:
+                startElement(LayoutGdsElementKind::Text, record.offset);
+                return;
+            case GdsRecordType::Layer:
+                if (auto layer = firstInt2(record); layer.has_value()) {
+                    currentElement().layer = *layer;
+                }
+                return;
+            case GdsRecordType::Datatype:
+                if (auto datatype = firstInt2(record); datatype.has_value()) {
+                    currentElement().datatype = *datatype;
+                }
+                return;
+            case GdsRecordType::TextType:
+                if (auto texttype = firstInt2(record); texttype.has_value()) {
+                    currentElement().texttype = *texttype;
+                }
+                return;
+            case GdsRecordType::Xy:
+                parseXy(record);
+                return;
+            case GdsRecordType::Sname:
+                currentReference().target_name = stringValue(record);
+                return;
+            case GdsRecordType::ColRow:
+                parseColRow(record);
+                return;
+            case GdsRecordType::Strans:
+                parseStrans(record);
+                return;
+            case GdsRecordType::Mag:
+                currentReference().transform.magnification = real8Value(record).value_or(1.0);
+                return;
+            case GdsRecordType::Angle:
+                currentReference().transform.angle = real8Value(record).value_or(0.0);
+                return;
+            case GdsRecordType::String:
+                currentElement().text = stringValue(record);
+                return;
+            case GdsRecordType::EndEl:
+                finishElement(record.offset);
+                return;
+            case GdsRecordType::BgnLib:
+            case GdsRecordType::EndLib:
+            case GdsRecordType::Width:
+            case GdsRecordType::Presentation:
+                return;
+        }
+        warning("Skipping unsupported GDS record " + gdsRecordName(record.type), record.offset);
+    }
+
+    void parseUnits(const GdsRecord& record) {
+        const auto values = real8Values(record);
+        if (values.size() < 2U) {
+            warning("GDS UNITS record is missing values", record.offset);
+            return;
+        }
+        library_.user_unit_meters = values[0];
+        library_.database_unit_meters = values[1];
+        if (library_.database_unit_meters > 0.0) {
+            const auto units = std::llround(1.0e-6 / library_.database_unit_meters);
+            if (units > 0 && units <= std::numeric_limits<std::uint32_t>::max()) {
+                library_.units_per_micron = static_cast<std::uint32_t>(units);
+            }
+        }
+    }
+
+    void startCell(std::size_t record_offset) {
+        if (current_cell_.has_value()) {
+            warning("Starting a GDS cell before ENDSTR closed the previous cell", record_offset);
+        }
+        library_.cells.push_back(LayoutGdsCell{});
+        current_cell_ = static_cast<std::uint32_t>(library_.cells.size() - 1U);
+    }
+
+    void setCurrentCellName(std::string name, std::size_t record_offset) {
+        if (!current_cell_.has_value()) {
+            warning("STRNAME appeared outside a GDS cell", record_offset);
+            return;
+        }
+        library_.cells[*current_cell_].name = std::move(name);
+    }
+
+    void startElement(LayoutGdsElementKind kind, std::size_t record_offset) {
+        if (!current_cell_.has_value()) {
+            warning("GDS element appeared outside a cell", record_offset);
+            return;
+        }
+        if (current_element_.has_value()) {
+            warning("Starting a GDS element before ENDEL closed the previous element", record_offset);
+            finishElement(record_offset);
+        }
+        current_element_ = LayoutGdsElement{.kind = kind, .cell_index = *current_cell_};
+        if (kind == LayoutGdsElementKind::Sref || kind == LayoutGdsElementKind::Aref) {
+            current_reference_ = LayoutGdsReference{.kind = kind, .parent_cell_index = *current_cell_};
+        }
+    }
+
+    LayoutGdsElement& currentElement() {
+        if (!current_element_.has_value()) {
+            scratch_element_ = LayoutGdsElement{};
+            return scratch_element_;
+        }
+        return *current_element_;
+    }
+
+    LayoutGdsReference& currentReference() {
+        if (!current_reference_.has_value()) {
+            scratch_reference_ = LayoutGdsReference{};
+            return scratch_reference_;
+        }
+        return *current_reference_;
+    }
+
+    void finishElement(std::size_t record_offset) {
+        if (!current_element_.has_value()) {
+            warning("ENDEL appeared without an active GDS element", record_offset);
+            return;
+        }
+        auto element = std::move(*current_element_);
+        current_element_.reset();
+        if (current_reference_.has_value()) {
+            auto reference = std::move(*current_reference_);
+            current_reference_.reset();
+            if (!element.points.empty()) {
+                reference.origin = element.points.front();
+                if (reference.kind == LayoutGdsElementKind::Aref && element.points.size() >= 3U) {
+                    reference.column_vector =
+                        LayoutPoint{.x = element.points[1].x - element.points[0].x,
+                                    .y = element.points[1].y - element.points[0].y};
+                    reference.row_vector =
+                        LayoutPoint{.x = element.points[2].x - element.points[0].x,
+                                    .y = element.points[2].y - element.points[0].y};
+                }
+            }
+            const auto ref_index = static_cast<std::uint32_t>(library_.references.size());
+            element.reference_index = ref_index;
+            library_.references.push_back(std::move(reference));
+            if (element.cell_index < library_.cells.size()) {
+                library_.cells[element.cell_index].reference_indices.push_back(ref_index);
+            }
+        }
+        const auto element_index = static_cast<std::uint32_t>(library_.elements.size());
+        if (element.cell_index < library_.cells.size()) {
+            library_.cells[element.cell_index].element_indices.push_back(element_index);
+            expandCellBounds(library_.cells[element.cell_index].bounds, elementBounds(element));
+        }
+        library_.elements.push_back(std::move(element));
+    }
+
+    void parseXy(const GdsRecord& record) {
+        const auto values = int4Values(record);
+        if (values.size() % 2U != 0U) {
+            warning("GDS XY record has an odd coordinate count", record.offset);
+        }
+        auto& element = currentElement();
+        element.points.clear();
+        for (std::size_t index = 0; index + 1U < values.size(); index += 2U) {
+            element.points.push_back(LayoutPoint{.x = values[index], .y = values[index + 1U]});
+        }
+    }
+
+    void parseColRow(const GdsRecord& record) {
+        const auto values = int2Values(record);
+        if (values.size() < 2U) {
+            warning("GDS COLROW record is missing values", record.offset);
+            return;
+        }
+        currentReference().columns = values[0] == 0U ? 1U : values[0];
+        currentReference().rows = values[1] == 0U ? 1U : values[1];
+    }
+
+    void parseStrans(const GdsRecord& record) {
+        checkType(record, kGdsBitArray);
+        const auto values = rawU16Values(record);
+        if (values.empty()) {
+            warning("GDS STRANS record is missing flags", record.offset);
+            return;
+        }
+        currentReference().transform.reflected = (values[0] & 0x8000U) != 0U;
+    }
+
+    std::vector<std::uint16_t> int2Values(const GdsRecord& record) {
+        checkType(record, kGdsInt2);
+        return rawU16Values(record);
+    }
+
+    std::vector<std::uint16_t> rawU16Values(const GdsRecord& record) {
+        if (record.data_size % 2U != 0U) {
+            warning("GDS " + gdsRecordName(record.type) + " has a truncated 2-byte integer", record.offset);
+        }
+        std::vector<std::uint16_t> result;
+        for (std::size_t offset = record.data_offset; offset + 1U < record.data_offset + record.data_size;
+             offset += 2U) {
+            result.push_back(readU16(offset));
+        }
+        return result;
+    }
+
+    std::optional<std::uint32_t> firstInt2(const GdsRecord& record) {
+        const auto values = int2Values(record);
+        if (values.empty()) {
+            warning("GDS " + gdsRecordName(record.type) + " is missing an integer value", record.offset);
+            return std::nullopt;
+        }
+        return values.front();
+    }
+
+    std::vector<std::int32_t> int4Values(const GdsRecord& record) {
+        checkType(record, kGdsInt4);
+        if (record.data_size % 4U != 0U) {
+            warning("GDS " + gdsRecordName(record.type) + " has a truncated 4-byte integer", record.offset);
+        }
+        std::vector<std::int32_t> result;
+        for (std::size_t offset = record.data_offset; offset + 3U < record.data_offset + record.data_size;
+             offset += 4U) {
+            result.push_back(readI32(offset));
+        }
+        return result;
+    }
+
+    std::vector<double> real8Values(const GdsRecord& record) {
+        checkType(record, kGdsReal8);
+        if (record.data_size % 8U != 0U) {
+            warning("GDS " + gdsRecordName(record.type) + " has a truncated 8-byte real", record.offset);
+        }
+        std::vector<double> result;
+        for (std::size_t offset = record.data_offset; offset + 7U < record.data_offset + record.data_size;
+             offset += 8U) {
+            result.push_back(readReal8(offset));
+        }
+        return result;
+    }
+
+    std::optional<double> real8Value(const GdsRecord& record) {
+        const auto values = real8Values(record);
+        if (values.empty()) {
+            warning("GDS " + gdsRecordName(record.type) + " is missing a real value", record.offset);
+            return std::nullopt;
+        }
+        return values.front();
+    }
+
+    std::string stringValue(const GdsRecord& record) {
+        checkType(record, kGdsString);
+        std::string value;
+        value.reserve(record.data_size);
+        const auto end = record.data_offset + record.data_size;
+        for (std::size_t offset = record.data_offset; offset < end; ++offset) {
+            if (bytes_[offset] == 0) {
+                continue;
+            }
+            value.push_back(static_cast<char>(bytes_[offset]));
+        }
+        if (!value.empty() && value.back() == ' ') {
+            while (!value.empty() && value.back() == ' ') {
+                value.pop_back();
+            }
+        }
+        return value;
+    }
+
+    void checkType(const GdsRecord& record, std::uint8_t expected) {
+        if (record.data_type != expected) {
+            warning("GDS " + gdsRecordName(record.type) + " has unexpected data type", record.offset);
+        }
+    }
+
+    std::uint16_t readU16(std::size_t offset) const {
+        return static_cast<std::uint16_t>((static_cast<std::uint16_t>(bytes_[offset]) << 8U) |
+                                          static_cast<std::uint16_t>(bytes_[offset + 1U]));
+    }
+
+    std::int32_t readI32(std::size_t offset) const {
+        const std::uint32_t value = (static_cast<std::uint32_t>(bytes_[offset]) << 24U) |
+                                    (static_cast<std::uint32_t>(bytes_[offset + 1U]) << 16U) |
+                                    (static_cast<std::uint32_t>(bytes_[offset + 2U]) << 8U) |
+                                    static_cast<std::uint32_t>(bytes_[offset + 3U]);
+        return static_cast<std::int32_t>(value);
+    }
+
+    double readReal8(std::size_t offset) const {
+        const auto first = bytes_[offset];
+        if (first == 0U) {
+            return 0.0;
+        }
+        const auto sign = (first & 0x80U) != 0U ? -1.0 : 1.0;
+        const auto exponent = static_cast<int>(first & 0x7fU) - 64;
+        std::uint64_t mantissa = 0;
+        for (std::size_t index = 1; index < 8; ++index) {
+            mantissa = (mantissa << 8U) | bytes_[offset + index];
+        }
+        const auto fraction = static_cast<double>(mantissa) / static_cast<double>(1ULL << 56U);
+        return sign * fraction * std::pow(16.0, exponent);
+    }
+
+    void resolveReferences() {
+        std::map<std::string, std::uint32_t> cell_by_name;
+        for (std::size_t index = 0; index < library_.cells.size(); ++index) {
+            const auto& name = library_.cells[index].name;
+            if (name.empty()) {
+                warning("GDS cell has no STRNAME", 0);
+                continue;
+            }
+            cell_by_name[name] = static_cast<std::uint32_t>(index);
+        }
+
+        for (auto& reference : library_.references) {
+            const auto found = cell_by_name.find(reference.target_name);
+            if (found == cell_by_name.end()) {
+                warning("GDS reference target '" + reference.target_name + "' is missing", 0);
+                continue;
+            }
+            reference.target_cell_index = found->second;
+        }
+    }
+
+    void inferTopCell() {
+        std::vector<bool> referenced(library_.cells.size(), false);
+        for (const auto& reference : library_.references) {
+            if (reference.target_cell_index < referenced.size()) {
+                referenced[reference.target_cell_index] = true;
+            }
+        }
+        for (std::size_t index = 0; index < library_.cells.size(); ++index) {
+            if (!referenced[index]) {
+                library_.top_cell_index = static_cast<std::uint32_t>(index);
+                library_.cells[index].is_top = true;
+                return;
+            }
+        }
+        if (!library_.cells.empty()) {
+            library_.top_cell_index = 0;
+            library_.cells[0].is_top = true;
+            warning("GDS hierarchy has no unreferenced top cell; possible reference cycle", 0);
+        }
+    }
+
+    static void expandCellBounds(std::optional<LayoutRect>& bounds,
+                                 const std::optional<LayoutRect>& rect) {
+        if (!rect.has_value()) {
+            return;
+        }
+        if (!bounds.has_value()) {
+            bounds = *rect;
+            return;
+        }
+        bounds->x0 = std::min(bounds->x0, rect->x0);
+        bounds->y0 = std::min(bounds->y0, rect->y0);
+        bounds->x1 = std::max(bounds->x1, rect->x1);
+        bounds->y1 = std::max(bounds->y1, rect->y1);
+    }
+
+    static std::optional<LayoutRect> elementBounds(const LayoutGdsElement& element) {
+        if (element.points.empty()) {
+            return std::nullopt;
+        }
+        LayoutRect bounds{.x0 = element.points.front().x,
+                          .y0 = element.points.front().y,
+                          .x1 = element.points.front().x,
+                          .y1 = element.points.front().y};
+        for (const auto& point : element.points) {
+            bounds.x0 = std::min(bounds.x0, point.x);
+            bounds.y0 = std::min(bounds.y0, point.y);
+            bounds.x1 = std::max(bounds.x1, point.x);
+            bounds.y1 = std::max(bounds.y1, point.y);
+        }
+        return bounds;
+    }
+
+    void warning(std::string message, std::size_t offset) {
+        addDiagnostic(LayoutDiagnosticSeverity::Warning, std::move(message), offset);
+    }
+
+    void addDiagnostic(LayoutDiagnosticSeverity severity, std::string message, std::size_t offset) {
+        if (!file_name_.empty()) {
+            message = std::string(file_name_) + ": " + message;
+        }
+        diagnostics_.push_back(LayoutDiagnostic{.severity = severity,
+                                                .message = std::move(message),
+                                                .line = 1,
+                                                .column = offset + 1U});
+    }
+
+    const std::vector<std::uint8_t>& bytes_;
+    std::string file_name_;
+    std::size_t offset_ = 0;
+    LayoutGdsLibrary library_;
+    std::vector<LayoutDiagnostic> diagnostics_;
+    std::optional<std::uint32_t> current_cell_;
+    std::optional<LayoutGdsElement> current_element_;
+    std::optional<LayoutGdsReference> current_reference_;
+    LayoutGdsElement scratch_element_;
+    LayoutGdsReference scratch_reference_;
+};
 
 class LefParser final : public ParserBase {
 public:
@@ -1264,6 +1856,15 @@ std::string readTextFile(const std::filesystem::path& path) {
     return buffer.str();
 }
 
+std::vector<std::uint8_t> readBinaryFile(const std::filesystem::path& path) {
+    std::ifstream input(path, std::ios::binary);
+    if (!input) {
+        throw std::runtime_error("Failed to read layout file: " + path.generic_string());
+    }
+    return std::vector<std::uint8_t>(std::istreambuf_iterator<char>(input),
+                                     std::istreambuf_iterator<char>());
+}
+
 } // namespace
 
 ParseResult<LayoutLefLibrary> parseLef(std::string_view text, std::string_view file_name) {
@@ -1274,12 +1875,21 @@ ParseResult<LayoutDefDesign> parseDef(std::string_view text, std::string_view fi
     return DefParser(text, file_name).parse();
 }
 
+ParseResult<LayoutGdsLibrary> parseGds(const std::vector<std::uint8_t>& bytes,
+                                       std::string_view file_name) {
+    return GdsParser(bytes, file_name).parse();
+}
+
 ParseResult<LayoutLefLibrary> parseLefFile(const std::filesystem::path& path) {
     return parseLef(readTextFile(path), path.generic_string());
 }
 
 ParseResult<LayoutDefDesign> parseDefFile(const std::filesystem::path& path) {
     return parseDef(readTextFile(path), path.generic_string());
+}
+
+ParseResult<LayoutGdsLibrary> parseGdsFile(const std::filesystem::path& path) {
+    return parseGds(readBinaryFile(path), path.generic_string());
 }
 
 } // namespace pristine::layout

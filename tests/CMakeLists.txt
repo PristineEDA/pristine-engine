@@ -55,6 +55,16 @@ set_tests_properties(pristine_ihp_lef_corpus PROPERTIES
 	SKIP_REGULAR_EXPRESSION "SKIP:")
 
 add_test(
+	NAME pristine_ihp_gds_corpus
+	COMMAND Python3::Interpreter ${CMAKE_CURRENT_SOURCE_DIR}/e2e/ihp_gds_corpus.py
+		$<TARGET_FILE:pristine-engine>
+		${PROJECT_SOURCE_DIR}/.deps/src/ihp-open-pdk)
+set_tests_properties(pristine_ihp_gds_corpus PROPERTIES
+	LABELS "layout;gds;ihp"
+	SKIP_RETURN_CODE 77
+	SKIP_REGULAR_EXPRESSION "SKIP:")
+
+add_test(
 	NAME pristine_lefdef_corpus
 	COMMAND Python3::Interpreter ${CMAKE_CURRENT_SOURCE_DIR}/e2e/lefdef_corpus.py
 		$<TARGET_FILE:pristine-engine>

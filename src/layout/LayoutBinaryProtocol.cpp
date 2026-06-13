@@ -18,8 +18,10 @@ constexpr std::uint8_t kCatalogMagic[] = {'P', 'L', 'C', 'T'};
 constexpr std::uint8_t kGeometryMagic[] = {'P', 'L', 'G', 'E'};
 constexpr std::uint16_t kFrameHeaderSize = 24;
 constexpr std::uint16_t kCatalogHeaderSize = 80;
+constexpr std::uint16_t kCatalogHeaderSizeV3 = 128;
 constexpr std::uint16_t kGeometryHeaderSize = 96;
 constexpr std::size_t kMaxPayloadSize = 128U * 1024U * 1024U;
+constexpr std::uint32_t kGdsCatalogCellTopFlag = 1U;
 
 struct LayoutCatalogPinShapeRange {
     std::uint32_t first_shape_index = kNoLayoutMacroIndex;
@@ -37,6 +39,14 @@ void appendCount(std::vector<std::uint8_t>& output, std::size_t value) {
         throw std::runtime_error("Layout binary count exceeds uint32 range");
     }
     appendU32(output, static_cast<std::uint32_t>(value));
+}
+
+std::uint32_t checkedCount(std::size_t value, std::string_view label) {
+    if (value > std::numeric_limits<std::uint32_t>::max()) {
+        throw std::runtime_error(std::string("Layout ") + std::string(label) +
+                                 " exceeds uint32 range");
+    }
+    return static_cast<std::uint32_t>(value);
 }
 
 std::uint32_t appendTableString(std::vector<std::uint8_t>& table, std::string_view value) {
@@ -112,6 +122,150 @@ std::vector<std::vector<LayoutCatalogPinShapeRange>> buildPinShapeRanges(const L
         ++range.shape_count;
     }
     return ranges;
+}
+
+std::vector<std::uint8_t> encodeGdsCatalogResponsePayload(const LayoutDataSet& data) {
+    if (!data.gds.has_value()) {
+        throw std::runtime_error("Layout v3 catalog requires GDS data");
+    }
+    const auto& gds = *data.gds;
+    std::vector<std::uint8_t> result(kCatalogHeaderSizeV3, 0);
+    std::vector<std::uint8_t> strings;
+
+    const auto layer_offset = checkedCount(result.size(), "layer offset");
+    for (const auto& layer : data.layers) {
+        appendU32(result, appendTableString(strings, layer.name));
+        appendU16(result, static_cast<std::uint16_t>(layer.kind));
+        appendU16(result, 0);
+        appendF64(result, layer.pitch.value_or(0.0));
+        appendF64(result, layer.width.value_or(0.0));
+        appendF64(result, layer.spacing.value_or(0.0));
+    }
+
+    const auto cell_offset = checkedCount(result.size(), "GDS cell offset");
+    for (const auto& cell : gds.cells) {
+        appendU32(result, appendTableString(strings, cell.name));
+        appendCount(result, cell.reference_indices.empty() ? 0U : cell.reference_indices.front());
+        appendCount(result, cell.reference_indices.size());
+        appendCount(result, cell.element_indices.empty() ? 0U : cell.element_indices.front());
+        appendCount(result, cell.element_indices.size());
+        appendU32(result, cell.is_top ? kGdsCatalogCellTopFlag : 0U);
+        if (cell.bounds.has_value()) {
+            appendF64(result, toMicrons(cell.bounds->x0, data.units_per_micron));
+            appendF64(result, toMicrons(cell.bounds->y0, data.units_per_micron));
+            appendF64(result, toMicrons(cell.bounds->x1, data.units_per_micron));
+            appendF64(result, toMicrons(cell.bounds->y1, data.units_per_micron));
+        }
+        else {
+            appendF64(result, 0.0);
+            appendF64(result, 0.0);
+            appendF64(result, 0.0);
+            appendF64(result, 0.0);
+        }
+    }
+
+    const auto reference_offset = checkedCount(result.size(), "GDS reference offset");
+    for (const auto& reference : gds.references) {
+        appendU32(result, reference.parent_cell_index);
+        appendU32(result, reference.target_cell_index);
+        appendU16(result, static_cast<std::uint16_t>(reference.kind));
+        appendU16(result, reference.transform.reflected ? 1U : 0U);
+        appendF64(result, toMicrons(reference.origin.x, data.units_per_micron));
+        appendF64(result, toMicrons(reference.origin.y, data.units_per_micron));
+        appendF64(result, reference.transform.magnification);
+        appendF64(result, reference.transform.angle);
+        appendU32(result, reference.columns);
+        appendU32(result, reference.rows);
+        appendF64(result, toMicrons(reference.column_vector.x, data.units_per_micron));
+        appendF64(result, toMicrons(reference.column_vector.y, data.units_per_micron));
+        appendF64(result, toMicrons(reference.row_vector.x, data.units_per_micron));
+        appendF64(result, toMicrons(reference.row_vector.y, data.units_per_micron));
+        appendU32(result, appendTableString(strings, reference.target_name));
+    }
+
+    const auto element_offset = checkedCount(result.size(), "GDS element offset");
+    std::uint32_t first_point_index = 0;
+    for (const auto& element : gds.elements) {
+        appendU32(result, element.cell_index);
+        appendU16(result, static_cast<std::uint16_t>(element.kind));
+        appendU16(result, 0);
+        appendU32(result, element.layer);
+        appendU32(result, element.datatype);
+        appendU32(result, element.texttype);
+        appendU32(result, element.reference_index);
+        appendU32(result, first_point_index);
+        appendCount(result, element.points.size());
+        appendU32(result, appendTableString(strings, element.text));
+        first_point_index += checkedCount(element.points.size(), "GDS point count");
+    }
+
+    const auto point_offset = checkedCount(result.size(), "GDS point offset");
+    for (const auto& element : gds.elements) {
+        for (const auto& point : element.points) {
+            appendF64(result, toMicrons(point.x, data.units_per_micron));
+            appendF64(result, toMicrons(point.y, data.units_per_micron));
+        }
+    }
+
+    const auto diagnostic_offset = checkedCount(result.size(), "GDS diagnostic offset");
+    for (const auto& diagnostic : data.diagnostics) {
+        appendU16(result, static_cast<std::uint16_t>(diagnostic.severity));
+        appendU16(result, 0);
+        appendU32(result, static_cast<std::uint32_t>(diagnostic.line));
+        appendU32(result, static_cast<std::uint32_t>(diagnostic.column));
+        appendU32(result, appendTableString(strings, diagnostic.message));
+    }
+
+    alignTo(result, 4);
+    const auto string_offset = checkedCount(result.size(), "GDS string offset");
+    result.insert(result.end(), strings.begin(), strings.end());
+
+    std::size_t offset = 0;
+    result[offset++] = kCatalogMagic[0];
+    result[offset++] = kCatalogMagic[1];
+    result[offset++] = kCatalogMagic[2];
+    result[offset++] = kCatalogMagic[3];
+    result[offset++] = static_cast<std::uint8_t>(kLayoutProtocolVersionV3 & 0xffU);
+    result[offset++] = static_cast<std::uint8_t>((kLayoutProtocolVersionV3 >> 8U) & 0xffU);
+    result[offset++] = static_cast<std::uint8_t>(kCatalogHeaderSizeV3 & 0xffU);
+    result[offset++] = static_cast<std::uint8_t>((kCatalogHeaderSizeV3 >> 8U) & 0xffU);
+    auto writeHeaderU32 = [&](std::uint32_t value) {
+        result[offset++] = static_cast<std::uint8_t>(value & 0xffU);
+        result[offset++] = static_cast<std::uint8_t>((value >> 8U) & 0xffU);
+        result[offset++] = static_cast<std::uint8_t>((value >> 16U) & 0xffU);
+        result[offset++] = static_cast<std::uint8_t>((value >> 24U) & 0xffU);
+    };
+    writeHeaderU32(data.units_per_micron);
+    writeHeaderU32(checkedCount(data.layers.size(), "layer count"));
+    writeHeaderU32(checkedCount(gds.cells.size(), "GDS cell count"));
+    writeHeaderU32(checkedCount(gds.references.size(), "GDS reference count"));
+    writeHeaderU32(checkedCount(gds.elements.size(), "GDS element count"));
+    writeHeaderU32(checkedCount(data.diagnostics.size(), "diagnostic count"));
+    writeHeaderU32(layer_offset);
+    writeHeaderU32(cell_offset);
+    writeHeaderU32(reference_offset);
+    writeHeaderU32(element_offset);
+    writeHeaderU32(point_offset);
+    writeHeaderU32(diagnostic_offset);
+    writeHeaderU32(string_offset);
+    writeHeaderU32(checkedCount(strings.size(), "string table"));
+    writeHeaderU32(data.bounds.has_value() ? 1U : 0U);
+    writeHeaderU32(gds.top_cell_index);
+    writeHeaderU32(checkedCount(data.shapes.size(), "shape count"));
+    writeHeaderU32(0);
+    writeHeaderU32(0);
+    writeHeaderU32(0);
+    writeHeaderU32(0);
+    writeHeaderU32(0);
+    writeHeaderU32(0);
+    writeHeaderU32(0);
+    writeHeaderU32(0);
+    writeHeaderU32(0);
+    writeHeaderU32(0);
+    writeHeaderU32(0);
+    writeHeaderU32(0);
+
+    return result;
 }
 
 } // namespace
@@ -197,7 +351,7 @@ std::vector<std::uint8_t> encodeFrame(const LayoutFrame& frame) {
     std::vector<std::uint8_t> result;
     result.reserve(kFrameHeaderSize + frame.payload.size());
     result.insert(result.end(), std::begin(kFrameMagic), std::end(kFrameMagic));
-    appendU16(result, kLayoutProtocolVersion);
+    appendU16(result, frame.version);
     appendU16(result, static_cast<std::uint16_t>(frame.message_type));
     appendU32(result, frame.request_id);
     appendU32(result, frame.flags);
@@ -218,7 +372,7 @@ LayoutFrame decodeFrame(const std::uint8_t* bytes, std::size_t size) {
         throw std::runtime_error("Invalid layout frame magic");
     }
     const auto version = readU16(bytes, size, 4);
-    if (version != kLayoutProtocolVersion) {
+    if (version != kLayoutProtocolVersion && version != kLayoutProtocolVersionV3) {
         throw std::runtime_error("Unsupported layout frame version");
     }
     const auto message_type = readU16(bytes, size, 6);
@@ -235,18 +389,24 @@ LayoutFrame decodeFrame(const std::uint8_t* bytes, std::size_t size) {
     return LayoutFrame{.message_type = static_cast<LayoutMessageType>(message_type),
                        .request_id = request_id,
                        .flags = flags,
+                       .version = version,
                        .payload = std::vector<std::uint8_t>(bytes + kFrameHeaderSize,
                                                             bytes + kFrameHeaderSize +
                                                                 payload_size)};
 }
 
 std::vector<std::uint8_t> encodeHelloResponsePayload(const LayoutDataSet& data) {
+    return encodeHelloResponsePayload(data, kLayoutProtocolVersion);
+}
+
+std::vector<std::uint8_t> encodeHelloResponsePayload(const LayoutDataSet& data,
+                                                     std::uint16_t version) {
     std::vector<std::uint8_t> result;
-    appendU16(result, kLayoutProtocolVersion);
+    appendU16(result, version);
     appendU16(result, 0);
     appendU32(result, data.units_per_micron);
     appendCount(result, data.layers.size());
-    appendCount(result, data.macros.size());
+    appendCount(result, data.gds.has_value() ? data.gds->cells.size() : data.macros.size());
     appendCount(result, data.components.size());
     appendCount(result, data.nets.size());
     appendCount(result, data.shapes.size());
@@ -269,6 +429,15 @@ std::vector<std::uint8_t> encodeHelloResponsePayload(const LayoutDataSet& data) 
 }
 
 std::vector<std::uint8_t> encodeCatalogResponsePayload(const LayoutDataSet& data) {
+    return encodeCatalogResponsePayload(data, kLayoutProtocolVersion);
+}
+
+std::vector<std::uint8_t> encodeCatalogResponsePayload(const LayoutDataSet& data,
+                                                       std::uint16_t version) {
+    if (version == kLayoutProtocolVersionV3) {
+        return encodeGdsCatalogResponsePayload(data);
+    }
+
     std::vector<std::uint8_t> result(kCatalogHeaderSize, 0);
     std::vector<std::uint8_t> strings;
     const auto pin_shape_ranges = buildPinShapeRanges(data);
@@ -367,8 +536,8 @@ std::vector<std::uint8_t> encodeCatalogResponsePayload(const LayoutDataSet& data
     result[offset++] = kCatalogMagic[1];
     result[offset++] = kCatalogMagic[2];
     result[offset++] = kCatalogMagic[3];
-    result[offset++] = static_cast<std::uint8_t>(kLayoutProtocolVersion & 0xffU);
-    result[offset++] = static_cast<std::uint8_t>((kLayoutProtocolVersion >> 8U) & 0xffU);
+    result[offset++] = static_cast<std::uint8_t>(version & 0xffU);
+    result[offset++] = static_cast<std::uint8_t>((version >> 8U) & 0xffU);
     result[offset++] = static_cast<std::uint8_t>(kCatalogHeaderSize & 0xffU);
     result[offset++] = static_cast<std::uint8_t>((kCatalogHeaderSize >> 8U) & 0xffU);
     auto writeHeaderU32 = [&](std::uint32_t value) {
@@ -401,6 +570,12 @@ std::vector<std::uint8_t> encodeCatalogResponsePayload(const LayoutDataSet& data
 
 std::vector<std::uint8_t> encodeGeometryResponsePayload(const LayoutDataSet& data,
                                                         const LayoutGeometryRequest& request) {
+    return encodeGeometryResponsePayload(data, request, kLayoutProtocolVersion);
+}
+
+std::vector<std::uint8_t> encodeGeometryResponsePayload(const LayoutDataSet& data,
+                                                        const LayoutGeometryRequest& request,
+                                                        std::uint16_t version) {
     std::vector<const LayoutShape*> selected;
     selected.reserve(data.shapes.size());
     bool truncated = false;
@@ -482,8 +657,8 @@ std::vector<std::uint8_t> encodeGeometryResponsePayload(const LayoutDataSet& dat
     result[offset++] = kGeometryMagic[1];
     result[offset++] = kGeometryMagic[2];
     result[offset++] = kGeometryMagic[3];
-    result[offset++] = static_cast<std::uint8_t>(kLayoutProtocolVersion & 0xffU);
-    result[offset++] = static_cast<std::uint8_t>((kLayoutProtocolVersion >> 8U) & 0xffU);
+    result[offset++] = static_cast<std::uint8_t>(version & 0xffU);
+    result[offset++] = static_cast<std::uint8_t>((version >> 8U) & 0xffU);
     result[offset++] = static_cast<std::uint8_t>(kGeometryHeaderSize & 0xffU);
     result[offset++] = static_cast<std::uint8_t>((kGeometryHeaderSize >> 8U) & 0xffU);
     auto writeHeaderU32 = [&](std::uint32_t value) {

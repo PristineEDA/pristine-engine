@@ -258,6 +258,12 @@ TEST_CASE("ServerSession handles initialize-shutdown-exit", "[server][lifecycle]
               "pristineLayoutProvider").at("protocol") == "pristine-layout-columnar-v2");
     CHECK(initialize_response.at("result").at("capabilities").at("experimental").at(
               "pristineLayoutProvider").at("sources").at(0) == "lefdef");
+    CHECK(initialize_response.at("result").at("capabilities").at("experimental").at(
+              "pristineLayoutProvider").at("sources").at(1) == "gds");
+    CHECK(initialize_response.at("result").at("capabilities").at("experimental").at(
+              "pristineLayoutProvider").at("protocols").at(0) == "pristine-layout-columnar-v2");
+    CHECK(initialize_response.at("result").at("capabilities").at("experimental").at(
+              "pristineLayoutProvider").at("protocols").at(1) == "pristine-layout-columnar-v3");
     CHECK(initialize_response.at("result").at("capabilities").at("textDocumentSync").at(
               "openClose") == true);
 
@@ -367,6 +373,7 @@ END DESIGN
     const auto& result = open_response.at("result");
     CHECK(result.at("sessionId") == "1");
     CHECK(result.at("protocol") == "pristine-layout-columnar-v2");
+    CHECK(result.at("source") == "lefdef");
     CHECK(result.at("title") == "tiny-layout");
     CHECK(result.at("lefCount") == 1);
     CHECK(result.at("defPresent") == true);
@@ -375,6 +382,9 @@ END DESIGN
     CHECK(result.at("macroCount") == 1);
     CHECK(result.at("componentCount") == 1);
     CHECK(result.at("netCount") == 0);
+    CHECK(result.at("cellCount") == 0);
+    CHECK(result.at("referenceCount") == 0);
+    CHECK(result.at("elementCount") == 0);
     CHECK(result.at("diagnosticCount").get<std::size_t>() >= 0);
     CHECK(result.at("fileUris").size() == 2);
     CHECK(result.at("endpoint").at("path").get<std::string>().find("pristine-engine-layout") !=
