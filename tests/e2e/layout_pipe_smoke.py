@@ -10,10 +10,10 @@ from typing import BinaryIO
 
 
 FRAME_HEADER = struct.Struct("<4sHHIIII")
-PROTOCOL_VERSION = 2
-PROTOCOL_VERSION_V3 = 3
-SHAPE_TABLE_STRIDE_V2 = 28
+PROTOCOL_VERSION = 3
+SHAPE_TABLE_STRIDE = 28
 PIN_TABLE_STRIDE = 28
+DEF_PIN_TABLE_STRIDE = 40
 GDS_CELL_STRIDE = 56
 NO_MACRO_INDEX = 0xFFFFFFFF
 
@@ -23,6 +23,7 @@ CATALOG_REQUEST = 3
 CATALOG_RESPONSE = 4
 GEOMETRY_REQUEST = 5
 GEOMETRY_RESPONSE = 6
+ERROR_RESPONSE = 7
 CLOSE = 8
 
 
@@ -192,6 +193,9 @@ DIEAREA ( 0 0 ) ( 2000 2000 ) ;
 COMPONENTS 1 ;
   - U1 invx1 + PLACED ( 100 200 ) N ;
 END COMPONENTS
+PINS 1 ;
+  - IN + NET n1 + LAYER M1 ( 0 0 ) ( 20 20 ) + FIXED ( 10 10 ) N ;
+END PINS
 NETS 1 ;
   - n1 ( U1 A ) + ROUTED M1 ( 100 200 ) ( 300 200 ) ;
 END NETS
@@ -277,6 +281,15 @@ def write_gds_workspace(root: pathlib.Path) -> pathlib.Path:
     return gds
 
 
+def exercise_v2_rejection(session: dict) -> None:
+    with connect_pipe(session["endpoint"]["kind"], session["endpoint"]["path"]) as pipe:
+        pipe.write(frame(HELLO, 9, version=2))
+        pipe.flush()
+        message_type, _request_id, _flags, payload = read_frame(pipe)
+        assert message_type == ERROR_RESPONSE
+        assert struct.unpack_from("<I", payload, 0)[0] == 2
+
+
 def exercise_layout_pipe(session: dict) -> None:
     with connect_pipe(session["endpoint"]["kind"], session["endpoint"]["path"]) as pipe:
         pipe.write(frame(HELLO, 10))
@@ -295,13 +308,23 @@ def exercise_layout_pipe(session: dict) -> None:
         assert request_id == 11
         assert payload[:4] == b"PLCT"
         assert struct.unpack_from("<H", payload, 4)[0] == PROTOCOL_VERSION
-        assert struct.unpack_from("<H", payload, 6)[0] == 80
+        assert struct.unpack_from("<H", payload, 6)[0] == 136
         assert struct.unpack_from("<I", payload, 8)[0] == 1000
         assert struct.unpack_from("<I", payload, 12)[0] == 1
-        assert struct.unpack_from("<I", payload, 16)[0] == 1
-        pin_count = struct.unpack_from("<I", payload, 72)[0]
-        pin_table_offset = struct.unpack_from("<I", payload, 76)[0]
-        string_table_offset = struct.unpack_from("<I", payload, 60)[0]
+        assert struct.unpack_from("<I", payload, 36)[0] == 1
+        assert struct.unpack_from("<I", payload, 44)[0] == 1
+        assert struct.unpack_from("<I", payload, 68)[0] == 1
+        assert struct.unpack_from("<I", payload, 76)[0] == 1
+        assert struct.unpack_from("<I", payload, 84)[0] == 1
+        assert struct.unpack_from("<I", payload, 92)[0] == 0
+        assert struct.unpack_from("<I", payload, 100)[0] == 0
+        assert struct.unpack_from("<I", payload, 108)[0] == 0
+        assert struct.unpack_from("<I", payload, 116)[0] == 0
+        pin_count = struct.unpack_from("<I", payload, 52)[0]
+        pin_table_offset = struct.unpack_from("<I", payload, 56)[0]
+        def_pin_count = struct.unpack_from("<I", payload, 76)[0]
+        def_pin_table_offset = struct.unpack_from("<I", payload, 80)[0]
+        string_table_offset = struct.unpack_from("<I", payload, 28)[0]
         assert pin_count == 3
 
         def table_string(offset: int) -> str:
@@ -338,6 +361,12 @@ def exercise_layout_pipe(session: dict) -> None:
         assert pins[(0, 2)]["use"] == "GROUND"
         assert pins[(0, 2)]["direction"] == 3
         assert pins[(0, 2)]["shape_count"] == 1
+        assert def_pin_count == 1
+        assert def_pin_table_offset + DEF_PIN_TABLE_STRIDE <= len(payload)
+        def_pin_name_offset, def_pin_net_offset = struct.unpack_from("<II", payload, def_pin_table_offset)
+        assert table_string(def_pin_name_offset) == "IN"
+        assert table_string(def_pin_net_offset) == "n1"
+        assert struct.unpack_from("<II", payload, def_pin_table_offset + 32) == (5, 1)
 
         pipe.write(frame(GEOMETRY_REQUEST, 12, geometry_payload(64)))
         pipe.flush()
@@ -351,7 +380,7 @@ def exercise_layout_pipe(session: dict) -> None:
         assert shape_count >= 3
         shape_table_offset = struct.unpack_from("<I", payload, 24)[0]
         macro_indices = [
-            struct.unpack_from("<I", payload, shape_table_offset + index * SHAPE_TABLE_STRIDE_V2 + 12)[0]
+            struct.unpack_from("<I", payload, shape_table_offset + index * SHAPE_TABLE_STRIDE + 12)[0]
             for index in range(shape_count)
         ]
         assert 0 in macro_indices
@@ -368,28 +397,32 @@ def exercise_layout_pipe(session: dict) -> None:
 
 def exercise_gds_pipe(session: dict) -> None:
     with connect_pipe(session["endpoint"]["kind"], session["endpoint"]["path"]) as pipe:
-        pipe.write(frame(HELLO, 20, version=PROTOCOL_VERSION_V3))
+        pipe.write(frame(HELLO, 20))
         pipe.flush()
-        message_type, request_id, _flags, payload = read_frame(pipe, PROTOCOL_VERSION_V3)
+        message_type, request_id, _flags, payload = read_frame(pipe)
         assert message_type == HELLO_RESPONSE
         assert request_id == 20
-        assert struct.unpack_from("<H", payload, 0)[0] == PROTOCOL_VERSION_V3
+        assert struct.unpack_from("<H", payload, 0)[0] == PROTOCOL_VERSION
         assert struct.unpack_from("<I", payload, 8)[0] >= 1
         assert struct.unpack_from("<I", payload, 12)[0] == 2
 
-        pipe.write(frame(CATALOG_REQUEST, 21, version=PROTOCOL_VERSION_V3))
+        pipe.write(frame(CATALOG_REQUEST, 21))
         pipe.flush()
-        message_type, request_id, _flags, payload = read_frame(pipe, PROTOCOL_VERSION_V3)
+        message_type, request_id, _flags, payload = read_frame(pipe)
         assert message_type == CATALOG_RESPONSE
         assert request_id == 21
         assert payload[:4] == b"PLCT"
-        assert struct.unpack_from("<H", payload, 4)[0] == PROTOCOL_VERSION_V3
-        assert struct.unpack_from("<H", payload, 6)[0] == 128
-        assert struct.unpack_from("<I", payload, 16)[0] == 2
-        assert struct.unpack_from("<I", payload, 20)[0] == 2
-        assert struct.unpack_from("<I", payload, 24)[0] == 3
-        cell_offset = struct.unpack_from("<I", payload, 36)[0]
-        string_table_offset = struct.unpack_from("<I", payload, 56)[0]
+        assert struct.unpack_from("<H", payload, 4)[0] == PROTOCOL_VERSION
+        assert struct.unpack_from("<H", payload, 6)[0] == 136
+        assert struct.unpack_from("<I", payload, 12)[0] == 2
+        assert struct.unpack_from("<I", payload, 44)[0] == 0
+        assert struct.unpack_from("<I", payload, 52)[0] == 0
+        assert struct.unpack_from("<I", payload, 76)[0] == 0
+        assert struct.unpack_from("<I", payload, 92)[0] == 2
+        assert struct.unpack_from("<I", payload, 100)[0] == 2
+        assert struct.unpack_from("<I", payload, 108)[0] == 3
+        cell_offset = struct.unpack_from("<I", payload, 96)[0]
+        string_table_offset = struct.unpack_from("<I", payload, 28)[0]
 
         def table_string(offset: int) -> str:
             start = string_table_offset + offset
@@ -402,23 +435,23 @@ def exercise_gds_pipe(session: dict) -> None:
         assert table_string(struct.unpack_from("<I", payload, top_row)[0]) == "TOP"
         assert struct.unpack_from("<I", payload, top_row + 20)[0] == 1
 
-        pipe.write(frame(GEOMETRY_REQUEST, 22, geometry_payload(16), version=PROTOCOL_VERSION_V3))
+        pipe.write(frame(GEOMETRY_REQUEST, 22, geometry_payload(16)))
         pipe.flush()
-        message_type, request_id, flags, payload = read_frame(pipe, PROTOCOL_VERSION_V3)
+        message_type, request_id, flags, payload = read_frame(pipe)
         assert message_type == GEOMETRY_RESPONSE
         assert request_id == 22
         assert flags == 0
         assert payload[:4] == b"PLGE"
-        assert struct.unpack_from("<H", payload, 4)[0] == PROTOCOL_VERSION_V3
+        assert struct.unpack_from("<H", payload, 4)[0] == PROTOCOL_VERSION
         assert struct.unpack_from("<I", payload, 12)[0] >= 2
         shape_table_offset = struct.unpack_from("<I", payload, 24)[0]
         owner_kinds = [
-            struct.unpack_from("<H", payload, shape_table_offset + index * SHAPE_TABLE_STRIDE_V2 + 6)[0]
+            struct.unpack_from("<H", payload, shape_table_offset + index * SHAPE_TABLE_STRIDE + 6)[0]
             for index in range(struct.unpack_from("<I", payload, 12)[0])
         ]
         assert 11 in owner_kinds
 
-        pipe.write(frame(CLOSE, 23, version=PROTOCOL_VERSION_V3))
+        pipe.write(frame(CLOSE, 23))
         pipe.flush()
 
 
@@ -455,8 +488,8 @@ def main() -> int:
         )
         provider = initialize["result"]["capabilities"]["experimental"]["pristineLayoutProvider"]
         assert provider["transport"] == "pipe"
-        assert provider["protocol"] == "pristine-layout-columnar-v2"
-        assert provider["protocols"] == ["pristine-layout-columnar-v2", "pristine-layout-columnar-v3"]
+        assert provider["protocol"] == "pristine-layout-columnar-v3"
+        assert provider["protocols"] == ["pristine-layout-columnar-v3"]
         assert provider["sources"] == ["lefdef", "gds"]
 
         open_response = request(
@@ -466,7 +499,7 @@ def main() -> int:
             {"lefUris": [lef.as_uri()], "defUri": deffile.as_uri(), "title": "tiny-layout"},
         )
         session = open_response["result"]
-        assert session["protocol"] == "pristine-layout-columnar-v2"
+        assert session["protocol"] == "pristine-layout-columnar-v3"
         assert session["source"] == "lefdef"
         assert session["lefCount"] == 1
         assert session["defPresent"] is True
@@ -474,6 +507,7 @@ def main() -> int:
         assert session["macroCount"] == 1
         assert session["componentCount"] == 1
         assert session["netCount"] == 1
+        exercise_v2_rejection(session)
         exercise_layout_pipe(session)
 
         close_response = request(

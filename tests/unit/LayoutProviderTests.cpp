@@ -330,7 +330,7 @@ TEST_CASE("GDS parser captures hierarchy elements references and source v3 catal
 
     auto source = openGdsLayoutSource(gds_path, "file:///tiny.gds", "tiny-gds");
     CHECK(source->sourceKind() == "gds");
-    CHECK(source->protocolVersion() == kLayoutProtocolVersionV3);
+    CHECK(source->protocolVersion() == kLayoutProtocolVersion);
     const auto& data = source->dataSet();
     CHECK(data.title == "tiny-gds");
     REQUIRE(data.gds.has_value());
@@ -345,25 +345,29 @@ TEST_CASE("GDS parser captures hierarchy elements references and source v3 catal
     const auto frame = encodeFrame(LayoutFrame{.message_type = LayoutMessageType::Hello,
                                                .request_id = 7,
                                                .flags = 0,
-                                               .version = kLayoutProtocolVersionV3});
+                                               .version = kLayoutProtocolVersion});
     const auto decoded = decodeFrame(frame);
-    CHECK(decoded.version == kLayoutProtocolVersionV3);
+    CHECK(decoded.version == kLayoutProtocolVersion);
     CHECK(decoded.message_type == LayoutMessageType::Hello);
 
     const auto hello = source->encodeHelloResponse();
-    CHECK(readU16(hello.data(), hello.size(), 0) == kLayoutProtocolVersionV3);
+    CHECK(readU16(hello.data(), hello.size(), 0) == kLayoutProtocolVersion);
     CHECK(readU32(hello.data(), hello.size(), 12) == 2);
 
     const auto catalog = source->encodeCatalogResponse();
     CHECK(std::string(reinterpret_cast<const char*>(catalog.data()), 4) == "PLCT");
-    CHECK(readU16(catalog.data(), catalog.size(), 4) == kLayoutProtocolVersionV3);
-    CHECK(readU16(catalog.data(), catalog.size(), 6) == 128);
-    CHECK(readU32(catalog.data(), catalog.size(), 12) == 3);
-    CHECK(readU32(catalog.data(), catalog.size(), 16) == 2);
-    CHECK(readU32(catalog.data(), catalog.size(), 20) == 2);
-    CHECK(readU32(catalog.data(), catalog.size(), 24) == 5);
-    const auto cell_offset = readU32(catalog.data(), catalog.size(), 36);
-    const auto string_offset = readU32(catalog.data(), catalog.size(), 56);
+    CHECK(readU16(catalog.data(), catalog.size(), 4) == kLayoutProtocolVersion);
+    CHECK(readU16(catalog.data(), catalog.size(), 6) == 136);
+    CHECK(readU32(catalog.data(), catalog.size(), 12) == 2);
+    CHECK(readU32(catalog.data(), catalog.size(), 36) == 3);
+    CHECK(readU32(catalog.data(), catalog.size(), 44) == 0);
+    CHECK(readU32(catalog.data(), catalog.size(), 52) == 0);
+    CHECK(readU32(catalog.data(), catalog.size(), 76) == 0);
+    CHECK(readU32(catalog.data(), catalog.size(), 92) == 2);
+    CHECK(readU32(catalog.data(), catalog.size(), 100) == 2);
+    CHECK(readU32(catalog.data(), catalog.size(), 108) == 5);
+    const auto cell_offset = readU32(catalog.data(), catalog.size(), 96);
+    const auto string_offset = readU32(catalog.data(), catalog.size(), 28);
     CHECK(readTableString(catalog,
                           string_offset,
                           readU32(catalog.data(), catalog.size(), cell_offset)) == "LEAF");
@@ -376,7 +380,7 @@ TEST_CASE("GDS parser captures hierarchy elements references and source v3 catal
 
     const auto geometry = source->encodeGeometryResponse(decodeGeometryRequestPayload(
         geometryRequest(2)));
-    CHECK(readU16(geometry.data(), geometry.size(), 4) == kLayoutProtocolVersionV3);
+    CHECK(readU16(geometry.data(), geometry.size(), 4) == kLayoutProtocolVersion);
     CHECK(readU32(geometry.data(), geometry.size(), 12) == 2);
     CHECK(readU32(geometry.data(), geometry.size(), 20) == kLayoutFrameFlagTruncated);
 
@@ -430,19 +434,34 @@ TEST_CASE("Layout source aggregates LEF DEF data and encodes catalog geometry", 
     CHECK(readU32(hello.data(), hello.size(), 4) == 2000);
 
     const auto catalog = source->encodeCatalogResponse();
-    REQUIRE(catalog.size() > 80);
+    REQUIRE(catalog.size() > 136);
     CHECK(std::string(reinterpret_cast<const char*>(catalog.data()), 4) == "PLCT");
     CHECK(readU16(catalog.data(), catalog.size(), 4) == kLayoutProtocolVersion);
-    CHECK(readU16(catalog.data(), catalog.size(), 6) == 80);
+    CHECK(readU16(catalog.data(), catalog.size(), 6) == 136);
     CHECK(readU32(catalog.data(), catalog.size(), 8) == 2000);
     CHECK(readU32(catalog.data(), catalog.size(), 12) == 1);
-    const auto pin_count = readU32(catalog.data(), catalog.size(), 72);
-    const auto pin_table_offset = readU32(catalog.data(), catalog.size(), 76);
-    const auto string_table_offset = readU32(catalog.data(), catalog.size(), 60);
+    CHECK(readU32(catalog.data(), catalog.size(), 36) == 1);
+    CHECK(readU32(catalog.data(), catalog.size(), 44) == 1);
+    CHECK(readU32(catalog.data(), catalog.size(), 60) == 1);
+    CHECK(readU32(catalog.data(), catalog.size(), 68) == 1);
+    CHECK(readU32(catalog.data(), catalog.size(), 84) == 1);
+    CHECK(readU32(catalog.data(), catalog.size(), 92) == 0);
+    CHECK(readU32(catalog.data(), catalog.size(), 100) == 0);
+    CHECK(readU32(catalog.data(), catalog.size(), 108) == 0);
+    CHECK(readU32(catalog.data(), catalog.size(), 116) == 0);
+    const auto pin_count = readU32(catalog.data(), catalog.size(), 52);
+    const auto pin_table_offset = readU32(catalog.data(), catalog.size(), 56);
+    const auto def_pin_count = readU32(catalog.data(), catalog.size(), 76);
+    const auto def_pin_table_offset = readU32(catalog.data(), catalog.size(), 80);
+    const auto string_table_offset = readU32(catalog.data(), catalog.size(), 28);
     REQUIRE(pin_count == 3);
     REQUIRE(pin_table_offset > 0);
+    REQUIRE(def_pin_count == 1);
+    REQUIRE(def_pin_table_offset > 0);
     constexpr std::uint32_t kPinTableStride = 28;
+    constexpr std::uint32_t kDefPinTableStride = 40;
     REQUIRE(pin_table_offset + (pin_count * kPinTableStride) <= catalog.size());
+    REQUIRE(def_pin_table_offset + (def_pin_count * kDefPinTableStride) <= catalog.size());
     CHECK(readU32(catalog.data(), catalog.size(), pin_table_offset + 0) == 0);
     CHECK(readU32(catalog.data(), catalog.size(), pin_table_offset + 4) == 0);
     CHECK(readTableString(catalog,
@@ -484,6 +503,14 @@ TEST_CASE("Layout source aggregates LEF DEF data and encodes catalog geometry", 
           3);
     CHECK(readU32(catalog.data(), catalog.size(), pin_table_offset + (2U * kPinTableStride) + 24) ==
           1);
+    CHECK(readTableString(catalog,
+                          string_table_offset,
+                          readU32(catalog.data(), catalog.size(), def_pin_table_offset)) == "IN");
+    CHECK(readTableString(catalog,
+                          string_table_offset,
+                          readU32(catalog.data(), catalog.size(), def_pin_table_offset + 4)) == "n1");
+    CHECK(readU32(catalog.data(), catalog.size(), def_pin_table_offset + 32) == 6);
+    CHECK(readU32(catalog.data(), catalog.size(), def_pin_table_offset + 36) == 1);
 
     const auto geometry = source->encodeGeometryResponse(decodeGeometryRequestPayload(
         geometryRequest(3)));
@@ -493,8 +520,8 @@ TEST_CASE("Layout source aggregates LEF DEF data and encodes catalog geometry", 
     CHECK(readU32(geometry.data(), geometry.size(), 12) == 3);
     CHECK(readU32(geometry.data(), geometry.size(), 20) == kLayoutFrameFlagTruncated);
     const auto shape_table_offset = readU32(geometry.data(), geometry.size(), 24);
-    constexpr std::uint32_t kShapeTableStrideV2 = 28;
-    REQUIRE(shape_table_offset + (3U * kShapeTableStrideV2) <= geometry.size());
+    constexpr std::uint32_t kShapeTableStride = 28;
+    REQUIRE(shape_table_offset + (3U * kShapeTableStride) <= geometry.size());
     CHECK(readU16(geometry.data(), geometry.size(), shape_table_offset + 6) ==
           static_cast<std::uint16_t>(LayoutOwnerKind::Pin));
     CHECK(readU32(geometry.data(), geometry.size(), shape_table_offset + 8) == 0);
@@ -507,18 +534,18 @@ TEST_CASE("Layout source aggregates LEF DEF data and encodes catalog geometry", 
                                       (readU32(geometry.data(), geometry.size(), shape_table_offset + 8) *
                                        kPinTableStride) +
                                       8)) == "A");
-    CHECK(readU16(geometry.data(), geometry.size(), shape_table_offset + kShapeTableStrideV2 + 6) ==
+    CHECK(readU16(geometry.data(), geometry.size(), shape_table_offset + kShapeTableStride + 6) ==
           static_cast<std::uint16_t>(LayoutOwnerKind::Pin));
-    CHECK(readU32(geometry.data(), geometry.size(), shape_table_offset + kShapeTableStrideV2 + 12) ==
+    CHECK(readU32(geometry.data(), geometry.size(), shape_table_offset + kShapeTableStride + 12) ==
           0);
-    CHECK(readU16(geometry.data(), geometry.size(), shape_table_offset + (2U * kShapeTableStrideV2) + 6) ==
+    CHECK(readU16(geometry.data(), geometry.size(), shape_table_offset + (2U * kShapeTableStride) + 6) ==
           static_cast<std::uint16_t>(LayoutOwnerKind::Pin));
     CHECK(readU32(geometry.data(),
                   geometry.size(),
-                  shape_table_offset + (2U * kShapeTableStrideV2) + 8) == 1);
+                  shape_table_offset + (2U * kShapeTableStride) + 8) == 1);
     CHECK(readU32(geometry.data(),
                   geometry.size(),
-                  shape_table_offset + (2U * kShapeTableStrideV2) + 12) == 0);
+                  shape_table_offset + (2U * kShapeTableStride) + 12) == 0);
     CHECK(readTableString(catalog,
                           string_table_offset,
                           readU32(catalog.data(),
@@ -526,7 +553,7 @@ TEST_CASE("Layout source aggregates LEF DEF data and encodes catalog geometry", 
                                   pin_table_offset +
                                       (readU32(geometry.data(),
                                                geometry.size(),
-                                               shape_table_offset + (2U * kShapeTableStrideV2) + 8) *
+                                               shape_table_offset + (2U * kShapeTableStride) + 8) *
                                        kPinTableStride) +
                                       8)) == "VDD");
 
@@ -535,17 +562,22 @@ TEST_CASE("Layout source aggregates LEF DEF data and encodes catalog geometry", 
     std::filesystem::remove(def_path, error);
 }
 
-TEST_CASE("Layout binary protocol rejects legacy v1 frames", "[layout][protocol]") {
-    std::vector<std::uint8_t> frame;
-    frame.insert(frame.end(), {'P', 'L', 'D', '1'});
-    appendU16(frame, 1);
-    appendU16(frame, static_cast<std::uint16_t>(LayoutMessageType::Hello));
-    appendU32(frame, 1);
-    appendU32(frame, 0);
-    appendU32(frame, 0);
-    appendU32(frame, 0);
+TEST_CASE("Layout binary protocol rejects non-v3 frames", "[layout][protocol]") {
+    auto legacyFrame = [](std::uint16_t version) {
+        std::vector<std::uint8_t> frame;
+        frame.insert(frame.end(), {'P', 'L', 'D', '1'});
+        appendU16(frame, version);
+        appendU16(frame, static_cast<std::uint16_t>(LayoutMessageType::Hello));
+        appendU32(frame, 1);
+        appendU32(frame, 0);
+        appendU32(frame, 0);
+        appendU32(frame, 0);
+        return frame;
+    };
 
-    CHECK_THROWS_WITH(decodeFrame(frame),
+    CHECK_THROWS_WITH(decodeFrame(legacyFrame(1)),
+                      Catch::Matchers::ContainsSubstring("Unsupported layout frame version"));
+    CHECK_THROWS_WITH(decodeFrame(legacyFrame(2)),
                       Catch::Matchers::ContainsSubstring("Unsupported layout frame version"));
 }
 

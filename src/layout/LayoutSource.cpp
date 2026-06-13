@@ -20,21 +20,16 @@ namespace {
 
 class DataSetLayoutSource final : public LayoutSource {
 public:
-    DataSetLayoutSource(LayoutDataSet data,
-                        std::string source_kind,
-                        std::uint16_t protocol_version = kLayoutProtocolVersion) :
+    DataSetLayoutSource(LayoutDataSet data, std::string source_kind) :
         data_(std::move(data)),
-        source_kind_(std::move(source_kind)),
-        protocol_version_(protocol_version) {}
+        source_kind_(std::move(source_kind)) {}
 
     const LayoutDataSet& dataSet() const override { return data_; }
     std::string_view sourceKind() const override { return source_kind_; }
-    std::uint16_t protocolVersion() const override { return protocol_version_; }
 
 private:
     LayoutDataSet data_;
     std::string source_kind_;
-    std::uint16_t protocol_version_ = kLayoutProtocolVersion;
 };
 
 std::uint32_t findOrAddLayer(LayoutDataSet& data, const LayoutLayer& layer) {
@@ -386,21 +381,20 @@ std::uint16_t LayoutSource::protocolVersion() const {
 }
 
 std::string_view LayoutSource::protocolName() const {
-    return protocolVersion() == kLayoutProtocolVersionV3 ? kLayoutProtocolNameV3
-                                                         : kLayoutProtocolName;
+    return kLayoutProtocolName;
 }
 
 std::vector<std::uint8_t> LayoutSource::encodeHelloResponse() const {
-    return encodeHelloResponsePayload(dataSet(), protocolVersion());
+    return encodeHelloResponsePayload(dataSet());
 }
 
 std::vector<std::uint8_t> LayoutSource::encodeCatalogResponse() const {
-    return encodeCatalogResponsePayload(dataSet(), protocolVersion());
+    return encodeCatalogResponsePayload(dataSet());
 }
 
 std::vector<std::uint8_t> LayoutSource::encodeGeometryResponse(
     const LayoutGeometryRequest& request) const {
-    return encodeGeometryResponsePayload(dataSet(), request, protocolVersion());
+    return encodeGeometryResponsePayload(dataSet(), request);
 }
 
 std::shared_ptr<LayoutSource> makeDataSetLayoutSource(LayoutDataSet data, std::string source_kind) {
@@ -459,9 +453,7 @@ std::shared_ptr<LayoutSource> openGdsLayoutSource(const std::filesystem::path& g
                        GdsAffineTransform{},
                        stack);
     }
-    return std::make_shared<DataSetLayoutSource>(std::move(data),
-                                                 "gds",
-                                                 kLayoutProtocolVersionV3);
+    return std::make_shared<DataSetLayoutSource>(std::move(data), "gds");
 }
 
 } // namespace pristine::layout

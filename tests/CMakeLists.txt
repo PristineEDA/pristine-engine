@@ -61,6 +61,7 @@ add_test(
 		${PROJECT_SOURCE_DIR}/.deps/src/ihp-open-pdk)
 set_tests_properties(pristine_ihp_gds_corpus PROPERTIES
 	LABELS "layout;gds;ihp"
+	TIMEOUT 3600
 	SKIP_RETURN_CODE 77
 	SKIP_REGULAR_EXPRESSION "SKIP:")
 

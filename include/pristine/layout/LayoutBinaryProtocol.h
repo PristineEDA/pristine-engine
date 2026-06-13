@@ -8,10 +8,8 @@
 
 namespace pristine::layout {
 
-inline constexpr std::string_view kLayoutProtocolName = "pristine-layout-columnar-v2";
-inline constexpr std::uint16_t kLayoutProtocolVersion = 2;
-inline constexpr std::string_view kLayoutProtocolNameV3 = "pristine-layout-columnar-v3";
-inline constexpr std::uint16_t kLayoutProtocolVersionV3 = 3;
+inline constexpr std::string_view kLayoutProtocolName = "pristine-layout-columnar-v3";
+inline constexpr std::uint16_t kLayoutProtocolVersion = 3;
 inline constexpr std::uint32_t kLayoutFrameFlagTruncated = 1U;
 
 enum class LayoutMessageType : std::uint16_t {
@@ -45,18 +43,10 @@ struct LayoutFrame {
 [[nodiscard]] LayoutFrame decodeFrame(const std::uint8_t* bytes, std::size_t size);
 
 [[nodiscard]] std::vector<std::uint8_t> encodeHelloResponsePayload(const LayoutDataSet& data);
-[[nodiscard]] std::vector<std::uint8_t> encodeHelloResponsePayload(const LayoutDataSet& data,
-                                                                   std::uint16_t version);
 [[nodiscard]] std::vector<std::uint8_t> encodeCatalogResponsePayload(const LayoutDataSet& data);
-[[nodiscard]] std::vector<std::uint8_t> encodeCatalogResponsePayload(const LayoutDataSet& data,
-                                                                     std::uint16_t version);
 [[nodiscard]] std::vector<std::uint8_t> encodeGeometryResponsePayload(
     const LayoutDataSet& data,
     const LayoutGeometryRequest& request);
-[[nodiscard]] std::vector<std::uint8_t> encodeGeometryResponsePayload(
-    const LayoutDataSet& data,
-    const LayoutGeometryRequest& request,
-    std::uint16_t version);
 [[nodiscard]] std::vector<std::uint8_t> encodeErrorPayload(LayoutErrorCode code,
                                                          std::string_view message);
 [[nodiscard]] LayoutGeometryRequest decodeGeometryRequestPayload(

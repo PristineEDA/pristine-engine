@@ -61,15 +61,6 @@ std::string endpointPath(std::string_view session_id) {
 }
 
 std::vector<std::uint8_t> handleRequest(const LayoutSource& source, const LayoutFrame& request) {
-    if (request.version != source.protocolVersion()) {
-        return encodeFrame(LayoutFrame{.message_type = LayoutMessageType::ErrorResponse,
-                                       .request_id = request.request_id,
-                                       .flags = 0,
-                                       .version = source.protocolVersion(),
-                                       .payload = encodeErrorPayload(
-                                           LayoutErrorCode::UnsupportedVersion,
-                                           "Unsupported layout frame version for active session")});
-    }
     try {
         switch (request.message_type) {
             case LayoutMessageType::Hello:
@@ -115,6 +106,16 @@ std::vector<std::uint8_t> handleRequest(const LayoutSource& source, const Layout
                                        .payload = encodeErrorPayload(LayoutErrorCode::InvalidRequest,
                                                                      error.what())});
     }
+}
+
+std::vector<std::uint8_t> encodeProtocolErrorResponse(std::uint32_t request_id,
+                                                      LayoutErrorCode code,
+                                                      std::string_view message) {
+    return encodeFrame(LayoutFrame{.message_type = LayoutMessageType::ErrorResponse,
+                                   .request_id = request_id,
+                                   .flags = 0,
+                                   .version = kLayoutProtocolVersion,
+                                   .payload = encodeErrorPayload(code, message)});
 }
 
 #if defined(_WIN32)
@@ -279,7 +280,17 @@ void serveConnection(NativeHandle connection,
         if (!frame_bytes.has_value()) {
             return;
         }
-        const auto request = decodeFrame(*frame_bytes);
+        LayoutFrame request;
+        try {
+            request = decodeFrame(*frame_bytes);
+        }
+        catch (const std::exception& error) {
+            const auto response = encodeProtocolErrorResponse(0,
+                                                              LayoutErrorCode::UnsupportedVersion,
+                                                              error.what());
+            (void)writeExact(connection, response);
+            return;
+        }
         if (request.message_type == LayoutMessageType::Close) {
             return;
         }

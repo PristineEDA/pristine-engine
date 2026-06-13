@@ -69,3 +69,7 @@ Testing/
 .cache/
 .deps/
 artifacts/
+
+# Python cache
+__pycache__/
+*.py[cod]

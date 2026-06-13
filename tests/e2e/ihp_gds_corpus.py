@@ -137,7 +137,8 @@ def main() -> int:
                 print(
                     f"IHP GDS progress {index}/{len(gds_files)} files, "
                     f"{total_cells} cells, {total_elements} elements, "
-                    f"{total_diagnostics} diagnostics"
+                    f"{total_diagnostics} diagnostics",
+                    flush=True,
                 )
 
         if failures:
