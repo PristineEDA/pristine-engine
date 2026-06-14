@@ -106,6 +106,34 @@ std::vector<std::uint8_t> geometryRequest(std::uint32_t max_shapes) {
     return payload;
 }
 
+std::vector<std::uint8_t> ownerFilteredGeometryRequest(
+    std::uint32_t max_shapes,
+    std::initializer_list<std::uint32_t> macro_indices,
+    std::initializer_list<std::uint32_t> gds_root_cell_indices) {
+    std::vector<std::uint8_t> payload;
+    appendU32(payload, 2);
+    appendU32(payload, max_shapes);
+    appendU32(payload, 0);
+    appendU32(payload, 0);
+    appendU32(payload, static_cast<std::uint32_t>(macro_indices.size()));
+    for (const auto macro_index : macro_indices) {
+        appendU32(payload, macro_index);
+    }
+    appendU32(payload, static_cast<std::uint32_t>(gds_root_cell_indices.size()));
+    for (const auto cell_index : gds_root_cell_indices) {
+        appendU32(payload, cell_index);
+    }
+    return payload;
+}
+
+std::uint32_t geometryShapeCount(const std::vector<std::uint8_t>& payload) {
+    return readU32(payload.data(), payload.size(), 12);
+}
+
+std::uint32_t geometryShapeTableOffset(const std::vector<std::uint8_t>& payload) {
+    return readU32(payload.data(), payload.size(), 24);
+}
+
 std::string readTableString(const std::vector<std::uint8_t>& payload,
                             std::uint32_t string_table_offset,
                             std::uint32_t string_offset) {
@@ -384,6 +412,42 @@ TEST_CASE("GDS parser captures hierarchy elements references and source v3 catal
     CHECK(readU32(geometry.data(), geometry.size(), 12) == 2);
     CHECK(readU32(geometry.data(), geometry.size(), 20) == kLayoutFrameFlagTruncated);
 
+    const auto leaf_geometry = source->encodeGeometryResponse(decodeGeometryRequestPayload(
+        ownerFilteredGeometryRequest(0, {}, {0})));
+    CHECK(readU16(leaf_geometry.data(), leaf_geometry.size(), 4) == kLayoutProtocolVersion);
+    CHECK(geometryShapeCount(leaf_geometry) == 3);
+    auto leaf_shape_offset = geometryShapeTableOffset(leaf_geometry);
+    constexpr std::uint32_t kShapeTableStride = 28;
+    for (std::uint32_t shape_index = 0; shape_index < geometryShapeCount(leaf_geometry);
+         ++shape_index) {
+        CHECK(readU16(leaf_geometry.data(),
+                      leaf_geometry.size(),
+                      leaf_shape_offset + (shape_index * kShapeTableStride) + 6) ==
+              static_cast<std::uint16_t>(LayoutOwnerKind::GdsElement));
+        CHECK(readU32(leaf_geometry.data(),
+                      leaf_geometry.size(),
+                      leaf_shape_offset + (shape_index * kShapeTableStride) + 12) == 0);
+    }
+
+    const auto top_geometry = source->encodeGeometryResponse(decodeGeometryRequestPayload(
+        ownerFilteredGeometryRequest(0, {}, {1})));
+    CHECK(readU16(top_geometry.data(), top_geometry.size(), 4) == kLayoutProtocolVersion);
+    CHECK(geometryShapeCount(top_geometry) == data.shapes.size());
+    const auto top_shape_offset = geometryShapeTableOffset(top_geometry);
+    bool saw_leaf_source_cell = false;
+    for (std::uint32_t shape_index = 0; shape_index < geometryShapeCount(top_geometry);
+         ++shape_index) {
+        saw_leaf_source_cell =
+            saw_leaf_source_cell ||
+            readU32(top_geometry.data(),
+                    top_geometry.size(),
+                    top_shape_offset + (shape_index * kShapeTableStride) + 12) == 0;
+    }
+    CHECK(saw_leaf_source_cell);
+    CHECK_THROWS_WITH(source->encodeGeometryResponse(decodeGeometryRequestPayload(
+                          ownerFilteredGeometryRequest(0, {}, {42}))),
+                      Catch::Matchers::ContainsSubstring("GDS cell index is out of range"));
+
     std::error_code error;
     std::filesystem::remove(gds_path, error);
 }
@@ -557,6 +621,24 @@ TEST_CASE("Layout source aggregates LEF DEF data and encodes catalog geometry", 
                                        kPinTableStride) +
                                       8)) == "VDD");
 
+    const auto macro_geometry = source->encodeGeometryResponse(decodeGeometryRequestPayload(
+        ownerFilteredGeometryRequest(0, {0}, {})));
+    CHECK(readU16(macro_geometry.data(), macro_geometry.size(), 4) == kLayoutProtocolVersion);
+    REQUIRE(geometryShapeCount(macro_geometry) == 5);
+    const auto macro_shape_offset = geometryShapeTableOffset(macro_geometry);
+    for (std::uint32_t shape_index = 0; shape_index < geometryShapeCount(macro_geometry);
+         ++shape_index) {
+        CHECK(readU32(macro_geometry.data(),
+                      macro_geometry.size(),
+                      macro_shape_offset + (shape_index * kShapeTableStride) + 12) == 0);
+    }
+    CHECK_THROWS_WITH(source->encodeGeometryResponse(decodeGeometryRequestPayload(
+                          ownerFilteredGeometryRequest(0, {99}, {}))),
+                      Catch::Matchers::ContainsSubstring("macro index is out of range"));
+    CHECK_THROWS_WITH(source->encodeGeometryResponse(decodeGeometryRequestPayload(
+                          ownerFilteredGeometryRequest(0, {}, {0}))),
+                      Catch::Matchers::ContainsSubstring("requires a GDS layout source"));
+
     std::error_code error;
     std::filesystem::remove(lef_path, error);
     std::filesystem::remove(def_path, error);
@@ -586,6 +668,27 @@ TEST_CASE("Layout geometry request rejects trailing bytes", "[layout][protocol]"
     payload.push_back(0);
     CHECK_THROWS_WITH(decodeGeometryRequestPayload(payload),
                       Catch::Matchers::ContainsSubstring("trailing bytes"));
+}
+
+TEST_CASE("Layout geometry request decodes owner filter extension", "[layout][protocol]") {
+    const auto request = decodeGeometryRequestPayload(ownerFilteredGeometryRequest(17, {3, 5}, {7}));
+    CHECK_FALSE(request.has_bbox);
+    CHECK(request.max_shapes == 17);
+    REQUIRE(request.macro_indices.size() == 2);
+    CHECK(request.macro_indices[0] == 3);
+    CHECK(request.macro_indices[1] == 5);
+    REQUIRE(request.gds_root_cell_indices.size() == 1);
+    CHECK(request.gds_root_cell_indices[0] == 7);
+
+    auto unsupported = geometryRequest(0);
+    unsupported[0] = 4;
+    CHECK_THROWS_WITH(decodeGeometryRequestPayload(unsupported),
+                      Catch::Matchers::ContainsSubstring("unsupported flags"));
+
+    auto truncated = ownerFilteredGeometryRequest(0, {0}, {1});
+    truncated.pop_back();
+    CHECK_THROWS_WITH(decodeGeometryRequestPayload(truncated),
+                      Catch::Matchers::ContainsSubstring("truncated"));
 }
 
 } // namespace pristine::layout

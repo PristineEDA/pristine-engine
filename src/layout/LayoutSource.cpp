@@ -32,6 +32,10 @@ private:
     std::string source_kind_;
 };
 
+std::string gdsLayerName(std::uint32_t layer, std::uint32_t datatype) {
+    return "GDS:" + std::to_string(layer) + "/" + std::to_string(datatype);
+}
+
 std::uint32_t findOrAddLayer(LayoutDataSet& data, const LayoutLayer& layer) {
     for (std::size_t index = 0; index < data.layers.size(); ++index) {
         if (data.layers[index].name == layer.name) {
@@ -90,7 +94,7 @@ void appendShape(LayoutDataSet& data, LayoutShape shape) {
 std::uint32_t findOrAddGdsLayer(LayoutDataSet& data,
                                 std::uint32_t layer,
                                 std::uint32_t datatype) {
-    const auto name = "GDS:" + std::to_string(layer) + "/" + std::to_string(datatype);
+    const auto name = gdsLayerName(layer, datatype);
     for (std::size_t index = 0; index < data.layers.size(); ++index) {
         if (data.layers[index].name == name) {
             return static_cast<std::uint32_t>(index);
@@ -98,6 +102,31 @@ std::uint32_t findOrAddGdsLayer(LayoutDataSet& data,
     }
     data.layers.push_back(LayoutLayer{.name = name, .kind = LayoutLayerKind::Unknown});
     return static_cast<std::uint32_t>(data.layers.size() - 1U);
+}
+
+std::uint32_t findGdsLayer(const LayoutDataSet& data,
+                           std::uint32_t layer,
+                           std::uint32_t datatype) {
+    const auto name = gdsLayerName(layer, datatype);
+    for (std::size_t index = 0; index < data.layers.size(); ++index) {
+        if (data.layers[index].name == name) {
+            return static_cast<std::uint32_t>(index);
+        }
+    }
+    throw std::runtime_error("GDS layer is missing from layout catalog");
+}
+
+bool isDrawableGdsElement(const LayoutGdsElement& element) {
+    return element.kind != LayoutGdsElementKind::Sref &&
+           element.kind != LayoutGdsElementKind::Aref && !element.points.empty();
+}
+
+void registerGdsLayers(LayoutDataSet& data, const LayoutGdsLibrary& gds) {
+    for (const auto& element : gds.elements) {
+        if (isDrawableGdsElement(element)) {
+            findOrAddGdsLayer(data, element.layer, element.datatype);
+        }
+    }
 }
 
 struct GdsAffineTransform {
@@ -171,8 +200,7 @@ void appendGdsElementShape(LayoutDataSet& data,
                            const LayoutGdsElement& element,
                            const GdsAffineTransform& transform,
                            std::uint32_t element_index) {
-    if (element.kind == LayoutGdsElementKind::Sref || element.kind == LayoutGdsElementKind::Aref ||
-        element.points.empty()) {
+    if (!isDrawableGdsElement(element)) {
         return;
     }
 
@@ -190,6 +218,31 @@ void appendGdsElementShape(LayoutDataSet& data,
         shape.rect = shapeBounds(shape);
     }
     appendShape(data, std::move(shape));
+}
+
+void appendGdsElementShape(std::vector<LayoutShape>& shapes,
+                           const LayoutDataSet& data,
+                           const LayoutGdsElement& element,
+                           const GdsAffineTransform& transform,
+                           std::uint32_t element_index) {
+    if (!isDrawableGdsElement(element)) {
+        return;
+    }
+
+    LayoutShape shape{.kind = shapeKindForGdsElement(element),
+                      .owner_kind = LayoutOwnerKind::GdsElement,
+                      .owner_index = element_index,
+                      .macro_index = element.cell_index,
+                      .layer_index = findGdsLayer(data, element.layer, element.datatype),
+                      .flags = element.texttype};
+    shape.polygon.points.reserve(element.points.size());
+    for (const auto& point : element.points) {
+        shape.polygon.points.push_back(applyTransform(transform, point));
+    }
+    if (!shape.polygon.points.empty()) {
+        shape.rect = shapeBounds(shape);
+    }
+    shapes.push_back(std::move(shape));
 }
 
 void flattenGdsCell(LayoutDataSet& data,
@@ -234,6 +287,68 @@ void flattenGdsCell(LayoutDataSet& data,
         }
     }
     stack.erase(cell_index);
+}
+
+void flattenGdsCell(std::vector<LayoutShape>& shapes,
+                    const LayoutDataSet& data,
+                    const LayoutGdsLibrary& gds,
+                    std::uint32_t cell_index,
+                    const GdsAffineTransform& transform,
+                    std::set<std::uint32_t>& stack) {
+    if (cell_index >= gds.cells.size()) {
+        throw std::runtime_error("Layout geometry request GDS cell index is out of range");
+    }
+    if (!stack.insert(cell_index).second) {
+        return;
+    }
+    const auto& cell = gds.cells[cell_index];
+    for (const auto element_index : cell.element_indices) {
+        if (element_index >= gds.elements.size()) {
+            continue;
+        }
+        appendGdsElementShape(shapes, data, gds.elements[element_index], transform, element_index);
+    }
+    for (const auto reference_index : cell.reference_indices) {
+        if (reference_index >= gds.references.size()) {
+            continue;
+        }
+        const auto& reference = gds.references[reference_index];
+        if (reference.target_cell_index >= gds.cells.size()) {
+            continue;
+        }
+        const auto columns = std::max<std::uint32_t>(reference.columns, 1U);
+        const auto rows = std::max<std::uint32_t>(reference.rows, 1U);
+        for (std::uint32_t column = 0; column < columns; ++column) {
+            for (std::uint32_t row = 0; row < rows; ++row) {
+                flattenGdsCell(shapes,
+                               data,
+                               gds,
+                               reference.target_cell_index,
+                               composeTransforms(transform, referenceTransform(reference, column, row)),
+                               stack);
+            }
+        }
+    }
+    stack.erase(cell_index);
+}
+
+std::vector<LayoutShape> flattenRequestedGdsCells(const LayoutDataSet& data,
+                                                  const LayoutGeometryRequest& request) {
+    if (!data.gds.has_value()) {
+        throw std::runtime_error("GDS cell geometry filter requires a GDS layout source");
+    }
+    const auto& gds = *data.gds;
+    for (const auto cell_index : request.gds_root_cell_indices) {
+        if (cell_index >= gds.cells.size()) {
+            throw std::runtime_error("Layout geometry request GDS cell index is out of range");
+        }
+    }
+    std::vector<LayoutShape> shapes;
+    for (const auto cell_index : request.gds_root_cell_indices) {
+        std::set<std::uint32_t> stack;
+        flattenGdsCell(shapes, data, gds, cell_index, GdsAffineTransform{}, stack);
+    }
+    return shapes;
 }
 
 void appendLef(LayoutDataSet& data, const LayoutLefLibrary& lef) {
@@ -394,6 +509,10 @@ std::vector<std::uint8_t> LayoutSource::encodeCatalogResponse() const {
 
 std::vector<std::uint8_t> LayoutSource::encodeGeometryResponse(
     const LayoutGeometryRequest& request) const {
+    if (!request.gds_root_cell_indices.empty()) {
+        const auto shapes = flattenRequestedGdsCells(dataSet(), request);
+        return encodeGeometryResponsePayload(dataSet(), request, shapes);
+    }
     return encodeGeometryResponsePayload(dataSet(), request);
 }
 
@@ -445,6 +564,9 @@ std::shared_ptr<LayoutSource> openGdsLayoutSource(const std::filesystem::path& g
     data.file_uris.push_back(std::move(gds_uri));
     data.diagnostics = result.value.diagnostics;
     data.gds = std::move(result.value);
+    if (data.gds.has_value()) {
+        registerGdsLayers(data, *data.gds);
+    }
     if (data.gds.has_value() && data.gds->top_cell_index < data.gds->cells.size()) {
         std::set<std::uint32_t> stack;
         flattenGdsCell(data,

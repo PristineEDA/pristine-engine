@@ -284,6 +284,8 @@ struct LayoutGeometryRequest {
     std::uint32_t max_shapes = 0;
     std::vector<std::uint32_t> layer_indices{};
     std::vector<LayoutShapeKind> shape_kinds{};
+    std::vector<std::uint32_t> macro_indices{};
+    std::vector<std::uint32_t> gds_root_cell_indices{};
 };
 
 template<typename T>

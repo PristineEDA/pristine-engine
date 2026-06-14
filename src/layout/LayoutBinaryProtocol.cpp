@@ -23,6 +23,10 @@ constexpr std::size_t kMaxPayloadSize = 128U * 1024U * 1024U;
 constexpr std::uint32_t kGdsCatalogCellTopFlag = 1U;
 constexpr std::uint32_t kLayoutCatalogSourceLefDef = 1U;
 constexpr std::uint32_t kLayoutCatalogSourceGds = 2U;
+constexpr std::uint32_t kGeometryRequestFlagHasBbox = 1U;
+constexpr std::uint32_t kGeometryRequestFlagOwnerFilters = 2U;
+constexpr std::uint32_t kGeometryRequestSupportedFlags =
+    kGeometryRequestFlagHasBbox | kGeometryRequestFlagOwnerFilters;
 
 struct LayoutCatalogPinShapeRange {
     std::uint32_t first_shape_index = kNoLayoutMacroIndex;
@@ -97,6 +101,80 @@ bool containsKind(const LayoutGeometryRequest& request, LayoutShapeKind kind) {
     return request.shape_kinds.empty() ||
            std::find(request.shape_kinds.begin(), request.shape_kinds.end(), kind) !=
                request.shape_kinds.end();
+}
+
+bool containsMacro(const LayoutGeometryRequest& request, std::uint32_t macro_index) {
+    return request.macro_indices.empty() ||
+           std::find(request.macro_indices.begin(), request.macro_indices.end(), macro_index) !=
+               request.macro_indices.end();
+}
+
+void validateMacroFilters(const LayoutDataSet& data, const LayoutGeometryRequest& request) {
+    if (data.gds.has_value() && !request.macro_indices.empty()) {
+        throw std::runtime_error("LEF macro geometry filter is not valid for GDS layout sources");
+    }
+    if (data.gds.has_value()) {
+        return;
+    }
+    for (const auto macro_index : request.macro_indices) {
+        if (macro_index >= data.macros.size()) {
+            throw std::runtime_error("Layout geometry request macro index is out of range");
+        }
+    }
+}
+
+void validateNoGdsRootFilters(const LayoutGeometryRequest& request) {
+    if (!request.gds_root_cell_indices.empty()) {
+        throw std::runtime_error("GDS cell geometry filter requires a GDS layout source");
+    }
+}
+
+bool matchesGeometryRequest(const LayoutGeometryRequest& request, const LayoutShape& shape) {
+    if (!containsLayer(request, shape.layer_index) || !containsKind(request, shape.kind) ||
+        !containsMacro(request, shape.macro_index)) {
+        return false;
+    }
+    if (request.has_bbox && !intersects(shapeBounds(shape), request.bbox)) {
+        return false;
+    }
+    return true;
+}
+
+void readU32List(const std::uint8_t* bytes,
+                 std::size_t size,
+                 std::size_t& offset,
+                 std::vector<std::uint32_t>& values,
+                 std::string_view label) {
+    const auto count = readU32(bytes, size, offset);
+    offset += sizeof(std::uint32_t);
+    if (static_cast<std::size_t>(count) > (size - offset) / sizeof(std::uint32_t)) {
+        throw std::runtime_error(std::string("Layout geometry request ") + std::string(label) +
+                                 " list is truncated");
+    }
+    values.reserve(values.size() + count);
+    for (std::uint32_t index = 0; index < count; ++index) {
+        values.push_back(readU32(bytes, size, offset));
+        offset += sizeof(std::uint32_t);
+    }
+}
+
+std::vector<const LayoutShape*> selectGeometryShapes(const std::vector<LayoutShape>& shapes,
+                                                    const LayoutGeometryRequest& request,
+                                                    bool& truncated) {
+    std::vector<const LayoutShape*> selected;
+    selected.reserve(shapes.size());
+    truncated = false;
+    for (const auto& shape : shapes) {
+        if (!matchesGeometryRequest(request, shape)) {
+            continue;
+        }
+        if (request.max_shapes != 0 && selected.size() >= request.max_shapes) {
+            truncated = true;
+            break;
+        }
+        selected.push_back(&shape);
+    }
+    return selected;
 }
 
 std::vector<std::vector<LayoutCatalogPinShapeRange>> buildPinShapeRanges(const LayoutDataSet& data) {
@@ -542,22 +620,20 @@ std::vector<std::uint8_t> encodeCatalogResponsePayload(const LayoutDataSet& data
 
 std::vector<std::uint8_t> encodeGeometryResponsePayload(const LayoutDataSet& data,
                                                         const LayoutGeometryRequest& request) {
-    std::vector<const LayoutShape*> selected;
-    selected.reserve(data.shapes.size());
-    bool truncated = false;
-    for (const auto& shape : data.shapes) {
-        if (!containsLayer(request, shape.layer_index) || !containsKind(request, shape.kind)) {
-            continue;
-        }
-        if (request.has_bbox && !intersects(shapeBounds(shape), request.bbox)) {
-            continue;
-        }
-        if (request.max_shapes != 0 && selected.size() >= request.max_shapes) {
-            truncated = true;
-            break;
-        }
-        selected.push_back(&shape);
+    validateMacroFilters(data, request);
+    validateNoGdsRootFilters(request);
+    return encodeGeometryResponsePayload(data, request, data.shapes);
+}
+
+std::vector<std::uint8_t> encodeGeometryResponsePayload(const LayoutDataSet& data,
+                                                        const LayoutGeometryRequest& request,
+                                                        const std::vector<LayoutShape>& shapes) {
+    validateMacroFilters(data, request);
+    if (!data.gds.has_value()) {
+        validateNoGdsRootFilters(request);
     }
+    bool truncated = false;
+    const auto selected = selectGeometryShapes(shapes, request, truncated);
 
     std::vector<std::uint8_t> result(kGeometryHeaderSize, 0);
     const auto shape_table_offset = static_cast<std::uint32_t>(result.size());
@@ -662,8 +738,11 @@ LayoutGeometryRequest decodeGeometryRequestPayload(const std::vector<std::uint8_
     requireAvailable(size, offset, 4);
     const auto flags = readU32(bytes, size, offset);
     offset += sizeof(std::uint32_t);
+    if ((flags & ~kGeometryRequestSupportedFlags) != 0U) {
+        throw std::runtime_error("Layout geometry request has unsupported flags");
+    }
     LayoutGeometryRequest request;
-    request.has_bbox = (flags & 1U) != 0U;
+    request.has_bbox = (flags & kGeometryRequestFlagHasBbox) != 0U;
     request.max_shapes = readU32(bytes, size, offset);
     offset += sizeof(std::uint32_t);
     if (request.has_bbox) {
@@ -680,18 +759,20 @@ LayoutGeometryRequest decodeGeometryRequestPayload(const std::vector<std::uint8_
                                   .x1 = static_cast<std::int64_t>(x1),
                                   .y1 = static_cast<std::int64_t>(y1)};
     }
-    const auto layer_count = readU32(bytes, size, offset);
-    offset += sizeof(std::uint32_t);
-    for (std::uint32_t index = 0; index < layer_count; ++index) {
-        request.layer_indices.push_back(readU32(bytes, size, offset));
-        offset += sizeof(std::uint32_t);
-    }
+    readU32List(bytes, size, offset, request.layer_indices, "layer index");
     const auto kind_count = readU32(bytes, size, offset);
     offset += sizeof(std::uint32_t);
+    if (static_cast<std::size_t>(kind_count) > (size - offset) / sizeof(std::uint32_t)) {
+        throw std::runtime_error("Layout geometry request shape kind list is truncated");
+    }
     for (std::uint32_t index = 0; index < kind_count; ++index) {
         request.shape_kinds.push_back(
             static_cast<LayoutShapeKind>(readU32(bytes, size, offset)));
         offset += sizeof(std::uint32_t);
+    }
+    if ((flags & kGeometryRequestFlagOwnerFilters) != 0U) {
+        readU32List(bytes, size, offset, request.macro_indices, "macro index");
+        readU32List(bytes, size, offset, request.gds_root_cell_indices, "GDS root cell index");
     }
     if (offset != size) {
         throw std::runtime_error("Layout geometry request has trailing bytes");

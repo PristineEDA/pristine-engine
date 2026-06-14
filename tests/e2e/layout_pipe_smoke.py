@@ -129,6 +129,23 @@ def geometry_payload(max_shapes: int) -> bytes:
     return struct.pack("<IIII", 0, max_shapes, 0, 0)
 
 
+def owner_filtered_geometry_payload(
+    max_shapes: int,
+    macro_indices: list[int] | None = None,
+    gds_root_cell_indices: list[int] | None = None,
+) -> bytes:
+    macro_indices = macro_indices or []
+    gds_root_cell_indices = gds_root_cell_indices or []
+    payload = bytearray(struct.pack("<IIII", 2, max_shapes, 0, 0))
+    payload += struct.pack("<I", len(macro_indices))
+    for macro_index in macro_indices:
+        payload += struct.pack("<I", macro_index)
+    payload += struct.pack("<I", len(gds_root_cell_indices))
+    for cell_index in gds_root_cell_indices:
+        payload += struct.pack("<I", cell_index)
+    return bytes(payload)
+
+
 def find_repo_root(server_path: pathlib.Path) -> pathlib.Path:
     for parent in [server_path.parent, *server_path.parents]:
         if (parent / "AGENTS.md").is_file() and (parent / ".git").is_dir():
@@ -391,7 +408,25 @@ def exercise_layout_pipe(session: dict) -> None:
         assert first_owner_kind == 4
         assert pins[(first_macro_index, first_owner_index)]["name"] == "A"
 
-        pipe.write(frame(CLOSE, 13))
+        pipe.write(frame(GEOMETRY_REQUEST, 13, owner_filtered_geometry_payload(64, macro_indices=[0])))
+        pipe.flush()
+        message_type, request_id, flags, payload = read_frame(pipe)
+        assert message_type == GEOMETRY_RESPONSE
+        assert request_id == 13
+        assert flags == 0
+        assert payload[:4] == b"PLGE"
+        macro_shape_count = struct.unpack_from("<I", payload, 12)[0]
+        assert macro_shape_count == 4
+        macro_shape_table_offset = struct.unpack_from("<I", payload, 24)[0]
+        macro_shape_indices = [
+            struct.unpack_from(
+                "<I", payload, macro_shape_table_offset + index * SHAPE_TABLE_STRIDE + 12
+            )[0]
+            for index in range(macro_shape_count)
+        ]
+        assert macro_shape_indices == [0, 0, 0, 0]
+
+        pipe.write(frame(CLOSE, 14))
         pipe.flush()
 
 
@@ -434,6 +469,7 @@ def exercise_gds_pipe(session: dict) -> None:
         top_row = cell_offset + GDS_CELL_STRIDE
         assert table_string(struct.unpack_from("<I", payload, top_row)[0]) == "TOP"
         assert struct.unpack_from("<I", payload, top_row + 20)[0] == 1
+        top_cell_index = 1
 
         pipe.write(frame(GEOMETRY_REQUEST, 22, geometry_payload(16)))
         pipe.flush()
@@ -451,7 +487,39 @@ def exercise_gds_pipe(session: dict) -> None:
         ]
         assert 11 in owner_kinds
 
-        pipe.write(frame(CLOSE, 23))
+        pipe.write(
+            frame(
+                GEOMETRY_REQUEST,
+                23,
+                owner_filtered_geometry_payload(16, gds_root_cell_indices=[top_cell_index]),
+            )
+        )
+        pipe.flush()
+        message_type, request_id, flags, payload = read_frame(pipe)
+        assert message_type == GEOMETRY_RESPONSE
+        assert request_id == 23
+        assert flags == 0
+        assert payload[:4] == b"PLGE"
+        assert struct.unpack_from("<H", payload, 4)[0] == PROTOCOL_VERSION
+        filtered_shape_count = struct.unpack_from("<I", payload, 12)[0]
+        assert filtered_shape_count == 3
+        filtered_shape_table_offset = struct.unpack_from("<I", payload, 24)[0]
+        filtered_owner_kinds = [
+            struct.unpack_from(
+                "<H", payload, filtered_shape_table_offset + index * SHAPE_TABLE_STRIDE + 6
+            )[0]
+            for index in range(filtered_shape_count)
+        ]
+        filtered_macro_indices = [
+            struct.unpack_from(
+                "<I", payload, filtered_shape_table_offset + index * SHAPE_TABLE_STRIDE + 12
+            )[0]
+            for index in range(filtered_shape_count)
+        ]
+        assert filtered_owner_kinds == [11, 11, 11]
+        assert filtered_macro_indices == [0, 0, 0]
+
+        pipe.write(frame(CLOSE, 24))
         pipe.flush()
 
 

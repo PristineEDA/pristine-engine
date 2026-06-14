@@ -47,6 +47,10 @@ struct LayoutFrame {
 [[nodiscard]] std::vector<std::uint8_t> encodeGeometryResponsePayload(
     const LayoutDataSet& data,
     const LayoutGeometryRequest& request);
+[[nodiscard]] std::vector<std::uint8_t> encodeGeometryResponsePayload(
+    const LayoutDataSet& data,
+    const LayoutGeometryRequest& request,
+    const std::vector<LayoutShape>& shapes);
 [[nodiscard]] std::vector<std::uint8_t> encodeErrorPayload(LayoutErrorCode code,
                                                          std::string_view message);
 [[nodiscard]] LayoutGeometryRequest decodeGeometryRequestPayload(
