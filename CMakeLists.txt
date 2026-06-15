@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.23)
 
 project(
   pristine-engine
-  VERSION 0.1.2
+  VERSION 0.1.3
   DESCRIPTION "Standalone SystemVerilog language server"
   LANGUAGES C CXX)
 
