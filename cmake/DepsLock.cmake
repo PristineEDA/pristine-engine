@@ -5,6 +5,7 @@ set(PRISTINE_DEPENDENCY_NAMES
     lz4
     fastlz
     wellen
+    boost
     lefdef
     ihp_open_pdk
     nlohmann_json
@@ -37,6 +38,11 @@ set(PRISTINE_DEP_wellen_URL "https://codeload.github.com/ekiwi/wellen/tar.gz/442
 set(PRISTINE_DEP_wellen_SHA256 "D1E50C58A500F748D090F991ED29C0CA34A46ED3D6FD28D5C13C2113DDBD6384")
 set(PRISTINE_DEP_wellen_ARCHIVE_NAME "wellen-44274b0cb6fcc988ff25d770984f4abdbccc4b7d.tar.gz")
 set(PRISTINE_DEP_wellen_ALLOW_NO_CMAKE TRUE)
+
+set(PRISTINE_DEP_boost_URL "https://archives.boost.io/release/1.91.0/source/boost_1_91_0.tar.gz")
+set(PRISTINE_DEP_boost_SHA256 "5734305F40A76C30F951C9ABD409A45A2A19FB546EFE4162119250BBE4D3A463")
+set(PRISTINE_DEP_boost_ARCHIVE_NAME "boost_1_91_0.tar.gz")
+set(PRISTINE_DEP_boost_ALLOW_NO_CMAKE TRUE)
 
 set(PRISTINE_DEP_lefdef_URL "https://github.com/cibyr/lefdef/archive/6486f8a975e95f946ac5d1dccf9878beb48c6b38.tar.gz")
 set(PRISTINE_DEP_lefdef_SHA256 "37052B2FCCD602FBEE31BF6C40709FA646CFFB1CE5C5F786DBB924AFFCB8751E")

@@ -81,7 +81,7 @@ pristine_register_notice_family(
   bsl-1.0
   TITLE "Boost Software License 1.0"
   SOURCE_PATH "${PRISTINE_ROOT_DIR}/licenses/texts/BSL-1.0.txt"
-  NOTE "slang currently builds against a vendored boost_unordered header when a suitable Boost package is not found. This section preserves the Boost Software License text for that bundled header code."
+  NOTE "Boost-covered code is redistributed through the direct Boost 1.91.0 header dependency and slang's vendored boost_unordered header. This section preserves the Boost Software License text for that code."
 )
 
 pristine_register_notice_family(
@@ -194,6 +194,19 @@ pristine_register_attribution(
   RELATIONSHIP "test/differential reference fixture source"
   FAMILY_IDS slang-server-v0.2.5-mit
   NOTES "Local reference checkout at C:/Users/maksy/Desktop/project/slang-server reports tag v0.2.5 and commit 0ec16ae4905ae8a5cf9bb33727a9eccbb82fba2b. Use as the attribution anchor if any differential fixture copies upstream MIT-covered material; rewritten fixtures remain preferred."
+)
+
+pristine_register_attribution(
+  boost
+  NAME "Boost"
+  VERSION "1.91.0"
+  OWNER "Boost contributors"
+  URL "https://archives.boost.io/release/1.91.0/source/boost_1_91_0.tar.gz"
+  LICENSE_LABEL "BSL-1.0"
+  SCOPE "redistributed"
+  RELATIONSHIP "direct header-only dependency for layout spatial indexing"
+  FAMILY_IDS bsl-1.0
+  NOTES "Pinned in cmake/DepsLock.cmake; pristine-engine uses Boost.Geometry R-tree headers behind LayoutSpatialIndex."
 )
 
 pristine_register_attribution(

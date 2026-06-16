@@ -11,6 +11,25 @@ namespace {
 
 namespace fs = std::filesystem;
 
+std::string pathUtf8String(const fs::path& path) {
+    const auto text = path.generic_u8string();
+    std::string result;
+    result.reserve(text.size());
+    for (const auto ch : text) {
+        result.push_back(static_cast<char>(ch));
+    }
+    return result;
+}
+
+fs::path pathFromUtf8(std::string_view value) {
+    std::u8string text;
+    text.reserve(value.size());
+    for (const auto ch : value) {
+        text.push_back(static_cast<char8_t>(static_cast<unsigned char>(ch)));
+    }
+    return fs::path(text);
+}
+
 std::optional<std::string> getOptionalString(const lsp::Json& value, std::string_view field_name) {
     const auto field_it = value.find(field_name);
     if (field_it == value.end() || field_it->is_null()) {
@@ -81,14 +100,14 @@ std::string percentDecode(std::string_view value) {
 }
 
 bool isSystemVerilogFile(const fs::path& path) {
-    const auto extension = path.extension().string();
+    const auto extension = pathUtf8String(path.extension());
     return extension == ".sv" || extension == ".svh" || extension == ".v" || extension == ".vh";
 }
 
 bool isExcludedPath(const fs::path& path, const std::vector<std::string>& exclude_dirs) {
-    const auto normalized = path.generic_string();
+    const auto normalized = pathUtf8String(path);
     return std::any_of(exclude_dirs.begin(), exclude_dirs.end(), [&](const std::string& exclude_dir) {
-        return !exclude_dir.empty() && normalized.find(fs::path(exclude_dir).generic_string()) != std::string::npos;
+        return !exclude_dir.empty() && normalized.find(pathUtf8String(pathFromUtf8(exclude_dir))) != std::string::npos;
     });
 }
 
@@ -166,7 +185,7 @@ std::optional<fs::path> WorkspaceManager::pathFromFileUri(std::string_view uri) 
     }
 #endif
 
-    return fs::path(decoded);
+    return pathFromUtf8(decoded);
 }
 
 std::vector<fs::path> WorkspaceManager::sourceFilesForIndex() const {

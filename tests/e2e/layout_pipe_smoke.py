@@ -25,6 +25,14 @@ GEOMETRY_REQUEST = 5
 GEOMETRY_RESPONSE = 6
 ERROR_RESPONSE = 7
 CLOSE = 8
+TILE_GEOMETRY_REQUEST = 9
+TILE_GEOMETRY_RESPONSE = 10
+HIT_TEST_REQUEST = 11
+HIT_TEST_RESPONSE = 12
+INSPECT_REQUEST = 13
+INSPECT_RESPONSE = 14
+SELECTION_GEOMETRY_REQUEST = 15
+SELECTION_GEOMETRY_RESPONSE = 16
 
 
 def write_message(process: subprocess.Popen[bytes], message: dict) -> None:
@@ -144,6 +152,31 @@ def owner_filtered_geometry_payload(
     for cell_index in gds_root_cell_indices:
         payload += struct.pack("<I", cell_index)
     return bytes(payload)
+
+
+def tile_geometry_payload(root_cell_index: int, bbox: tuple[float, float, float, float], max_shapes: int = 0) -> bytes:
+    payload = bytearray(struct.pack("<IIIIIII", 1, root_cell_index, max_shapes, 0, 0, 2, 0))
+    payload += struct.pack("<dddd", *bbox)
+    payload += struct.pack("<III", 0, 0, 0)
+    return bytes(payload)
+
+
+def hit_test_payload(root_cell_index: int, x: float, y: float, radius: float, max_results: int = 16) -> bytes:
+    payload = bytearray(struct.pack("<III", 0, root_cell_index, max_results))
+    payload += struct.pack("<ddd", x, y, radius)
+    payload += struct.pack("<III", 0, 0, 0)
+    return bytes(payload)
+
+
+def object_payload(kind: int, cell_index: int, reference_index: int, element_index: int, layer_index: int = 0xFFFFFFFF, datatype: int = 0) -> bytes:
+    return struct.pack("<IIIIIIIQ", 0, kind, cell_index, reference_index, element_index, layer_index, datatype, 0)
+
+
+def embedded_tile_geometry(payload: bytes) -> bytes:
+    assert payload[:4] == b"PLTG"
+    offset = struct.unpack_from("<I", payload, 16)[0]
+    size = struct.unpack_from("<I", payload, 20)[0]
+    return payload[offset : offset + size]
 
 
 def find_repo_root(server_path: pathlib.Path) -> pathlib.Path:
@@ -519,7 +552,59 @@ def exercise_gds_pipe(session: dict) -> None:
         assert filtered_owner_kinds == [11, 11, 11]
         assert filtered_macro_indices == [0, 0, 0]
 
-        pipe.write(frame(CLOSE, 24))
+        pipe.write(frame(TILE_GEOMETRY_REQUEST, 24, tile_geometry_payload(top_cell_index, (90, 190, 275, 360), 2)))
+        pipe.flush()
+        message_type, request_id, flags, payload = read_frame(pipe)
+        assert message_type == TILE_GEOMETRY_RESPONSE
+        assert request_id == 24
+        assert flags == 1
+        assert payload[:4] == b"PLTG"
+        assert struct.unpack_from("<H", payload, 4)[0] == PROTOCOL_VERSION
+        assert struct.unpack_from("<H", payload, 6)[0] >= 72
+        assert struct.unpack_from("<I", payload, 24)[0] == 2
+        assert struct.unpack_from("<I", payload, 56)[0] >= 1
+        tile_geometry = embedded_tile_geometry(payload)
+        assert tile_geometry[:4] == b"PLGE"
+        assert struct.unpack_from("<I", tile_geometry, 12)[0] == 2
+
+        pipe.write(frame(HIT_TEST_REQUEST, 25, hit_test_payload(top_cell_index, 105, 205, 5)))
+        pipe.flush()
+        message_type, request_id, flags, payload = read_frame(pipe)
+        assert message_type == HIT_TEST_RESPONSE
+        assert request_id == 25
+        assert flags == 0
+        assert payload[:4] == b"PLHT"
+        assert struct.unpack_from("<H", payload, 6)[0] >= 64
+        hit_count = struct.unpack_from("<I", payload, 8)[0]
+        assert hit_count >= 1
+        hit_row_offset = struct.unpack_from("<I", payload, 12)[0]
+        assert struct.unpack_from("<I", payload, 16)[0] == 80
+        assert struct.unpack_from("<I", payload, 56)[0] >= hit_count
+        hit_kind = struct.unpack_from("<H", payload, hit_row_offset)[0]
+        hit_element_index = struct.unpack_from("<I", payload, hit_row_offset + 12)[0]
+        assert hit_kind == 3
+        assert hit_element_index != 0xFFFFFFFF
+
+        pipe.write(frame(INSPECT_REQUEST, 26, object_payload(3, 0xFFFFFFFF, 0xFFFFFFFF, hit_element_index)))
+        pipe.flush()
+        message_type, request_id, flags, payload = read_frame(pipe)
+        assert message_type == INSPECT_RESPONSE
+        assert request_id == 26
+        assert flags == 0
+        assert payload[:4] == b"PLIN"
+        assert struct.unpack_from("<I", payload, 8)[0] == 3
+        assert struct.unpack_from("<I", payload, 20)[0] == hit_element_index
+
+        pipe.write(frame(SELECTION_GEOMETRY_REQUEST, 27, object_payload(3, 0xFFFFFFFF, 0xFFFFFFFF, hit_element_index)))
+        pipe.flush()
+        message_type, request_id, flags, payload = read_frame(pipe)
+        assert message_type == SELECTION_GEOMETRY_RESPONSE
+        assert request_id == 27
+        assert flags == 0
+        assert payload[:4] == b"PLGE"
+        assert struct.unpack_from("<I", payload, 12)[0] == 1
+
+        pipe.write(frame(CLOSE, 28))
         pipe.flush()
 
 
@@ -599,6 +684,9 @@ def main() -> int:
         assert gds_session["referenceCount"] == 2
         assert gds_session["elementCount"] == 3
         assert gds_session["layerCount"] >= 1
+        assert gds_session["gdsMetrics"]["flattenedAtOpen"] is False
+        assert gds_session["gdsMetrics"]["spatialIndexBuiltAtOpen"] is False
+        assert gds_session["gdsMetrics"]["openMicros"] >= gds_session["gdsMetrics"]["parseMicros"]
         exercise_gds_pipe(gds_session)
 
         gds_close_response = request(

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstring>
 #include <iterator>
 #include <limits>
@@ -16,9 +17,16 @@ namespace {
 constexpr std::uint8_t kFrameMagic[] = {'P', 'L', 'D', '1'};
 constexpr std::uint8_t kCatalogMagic[] = {'P', 'L', 'C', 'T'};
 constexpr std::uint8_t kGeometryMagic[] = {'P', 'L', 'G', 'E'};
+constexpr std::uint8_t kTileGeometryMagic[] = {'P', 'L', 'T', 'G'};
+constexpr std::uint8_t kHitTestMagic[] = {'P', 'L', 'H', 'T'};
+constexpr std::uint8_t kInspectMagic[] = {'P', 'L', 'I', 'N'};
 constexpr std::uint16_t kFrameHeaderSize = 24;
 constexpr std::uint16_t kCatalogHeaderSize = 136;
 constexpr std::uint16_t kGeometryHeaderSize = 96;
+constexpr std::uint16_t kTileGeometryHeaderSize = 72;
+constexpr std::uint16_t kHitTestHeaderSize = 64;
+constexpr std::uint16_t kHitTestRowStride = 80;
+constexpr std::uint16_t kInspectHeaderSize = 116;
 constexpr std::size_t kMaxPayloadSize = 128U * 1024U * 1024U;
 constexpr std::uint32_t kGdsCatalogCellTopFlag = 1U;
 constexpr std::uint32_t kLayoutCatalogSourceLefDef = 1U;
@@ -27,6 +35,15 @@ constexpr std::uint32_t kGeometryRequestFlagHasBbox = 1U;
 constexpr std::uint32_t kGeometryRequestFlagOwnerFilters = 2U;
 constexpr std::uint32_t kGeometryRequestSupportedFlags =
     kGeometryRequestFlagHasBbox | kGeometryRequestFlagOwnerFilters;
+constexpr std::uint32_t kTileGeometryRequestFlagHasBbox = 1U;
+constexpr std::uint32_t kTileGeometryRequestSupportedFlags = kTileGeometryRequestFlagHasBbox;
+
+using Clock = std::chrono::steady_clock;
+
+std::uint64_t elapsedMicros(Clock::time_point start) {
+    return static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::microseconds>(Clock::now() - start).count());
+}
 
 struct LayoutCatalogPinShapeRange {
     std::uint32_t first_shape_index = kNoLayoutMacroIndex;
@@ -231,6 +248,21 @@ void writeU32Header(std::vector<std::uint8_t>& result,
     result[offset++] = static_cast<std::uint8_t>((value >> 8U) & 0xffU);
     result[offset++] = static_cast<std::uint8_t>((value >> 16U) & 0xffU);
     result[offset++] = static_cast<std::uint8_t>((value >> 24U) & 0xffU);
+}
+
+void writeU64Header(std::vector<std::uint8_t>& result,
+                    std::size_t& offset,
+                    std::uint64_t value) {
+    for (int shift = 0; shift < 64; shift += 8) {
+        result[offset++] = static_cast<std::uint8_t>((value >> shift) & 0xffULL);
+    }
+}
+
+void writeF64Header(std::vector<std::uint8_t>& result, std::size_t& offset, double value) {
+    std::uint64_t bits = 0;
+    static_assert(sizeof(bits) == sizeof(value));
+    std::memcpy(&bits, &value, sizeof(bits));
+    writeU64Header(result, offset, bits);
 }
 
 std::vector<std::uint8_t> encodeCatalogV3ResponsePayload(const LayoutDataSet& data) {
@@ -628,6 +660,13 @@ std::vector<std::uint8_t> encodeGeometryResponsePayload(const LayoutDataSet& dat
 std::vector<std::uint8_t> encodeGeometryResponsePayload(const LayoutDataSet& data,
                                                         const LayoutGeometryRequest& request,
                                                         const std::vector<LayoutShape>& shapes) {
+    return encodeGeometryResponsePayload(data, request, shapes, false);
+}
+
+std::vector<std::uint8_t> encodeGeometryResponsePayload(const LayoutDataSet& data,
+                                                        const LayoutGeometryRequest& request,
+                                                        const std::vector<LayoutShape>& shapes,
+                                                        bool pre_truncated) {
     validateMacroFilters(data, request);
     if (!data.gds.has_value()) {
         validateNoGdsRootFilters(request);
@@ -712,7 +751,7 @@ std::vector<std::uint8_t> encodeGeometryResponsePayload(const LayoutDataSet& dat
     writeHeaderU32(data.units_per_micron);
     writeHeaderU32(static_cast<std::uint32_t>(selected.size()));
     writeHeaderU32(static_cast<std::uint32_t>(polygon_x.size()));
-    writeHeaderU32(truncated ? kLayoutFrameFlagTruncated : 0U);
+    writeHeaderU32((truncated || pre_truncated) ? kLayoutFrameFlagTruncated : 0U);
     writeHeaderU32(shape_table_offset);
     writeHeaderU32(x0_offset);
     writeHeaderU32(y0_offset);
@@ -721,6 +760,141 @@ std::vector<std::uint8_t> encodeGeometryResponsePayload(const LayoutDataSet& dat
     writeHeaderU32(polygon_x_offset);
     writeHeaderU32(polygon_y_offset);
     writeHeaderU32(static_cast<std::uint32_t>(result.size()));
+    return result;
+}
+
+std::vector<std::uint8_t> encodeTileGeometryResponsePayload(
+    const LayoutDataSet& data,
+    const LayoutTileGeometryRequest& request,
+    const LayoutTileGeometryResult& tile_result) {
+    const auto encode_start = Clock::now();
+    LayoutGeometryRequest geometry_request;
+    geometry_request.has_bbox = request.has_bbox;
+    geometry_request.bbox = request.bbox;
+    geometry_request.max_shapes = 0;
+    geometry_request.layer_indices = request.layer_indices;
+    geometry_request.shape_kinds = request.shape_kinds;
+    const auto geometry_payload =
+        encodeGeometryResponsePayload(data, geometry_request, tile_result.shapes, tile_result.truncated);
+
+    std::vector<std::uint8_t> result(kTileGeometryHeaderSize, 0);
+    const auto geometry_offset = static_cast<std::uint32_t>(result.size());
+    result.insert(result.end(), geometry_payload.begin(), geometry_payload.end());
+    const auto flags = tile_result.truncated ? kLayoutFrameFlagTruncated : 0U;
+
+    std::size_t offset = 0;
+    result[offset++] = kTileGeometryMagic[0];
+    result[offset++] = kTileGeometryMagic[1];
+    result[offset++] = kTileGeometryMagic[2];
+    result[offset++] = kTileGeometryMagic[3];
+    result[offset++] = static_cast<std::uint8_t>(kLayoutProtocolVersion & 0xffU);
+    result[offset++] = static_cast<std::uint8_t>((kLayoutProtocolVersion >> 8U) & 0xffU);
+    result[offset++] = static_cast<std::uint8_t>(kTileGeometryHeaderSize & 0xffU);
+    result[offset++] = static_cast<std::uint8_t>((kTileGeometryHeaderSize >> 8U) & 0xffU);
+    writeU32Header(result, offset, flags);
+    writeU32Header(result, offset, tile_result.next_token);
+    writeU32Header(result, offset, geometry_offset);
+    writeU32Header(result, offset, checkedCount(geometry_payload.size(), "tile geometry payload"));
+    writeU32Header(result, offset, checkedCount(tile_result.shapes.size(), "tile shape count"));
+    writeU32Header(result, offset, checkedCount(result.size(), "tile payload size"));
+    writeU64Header(result, offset, tile_result.index_build_micros);
+    writeU64Header(result, offset, tile_result.query_micros);
+    writeU64Header(result, offset, elapsedMicros(encode_start));
+    writeU32Header(result, offset, tile_result.visited_cell_count);
+    writeU32Header(result, offset, tile_result.element_candidate_count);
+    writeU32Header(result, offset, tile_result.reference_candidate_count);
+    writeU32Header(result, offset, tile_result.traversed_reference_count);
+    return result;
+}
+
+std::vector<std::uint8_t> encodeHitTestResponsePayload(
+    const LayoutDataSet& data,
+    const LayoutHitTestResponse& response) {
+    const auto encode_start = Clock::now();
+    std::vector<std::uint8_t> result(kHitTestHeaderSize, 0);
+    const auto row_offset = checkedCount(result.size(), "hit-test row offset");
+    for (const auto& hit : response.hits) {
+        appendU16(result, static_cast<std::uint16_t>(hit.object.kind));
+        appendU16(result, 0);
+        appendU32(result, hit.object.cell_index);
+        appendU32(result, hit.object.reference_index);
+        appendU32(result, hit.object.element_index);
+        appendU32(result, hit.object.layer_index);
+        appendU32(result, hit.object.datatype);
+        appendU32(result, hit.rank);
+        appendU32(result, 0);
+        appendU64(result, hit.object.instance_path_hash);
+        appendF64(result, hit.distance);
+        appendF64(result, toMicrons(hit.bounds.x0, data.units_per_micron));
+        appendF64(result, toMicrons(hit.bounds.y0, data.units_per_micron));
+        appendF64(result, toMicrons(hit.bounds.x1, data.units_per_micron));
+        appendF64(result, toMicrons(hit.bounds.y1, data.units_per_micron));
+    }
+
+    std::size_t offset = 0;
+    result[offset++] = kHitTestMagic[0];
+    result[offset++] = kHitTestMagic[1];
+    result[offset++] = kHitTestMagic[2];
+    result[offset++] = kHitTestMagic[3];
+    result[offset++] = static_cast<std::uint8_t>(kLayoutProtocolVersion & 0xffU);
+    result[offset++] = static_cast<std::uint8_t>((kLayoutProtocolVersion >> 8U) & 0xffU);
+    result[offset++] = static_cast<std::uint8_t>(kHitTestHeaderSize & 0xffU);
+    result[offset++] = static_cast<std::uint8_t>((kHitTestHeaderSize >> 8U) & 0xffU);
+    writeU32Header(result, offset, checkedCount(response.hits.size(), "hit-test row count"));
+    writeU32Header(result, offset, row_offset);
+    writeU32Header(result, offset, kHitTestRowStride);
+    writeU32Header(result, offset, checkedCount(result.size(), "hit-test payload size"));
+    writeU32Header(result, offset, 0);
+    writeU32Header(result, offset, 0);
+    writeU64Header(result, offset, response.index_build_micros);
+    writeU64Header(result, offset, response.query_micros);
+    writeU64Header(result, offset, elapsedMicros(encode_start));
+    writeU32Header(result, offset, response.tile_shape_count);
+    writeU32Header(result, offset, response.precise_candidate_count);
+    return result;
+}
+
+std::vector<std::uint8_t> encodeInspectResponsePayload(const LayoutDataSet& data,
+                                                       const LayoutInspectResult& inspect) {
+    std::vector<std::uint8_t> result(kInspectHeaderSize, 0);
+    std::vector<std::uint8_t> strings;
+    const auto name_offset = appendTableString(strings, inspect.name);
+    const auto text_offset = appendTableString(strings, inspect.text);
+    alignTo(result, 4);
+    const auto string_offset = checkedCount(result.size(), "inspect string offset");
+    result.insert(result.end(), strings.begin(), strings.end());
+
+    std::size_t offset = 0;
+    result[offset++] = kInspectMagic[0];
+    result[offset++] = kInspectMagic[1];
+    result[offset++] = kInspectMagic[2];
+    result[offset++] = kInspectMagic[3];
+    result[offset++] = static_cast<std::uint8_t>(kLayoutProtocolVersion & 0xffU);
+    result[offset++] = static_cast<std::uint8_t>((kLayoutProtocolVersion >> 8U) & 0xffU);
+    result[offset++] = static_cast<std::uint8_t>(kInspectHeaderSize & 0xffU);
+    result[offset++] = static_cast<std::uint8_t>((kInspectHeaderSize >> 8U) & 0xffU);
+    writeU32Header(result, offset, static_cast<std::uint32_t>(inspect.object.kind));
+    writeU32Header(result, offset, inspect.object.cell_index);
+    writeU32Header(result, offset, inspect.object.reference_index);
+    writeU32Header(result, offset, inspect.object.element_index);
+    writeU32Header(result, offset, inspect.object.layer_index);
+    writeU32Header(result, offset, inspect.object.datatype);
+    writeU64Header(result, offset, inspect.object.instance_path_hash);
+    writeU32Header(result, offset, inspect.layer);
+    writeU32Header(result, offset, inspect.datatype);
+    writeU32Header(result, offset, inspect.texttype);
+    writeU32Header(result, offset, static_cast<std::uint32_t>(inspect.gds_element_kind));
+    writeU32Header(result, offset, static_cast<std::uint32_t>(inspect.gds_reference_kind));
+    writeU32Header(result, offset, name_offset);
+    writeU32Header(result, offset, text_offset);
+    writeU32Header(result, offset, string_offset);
+    writeU32Header(result, offset, checkedCount(strings.size(), "inspect string table"));
+    writeU32Header(result, offset, checkedCount(result.size(), "inspect payload size"));
+    writeU32Header(result, offset, 0);
+    writeF64Header(result, offset, toMicrons(inspect.bounds.x0, data.units_per_micron));
+    writeF64Header(result, offset, toMicrons(inspect.bounds.y0, data.units_per_micron));
+    writeF64Header(result, offset, toMicrons(inspect.bounds.x1, data.units_per_micron));
+    writeF64Header(result, offset, toMicrons(inspect.bounds.y1, data.units_per_micron));
     return result;
 }
 
@@ -778,6 +952,144 @@ LayoutGeometryRequest decodeGeometryRequestPayload(const std::vector<std::uint8_
         throw std::runtime_error("Layout geometry request has trailing bytes");
     }
     return request;
+}
+
+LayoutTileGeometryRequest decodeTileGeometryRequestPayload(
+    const std::vector<std::uint8_t>& payload) {
+    const auto* bytes = payload.data();
+    const auto size = payload.size();
+    std::size_t offset = 0;
+    requireAvailable(size, offset, 28);
+    const auto flags = readU32(bytes, size, offset);
+    offset += sizeof(std::uint32_t);
+    if ((flags & ~kTileGeometryRequestSupportedFlags) != 0U) {
+        throw std::runtime_error("Layout tile geometry request has unsupported flags");
+    }
+
+    LayoutTileGeometryRequest request;
+    request.has_bbox = (flags & kTileGeometryRequestFlagHasBbox) != 0U;
+    request.root_cell_index = readU32(bytes, size, offset);
+    offset += sizeof(std::uint32_t);
+    request.max_shapes = readU32(bytes, size, offset);
+    offset += sizeof(std::uint32_t);
+    request.max_points = readU32(bytes, size, offset);
+    offset += sizeof(std::uint32_t);
+    request.max_bytes = readU32(bytes, size, offset);
+    offset += sizeof(std::uint32_t);
+    request.lod = readU32(bytes, size, offset);
+    offset += sizeof(std::uint32_t);
+    request.continuation_token = readU32(bytes, size, offset);
+    offset += sizeof(std::uint32_t);
+
+    if (request.has_bbox) {
+        const auto x0 = readF64(bytes, size, offset);
+        offset += sizeof(double);
+        const auto y0 = readF64(bytes, size, offset);
+        offset += sizeof(double);
+        const auto x1 = readF64(bytes, size, offset);
+        offset += sizeof(double);
+        const auto y1 = readF64(bytes, size, offset);
+        offset += sizeof(double);
+        request.bbox = LayoutRect{.x0 = static_cast<std::int64_t>(x0),
+                                  .y0 = static_cast<std::int64_t>(y0),
+                                  .x1 = static_cast<std::int64_t>(x1),
+                                  .y1 = static_cast<std::int64_t>(y1)};
+    }
+    readU32List(bytes, size, offset, request.layer_indices, "tile layer index");
+    const auto kind_count = readU32(bytes, size, offset);
+    offset += sizeof(std::uint32_t);
+    if (static_cast<std::size_t>(kind_count) > (size - offset) / sizeof(std::uint32_t)) {
+        throw std::runtime_error("Layout tile geometry request shape kind list is truncated");
+    }
+    for (std::uint32_t index = 0; index < kind_count; ++index) {
+        request.shape_kinds.push_back(
+            static_cast<LayoutShapeKind>(readU32(bytes, size, offset)));
+        offset += sizeof(std::uint32_t);
+    }
+    readU32List(bytes, size, offset, request.datatypes, "tile datatype");
+    if (offset != size) {
+        throw std::runtime_error("Layout tile geometry request has trailing bytes");
+    }
+    return request;
+}
+
+LayoutHitTestRequest decodeHitTestRequestPayload(const std::vector<std::uint8_t>& payload) {
+    const auto* bytes = payload.data();
+    const auto size = payload.size();
+    std::size_t offset = 0;
+    requireAvailable(size, offset, 36);
+    const auto flags = readU32(bytes, size, offset);
+    offset += sizeof(std::uint32_t);
+    if (flags != 0U) {
+        throw std::runtime_error("Layout hit-test request has unsupported flags");
+    }
+    LayoutHitTestRequest request;
+    request.root_cell_index = readU32(bytes, size, offset);
+    offset += sizeof(std::uint32_t);
+    request.max_results = readU32(bytes, size, offset);
+    offset += sizeof(std::uint32_t);
+    const auto x = readF64(bytes, size, offset);
+    offset += sizeof(double);
+    const auto y = readF64(bytes, size, offset);
+    offset += sizeof(double);
+    const auto radius = readF64(bytes, size, offset);
+    offset += sizeof(double);
+    request.point = LayoutPoint{.x = static_cast<std::int64_t>(x),
+                                .y = static_cast<std::int64_t>(y)};
+    request.radius = static_cast<std::int64_t>(std::max(0.0, radius));
+    readU32List(bytes, size, offset, request.layer_indices, "hit-test layer index");
+    const auto kind_count = readU32(bytes, size, offset);
+    offset += sizeof(std::uint32_t);
+    if (static_cast<std::size_t>(kind_count) > (size - offset) / sizeof(std::uint32_t)) {
+        throw std::runtime_error("Layout hit-test request shape kind list is truncated");
+    }
+    for (std::uint32_t index = 0; index < kind_count; ++index) {
+        request.shape_kinds.push_back(
+            static_cast<LayoutShapeKind>(readU32(bytes, size, offset)));
+        offset += sizeof(std::uint32_t);
+    }
+    readU32List(bytes, size, offset, request.datatypes, "hit-test datatype");
+    if (offset != size) {
+        throw std::runtime_error("Layout hit-test request has trailing bytes");
+    }
+    return request;
+}
+
+LayoutInspectRequest decodeInspectRequestPayload(const std::vector<std::uint8_t>& payload) {
+    const auto* bytes = payload.data();
+    const auto size = payload.size();
+    std::size_t offset = 0;
+    requireAvailable(size, offset, 32);
+    const auto flags = readU32(bytes, size, offset);
+    offset += sizeof(std::uint32_t);
+    if (flags != 0U) {
+        throw std::runtime_error("Layout inspect request has unsupported flags");
+    }
+    LayoutInspectRequest request;
+    request.object.kind = static_cast<LayoutSpatialObjectKind>(readU32(bytes, size, offset));
+    offset += sizeof(std::uint32_t);
+    request.object.cell_index = readU32(bytes, size, offset);
+    offset += sizeof(std::uint32_t);
+    request.object.reference_index = readU32(bytes, size, offset);
+    offset += sizeof(std::uint32_t);
+    request.object.element_index = readU32(bytes, size, offset);
+    offset += sizeof(std::uint32_t);
+    request.object.layer_index = readU32(bytes, size, offset);
+    offset += sizeof(std::uint32_t);
+    request.object.datatype = readU32(bytes, size, offset);
+    offset += sizeof(std::uint32_t);
+    request.object.instance_path_hash = readU64(bytes, size, offset);
+    offset += sizeof(std::uint64_t);
+    if (offset != size) {
+        throw std::runtime_error("Layout inspect request has trailing bytes");
+    }
+    return request;
+}
+
+LayoutSelectionGeometryRequest decodeSelectionGeometryRequestPayload(
+    const std::vector<std::uint8_t>& payload) {
+    const auto inspect = decodeInspectRequestPayload(payload);
+    return LayoutSelectionGeometryRequest{.object = inspect.object};
 }
 
 } // namespace pristine::layout

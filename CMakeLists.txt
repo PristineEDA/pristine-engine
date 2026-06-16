@@ -238,6 +238,7 @@ add_library(
   src/layout/LayoutBinaryProtocol.cpp
   src/layout/LayoutParser.cpp
   src/layout/LayoutPipeService.cpp
+  src/layout/LayoutSpatialIndex.cpp
   src/layout/LayoutSource.cpp
   src/lsp/Protocol.cpp
   src/server/ServerSession.cpp
@@ -256,7 +257,7 @@ target_include_directories(
   pristine_core PUBLIC "${PROJECT_SOURCE_DIR}/include" "${PRISTINE_GENERATED_INCLUDE_DIR}")
 target_link_libraries(
   pristine_core PUBLIC nlohmann_json::nlohmann_json slang::slang zlibstatic lz4_static
-                       fastlz_static)
+                       fastlz_static pristine_boost_headers)
 
 if(MSVC)
   target_compile_options(pristine_core PRIVATE /W4 /permissive-)

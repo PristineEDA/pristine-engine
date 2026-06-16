@@ -23,6 +23,8 @@ Redistributed components:
   https://github.com/ariya/FastLZ/tree/b1342dabcf5257ab303743c9332fe75e9147a011
 - slang-server v0.2.5 (MIT) - Hudson River Trading LLC and slang-server contributors
   https://github.com/hudson-trading/slang-server/tree/v0.2.5
+- Boost 1.91.0 (BSL-1.0) - Boost contributors
+  https://archives.boost.io/release/1.91.0/source/boost_1_91_0.tar.gz
 - boost_unordered vendored header vendored in slang v11.0 (BSL-1.0) - Boost contributors listed in slang/external/boost_unordered.hpp
   https://github.com/MikePopoloski/slang/blob/v11.0/external/boost_unordered.hpp
 
@@ -225,9 +227,10 @@ SOFTWARE.
 ================================================================================
 Boost Software License 1.0
 ================================================================================
-slang currently builds against a vendored boost_unordered header when a suitable Boost package is not found. This section preserves the Boost Software License text for that bundled header code.
+Boost-covered code is redistributed through the direct Boost 1.91.0 header dependency and slang's vendored boost_unordered header. This section preserves the Boost Software License text for that code.
 
 Covered components:
+- Boost 1.91.0 - Boost contributors
 - boost_unordered vendored header vendored in slang v11.0 - Boost contributors listed in slang/external/boost_unordered.hpp
 
 Boost Software License - Version 1.0 - August 17th, 2003

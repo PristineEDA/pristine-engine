@@ -86,6 +86,46 @@ std::vector<std::uint8_t> handleRequest(const LayoutSource& source, const Layout
                                                .version = source.protocolVersion(),
                                                .payload = payload});
             }
+            case LayoutMessageType::TileGeometryRequest: {
+                const auto tile_request = decodeTileGeometryRequestPayload(request.payload);
+                const auto payload = source.encodeTileGeometryResponse(tile_request);
+                const auto flags = readU32(payload.data(), payload.size(), 8);
+                return encodeFrame(LayoutFrame{.message_type =
+                                                   LayoutMessageType::TileGeometryResponse,
+                                               .request_id = request.request_id,
+                                               .flags = flags,
+                                               .version = source.protocolVersion(),
+                                               .payload = payload});
+            }
+            case LayoutMessageType::HitTestRequest: {
+                const auto hit_request = decodeHitTestRequestPayload(request.payload);
+                return encodeFrame(LayoutFrame{.message_type = LayoutMessageType::HitTestResponse,
+                                               .request_id = request.request_id,
+                                               .flags = 0,
+                                               .version = source.protocolVersion(),
+                                               .payload = source.encodeHitTestResponse(hit_request)});
+            }
+            case LayoutMessageType::InspectRequest: {
+                const auto inspect_request = decodeInspectRequestPayload(request.payload);
+                return encodeFrame(LayoutFrame{.message_type = LayoutMessageType::InspectResponse,
+                                               .request_id = request.request_id,
+                                               .flags = 0,
+                                               .version = source.protocolVersion(),
+                                               .payload =
+                                                   source.encodeInspectResponse(inspect_request)});
+            }
+            case LayoutMessageType::SelectionGeometryRequest: {
+                const auto selection_request =
+                    decodeSelectionGeometryRequestPayload(request.payload);
+                const auto payload = source.encodeSelectionGeometryResponse(selection_request);
+                const auto flags = readU32(payload.data(), payload.size(), 20);
+                return encodeFrame(LayoutFrame{.message_type =
+                                                   LayoutMessageType::SelectionGeometryResponse,
+                                               .request_id = request.request_id,
+                                               .flags = flags,
+                                               .version = source.protocolVersion(),
+                                               .payload = payload});
+            }
             case LayoutMessageType::Close:
                 return {};
             default:
@@ -333,6 +373,7 @@ LayoutSessionInfo LayoutPipeService::openSession(std::shared_ptr<LayoutSource> s
                            .reference_count = data.gds.has_value() ? data.gds->references.size() : 0U,
                            .element_count = data.gds.has_value() ? data.gds->elements.size() : 0U,
                            .diagnostic_count = data.diagnostics.size(),
+                           .gds_open_metrics = data.gds_open_metrics,
                            .file_uris = data.file_uris};
     info.endpoint.kind = endpointKind();
     info.endpoint.path = endpointPath(info.session_id);

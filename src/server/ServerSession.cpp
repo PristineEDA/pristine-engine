@@ -817,6 +817,15 @@ jsonrpc::Json toLayoutSessionJson(const layout::LayoutSessionInfo& info) {
                          {"diagnosticCount", info.diagnostic_count},
                          {"messages", std::move(messages)},
                          {"fileUris", std::move(file_uris)}};
+    if (info.source == "gds") {
+        result["gdsMetrics"] = jsonrpc::Json{
+            {"parseMicros", info.gds_open_metrics.parse_micros},
+            {"layerRegisterMicros", info.gds_open_metrics.layer_register_micros},
+            {"boundsMicros", info.gds_open_metrics.bounds_micros},
+            {"openMicros", info.gds_open_metrics.open_micros},
+            {"flattenedAtOpen", info.gds_open_metrics.flattened_at_open},
+            {"spatialIndexBuiltAtOpen", info.gds_open_metrics.spatial_index_built_at_open}};
+    }
     return result;
 }
 

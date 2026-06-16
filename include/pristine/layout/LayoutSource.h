@@ -24,6 +24,14 @@ public:
     [[nodiscard]] virtual std::vector<std::uint8_t> encodeCatalogResponse() const;
     [[nodiscard]] virtual std::vector<std::uint8_t> encodeGeometryResponse(
         const LayoutGeometryRequest& request) const;
+    [[nodiscard]] virtual std::vector<std::uint8_t> encodeTileGeometryResponse(
+        const LayoutTileGeometryRequest& request) const;
+    [[nodiscard]] virtual std::vector<std::uint8_t> encodeHitTestResponse(
+        const LayoutHitTestRequest& request) const;
+    [[nodiscard]] virtual std::vector<std::uint8_t> encodeInspectResponse(
+        const LayoutInspectRequest& request) const;
+    [[nodiscard]] virtual std::vector<std::uint8_t> encodeSelectionGeometryResponse(
+        const LayoutSelectionGeometryRequest& request) const;
 };
 
 [[nodiscard]] std::shared_ptr<LayoutSource> makeDataSetLayoutSource(LayoutDataSet data,

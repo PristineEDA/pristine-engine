@@ -12,4 +12,5 @@ It inventories the third-party components redistributed in the `pristine-engine`
 | LZ4 | v1.10.0 | direct dependency for FST LZ4 value-chain blocks | BSD 2-Clause for lib sources | Yann Collet and LZ4 contributors | https://github.com/lz4/lz4/tree/v1.10.0 |
 | FastLZ | commit b1342dabcf5257ab303743c9332fe75e9147a011 | direct dependency for FST FastLZ value-chain blocks | MIT | Ariya Hidayat and FastLZ contributors | https://github.com/ariya/FastLZ/tree/b1342dabcf5257ab303743c9332fe75e9147a011 |
 | slang-server | v0.2.5 | test/differential reference fixture source | MIT | Hudson River Trading LLC and slang-server contributors | https://github.com/hudson-trading/slang-server/tree/v0.2.5 |
+| Boost | 1.91.0 | direct header-only dependency for layout spatial indexing | BSL-1.0 | Boost contributors | https://archives.boost.io/release/1.91.0/source/boost_1_91_0.tar.gz |
 | boost_unordered vendored header | vendored in slang v11.0 | transitive vendored header via slang | BSL-1.0 | Boost contributors listed in slang/external/boost_unordered.hpp | https://github.com/MikePopoloski/slang/blob/v11.0/external/boost_unordered.hpp |

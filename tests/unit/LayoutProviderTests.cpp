@@ -126,12 +126,82 @@ std::vector<std::uint8_t> ownerFilteredGeometryRequest(
     return payload;
 }
 
+std::vector<std::uint8_t> tileGeometryRequest(std::uint32_t root_cell_index,
+                                              LayoutRect bbox,
+                                              std::uint32_t max_shapes = 0,
+                                              std::uint32_t max_points = 0,
+                                              std::uint32_t max_bytes = 0,
+                                              std::uint32_t continuation_token = 0) {
+    std::vector<std::uint8_t> payload;
+    appendU32(payload, 1);
+    appendU32(payload, root_cell_index);
+    appendU32(payload, max_shapes);
+    appendU32(payload, max_points);
+    appendU32(payload, max_bytes);
+    appendU32(payload, 2);
+    appendU32(payload, continuation_token);
+    appendF64(payload, static_cast<double>(bbox.x0));
+    appendF64(payload, static_cast<double>(bbox.y0));
+    appendF64(payload, static_cast<double>(bbox.x1));
+    appendF64(payload, static_cast<double>(bbox.y1));
+    appendU32(payload, 0);
+    appendU32(payload, 0);
+    appendU32(payload, 0);
+    return payload;
+}
+
+std::vector<std::uint8_t> hitTestRequest(std::uint32_t root_cell_index,
+                                         LayoutPoint point,
+                                         std::int64_t radius,
+                                         std::uint32_t max_results = 16) {
+    std::vector<std::uint8_t> payload;
+    appendU32(payload, 0);
+    appendU32(payload, root_cell_index);
+    appendU32(payload, max_results);
+    appendF64(payload, static_cast<double>(point.x));
+    appendF64(payload, static_cast<double>(point.y));
+    appendF64(payload, static_cast<double>(radius));
+    appendU32(payload, 0);
+    appendU32(payload, 0);
+    appendU32(payload, 0);
+    return payload;
+}
+
+std::vector<std::uint8_t> inspectRequest(LayoutSpatialObjectKind kind,
+                                         std::uint32_t cell_index,
+                                         std::uint32_t reference_index,
+                                         std::uint32_t element_index,
+                                         std::uint32_t layer_index = kNoLayoutIndex,
+                                         std::uint32_t datatype = 0) {
+    std::vector<std::uint8_t> payload;
+    appendU32(payload, 0);
+    appendU32(payload, static_cast<std::uint32_t>(kind));
+    appendU32(payload, cell_index);
+    appendU32(payload, reference_index);
+    appendU32(payload, element_index);
+    appendU32(payload, layer_index);
+    appendU32(payload, datatype);
+    appendU64(payload, 0);
+    return payload;
+}
+
 std::uint32_t geometryShapeCount(const std::vector<std::uint8_t>& payload) {
     return readU32(payload.data(), payload.size(), 12);
 }
 
 std::uint32_t geometryShapeTableOffset(const std::vector<std::uint8_t>& payload) {
     return readU32(payload.data(), payload.size(), 24);
+}
+
+std::uint32_t tileShapeCount(const std::vector<std::uint8_t>& payload) {
+    return readU32(payload.data(), payload.size(), 24);
+}
+
+std::vector<std::uint8_t> tileGeometryPayload(const std::vector<std::uint8_t>& payload) {
+    const auto offset = readU32(payload.data(), payload.size(), 16);
+    const auto size = readU32(payload.data(), payload.size(), 20);
+    REQUIRE(offset + size <= payload.size());
+    return std::vector<std::uint8_t>(payload.begin() + offset, payload.begin() + offset + size);
 }
 
 std::string readTableString(const std::vector<std::uint8_t>& payload,
@@ -363,11 +433,11 @@ TEST_CASE("GDS parser captures hierarchy elements references and source v3 catal
     CHECK(data.title == "tiny-gds");
     REQUIRE(data.gds.has_value());
     CHECK(data.gds->cells.size() == 2);
-    CHECK(data.shapes.size() >= 6);
+    CHECK(data.shapes.empty());
     REQUIRE(data.bounds.has_value());
-    CHECK(data.bounds->x0 == 0);
-    CHECK(data.bounds->y0 == 0);
-    CHECK(data.bounds->x1 >= 260);
+    CHECK(data.bounds->x0 >= 100);
+    CHECK(data.bounds->y0 >= 200);
+    CHECK(data.bounds->x1 >= 250);
     CHECK(data.bounds->y1 >= 310);
 
     const auto frame = encodeFrame(LayoutFrame{.message_type = LayoutMessageType::Hello,
@@ -387,6 +457,7 @@ TEST_CASE("GDS parser captures hierarchy elements references and source v3 catal
     CHECK(readU16(catalog.data(), catalog.size(), 4) == kLayoutProtocolVersion);
     CHECK(readU16(catalog.data(), catalog.size(), 6) == 136);
     CHECK(readU32(catalog.data(), catalog.size(), 12) == 2);
+    CHECK(readU32(catalog.data(), catalog.size(), 16) == 0);
     CHECK(readU32(catalog.data(), catalog.size(), 36) == 3);
     CHECK(readU32(catalog.data(), catalog.size(), 44) == 0);
     CHECK(readU32(catalog.data(), catalog.size(), 52) == 0);
@@ -432,7 +503,7 @@ TEST_CASE("GDS parser captures hierarchy elements references and source v3 catal
     const auto top_geometry = source->encodeGeometryResponse(decodeGeometryRequestPayload(
         ownerFilteredGeometryRequest(0, {}, {1})));
     CHECK(readU16(top_geometry.data(), top_geometry.size(), 4) == kLayoutProtocolVersion);
-    CHECK(geometryShapeCount(top_geometry) == data.shapes.size());
+    CHECK(geometryShapeCount(top_geometry) == 9);
     const auto top_shape_offset = geometryShapeTableOffset(top_geometry);
     bool saw_leaf_source_cell = false;
     for (std::uint32_t shape_index = 0; shape_index < geometryShapeCount(top_geometry);
@@ -447,6 +518,85 @@ TEST_CASE("GDS parser captures hierarchy elements references and source v3 catal
     CHECK_THROWS_WITH(source->encodeGeometryResponse(decodeGeometryRequestPayload(
                           ownerFilteredGeometryRequest(0, {}, {42}))),
                       Catch::Matchers::ContainsSubstring("GDS cell index is out of range"));
+
+    std::error_code error;
+    std::filesystem::remove(gds_path, error);
+}
+
+TEST_CASE("GDS spatial index serves tile hit inspect and selection payloads",
+          "[layout][gds][spatial][protocol]") {
+    const auto gds_path = std::filesystem::temp_directory_path() / "pristine-layout-spatial.gds";
+    {
+        std::ofstream output(gds_path, std::ios::binary);
+        const auto bytes = tinyGds();
+        output.write(reinterpret_cast<const char*>(bytes.data()),
+                     static_cast<std::streamsize>(bytes.size()));
+    }
+
+    auto source = openGdsLayoutSource(gds_path, "file:///spatial.gds", "spatial-gds");
+    const auto tile_request = decodeTileGeometryRequestPayload(tileGeometryRequest(
+        1,
+        LayoutRect{.x0 = 90, .y0 = 190, .x1 = 275, .y1 = 360},
+        2));
+    CHECK(tile_request.root_cell_index == 1);
+    CHECK(tile_request.max_shapes == 2);
+    auto tile = source->encodeTileGeometryResponse(tile_request);
+    CHECK(std::string(reinterpret_cast<const char*>(tile.data()), 4) == "PLTG");
+    CHECK(readU16(tile.data(), tile.size(), 4) == kLayoutProtocolVersion);
+    CHECK(readU16(tile.data(), tile.size(), 6) >= 72);
+    CHECK(readU32(tile.data(), tile.size(), 8) == kLayoutFrameFlagTruncated);
+    CHECK(tileShapeCount(tile) == 2);
+    CHECK(readU32(tile.data(), tile.size(), 56) >= 1);
+    auto tile_geometry = tileGeometryPayload(tile);
+    CHECK(std::string(reinterpret_cast<const char*>(tile_geometry.data()), 4) == "PLGE");
+    CHECK(geometryShapeCount(tile_geometry) == 2);
+
+    const auto hit_request = decodeHitTestRequestPayload(
+        hitTestRequest(1, LayoutPoint{.x = 105, .y = 205}, 5));
+    const auto hit = source->encodeHitTestResponse(hit_request);
+    CHECK(std::string(reinterpret_cast<const char*>(hit.data()), 4) == "PLHT");
+    CHECK(readU16(hit.data(), hit.size(), 4) == kLayoutProtocolVersion);
+    CHECK(readU16(hit.data(), hit.size(), 6) >= 64);
+    REQUIRE(readU32(hit.data(), hit.size(), 8) >= 1);
+    const auto hit_row_offset = readU32(hit.data(), hit.size(), 12);
+    CHECK(readU32(hit.data(), hit.size(), 16) == 80);
+    CHECK(readU32(hit.data(), hit.size(), 56) >= readU32(hit.data(), hit.size(), 8));
+    CHECK(readU16(hit.data(), hit.size(), hit_row_offset) ==
+          static_cast<std::uint16_t>(LayoutSpatialObjectKind::Element));
+    const auto hit_element_index = readU32(hit.data(), hit.size(), hit_row_offset + 12);
+
+    const auto inspect_payload = source->encodeInspectResponse(decodeInspectRequestPayload(
+        inspectRequest(LayoutSpatialObjectKind::Element,
+                       kNoLayoutIndex,
+                       kNoLayoutIndex,
+                       hit_element_index)));
+    CHECK(std::string(reinterpret_cast<const char*>(inspect_payload.data()), 4) == "PLIN");
+    CHECK(readU16(inspect_payload.data(), inspect_payload.size(), 4) == kLayoutProtocolVersion);
+    CHECK(readU32(inspect_payload.data(), inspect_payload.size(), 8) ==
+          static_cast<std::uint32_t>(LayoutSpatialObjectKind::Element));
+    CHECK(readU32(inspect_payload.data(), inspect_payload.size(), 20) == hit_element_index);
+
+    const auto selection = source->encodeSelectionGeometryResponse(
+        decodeSelectionGeometryRequestPayload(inspectRequest(LayoutSpatialObjectKind::Element,
+                                                             kNoLayoutIndex,
+                                                             kNoLayoutIndex,
+                                                             hit_element_index)));
+    CHECK(std::string(reinterpret_cast<const char*>(selection.data()), 4) == "PLGE");
+    CHECK(geometryShapeCount(selection) == 1);
+
+    CHECK_THROWS_WITH(source->encodeTileGeometryResponse(decodeTileGeometryRequestPayload(
+                          tileGeometryRequest(42,
+                                              LayoutRect{.x0 = 0, .y0 = 0, .x1 = 1, .y1 = 1}))),
+                      Catch::Matchers::ContainsSubstring("root cell index is out of range"));
+
+    auto unsupported = tileGeometryRequest(1, LayoutRect{.x0 = 0, .y0 = 0, .x1 = 1, .y1 = 1});
+    unsupported[0] = 4;
+    CHECK_THROWS_WITH(decodeTileGeometryRequestPayload(unsupported),
+                      Catch::Matchers::ContainsSubstring("unsupported flags"));
+    unsupported = tileGeometryRequest(1, LayoutRect{.x0 = 0, .y0 = 0, .x1 = 1, .y1 = 1});
+    unsupported.push_back(0);
+    CHECK_THROWS_WITH(decodeTileGeometryRequestPayload(unsupported),
+                      Catch::Matchers::ContainsSubstring("trailing bytes"));
 
     std::error_code error;
     std::filesystem::remove(gds_path, error);

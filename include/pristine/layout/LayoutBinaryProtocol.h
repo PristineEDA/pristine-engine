@@ -21,6 +21,14 @@ enum class LayoutMessageType : std::uint16_t {
     GeometryResponse = 6,
     ErrorResponse = 7,
     Close = 8,
+    TileGeometryRequest = 9,
+    TileGeometryResponse = 10,
+    HitTestRequest = 11,
+    HitTestResponse = 12,
+    InspectRequest = 13,
+    InspectResponse = 14,
+    SelectionGeometryRequest = 15,
+    SelectionGeometryResponse = 16,
 };
 
 enum class LayoutErrorCode : std::uint32_t {
@@ -51,9 +59,32 @@ struct LayoutFrame {
     const LayoutDataSet& data,
     const LayoutGeometryRequest& request,
     const std::vector<LayoutShape>& shapes);
+[[nodiscard]] std::vector<std::uint8_t> encodeGeometryResponsePayload(
+    const LayoutDataSet& data,
+    const LayoutGeometryRequest& request,
+    const std::vector<LayoutShape>& shapes,
+    bool truncated);
+[[nodiscard]] std::vector<std::uint8_t> encodeTileGeometryResponsePayload(
+    const LayoutDataSet& data,
+    const LayoutTileGeometryRequest& request,
+    const LayoutTileGeometryResult& result);
+[[nodiscard]] std::vector<std::uint8_t> encodeHitTestResponsePayload(
+    const LayoutDataSet& data,
+    const LayoutHitTestResponse& response);
+[[nodiscard]] std::vector<std::uint8_t> encodeInspectResponsePayload(
+    const LayoutDataSet& data,
+    const LayoutInspectResult& result);
 [[nodiscard]] std::vector<std::uint8_t> encodeErrorPayload(LayoutErrorCode code,
                                                          std::string_view message);
 [[nodiscard]] LayoutGeometryRequest decodeGeometryRequestPayload(
+    const std::vector<std::uint8_t>& payload);
+[[nodiscard]] LayoutTileGeometryRequest decodeTileGeometryRequestPayload(
+    const std::vector<std::uint8_t>& payload);
+[[nodiscard]] LayoutHitTestRequest decodeHitTestRequestPayload(
+    const std::vector<std::uint8_t>& payload);
+[[nodiscard]] LayoutInspectRequest decodeInspectRequestPayload(
+    const std::vector<std::uint8_t>& payload);
+[[nodiscard]] LayoutSelectionGeometryRequest decodeSelectionGeometryRequestPayload(
     const std::vector<std::uint8_t>& payload);
 
 void appendString(std::vector<std::uint8_t>& output, std::string_view value);

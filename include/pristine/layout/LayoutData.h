@@ -260,6 +260,15 @@ struct LayoutGdsLibrary {
     std::vector<LayoutDiagnostic> diagnostics{};
 };
 
+struct LayoutGdsOpenMetrics {
+    std::uint64_t parse_micros = 0;
+    std::uint64_t layer_register_micros = 0;
+    std::uint64_t bounds_micros = 0;
+    std::uint64_t open_micros = 0;
+    bool flattened_at_open = false;
+    bool spatial_index_built_at_open = false;
+};
+
 struct LayoutDataSet {
     std::string id{};
     std::string title{};
@@ -276,6 +285,7 @@ struct LayoutDataSet {
     std::vector<LayoutDiagnostic> diagnostics{};
     std::vector<std::string> file_uris{};
     std::optional<LayoutGdsLibrary> gds{};
+    LayoutGdsOpenMetrics gds_open_metrics{};
 };
 
 struct LayoutGeometryRequest {
@@ -286,6 +296,96 @@ struct LayoutGeometryRequest {
     std::vector<LayoutShapeKind> shape_kinds{};
     std::vector<std::uint32_t> macro_indices{};
     std::vector<std::uint32_t> gds_root_cell_indices{};
+};
+
+enum class LayoutSpatialObjectKind : std::uint16_t {
+    Unknown = 0,
+    Cell = 1,
+    Reference = 2,
+    Element = 3,
+};
+
+struct LayoutSpatialObjectId {
+    LayoutSpatialObjectKind kind = LayoutSpatialObjectKind::Unknown;
+    std::uint32_t cell_index = kNoLayoutIndex;
+    std::uint32_t reference_index = kNoLayoutIndex;
+    std::uint32_t element_index = kNoLayoutIndex;
+    std::uint32_t layer_index = kNoLayoutIndex;
+    std::uint32_t datatype = 0;
+    std::uint64_t instance_path_hash = 0;
+};
+
+struct LayoutTileGeometryRequest {
+    bool has_bbox = false;
+    LayoutRect bbox{};
+    std::uint32_t root_cell_index = kNoLayoutIndex;
+    std::uint32_t max_shapes = 0;
+    std::uint32_t max_points = 0;
+    std::uint32_t max_bytes = 0;
+    std::uint32_t lod = 0;
+    std::uint32_t continuation_token = 0;
+    std::vector<std::uint32_t> layer_indices{};
+    std::vector<LayoutShapeKind> shape_kinds{};
+    std::vector<std::uint32_t> datatypes{};
+};
+
+struct LayoutTileGeometryResult {
+    std::vector<LayoutShape> shapes{};
+    bool truncated = false;
+    std::uint32_t next_token = 0;
+    std::uint64_t index_build_micros = 0;
+    std::uint64_t query_micros = 0;
+    std::uint64_t encode_micros = 0;
+    std::uint32_t visited_cell_count = 0;
+    std::uint32_t element_candidate_count = 0;
+    std::uint32_t reference_candidate_count = 0;
+    std::uint32_t traversed_reference_count = 0;
+};
+
+struct LayoutHitTestRequest {
+    LayoutPoint point{};
+    std::int64_t radius = 0;
+    std::uint32_t root_cell_index = kNoLayoutIndex;
+    std::uint32_t max_results = 16;
+    std::vector<std::uint32_t> layer_indices{};
+    std::vector<LayoutShapeKind> shape_kinds{};
+    std::vector<std::uint32_t> datatypes{};
+};
+
+struct LayoutHitTestResult {
+    LayoutSpatialObjectId object{};
+    LayoutRect bounds{};
+    std::uint32_t rank = 0;
+    double distance = 0.0;
+};
+
+struct LayoutHitTestResponse {
+    std::vector<LayoutHitTestResult> hits{};
+    std::uint64_t index_build_micros = 0;
+    std::uint64_t query_micros = 0;
+    std::uint64_t encode_micros = 0;
+    std::uint32_t tile_shape_count = 0;
+    std::uint32_t precise_candidate_count = 0;
+};
+
+struct LayoutInspectRequest {
+    LayoutSpatialObjectId object{};
+};
+
+struct LayoutInspectResult {
+    LayoutSpatialObjectId object{};
+    LayoutRect bounds{};
+    std::string name{};
+    std::string text{};
+    LayoutGdsElementKind gds_element_kind = LayoutGdsElementKind::Unknown;
+    LayoutGdsElementKind gds_reference_kind = LayoutGdsElementKind::Unknown;
+    std::uint32_t layer = 0;
+    std::uint32_t datatype = 0;
+    std::uint32_t texttype = 0;
+};
+
+struct LayoutSelectionGeometryRequest {
+    LayoutSpatialObjectId object{};
 };
 
 template<typename T>

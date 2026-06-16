@@ -65,6 +65,15 @@ pristine_require_dependency(nlohmann_json)
 pristine_require_dependency(zlib)
 pristine_require_dependency(lz4)
 
+set(pristine_boost_dir "${PRISTINE_DEPS_DIR}/src/boost")
+if(NOT EXISTS "${pristine_boost_dir}/boost/geometry.hpp")
+  message(
+    FATAL_ERROR
+      "Missing dependency 'boost' in ${pristine_boost_dir}. Run `cmake -DPRISTINE_ROOT_DIR=${PROJECT_SOURCE_DIR} -P ${PROJECT_SOURCE_DIR}/scripts/bootstrap_deps.cmake` first.")
+endif()
+add_library(pristine_boost_headers INTERFACE)
+target_include_directories(pristine_boost_headers SYSTEM INTERFACE "${pristine_boost_dir}")
+
 if(PRISTINE_BUILD_TESTS)
   pristine_require_dependency(catch2)
 endif()

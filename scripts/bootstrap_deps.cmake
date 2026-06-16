@@ -20,6 +20,7 @@ if(NOT DEFINED PRISTINE_COMPONENTS)
     lz4
     fastlz
     wellen
+    boost
     nlohmann_json
     catch2)
 endif()
