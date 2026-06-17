@@ -70,11 +70,38 @@ std::vector<std::uint8_t> handleRequest(const LayoutSource& source, const Layout
                                                .version = source.protocolVersion(),
                                                .payload = source.encodeHelloResponse()});
             case LayoutMessageType::CatalogRequest:
-                return encodeFrame(LayoutFrame{.message_type = LayoutMessageType::CatalogResponse,
-                                               .request_id = request.request_id,
-                                               .flags = 0,
-                                               .version = source.protocolVersion(),
-                                               .payload = source.encodeCatalogResponse()});
+                try {
+                    return encodeFrame(LayoutFrame{
+                        .message_type = LayoutMessageType::CatalogResponse,
+                        .request_id = request.request_id,
+                        .flags = 0,
+                        .version = source.protocolVersion(),
+                        .payload = source.encodeCatalogResponse()});
+                }
+                catch (const std::runtime_error& error) {
+                    if (std::string_view(error.what()).find("payload is too large") !=
+                        std::string_view::npos) {
+                        throw std::runtime_error(
+                            "Layout catalog payload is too large; use paged catalog requests");
+                    }
+                    throw;
+                }
+            case LayoutMessageType::CatalogSummaryRequest:
+                return encodeFrame(LayoutFrame{
+                    .message_type = LayoutMessageType::CatalogSummaryResponse,
+                    .request_id = request.request_id,
+                    .flags = 0,
+                    .version = source.protocolVersion(),
+                    .payload = source.encodeCatalogSummaryResponse()});
+            case LayoutMessageType::CatalogPageRequest: {
+                const auto catalog_request = decodeCatalogPageRequestPayload(request.payload);
+                return encodeFrame(LayoutFrame{
+                    .message_type = LayoutMessageType::CatalogPageResponse,
+                    .request_id = request.request_id,
+                    .flags = 0,
+                    .version = source.protocolVersion(),
+                    .payload = source.encodeCatalogPageResponse(catalog_request)});
+            }
             case LayoutMessageType::GeometryRequest: {
                 const auto geometry_request = decodeGeometryRequestPayload(request.payload);
                 const auto payload = source.encodeGeometryResponse(geometry_request);

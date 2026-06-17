@@ -127,6 +127,20 @@ std::vector<std::uint8_t> ownerFilteredGeometryRequest(
     return payload;
 }
 
+std::vector<std::uint8_t> catalogPageRequest(std::uint32_t table_kind,
+                                             std::uint32_t offset = 0,
+                                             std::uint32_t limit = 0,
+                                             std::uint32_t max_bytes = 0,
+                                             std::uint32_t flags = 0) {
+    std::vector<std::uint8_t> payload;
+    appendU32(payload, flags);
+    appendU32(payload, table_kind);
+    appendU32(payload, offset);
+    appendU32(payload, limit);
+    appendU32(payload, max_bytes);
+    return payload;
+}
+
 std::vector<std::uint8_t> tileGeometryRequest(std::uint32_t root_cell_index,
                                               LayoutRect bbox,
                                               std::uint32_t max_shapes = 0,
@@ -543,6 +557,58 @@ TEST_CASE("GDS parser captures hierarchy elements references and source v3 catal
                           readU32(catalog.data(), catalog.size(), cell_offset + kGdsCellStride)) ==
           "TOP");
     CHECK(readU32(catalog.data(), catalog.size(), cell_offset + kGdsCellStride + 20) == 1);
+
+    const auto catalog_summary = source->encodeCatalogSummaryResponse();
+    CHECK(std::string(reinterpret_cast<const char*>(catalog_summary.data()), 4) == "PLCS");
+    CHECK(readU16(catalog_summary.data(), catalog_summary.size(), 4) == kLayoutProtocolVersion);
+    CHECK(readU16(catalog_summary.data(), catalog_summary.size(), 6) == 152);
+    CHECK(readU32(catalog_summary.data(), catalog_summary.size(), 12) == 2);
+    CHECK(readU32(catalog_summary.data(), catalog_summary.size(), 16) == 0);
+    CHECK(readU32(catalog_summary.data(), catalog_summary.size(), 20) == 1);
+    CHECK(readU32(catalog_summary.data(), catalog_summary.size(), 24) == 1);
+    CHECK(readU32(catalog_summary.data(), catalog_summary.size(), 60) == 3);
+    CHECK(readU32(catalog_summary.data(), catalog_summary.size(), 88) == 2);
+    CHECK(readU32(catalog_summary.data(), catalog_summary.size(), 92) == 2);
+    CHECK(readU32(catalog_summary.data(), catalog_summary.size(), 96) == 5);
+    CHECK(readU32(catalog_summary.data(), catalog_summary.size(), 100) > 0);
+    const auto summary_string_offset = readU32(catalog_summary.data(), catalog_summary.size(), 112);
+    const auto summary_layer_offset = readU32(catalog_summary.data(), catalog_summary.size(), 64);
+    CHECK(readTableString(catalog_summary,
+                          summary_string_offset,
+                          readU32(catalog_summary.data(), catalog_summary.size(), summary_layer_offset)) ==
+          "GDS:1/0");
+
+    const auto first_cell_page = source->encodeCatalogPageResponse(
+        decodeCatalogPageRequestPayload(catalogPageRequest(2, 0, 1)));
+    CHECK(std::string(reinterpret_cast<const char*>(first_cell_page.data()), 4) == "PLCP");
+    CHECK(readU16(first_cell_page.data(), first_cell_page.size(), 4) == kLayoutProtocolVersion);
+    CHECK(readU16(first_cell_page.data(), first_cell_page.size(), 6) == 40);
+    CHECK(readU32(first_cell_page.data(), first_cell_page.size(), 8) == 2);
+    CHECK(readU32(first_cell_page.data(), first_cell_page.size(), 12) == 0);
+    CHECK(readU32(first_cell_page.data(), first_cell_page.size(), 16) == 1);
+    CHECK(readU32(first_cell_page.data(), first_cell_page.size(), 20) == 2);
+    CHECK(readU32(first_cell_page.data(), first_cell_page.size(), 24) == 1);
+    const auto page_string_offset = readU32(first_cell_page.data(), first_cell_page.size(), 28);
+    CHECK(readTableString(first_cell_page,
+                          page_string_offset,
+                          readU32(first_cell_page.data(), first_cell_page.size(), 40)) == "LEAF");
+
+    const auto top_cell_page = source->encodeCatalogPageResponse(
+        decodeCatalogPageRequestPayload(catalogPageRequest(2, 1, 1)));
+    CHECK(readU32(top_cell_page.data(), top_cell_page.size(), 12) == 1);
+    CHECK(readU32(top_cell_page.data(), top_cell_page.size(), 16) == 1);
+    CHECK(readU32(top_cell_page.data(), top_cell_page.size(), 24) == kNoLayoutIndex);
+    const auto top_page_string_offset = readU32(top_cell_page.data(), top_cell_page.size(), 28);
+    CHECK(readTableString(top_cell_page,
+                          top_page_string_offset,
+                          readU32(top_cell_page.data(), top_cell_page.size(), 40)) == "TOP");
+
+    const auto layer_page = source->encodeCatalogPageResponse(
+        decodeCatalogPageRequestPayload(catalogPageRequest(1, 0, 2)));
+    CHECK(readU32(layer_page.data(), layer_page.size(), 8) == 1);
+    CHECK(readU32(layer_page.data(), layer_page.size(), 16) == 2);
+    CHECK(readU32(layer_page.data(), layer_page.size(), 20) == 3);
+    CHECK(readU32(layer_page.data(), layer_page.size(), 24) == 2);
 
     const auto geometry = source->encodeGeometryResponse(decodeGeometryRequestPayload(
         geometryRequest(2)));
@@ -1098,6 +1164,29 @@ TEST_CASE("Layout search request decodes strict v3 payload", "[layout][protocol]
     oversized[query_size_offset + 3U] = 0x00;
     CHECK_THROWS_WITH(decodeSearchRequestPayload(oversized),
                       Catch::Matchers::ContainsSubstring("query is too large"));
+}
+
+TEST_CASE("Layout catalog page request decodes strict v3 payload", "[layout][protocol]") {
+    const auto request = decodeCatalogPageRequestPayload(catalogPageRequest(2, 3, 5, 4096));
+    CHECK(request.table_kind == LayoutCatalogPageTableKind::Cells);
+    CHECK(request.offset == 3);
+    CHECK(request.limit == 5);
+    CHECK(request.max_bytes == 4096);
+
+    CHECK_THROWS_WITH(decodeCatalogPageRequestPayload(catalogPageRequest(99)),
+                      Catch::Matchers::ContainsSubstring("table kind is unsupported"));
+    CHECK_THROWS_WITH(decodeCatalogPageRequestPayload(catalogPageRequest(1, 0, 0, 0, 1)),
+                      Catch::Matchers::ContainsSubstring("unsupported flags"));
+
+    auto trailing = catalogPageRequest(1);
+    trailing.push_back(0);
+    CHECK_THROWS_WITH(decodeCatalogPageRequestPayload(trailing),
+                      Catch::Matchers::ContainsSubstring("trailing bytes"));
+
+    auto truncated = catalogPageRequest(1);
+    truncated.pop_back();
+    CHECK_THROWS_WITH(decodeCatalogPageRequestPayload(truncated),
+                      Catch::Matchers::ContainsSubstring("truncated"));
 }
 
 } // namespace pristine::layout

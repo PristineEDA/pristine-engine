@@ -1087,6 +1087,15 @@ std::vector<std::uint8_t> LayoutSource::encodeCatalogResponse() const {
     return encodeCatalogResponsePayload(dataSet());
 }
 
+std::vector<std::uint8_t> LayoutSource::encodeCatalogSummaryResponse() const {
+    return encodeCatalogSummaryResponsePayload(dataSet());
+}
+
+std::vector<std::uint8_t> LayoutSource::encodeCatalogPageResponse(
+    const LayoutCatalogPageRequest& request) const {
+    return encodeCatalogPageResponsePayload(dataSet(), request);
+}
+
 std::vector<std::uint8_t> LayoutSource::encodeGeometryResponse(
     const LayoutGeometryRequest& request) const {
     if (dataSet().gds.has_value()) {

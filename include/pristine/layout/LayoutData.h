@@ -315,6 +315,23 @@ struct LayoutGeometryRequest {
     std::vector<std::uint32_t> gds_root_cell_indices{};
 };
 
+enum class LayoutCatalogPageTableKind : std::uint32_t {
+    Layers = 1,
+    Cells = 2,
+    References = 3,
+    Elements = 4,
+    Points = 5,
+    Strings = 6,
+    Diagnostics = 7,
+};
+
+struct LayoutCatalogPageRequest {
+    LayoutCatalogPageTableKind table_kind = LayoutCatalogPageTableKind::Layers;
+    std::uint32_t offset = 0;
+    std::uint32_t limit = 0;
+    std::uint32_t max_bytes = 0;
+};
+
 enum class LayoutSpatialObjectKind : std::uint16_t {
     Unknown = 0,
     Cell = 1,

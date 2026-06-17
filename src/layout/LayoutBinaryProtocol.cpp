@@ -16,6 +16,8 @@ namespace {
 
 constexpr std::uint8_t kFrameMagic[] = {'P', 'L', 'D', '1'};
 constexpr std::uint8_t kCatalogMagic[] = {'P', 'L', 'C', 'T'};
+constexpr std::uint8_t kCatalogSummaryMagic[] = {'P', 'L', 'C', 'S'};
+constexpr std::uint8_t kCatalogPageMagic[] = {'P', 'L', 'C', 'P'};
 constexpr std::uint8_t kGeometryMagic[] = {'P', 'L', 'G', 'E'};
 constexpr std::uint8_t kTileGeometryMagic[] = {'P', 'L', 'T', 'G'};
 constexpr std::uint8_t kHitTestMagic[] = {'P', 'L', 'H', 'T'};
@@ -23,6 +25,8 @@ constexpr std::uint8_t kInspectMagic[] = {'P', 'L', 'I', 'N'};
 constexpr std::uint8_t kSearchMagic[] = {'P', 'L', 'S', 'R'};
 constexpr std::uint16_t kFrameHeaderSize = 24;
 constexpr std::uint16_t kCatalogHeaderSize = 136;
+constexpr std::uint16_t kCatalogSummaryHeaderSize = 152;
+constexpr std::uint16_t kCatalogPageHeaderSize = 40;
 constexpr std::uint16_t kGeometryHeaderSize = 96;
 constexpr std::uint16_t kTileGeometryHeaderSize = 84;
 constexpr std::uint16_t kHitTestHeaderSize = 64;
@@ -43,6 +47,8 @@ constexpr std::uint32_t kTileGeometryRequestFlagHasBbox = 1U;
 constexpr std::uint32_t kTileGeometryRequestSupportedFlags = kTileGeometryRequestFlagHasBbox;
 constexpr std::uint32_t kSearchRequestFlagHasBbox = 1U;
 constexpr std::uint32_t kSearchRequestSupportedFlags = kSearchRequestFlagHasBbox;
+constexpr std::uint32_t kCatalogPageRequestSupportedFlags = 0U;
+constexpr std::uint32_t kDefaultCatalogPageLimit = 4096U;
 
 using Clock = std::chrono::steady_clock;
 
@@ -271,6 +277,159 @@ void writeF64Header(std::vector<std::uint8_t>& result, std::size_t& offset, doub
     writeU64Header(result, offset, bits);
 }
 
+std::uint32_t gdsPointCount(const LayoutGdsLibrary* gds) {
+    if (gds == nullptr) {
+        return 0U;
+    }
+    std::size_t count = 0;
+    for (const auto& element : gds->elements) {
+        count += element.points.size();
+    }
+    return checkedCount(count, "GDS point count");
+}
+
+void appendLayerCatalogRow(std::vector<std::uint8_t>& result,
+                           std::vector<std::uint8_t>& strings,
+                           const LayoutLayer& layer) {
+    appendU32(result, appendTableString(strings, layer.name));
+    appendU16(result, static_cast<std::uint16_t>(layer.kind));
+    appendU16(result, 0);
+    appendF64(result, layer.pitch.value_or(0.0));
+    appendF64(result, layer.width.value_or(0.0));
+    appendF64(result, layer.spacing.value_or(0.0));
+}
+
+void appendGdsCellCatalogRow(std::vector<std::uint8_t>& result,
+                             std::vector<std::uint8_t>& strings,
+                             const LayoutDataSet& data,
+                             const LayoutGdsCell& cell) {
+    appendU32(result, appendTableString(strings, cell.name));
+    appendCount(result, cell.reference_indices.empty() ? 0U : cell.reference_indices.front());
+    appendCount(result, cell.reference_indices.size());
+    appendCount(result, cell.element_indices.empty() ? 0U : cell.element_indices.front());
+    appendCount(result, cell.element_indices.size());
+    appendU32(result, cell.is_top ? kGdsCatalogCellTopFlag : 0U);
+    if (cell.bounds.has_value()) {
+        appendF64(result, toMicrons(cell.bounds->x0, data.units_per_micron));
+        appendF64(result, toMicrons(cell.bounds->y0, data.units_per_micron));
+        appendF64(result, toMicrons(cell.bounds->x1, data.units_per_micron));
+        appendF64(result, toMicrons(cell.bounds->y1, data.units_per_micron));
+    }
+    else {
+        appendF64(result, 0.0);
+        appendF64(result, 0.0);
+        appendF64(result, 0.0);
+        appendF64(result, 0.0);
+    }
+}
+
+void appendGdsReferenceCatalogRow(std::vector<std::uint8_t>& result,
+                                  std::vector<std::uint8_t>& strings,
+                                  const LayoutDataSet& data,
+                                  const LayoutGdsReference& reference) {
+    appendU32(result, reference.parent_cell_index);
+    appendU32(result, reference.target_cell_index);
+    appendU16(result, static_cast<std::uint16_t>(reference.kind));
+    appendU16(result, reference.transform.reflected ? 1U : 0U);
+    appendF64(result, toMicrons(reference.origin.x, data.units_per_micron));
+    appendF64(result, toMicrons(reference.origin.y, data.units_per_micron));
+    appendF64(result, reference.transform.magnification);
+    appendF64(result, reference.transform.angle);
+    appendU32(result, reference.columns);
+    appendU32(result, reference.rows);
+    appendF64(result, toMicrons(reference.column_vector.x, data.units_per_micron));
+    appendF64(result, toMicrons(reference.column_vector.y, data.units_per_micron));
+    appendF64(result, toMicrons(reference.row_vector.x, data.units_per_micron));
+    appendF64(result, toMicrons(reference.row_vector.y, data.units_per_micron));
+    appendU32(result, appendTableString(strings, reference.target_name));
+}
+
+std::uint32_t firstPointIndexForElement(const LayoutGdsLibrary& gds, std::size_t element_index) {
+    std::size_t first_point_index = 0;
+    for (std::size_t index = 0; index < element_index; ++index) {
+        first_point_index += gds.elements[index].points.size();
+    }
+    return checkedCount(first_point_index, "GDS first point index");
+}
+
+void appendGdsElementCatalogRow(std::vector<std::uint8_t>& result,
+                                std::vector<std::uint8_t>& strings,
+                                const LayoutGdsLibrary& gds,
+                                std::size_t element_index) {
+    const auto& element = gds.elements[element_index];
+    const auto point_count = checkedCount(element.points.size(), "GDS point count");
+    appendU32(result, element.cell_index);
+    appendU16(result, static_cast<std::uint16_t>(element.kind));
+    appendU16(result, 0);
+    appendU32(result, element.layer);
+    appendU32(result, element.datatype);
+    appendU32(result, element.texttype);
+    appendU32(result, element.reference_index);
+    appendU32(result, firstPointIndexForElement(gds, element_index));
+    appendU32(result, point_count);
+    appendU32(result, appendTableString(strings, element.text));
+}
+
+void appendDiagnosticCatalogRow(std::vector<std::uint8_t>& result,
+                                std::vector<std::uint8_t>& strings,
+                                const LayoutDiagnostic& diagnostic) {
+    appendU16(result, static_cast<std::uint16_t>(diagnostic.severity));
+    appendU16(result, 0);
+    appendU32(result, static_cast<std::uint32_t>(diagnostic.line));
+    appendU32(result, static_cast<std::uint32_t>(diagnostic.column));
+    appendU32(result, appendTableString(strings, diagnostic.message));
+}
+
+std::vector<std::string_view> buildPagedStringTable(const LayoutDataSet& data) {
+    std::vector<std::string_view> strings;
+    strings.reserve(data.layers.size() + data.diagnostics.size() +
+                    (data.gds.has_value() ? data.gds->cells.size() + data.gds->references.size() +
+                                                data.gds->elements.size()
+                                          : data.macros.size() + data.pins.size() + data.nets.size()));
+    for (const auto& layer : data.layers) {
+        strings.push_back(layer.name);
+    }
+    for (const auto& macro : data.macros) {
+        strings.push_back(macro.name);
+        strings.push_back(macro.class_name);
+        for (const auto& pin : macro.pins) {
+            strings.push_back(pin.name);
+            strings.push_back(pin.use);
+        }
+    }
+    for (const auto& via : data.vias) {
+        strings.push_back(via.name);
+    }
+    for (const auto& component : data.components) {
+        strings.push_back(component.name);
+        strings.push_back(component.macro_name);
+        strings.push_back(component.orientation);
+    }
+    for (const auto& pin : data.pins) {
+        strings.push_back(pin.name);
+        strings.push_back(pin.net_name);
+        strings.push_back(pin.orientation);
+    }
+    for (const auto& net : data.nets) {
+        strings.push_back(net.name);
+    }
+    if (data.gds.has_value()) {
+        for (const auto& cell : data.gds->cells) {
+            strings.push_back(cell.name);
+        }
+        for (const auto& reference : data.gds->references) {
+            strings.push_back(reference.target_name);
+        }
+        for (const auto& element : data.gds->elements) {
+            strings.push_back(element.text);
+        }
+    }
+    for (const auto& diagnostic : data.diagnostics) {
+        strings.push_back(diagnostic.message);
+    }
+    return strings;
+}
+
 std::vector<std::uint8_t> encodeCatalogV3ResponsePayload(const LayoutDataSet& data) {
     std::vector<std::uint8_t> result(kCatalogHeaderSize, 0);
     std::vector<std::uint8_t> strings;
@@ -497,6 +656,269 @@ std::vector<std::uint8_t> encodeCatalogV3ResponsePayload(const LayoutDataSet& da
     return result;
 }
 
+std::vector<std::uint8_t> encodeCatalogSummaryV3ResponsePayload(const LayoutDataSet& data) {
+    const auto* gds = data.gds.has_value() ? &*data.gds : nullptr;
+    std::vector<std::uint8_t> result(kCatalogSummaryHeaderSize, 0);
+    std::vector<std::uint8_t> strings;
+
+    const auto layer_offset = checkedCount(result.size(), "catalog summary layer offset");
+    const auto layer_limit = std::min<std::size_t>(data.layers.size(), 64U);
+    for (std::size_t index = 0; index < layer_limit; ++index) {
+        appendLayerCatalogRow(result, strings, data.layers[index]);
+    }
+
+    alignTo(result, 4);
+    const auto string_offset = checkedCount(result.size(), "catalog summary string offset");
+    result.insert(result.end(), strings.begin(), strings.end());
+
+    std::size_t offset = 0;
+    result[offset++] = kCatalogSummaryMagic[0];
+    result[offset++] = kCatalogSummaryMagic[1];
+    result[offset++] = kCatalogSummaryMagic[2];
+    result[offset++] = kCatalogSummaryMagic[3];
+    result[offset++] = static_cast<std::uint8_t>(kLayoutProtocolVersion & 0xffU);
+    result[offset++] = static_cast<std::uint8_t>((kLayoutProtocolVersion >> 8U) & 0xffU);
+    result[offset++] = static_cast<std::uint8_t>(kCatalogSummaryHeaderSize & 0xffU);
+    result[offset++] = static_cast<std::uint8_t>((kCatalogSummaryHeaderSize >> 8U) & 0xffU);
+    writeU32Header(result, offset, data.units_per_micron);
+    writeU32Header(result, offset, gds != nullptr ? kLayoutCatalogSourceGds : kLayoutCatalogSourceLefDef);
+    writeU32Header(result, offset, checkedCount(data.shapes.size(), "shape count"));
+    writeU32Header(result, offset, data.bounds.has_value() ? 1U : 0U);
+    writeU32Header(result, offset, gds != nullptr ? gds->top_cell_index : kNoLayoutIndex);
+    if (data.bounds.has_value()) {
+        writeF64Header(result, offset, toMicrons(data.bounds->x0, data.units_per_micron));
+        writeF64Header(result, offset, toMicrons(data.bounds->y0, data.units_per_micron));
+        writeF64Header(result, offset, toMicrons(data.bounds->x1, data.units_per_micron));
+        writeF64Header(result, offset, toMicrons(data.bounds->y1, data.units_per_micron));
+    }
+    else {
+        writeF64Header(result, offset, 0.0);
+        writeF64Header(result, offset, 0.0);
+        writeF64Header(result, offset, 0.0);
+        writeF64Header(result, offset, 0.0);
+    }
+    writeU32Header(result, offset, checkedCount(data.layers.size(), "layer count"));
+    writeU32Header(result, offset, layer_offset);
+    writeU32Header(result, offset, checkedCount(layer_limit, "summary layer count"));
+    writeU32Header(result, offset, checkedCount(data.macros.size(), "macro count"));
+    writeU32Header(result, offset, checkedCount(data.components.size(), "component count"));
+    writeU32Header(result, offset, checkedCount(data.pins.size(), "DEF pin count"));
+    writeU32Header(result, offset, checkedCount(data.nets.size(), "net count"));
+    writeU32Header(result, offset, gds != nullptr ? checkedCount(gds->cells.size(), "GDS cell count") : 0U);
+    writeU32Header(result, offset, gds != nullptr ? checkedCount(gds->references.size(), "GDS reference count") : 0U);
+    writeU32Header(result, offset, gds != nullptr ? checkedCount(gds->elements.size(), "GDS element count") : 0U);
+    writeU32Header(result, offset, gdsPointCount(gds));
+    writeU32Header(result, offset, checkedCount(buildPagedStringTable(data).size(), "catalog string count"));
+    writeU32Header(result, offset, checkedCount(data.diagnostics.size(), "diagnostic count"));
+    writeU32Header(result, offset, string_offset);
+    writeU32Header(result, offset, checkedCount(strings.size(), "summary string table"));
+    writeU64Header(result, offset, data.gds_open_metrics.parse_micros);
+    writeU64Header(result, offset, data.gds_open_metrics.layer_register_micros);
+    writeU64Header(result, offset, data.gds_open_metrics.bounds_micros);
+    writeU64Header(result, offset, data.gds_open_metrics.open_micros);
+
+    return result;
+}
+
+std::uint32_t catalogPageTotalCount(const LayoutDataSet& data,
+                                    LayoutCatalogPageTableKind table_kind) {
+    const auto* gds = data.gds.has_value() ? &*data.gds : nullptr;
+    switch (table_kind) {
+        case LayoutCatalogPageTableKind::Layers:
+            return checkedCount(data.layers.size(), "layer count");
+        case LayoutCatalogPageTableKind::Cells:
+            return gds != nullptr ? checkedCount(gds->cells.size(), "GDS cell count") : 0U;
+        case LayoutCatalogPageTableKind::References:
+            return gds != nullptr ? checkedCount(gds->references.size(), "GDS reference count") : 0U;
+        case LayoutCatalogPageTableKind::Elements:
+            return gds != nullptr ? checkedCount(gds->elements.size(), "GDS element count") : 0U;
+        case LayoutCatalogPageTableKind::Points:
+            return gdsPointCount(gds);
+        case LayoutCatalogPageTableKind::Strings:
+            return checkedCount(buildPagedStringTable(data).size(), "catalog string count");
+        case LayoutCatalogPageTableKind::Diagnostics:
+            return checkedCount(data.diagnostics.size(), "diagnostic count");
+    }
+    throw std::runtime_error("Layout catalog page table kind is unsupported");
+}
+
+std::vector<std::uint8_t> encodeCatalogPageV3ResponsePayload(
+    const LayoutDataSet& data,
+    const LayoutCatalogPageRequest& request) {
+    const auto* gds = data.gds.has_value() ? &*data.gds : nullptr;
+    const auto total_count = catalogPageTotalCount(data, request.table_kind);
+    if (request.offset > total_count) {
+        throw std::runtime_error("Layout catalog page offset is out of range");
+    }
+
+    const auto max_bytes = request.max_bytes == 0U ? kMaxPayloadSize : request.max_bytes;
+    if (max_bytes < kCatalogPageHeaderSize || max_bytes > kMaxPayloadSize) {
+        throw std::runtime_error("Layout catalog page maxBytes is out of range");
+    }
+    const auto requested_limit = request.limit == 0U ? kDefaultCatalogPageLimit : request.limit;
+    const auto remaining_count = total_count - request.offset;
+    const auto clamped_limit = std::min<std::uint32_t>(requested_limit, remaining_count);
+    const auto end = request.offset + clamped_limit;
+
+    std::vector<std::uint8_t> result(kCatalogPageHeaderSize, 0);
+    std::vector<std::uint8_t> strings;
+    std::uint32_t written_count = 0;
+    auto wouldExceed = [&]() {
+        return result.size() + strings.size() > max_bytes;
+    };
+
+    if (request.table_kind == LayoutCatalogPageTableKind::Layers) {
+        for (std::uint32_t index = request.offset; index < end; ++index) {
+            const auto size_before = result.size();
+            const auto strings_before = strings.size();
+            appendLayerCatalogRow(result, strings, data.layers[index]);
+            if (wouldExceed()) {
+                result.resize(size_before);
+                strings.resize(strings_before);
+                break;
+            }
+            ++written_count;
+        }
+    }
+    else if (request.table_kind == LayoutCatalogPageTableKind::Cells) {
+        if (gds == nullptr) {
+            throw std::runtime_error("GDS catalog cell pages require a GDS layout source");
+        }
+        for (std::uint32_t index = request.offset; index < end; ++index) {
+            const auto size_before = result.size();
+            const auto strings_before = strings.size();
+            appendGdsCellCatalogRow(result, strings, data, gds->cells[index]);
+            if (wouldExceed()) {
+                result.resize(size_before);
+                strings.resize(strings_before);
+                break;
+            }
+            ++written_count;
+        }
+    }
+    else if (request.table_kind == LayoutCatalogPageTableKind::References) {
+        if (gds == nullptr) {
+            throw std::runtime_error("GDS catalog reference pages require a GDS layout source");
+        }
+        for (std::uint32_t index = request.offset; index < end; ++index) {
+            const auto size_before = result.size();
+            const auto strings_before = strings.size();
+            appendGdsReferenceCatalogRow(result, strings, data, gds->references[index]);
+            if (wouldExceed()) {
+                result.resize(size_before);
+                strings.resize(strings_before);
+                break;
+            }
+            ++written_count;
+        }
+    }
+    else if (request.table_kind == LayoutCatalogPageTableKind::Elements) {
+        if (gds == nullptr) {
+            throw std::runtime_error("GDS catalog element pages require a GDS layout source");
+        }
+        for (std::uint32_t index = request.offset; index < end; ++index) {
+            const auto size_before = result.size();
+            const auto strings_before = strings.size();
+            appendGdsElementCatalogRow(result, strings, *gds, index);
+            if (wouldExceed()) {
+                result.resize(size_before);
+                strings.resize(strings_before);
+                break;
+            }
+            ++written_count;
+        }
+    }
+    else if (request.table_kind == LayoutCatalogPageTableKind::Points) {
+        if (gds == nullptr) {
+            throw std::runtime_error("GDS catalog point pages require a GDS layout source");
+        }
+        std::uint32_t point_index = 0;
+        for (const auto& element : gds->elements) {
+            for (const auto& point : element.points) {
+                if (point_index >= request.offset && point_index < end) {
+                    const auto size_before = result.size();
+                    appendF64(result, toMicrons(point.x, data.units_per_micron));
+                    appendF64(result, toMicrons(point.y, data.units_per_micron));
+                    if (wouldExceed()) {
+                        result.resize(size_before);
+                        break;
+                    }
+                    ++written_count;
+                }
+                ++point_index;
+                if (point_index >= end || result.size() + strings.size() > max_bytes) {
+                    break;
+                }
+            }
+            if (point_index >= end || result.size() + strings.size() > max_bytes) {
+                break;
+            }
+        }
+    }
+    else if (request.table_kind == LayoutCatalogPageTableKind::Strings) {
+        const auto all_strings = buildPagedStringTable(data);
+        for (std::uint32_t index = request.offset; index < end; ++index) {
+            const auto size_before = result.size();
+            appendString(result, all_strings[index]);
+            if (wouldExceed()) {
+                result.resize(size_before);
+                break;
+            }
+            ++written_count;
+        }
+    }
+    else if (request.table_kind == LayoutCatalogPageTableKind::Diagnostics) {
+        for (std::uint32_t index = request.offset; index < end; ++index) {
+            const auto size_before = result.size();
+            const auto strings_before = strings.size();
+            appendDiagnosticCatalogRow(result, strings, data.diagnostics[index]);
+            if (wouldExceed()) {
+                result.resize(size_before);
+                strings.resize(strings_before);
+                break;
+            }
+            ++written_count;
+        }
+    }
+    else {
+        throw std::runtime_error("Layout catalog page table kind is unsupported");
+    }
+
+    if (request.offset < total_count && written_count == 0U) {
+        throw std::runtime_error("Layout catalog page maxBytes is too small for one row");
+    }
+
+    const auto next_offset = request.offset + written_count < total_count
+        ? request.offset + written_count
+        : kNoLayoutIndex;
+    alignTo(result, 4);
+    const auto string_offset = checkedCount(result.size(), "catalog page string offset");
+    result.insert(result.end(), strings.begin(), strings.end());
+    if (result.size() > kMaxPayloadSize) {
+        throw std::runtime_error("Layout payload is too large");
+    }
+
+    std::size_t offset = 0;
+    result[offset++] = kCatalogPageMagic[0];
+    result[offset++] = kCatalogPageMagic[1];
+    result[offset++] = kCatalogPageMagic[2];
+    result[offset++] = kCatalogPageMagic[3];
+    result[offset++] = static_cast<std::uint8_t>(kLayoutProtocolVersion & 0xffU);
+    result[offset++] = static_cast<std::uint8_t>((kLayoutProtocolVersion >> 8U) & 0xffU);
+    result[offset++] = static_cast<std::uint8_t>(kCatalogPageHeaderSize & 0xffU);
+    result[offset++] = static_cast<std::uint8_t>((kCatalogPageHeaderSize >> 8U) & 0xffU);
+    writeU32Header(result, offset, static_cast<std::uint32_t>(request.table_kind));
+    writeU32Header(result, offset, request.offset);
+    writeU32Header(result, offset, written_count);
+    writeU32Header(result, offset, total_count);
+    writeU32Header(result, offset, next_offset);
+    writeU32Header(result, offset, string_offset);
+    writeU32Header(result, offset, checkedCount(strings.size(), "catalog page string table"));
+    writeU32Header(result, offset, 0);
+
+    return result;
+}
+
 } // namespace
 
 void appendU16(std::vector<std::uint8_t>& output, std::uint16_t value) {
@@ -654,6 +1076,16 @@ std::vector<std::uint8_t> encodeHelloResponsePayload(const LayoutDataSet& data) 
 
 std::vector<std::uint8_t> encodeCatalogResponsePayload(const LayoutDataSet& data) {
     return encodeCatalogV3ResponsePayload(data);
+}
+
+std::vector<std::uint8_t> encodeCatalogSummaryResponsePayload(const LayoutDataSet& data) {
+    return encodeCatalogSummaryV3ResponsePayload(data);
+}
+
+std::vector<std::uint8_t> encodeCatalogPageResponsePayload(
+    const LayoutDataSet& data,
+    const LayoutCatalogPageRequest& request) {
+    return encodeCatalogPageV3ResponsePayload(data, request);
 }
 
 std::vector<std::uint8_t> encodeGeometryResponsePayload(const LayoutDataSet& data,
@@ -1210,6 +1642,48 @@ LayoutSearchRequest decodeSearchRequestPayload(const std::vector<std::uint8_t>& 
     offset += query_bytes;
     if (offset != size) {
         throw std::runtime_error("Layout search request has trailing bytes");
+    }
+    return request;
+}
+
+LayoutCatalogPageRequest decodeCatalogPageRequestPayload(
+    const std::vector<std::uint8_t>& payload) {
+    const auto* bytes = payload.data();
+    const auto size = payload.size();
+    std::size_t offset = 0;
+    requireAvailable(size, offset, 20);
+    const auto flags = readU32(bytes, size, offset);
+    offset += sizeof(std::uint32_t);
+    if ((flags & ~kCatalogPageRequestSupportedFlags) != 0U) {
+        throw std::runtime_error("Layout catalog page request has unsupported flags");
+    }
+
+    LayoutCatalogPageRequest request;
+    request.table_kind = static_cast<LayoutCatalogPageTableKind>(readU32(bytes, size, offset));
+    offset += sizeof(std::uint32_t);
+    request.offset = readU32(bytes, size, offset);
+    offset += sizeof(std::uint32_t);
+    request.limit = readU32(bytes, size, offset);
+    offset += sizeof(std::uint32_t);
+    request.max_bytes = readU32(bytes, size, offset);
+    offset += sizeof(std::uint32_t);
+    switch (request.table_kind) {
+        case LayoutCatalogPageTableKind::Layers:
+        case LayoutCatalogPageTableKind::Cells:
+        case LayoutCatalogPageTableKind::References:
+        case LayoutCatalogPageTableKind::Elements:
+        case LayoutCatalogPageTableKind::Points:
+        case LayoutCatalogPageTableKind::Strings:
+        case LayoutCatalogPageTableKind::Diagnostics:
+            break;
+        default:
+            throw std::runtime_error("Layout catalog page request table kind is unsupported");
+    }
+    if (request.limit == std::numeric_limits<std::uint32_t>::max()) {
+        throw std::runtime_error("Layout catalog page request limit is too large");
+    }
+    if (offset != size) {
+        throw std::runtime_error("Layout catalog page request has trailing bytes");
     }
     return request;
 }

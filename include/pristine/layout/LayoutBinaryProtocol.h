@@ -31,6 +31,10 @@ enum class LayoutMessageType : std::uint16_t {
     SelectionGeometryResponse = 16,
     SearchRequest = 17,
     SearchResponse = 18,
+    CatalogSummaryRequest = 19,
+    CatalogSummaryResponse = 20,
+    CatalogPageRequest = 21,
+    CatalogPageResponse = 22,
 };
 
 enum class LayoutErrorCode : std::uint32_t {
@@ -54,6 +58,10 @@ struct LayoutFrame {
 
 [[nodiscard]] std::vector<std::uint8_t> encodeHelloResponsePayload(const LayoutDataSet& data);
 [[nodiscard]] std::vector<std::uint8_t> encodeCatalogResponsePayload(const LayoutDataSet& data);
+[[nodiscard]] std::vector<std::uint8_t> encodeCatalogSummaryResponsePayload(const LayoutDataSet& data);
+[[nodiscard]] std::vector<std::uint8_t> encodeCatalogPageResponsePayload(
+    const LayoutDataSet& data,
+    const LayoutCatalogPageRequest& request);
 [[nodiscard]] std::vector<std::uint8_t> encodeGeometryResponsePayload(
     const LayoutDataSet& data,
     const LayoutGeometryRequest& request);
@@ -92,6 +100,8 @@ struct LayoutFrame {
 [[nodiscard]] LayoutSelectionGeometryRequest decodeSelectionGeometryRequestPayload(
     const std::vector<std::uint8_t>& payload);
 [[nodiscard]] LayoutSearchRequest decodeSearchRequestPayload(
+    const std::vector<std::uint8_t>& payload);
+[[nodiscard]] LayoutCatalogPageRequest decodeCatalogPageRequestPayload(
     const std::vector<std::uint8_t>& payload);
 
 void appendString(std::vector<std::uint8_t>& output, std::string_view value);

@@ -69,6 +69,8 @@ using SpatialTree = bgi::rtree<SpatialValue, bgi::rstar<16>>;
 struct CellSpatialIndex {
     SpatialTree elements;
     SpatialTree references;
+    bool elements_built = false;
+    bool references_built = false;
 };
 
 struct InstanceRecord {
@@ -530,6 +532,8 @@ public:
 
     [[nodiscard]] bool truncated() const { return truncated_; }
 
+    [[nodiscard]] bool bounded() const { return max_shapes_ != 0 || max_points_ != 0; }
+
     [[nodiscard]] std::uint32_t nextToken() const {
         if (!truncated_ || seen_ > std::numeric_limits<std::uint32_t>::max()) {
             return 0;
@@ -556,18 +560,7 @@ public:
             return;
         }
         const auto& gds = *data_->gds;
-        for (const auto& element : gds.elements) {
-            if (isDrawableGdsElement(element)) {
-                const auto key = std::make_pair(element.layer, element.datatype);
-                if (layer_indices_.find(key) == layer_indices_.end()) {
-                    layer_indices_.emplace(key, findGdsLayer(*data_, element.layer, element.datatype));
-                }
-            }
-        }
         cells_.resize(gds.cells.size());
-        for (std::size_t cell_index = 0; cell_index < gds.cells.size(); ++cell_index) {
-            buildCell(static_cast<std::uint32_t>(cell_index));
-        }
     }
 
     [[nodiscard]] LayoutSpatialIndexStats stats() const {
@@ -628,8 +621,10 @@ public:
         tile_request.layer_indices = request.layer_indices;
         tile_request.shape_kinds = request.shape_kinds;
         tile_request.datatypes = request.datatypes;
-        tile_request.max_shapes = 0;
-        tile_request.max_points = 0;
+        const auto candidate_limit =
+            std::max<std::uint32_t>(256U, std::max<std::uint32_t>(request.max_results, 1U) * 32U);
+        tile_request.max_shapes = candidate_limit;
+        tile_request.max_points = candidate_limit * 16U;
         auto tile = queryTile(tile_request);
         response.tile_shape_count = saturatingU32(tile.shapes.size());
         for (const auto& shape : tile.shapes) {
@@ -941,14 +936,6 @@ private:
         return LayoutInspectClass::Shape;
     }
 
-    [[nodiscard]] static LayoutShape asLodBoundingShape(LayoutShape shape,
-                                                        LayoutShapeKind kind) {
-        shape.rect = shapeBounds(shape);
-        shape.polygon.points.clear();
-        shape.kind = kind;
-        return shape;
-    }
-
     [[nodiscard]] LayoutShape makeReferenceShape(const LayoutGdsReference& reference,
                                                  const LayoutRect& target_bounds,
                                                  const GdsAffineTransform& transform,
@@ -972,13 +959,15 @@ private:
                            .rect = transformBounds(transform, target_bounds)};
     }
 
-    void buildCell(std::uint32_t cell_index) {
+    void ensureElementsBuilt(std::uint32_t cell_index) const {
+        auto& index = cells_[cell_index];
+        if (index.elements_built) {
+            return;
+        }
         const auto& gds = requireGds();
         const auto& cell = gds.cells[cell_index];
         std::vector<SpatialValue> element_values;
-        std::vector<SpatialValue> reference_values;
         element_values.reserve(cell.element_indices.size());
-        reference_values.reserve(cell.reference_indices.size());
 
         for (const auto element_index : cell.element_indices) {
             if (element_index >= gds.elements.size()) {
@@ -1004,6 +993,20 @@ private:
                                .datatype = element.datatype};
             element_values.emplace_back(toBoostBox(bounds), std::move(entry));
         }
+
+        index.elements = SpatialTree(element_values.begin(), element_values.end());
+        index.elements_built = true;
+    }
+
+    void ensureReferencesBuilt(std::uint32_t cell_index) const {
+        auto& index = cells_[cell_index];
+        if (index.references_built) {
+            return;
+        }
+        const auto& gds = requireGds();
+        const auto& cell = gds.cells[cell_index];
+        std::vector<SpatialValue> reference_values;
+        reference_values.reserve(cell.reference_indices.size());
 
         for (const auto reference_index : cell.reference_indices) {
             if (reference_index >= gds.references.size()) {
@@ -1050,8 +1053,8 @@ private:
             reference_values.emplace_back(toBoostBox(*bounds), std::move(entry));
         }
 
-        cells_[cell_index].elements = SpatialTree(element_values.begin(), element_values.end());
-        cells_[cell_index].references = SpatialTree(reference_values.begin(), reference_values.end());
+        index.references = SpatialTree(reference_values.begin(), reference_values.end());
+        index.references_built = true;
     }
 
     [[nodiscard]] LayoutShape makeElementShape(const LayoutGdsElement& element,
@@ -1105,47 +1108,96 @@ private:
         const auto query_box = toBoostBox(local_bbox);
 
         if (request.lod < 2U) {
-            std::vector<SpatialValue> element_candidates;
-            cells_[cell_index].elements.query(bgi::intersects(query_box),
-                                              std::back_inserter(element_candidates));
-            incrementCounter(result.element_candidate_count, element_candidates.size());
-            std::sort(element_candidates.begin(),
-                      element_candidates.end(),
-                      [](const auto& lhs, const auto& rhs) {
-                          return lhs.second.object.element_index < rhs.second.object.element_index;
-                      });
-            for (const auto& value : element_candidates) {
-                const auto& entry = value.second;
-                if (!containsLayer(request.layer_indices, entry.object.layer_index) ||
-                    !containsKind(request.shape_kinds, entry.shape_kind) ||
-                    !containsDatatype(request.datatypes, entry.datatype)) {
-                    continue;
+            constexpr std::size_t kStreamingElementThreshold = 4096U;
+            const auto& cell = gds.cells[cell_index];
+            const auto appendElement = [&](std::uint32_t element_index,
+                                           LayoutRect local_element_bounds,
+                                           std::uint32_t layer_index,
+                                           LayoutShapeKind shape_kind,
+                                           std::uint32_t datatype) -> bool {
+                if (!containsLayer(request.layer_indices, layer_index) ||
+                    !containsKind(request.shape_kinds, shape_kind) ||
+                    !containsDatatype(request.datatypes, datatype)) {
+                    return true;
                 }
-                const auto& element = gds.elements[entry.object.element_index];
-                auto shape =
-                    makeElementShape(element, transform, entry.object.element_index, path_hash, path);
+                const auto& element = gds.elements[element_index];
+                auto shape = makeElementShape(element, transform, element_index, path_hash, path);
                 const auto lod_shape = request.lod == 1U;
                 if (request.lod == 1U) {
-                    shape = asLodBoundingShape(std::move(shape), LayoutShapeKind::Rect);
+                    shape.rect = transformBounds(transform, local_element_bounds);
+                    shape.polygon.points.clear();
+                    shape.kind = LayoutShapeKind::Rect;
                 }
                 if (request.has_bbox && !intersects(shapeBounds(shape), request.bbox)) {
-                    continue;
+                    return true;
                 }
                 if (budget.shouldSkip()) {
-                    continue;
+                    return true;
                 }
                 if (!budget.canAppend(shape)) {
-                    stack.erase(cell_index);
-                    return;
+                    return false;
                 }
                 budget.appended(shape);
                 if (lod_shape) {
                     incrementCounter(result.lod_shape_count);
                 }
                 result.shapes.push_back(std::move(shape));
+                return true;
+            };
+
+            if (budget.bounded() && request.has_bbox &&
+                cell.element_indices.size() >= kStreamingElementThreshold) {
+                for (const auto element_index : cell.element_indices) {
+                    if (element_index >= gds.elements.size()) {
+                        continue;
+                    }
+                    const auto& element = gds.elements[element_index];
+                    if (!isDrawableGdsElement(element)) {
+                        continue;
+                    }
+                    const auto local_element_bounds = pointBounds(element.points);
+                    if (!intersects(local_element_bounds, local_bbox)) {
+                        continue;
+                    }
+                    const auto layer_index = layerIndexFor(element);
+                    incrementCounter(result.element_candidate_count);
+                    if (!appendElement(element_index,
+                                       local_element_bounds,
+                                       layer_index,
+                                       shapeKindForGdsElement(element),
+                                       element.datatype)) {
+                        stack.erase(cell_index);
+                        return;
+                    }
+                }
+            }
+            else {
+                ensureElementsBuilt(cell_index);
+                std::vector<SpatialValue> element_candidates;
+                cells_[cell_index].elements.query(bgi::intersects(query_box),
+                                                  std::back_inserter(element_candidates));
+                incrementCounter(result.element_candidate_count, element_candidates.size());
+                std::sort(element_candidates.begin(),
+                          element_candidates.end(),
+                          [](const auto& lhs, const auto& rhs) {
+                              return lhs.second.object.element_index <
+                                     rhs.second.object.element_index;
+                          });
+                for (const auto& value : element_candidates) {
+                    const auto& entry = value.second;
+                    if (!appendElement(entry.object.element_index,
+                                       entry.bounds,
+                                       entry.object.layer_index,
+                                       entry.shape_kind,
+                                       entry.datatype)) {
+                        stack.erase(cell_index);
+                        return;
+                    }
+                }
             }
         }
 
+        ensureReferencesBuilt(cell_index);
         std::vector<SpatialValue> reference_candidates;
         cells_[cell_index].references.query(bgi::intersects(query_box),
                                             std::back_inserter(reference_candidates));
@@ -1244,15 +1296,18 @@ private:
 
     const LayoutDataSet* data_ = nullptr;
     [[nodiscard]] std::uint32_t layerIndexFor(const LayoutGdsElement& element) const {
+        const auto key = std::make_pair(element.layer, element.datatype);
         const auto found = layer_indices_.find(std::make_pair(element.layer, element.datatype));
         if (found == layer_indices_.end()) {
-            throw std::runtime_error("GDS layer is missing from layout spatial index");
+            const auto layer_index = findGdsLayer(*data_, element.layer, element.datatype);
+            layer_indices_.emplace(key, layer_index);
+            return layer_index;
         }
         return found->second;
     }
 
-    std::map<std::pair<std::uint32_t, std::uint32_t>, std::uint32_t> layer_indices_;
-    std::vector<CellSpatialIndex> cells_;
+    mutable std::map<std::pair<std::uint32_t, std::uint32_t>, std::uint32_t> layer_indices_;
+    mutable std::vector<CellSpatialIndex> cells_;
     mutable std::mutex instance_mutex_;
     mutable std::map<std::uint64_t, InstanceRecord> instance_records_;
 };

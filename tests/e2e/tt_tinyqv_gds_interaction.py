@@ -30,6 +30,13 @@ SELECTION_GEOMETRY_REQUEST = 15
 SELECTION_GEOMETRY_RESPONSE = 16
 SEARCH_REQUEST = 17
 SEARCH_RESPONSE = 18
+CATALOG_SUMMARY_REQUEST = 19
+CATALOG_SUMMARY_RESPONSE = 20
+CATALOG_PAGE_REQUEST = 21
+CATALOG_PAGE_RESPONSE = 22
+
+CATALOG_PAGE_LAYERS = 1
+CATALOG_PAGE_CELLS = 2
 
 SEARCH_KIND_CELL = 1 << 0
 SEARCH_KIND_REFERENCE = 1 << 1
@@ -52,6 +59,10 @@ def metric_summary(values: list[int]) -> dict[str, int]:
         "p95": percentile(values, 0.95),
         "max": max(values) if values else 0,
     }
+
+
+def trace(message: str) -> None:
+    print(f"[tt-tinyqv] {message}", flush=True)
 
 
 def now_micros() -> int:
@@ -154,9 +165,9 @@ def tile_payload(
     root_cell_index: int,
     bbox: tuple[float, float, float, float],
     lod: int,
-    max_shapes: int = 250_000,
-    max_points: int = 2_000_000,
-    max_bytes: int = 8_000_000,
+    max_shapes: int = 4_096,
+    max_points: int = 65_536,
+    max_bytes: int = 2_000_000,
     continuation_token: int = 0,
 ) -> bytes:
     payload = bytearray(
@@ -265,6 +276,82 @@ def table_string(payload: bytes, string_table_offset: int, string_offset: int) -
     size = struct.unpack_from("<I", payload, start)[0]
     begin = start + 4
     return payload[begin : begin + size].decode("utf-8", errors="replace")
+
+
+def catalog_page_payload(table_kind: int, offset: int = 0, limit: int = 4096, max_bytes: int = 8_000_000) -> bytes:
+    return struct.pack("<IIIII", 0, table_kind, offset, limit, max_bytes)
+
+
+def parse_catalog_summary(payload: bytes) -> dict:
+    if payload[:4] != b"PLCS":
+        raise AssertionError("catalog summary payload missing PLCS magic")
+    layer_offset = struct.unpack_from("<I", payload, 64)[0]
+    layer_summary_count = struct.unpack_from("<I", payload, 68)[0]
+    string_offset = struct.unpack_from("<I", payload, 112)[0]
+    bounds = None
+    if struct.unpack_from("<I", payload, 20)[0]:
+        bounds = {
+            "x0": struct.unpack_from("<d", payload, 28)[0],
+            "y0": struct.unpack_from("<d", payload, 36)[0],
+            "x1": struct.unpack_from("<d", payload, 44)[0],
+            "y1": struct.unpack_from("<d", payload, 52)[0],
+        }
+    layer_names = []
+    for index in range(layer_summary_count):
+        row = layer_offset + index * 32
+        layer_names.append(table_string(payload, string_offset, struct.unpack_from("<I", payload, row)[0]))
+    return {
+        "source": struct.unpack_from("<I", payload, 12)[0],
+        "shape_count": struct.unpack_from("<I", payload, 16)[0],
+        "top_cell_index": struct.unpack_from("<I", payload, 24)[0],
+        "bounds": bounds,
+        "layer_count": struct.unpack_from("<I", payload, 60)[0],
+        "layer_names": layer_names,
+        "macro_count": struct.unpack_from("<I", payload, 72)[0],
+        "component_count": struct.unpack_from("<I", payload, 76)[0],
+        "def_pin_count": struct.unpack_from("<I", payload, 80)[0],
+        "net_count": struct.unpack_from("<I", payload, 84)[0],
+        "cell_count": struct.unpack_from("<I", payload, 88)[0],
+        "reference_count": struct.unpack_from("<I", payload, 92)[0],
+        "element_count": struct.unpack_from("<I", payload, 96)[0],
+        "point_count": struct.unpack_from("<I", payload, 100)[0],
+        "string_count": struct.unpack_from("<I", payload, 104)[0],
+        "diagnostic_count": struct.unpack_from("<I", payload, 108)[0],
+        "parse_micros": struct.unpack_from("<Q", payload, 120)[0],
+        "open_micros": struct.unpack_from("<Q", payload, 144)[0],
+    }
+
+
+def parse_catalog_page(payload: bytes, table_kind: int) -> dict:
+    if payload[:4] != b"PLCP":
+        raise AssertionError("catalog page payload missing PLCP magic")
+    actual_kind = struct.unpack_from("<I", payload, 8)[0]
+    if actual_kind != table_kind:
+        raise AssertionError(f"catalog page kind mismatch: {actual_kind} != {table_kind}")
+    row_offset = 40
+    offset = struct.unpack_from("<I", payload, 12)[0]
+    count = struct.unpack_from("<I", payload, 16)[0]
+    total = struct.unpack_from("<I", payload, 20)[0]
+    next_offset = struct.unpack_from("<I", payload, 24)[0]
+    string_offset = struct.unpack_from("<I", payload, 28)[0]
+    result = {
+        "offset": offset,
+        "count": count,
+        "total": total,
+        "next_offset": next_offset,
+        "payload_bytes": len(payload),
+    }
+    if table_kind == CATALOG_PAGE_CELLS and count:
+        first_name = table_string(payload, string_offset, struct.unpack_from("<I", payload, row_offset)[0])
+        result["first_name"] = first_name
+        result["first_flags"] = struct.unpack_from("<I", payload, row_offset + 20)[0]
+    elif table_kind == CATALOG_PAGE_LAYERS:
+        names = []
+        for index in range(min(count, 16)):
+            row = row_offset + index * 32
+            names.append(table_string(payload, string_offset, struct.unpack_from("<I", payload, row)[0]))
+        result["layer_names"] = names
+    return result
 
 
 def parse_catalog(payload: bytes) -> dict:
@@ -458,6 +545,7 @@ def compare_baseline(metrics: dict) -> None:
 
 
 def run_interaction(server_path: pathlib.Path, gds_path: pathlib.Path) -> dict:
+    trace(f"starting engine {server_path}")
     process: subprocess.Popen[bytes] | None = None
     request_id = 1
     try:
@@ -468,6 +556,7 @@ def run_interaction(server_path: pathlib.Path, gds_path: pathlib.Path) -> dict:
             stderr=subprocess.PIPE,
         )
         workspace_uri = gds_path.parent.as_uri()
+        trace("initialize")
         request(
             process,
             request_id,
@@ -482,6 +571,7 @@ def run_interaction(server_path: pathlib.Path, gds_path: pathlib.Path) -> dict:
         request_id += 1
         notify(process, "initialized", {})
 
+        trace("open GDS layout session")
         open_start = now_micros()
         session = request(
             process,
@@ -515,15 +605,58 @@ def run_interaction(server_path: pathlib.Path, gds_path: pathlib.Path) -> dict:
         }
 
         with connect_pipe(session["endpoint"]["kind"], session["endpoint"]["path"]) as pipe:
+            trace("pipe hello")
             _flags, _wall, hello, _ = send_pipe(pipe, HELLO, 10, expect=HELLO_RESPONSE)
             if struct.unpack_from("<H", hello, 0)[0] != PROTOCOL_VERSION:
                 raise AssertionError("hello payload did not report v3")
 
-            _flags, _wall, catalog_payload, _ = send_pipe(pipe, CATALOG_REQUEST, 11, expect=CATALOG_RESPONSE)
-            catalog = parse_catalog(catalog_payload)
+            trace("catalog summary")
+            _flags, summary_wall, summary_payload, _ = send_pipe(
+                pipe, CATALOG_SUMMARY_REQUEST, 11, expect=CATALOG_SUMMARY_RESPONSE
+            )
+            catalog = parse_catalog_summary(summary_payload)
+            metrics["catalog_summary_wall_micros"] = [summary_wall]
+            trace("catalog layer page")
+            _flags, layer_page_wall, layer_page_payload_bytes, _ = send_pipe(
+                pipe,
+                CATALOG_PAGE_REQUEST,
+                12,
+                catalog_page_payload(CATALOG_PAGE_LAYERS, 0, 64),
+                expect=CATALOG_PAGE_RESPONSE,
+            )
+            layer_page = parse_catalog_page(layer_page_payload_bytes, CATALOG_PAGE_LAYERS)
+            metrics["catalog_page_wall_micros"] = [layer_page_wall]
+            metrics["catalog_pages"] = [layer_page]
+            trace("catalog cell page")
+            _flags, cell_page_wall, cell_page_payload_bytes, _ = send_pipe(
+                pipe,
+                CATALOG_PAGE_REQUEST,
+                13,
+                catalog_page_payload(CATALOG_PAGE_CELLS, 0, 64),
+                expect=CATALOG_PAGE_RESPONSE,
+            )
+            cell_page = parse_catalog_page(cell_page_payload_bytes, CATALOG_PAGE_CELLS)
+            metrics["catalog_page_wall_micros"].append(cell_page_wall)
+            metrics["catalog_pages"].append(cell_page)
+            top_index_for_name = catalog.get("top_cell_index")
+            if top_index_for_name is not None and top_index_for_name != NO_INDEX:
+                trace(f"catalog top cell page offset={top_index_for_name}")
+                _flags, top_cell_page_wall, top_cell_page_payload_bytes, _ = send_pipe(
+                    pipe,
+                    CATALOG_PAGE_REQUEST,
+                    14,
+                    catalog_page_payload(CATALOG_PAGE_CELLS, int(top_index_for_name), 1),
+                    expect=CATALOG_PAGE_RESPONSE,
+                )
+                top_cell_page = parse_catalog_page(top_cell_page_payload_bytes, CATALOG_PAGE_CELLS)
+                metrics["catalog_page_wall_micros"].append(top_cell_page_wall)
+                metrics["catalog_pages"].append(top_cell_page)
+                catalog["top_name"] = top_cell_page.get("first_name", "")
+            if layer_page.get("layer_names"):
+                catalog["layer_names"] = layer_page["layer_names"]
             metrics["catalog"] = catalog
             top = catalog["top_cell_index"]
-            bounds = session.get("bounds") or catalog.get("top_bounds")
+            bounds = session.get("bounds") or catalog.get("bounds")
             if not bounds:
                 raise AssertionError("GDS catalog did not report top-cell bounds")
 
@@ -537,28 +670,32 @@ def run_interaction(server_path: pathlib.Path, gds_path: pathlib.Path) -> dict:
                 raise AssertionError(f"invalid GDS bounds: {bounds}")
 
             scenarios = [("full_lod2", full_bbox, 2)]
-            for scale, lod in [(0.50, 1), (0.20, 0), (0.10, 0)]:
+            for dx in (-0.25, 0.25):
+                for dy in (-0.25, 0.25):
+                    scenarios.append((f"overview_quadrant_{dx}_{dy}", make_bbox(bounds, 0.35, dx, dy), 2))
+            for scale, lod in [(0.05, 1), (0.02, 0), (0.01, 0)]:
                 scenarios.append((f"center_s{scale}_lod{lod}", make_bbox(bounds, scale), lod))
             for dx in (-0.25, 0.25):
                 for dy in (-0.25, 0.25):
-                    scenarios.append((f"quadrant_{dx}_{dy}", make_bbox(bounds, 0.35, dx, dy), 1))
+                    scenarios.append((f"quadrant_{dx}_{dy}", make_bbox(bounds, 0.04, dx, dy), 1))
             for ix in range(5):
                 for iy in range(5):
                     scenarios.append(
                         (
                             f"pan_{ix}_{iy}",
-                            make_bbox(bounds, 0.18, (ix - 2) * 0.12, (iy - 2) * 0.12),
+                            make_bbox(bounds, 0.025, (ix - 2) * 0.035, (iy - 2) * 0.035),
                             1,
                         )
                     )
             for index in range(60):
-                scale = 0.08 + (index % 6) * 0.035
-                dx = ((index % 10) - 4.5) * 0.035
-                dy = (((index // 10) % 6) - 2.5) * 0.05
+                scale = 0.008 + (index % 6) * 0.004
+                dx = ((index % 10) - 4.5) * 0.01
+                dy = (((index // 10) % 6) - 2.5) * 0.014
                 scenarios.append((f"burst_{index}", make_bbox(bounds, scale, dx, dy), index % 3))
 
             next_request_id = 100
             for name, bbox, lod in scenarios:
+                trace(f"tile {name} lod={lod}")
                 flags, wall, payload, _ = send_pipe(
                     pipe,
                     TILE_GEOMETRY_REQUEST,
@@ -574,6 +711,7 @@ def run_interaction(server_path: pathlib.Path, gds_path: pathlib.Path) -> dict:
 
             repeat_bbox = make_bbox(bounds, 0.20)
             for index in range(3):
+                trace(f"tile repeat_cache_{index}")
                 flags, wall, payload, _ = send_pipe(
                     pipe,
                     TILE_GEOMETRY_REQUEST,
@@ -587,6 +725,7 @@ def run_interaction(server_path: pathlib.Path, gds_path: pathlib.Path) -> dict:
                 parsed["lod"] = 1
                 metrics["tiles"].append(parsed)
 
+            trace("tile continuation_first")
             flags, wall, payload, _ = send_pipe(
                 pipe,
                 TILE_GEOMETRY_REQUEST,
@@ -600,6 +739,7 @@ def run_interaction(server_path: pathlib.Path, gds_path: pathlib.Path) -> dict:
             first_page["lod"] = 2
             metrics["tiles"].append(first_page)
             if first_page["next_token"]:
+                trace("tile continuation_second")
                 flags, wall, payload, _ = send_pipe(
                     pipe,
                     TILE_GEOMETRY_REQUEST,
@@ -620,6 +760,7 @@ def run_interaction(server_path: pathlib.Path, gds_path: pathlib.Path) -> dict:
                 second_page["lod"] = 2
                 metrics["tiles"].append(second_page)
 
+            trace("tile bad-token error")
             message = expect_pipe_error(
                 pipe,
                 TILE_GEOMETRY_REQUEST,
@@ -632,7 +773,7 @@ def run_interaction(server_path: pathlib.Path, gds_path: pathlib.Path) -> dict:
             metrics["error_frames"] += 1
 
             hit_object = None
-            hit_radius = max(full_bbox[2] - full_bbox[0], full_bbox[3] - full_bbox[1]) / 1000.0
+            hit_radius = max(full_bbox[2] - full_bbox[0], full_bbox[3] - full_bbox[1]) / 10000.0
             hit_points: list[tuple[float, float]] = []
             for tile in metrics["tiles"]:
                 for point in tile.get("sample_points", []):
@@ -645,6 +786,7 @@ def run_interaction(server_path: pathlib.Path, gds_path: pathlib.Path) -> dict:
                 bbox = make_bbox(bounds, 0.01, dx, dy)
                 hit_points.append(((bbox[0] + bbox[2]) / 2.0, (bbox[1] + bbox[3]) / 2.0))
             for x, y in hit_points:
+                trace("hit-test")
                 _flags, wall, payload, _ = send_pipe(
                     pipe,
                     HIT_TEST_REQUEST,
@@ -671,6 +813,7 @@ def run_interaction(server_path: pathlib.Path, gds_path: pathlib.Path) -> dict:
                 hit_object["datatype"],
                 hit_object["instance_path_hash"],
             )
+            trace("inspect hit object")
             _flags, wall, inspect_payload_bytes, _ = send_pipe(
                 pipe, INSPECT_REQUEST, next_request_id, object_bytes, expect=INSPECT_RESPONSE
             )
@@ -679,6 +822,7 @@ def run_interaction(server_path: pathlib.Path, gds_path: pathlib.Path) -> dict:
                 raise AssertionError("inspect response missing PLIN magic")
             metrics["inspect_wall_micros"].append(wall)
 
+            trace("selection hit object")
             _flags, wall, selection_payload, _ = send_pipe(
                 pipe,
                 SELECTION_GEOMETRY_REQUEST,
@@ -698,6 +842,7 @@ def run_interaction(server_path: pathlib.Path, gds_path: pathlib.Path) -> dict:
             ]
             search_object = None
             for name, query, kind_mask in queries:
+                trace(f"search {name}")
                 _flags, wall, payload, _ = send_pipe(
                     pipe,
                     SEARCH_REQUEST,
@@ -726,6 +871,8 @@ def run_interaction(server_path: pathlib.Path, gds_path: pathlib.Path) -> dict:
                 search_object["datatype"],
                 search_object["instance_path_hash"],
             )
+            trace("inspect search object")
+            trace("selection search object")
             _flags, wall, payload, _ = send_pipe(
                 pipe, INSPECT_REQUEST, next_request_id, search_object_bytes, expect=INSPECT_RESPONSE
             )
@@ -762,6 +909,11 @@ def run_interaction(server_path: pathlib.Path, gds_path: pathlib.Path) -> dict:
         search_query = [entry["query_micros"] for entry in metrics["searches"]]
         metrics["summary"] = {
             "open_wall_micros": metric_summary(metrics["open_wall_micros"]),
+            "catalog_summary_wall_micros": metric_summary(metrics.get("catalog_summary_wall_micros", [])),
+            "catalog_page_wall_micros": metric_summary(metrics.get("catalog_page_wall_micros", [])),
+            "catalog_page_payload_bytes": metric_summary(
+                [entry["payload_bytes"] for entry in metrics.get("catalog_pages", [])]
+            ),
             "tile_query_micros": metric_summary(tile_query),
             "tile_encode_micros": metric_summary(tile_encode),
             "tile_wall_micros": metric_summary([entry["wall_micros"] for entry in metrics["tiles"]]),
@@ -787,6 +939,12 @@ def main() -> int:
         return 2
     server_path = pathlib.Path(sys.argv[1]).resolve()
     gds_path = pathlib.Path(sys.argv[2]).resolve()
+    if not gds_path.is_file():
+        repo_root = pathlib.Path(__file__).resolve().parents[2]
+        fetch_script = repo_root / "scripts" / "fetch_tt_tinyqv_gds.mjs"
+        if fetch_script.is_file():
+            print(f"TT tinyQV GDS missing at {gds_path}; running {fetch_script}")
+            subprocess.run(["node", str(fetch_script)], cwd=repo_root, check=False)
     if not gds_path.is_file():
         if os.environ.get("PRISTINE_REQUIRE_TT_TINYQV_GDS"):
             print(f"ERROR: required TT tinyQV GDS fixture is missing at {gds_path}", file=sys.stderr)

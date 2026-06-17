@@ -22,6 +22,9 @@ public:
 
     [[nodiscard]] virtual std::vector<std::uint8_t> encodeHelloResponse() const;
     [[nodiscard]] virtual std::vector<std::uint8_t> encodeCatalogResponse() const;
+    [[nodiscard]] virtual std::vector<std::uint8_t> encodeCatalogSummaryResponse() const;
+    [[nodiscard]] virtual std::vector<std::uint8_t> encodeCatalogPageResponse(
+        const LayoutCatalogPageRequest& request) const;
     [[nodiscard]] virtual std::vector<std::uint8_t> encodeGeometryResponse(
         const LayoutGeometryRequest& request) const;
     [[nodiscard]] virtual std::vector<std::uint8_t> encodeTileGeometryResponse(
