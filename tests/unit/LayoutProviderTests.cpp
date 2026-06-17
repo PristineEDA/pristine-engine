@@ -131,14 +131,15 @@ std::vector<std::uint8_t> tileGeometryRequest(std::uint32_t root_cell_index,
                                               std::uint32_t max_shapes = 0,
                                               std::uint32_t max_points = 0,
                                               std::uint32_t max_bytes = 0,
-                                              std::uint32_t continuation_token = 0) {
+                                              std::uint32_t continuation_token = 0,
+                                              std::uint32_t lod = 2) {
     std::vector<std::uint8_t> payload;
     appendU32(payload, 1);
     appendU32(payload, root_cell_index);
     appendU32(payload, max_shapes);
     appendU32(payload, max_points);
     appendU32(payload, max_bytes);
-    appendU32(payload, 2);
+    appendU32(payload, lod);
     appendU32(payload, continuation_token);
     appendF64(payload, static_cast<double>(bbox.x0));
     appendF64(payload, static_cast<double>(bbox.y0));
@@ -172,7 +173,8 @@ std::vector<std::uint8_t> inspectRequest(LayoutSpatialObjectKind kind,
                                          std::uint32_t reference_index,
                                          std::uint32_t element_index,
                                          std::uint32_t layer_index = kNoLayoutIndex,
-                                         std::uint32_t datatype = 0) {
+                                         std::uint32_t datatype = 0,
+                                         std::uint64_t instance_path_hash = 0) {
     std::vector<std::uint8_t> payload;
     appendU32(payload, 0);
     appendU32(payload, static_cast<std::uint32_t>(kind));
@@ -181,7 +183,7 @@ std::vector<std::uint8_t> inspectRequest(LayoutSpatialObjectKind kind,
     appendU32(payload, element_index);
     appendU32(payload, layer_index);
     appendU32(payload, datatype);
-    appendU64(payload, 0);
+    appendU64(payload, instance_path_hash);
     return payload;
 }
 
@@ -195,6 +197,22 @@ std::uint32_t geometryShapeTableOffset(const std::vector<std::uint8_t>& payload)
 
 std::uint32_t tileShapeCount(const std::vector<std::uint8_t>& payload) {
     return readU32(payload.data(), payload.size(), 24);
+}
+
+std::uint32_t tileNextToken(const std::vector<std::uint8_t>& payload) {
+    return readU32(payload.data(), payload.size(), 12);
+}
+
+std::uint32_t tileLodShapeCount(const std::vector<std::uint8_t>& payload) {
+    return readU32(payload.data(), payload.size(), 72);
+}
+
+std::uint32_t tileCacheHitCount(const std::vector<std::uint8_t>& payload) {
+    return readU32(payload.data(), payload.size(), 76);
+}
+
+std::uint32_t tileCacheMissCount(const std::vector<std::uint8_t>& payload) {
+    return readU32(payload.data(), payload.size(), 80);
 }
 
 std::vector<std::uint8_t> tileGeometryPayload(const std::vector<std::uint8_t>& payload) {
@@ -421,6 +439,12 @@ TEST_CASE("GDS parser captures hierarchy elements references and source v3 catal
     CHECK(parsed.value.top_cell_index == 1);
     CHECK(parsed.value.cells[1].is_top);
     CHECK(parsed.value.elements.size() == 5);
+    CHECK(parsed.value.parse_metrics.record_count > 0);
+    CHECK(parsed.value.parse_metrics.xy_point_count > 0);
+    CHECK(parsed.value.parse_metrics.string_count > 0);
+    CHECK(parsed.value.parse_metrics.cell_count == 2);
+    CHECK(parsed.value.parse_metrics.reference_count == 2);
+    CHECK(parsed.value.parse_metrics.element_count == 5);
     REQUIRE(parsed.value.references.size() == 2);
     CHECK(parsed.value.references[0].target_cell_index == 0);
     CHECK(parsed.value.references[1].kind == LayoutGdsElementKind::Aref);
@@ -543,13 +567,80 @@ TEST_CASE("GDS spatial index serves tile hit inspect and selection payloads",
     auto tile = source->encodeTileGeometryResponse(tile_request);
     CHECK(std::string(reinterpret_cast<const char*>(tile.data()), 4) == "PLTG");
     CHECK(readU16(tile.data(), tile.size(), 4) == kLayoutProtocolVersion);
-    CHECK(readU16(tile.data(), tile.size(), 6) >= 72);
+    CHECK(readU16(tile.data(), tile.size(), 6) >= 84);
     CHECK(readU32(tile.data(), tile.size(), 8) == kLayoutFrameFlagTruncated);
     CHECK(tileShapeCount(tile) == 2);
     CHECK(readU32(tile.data(), tile.size(), 56) >= 1);
+    CHECK(tileLodShapeCount(tile) == 2);
+    CHECK(tileCacheHitCount(tile) == 0);
+    CHECK(tileCacheMissCount(tile) == 1);
     auto tile_geometry = tileGeometryPayload(tile);
     CHECK(std::string(reinterpret_cast<const char*>(tile_geometry.data()), 4) == "PLGE");
     CHECK(geometryShapeCount(tile_geometry) == 2);
+
+    const auto cached_tile = source->encodeTileGeometryResponse(tile_request);
+    CHECK(tileCacheHitCount(cached_tile) == 1);
+    CHECK(tileCacheMissCount(cached_tile) == 0);
+
+    const auto precise_tile_request = decodeTileGeometryRequestPayload(tileGeometryRequest(
+        1,
+        LayoutRect{.x0 = 90, .y0 = 190, .x1 = 275, .y1 = 360},
+        0,
+        0,
+        0,
+        0,
+        0));
+    const auto precise_tile = source->encodeTileGeometryResponse(precise_tile_request);
+    auto precise_geometry = tileGeometryPayload(precise_tile);
+    CHECK(geometryShapeCount(precise_geometry) == 9);
+    CHECK(tileLodShapeCount(precise_tile) == 0);
+
+    const auto medium_tile_request = decodeTileGeometryRequestPayload(tileGeometryRequest(
+        1,
+        LayoutRect{.x0 = 90, .y0 = 190, .x1 = 275, .y1 = 360},
+        0,
+        0,
+        0,
+        0,
+        1));
+    const auto medium_tile = source->encodeTileGeometryResponse(medium_tile_request);
+    auto medium_geometry = tileGeometryPayload(medium_tile);
+    CHECK(geometryShapeCount(medium_geometry) == 9);
+    CHECK(tileLodShapeCount(medium_tile) == 9);
+
+    const auto page1_request = decodeTileGeometryRequestPayload(tileGeometryRequest(
+        1,
+        LayoutRect{.x0 = 90, .y0 = 190, .x1 = 275, .y1 = 360},
+        1,
+        0,
+        0,
+        0,
+        0));
+    const auto page1 = source->encodeTileGeometryResponse(page1_request);
+    CHECK(readU32(page1.data(), page1.size(), 8) == kLayoutFrameFlagTruncated);
+    REQUIRE(tileNextToken(page1) != 0);
+    const auto page2_request = decodeTileGeometryRequestPayload(tileGeometryRequest(
+        1,
+        LayoutRect{.x0 = 90, .y0 = 190, .x1 = 275, .y1 = 360},
+        1,
+        0,
+        0,
+        tileNextToken(page1),
+        0));
+    const auto page2 = source->encodeTileGeometryResponse(page2_request);
+    CHECK(tileShapeCount(page2) == 1);
+    CHECK_THROWS_WITH(source->encodeTileGeometryResponse(decodeTileGeometryRequestPayload(
+                          tileGeometryRequest(1,
+                                              LayoutRect{.x0 = 90,
+                                                         .y0 = 190,
+                                                         .x1 = 275,
+                                                         .y1 = 360},
+                                              1,
+                                              0,
+                                              0,
+                                              0x00abcdef,
+                                              0))),
+                      Catch::Matchers::ContainsSubstring("continuation token"));
 
     const auto hit_request = decodeHitTestRequestPayload(
         hitTestRequest(1, LayoutPoint{.x = 105, .y = 205}, 5));
@@ -564,23 +655,52 @@ TEST_CASE("GDS spatial index serves tile hit inspect and selection payloads",
     CHECK(readU16(hit.data(), hit.size(), hit_row_offset) ==
           static_cast<std::uint16_t>(LayoutSpatialObjectKind::Element));
     const auto hit_element_index = readU32(hit.data(), hit.size(), hit_row_offset + 12);
+    const auto hit_layer_index = readU32(hit.data(), hit.size(), hit_row_offset + 16);
+    const auto hit_datatype = readU32(hit.data(), hit.size(), hit_row_offset + 20);
+    const auto hit_instance_hash = readU64(hit.data(), hit.size(), hit_row_offset + 32);
+    CHECK(hit_instance_hash != 0);
 
     const auto inspect_payload = source->encodeInspectResponse(decodeInspectRequestPayload(
         inspectRequest(LayoutSpatialObjectKind::Element,
                        kNoLayoutIndex,
                        kNoLayoutIndex,
-                       hit_element_index)));
+                       hit_element_index,
+                       hit_layer_index,
+                       hit_datatype,
+                       hit_instance_hash)));
     CHECK(std::string(reinterpret_cast<const char*>(inspect_payload.data()), 4) == "PLIN");
     CHECK(readU16(inspect_payload.data(), inspect_payload.size(), 4) == kLayoutProtocolVersion);
+    CHECK(readU16(inspect_payload.data(), inspect_payload.size(), 6) >= 144);
     CHECK(readU32(inspect_payload.data(), inspect_payload.size(), 8) ==
           static_cast<std::uint32_t>(LayoutSpatialObjectKind::Element));
     CHECK(readU32(inspect_payload.data(), inspect_payload.size(), 20) == hit_element_index);
+    CHECK(readU64(inspect_payload.data(), inspect_payload.size(), 32) == hit_instance_hash);
+    CHECK(readU32(inspect_payload.data(), inspect_payload.size(), 116) ==
+          static_cast<std::uint32_t>(LayoutInspectClass::Shape));
+    CHECK(readU32(inspect_payload.data(), inspect_payload.size(), 120) == 0);
+    const auto inspect_string_offset = readU32(inspect_payload.data(), inspect_payload.size(), 68);
+    const auto inspect_instance_offset =
+        readU32(inspect_payload.data(), inspect_payload.size(), 124);
+    CHECK_FALSE(readTableString(inspect_payload, inspect_string_offset, inspect_instance_offset)
+                    .empty());
+
+    const auto text_inspect = source->encodeInspectResponse(decodeInspectRequestPayload(
+        inspectRequest(LayoutSpatialObjectKind::Element, kNoLayoutIndex, kNoLayoutIndex, 2)));
+    CHECK(readU32(text_inspect.data(), text_inspect.size(), 116) ==
+          static_cast<std::uint32_t>(LayoutInspectClass::Label));
+    const auto path_inspect = source->encodeInspectResponse(decodeInspectRequestPayload(
+        inspectRequest(LayoutSpatialObjectKind::Element, kNoLayoutIndex, kNoLayoutIndex, 1)));
+    CHECK(readU32(path_inspect.data(), path_inspect.size(), 116) ==
+          static_cast<std::uint32_t>(LayoutInspectClass::Wire));
 
     const auto selection = source->encodeSelectionGeometryResponse(
         decodeSelectionGeometryRequestPayload(inspectRequest(LayoutSpatialObjectKind::Element,
                                                              kNoLayoutIndex,
                                                              kNoLayoutIndex,
-                                                             hit_element_index)));
+                                                             hit_element_index,
+                                                             hit_layer_index,
+                                                             hit_datatype,
+                                                             hit_instance_hash)));
     CHECK(std::string(reinterpret_cast<const char*>(selection.data()), 4) == "PLGE");
     CHECK(geometryShapeCount(selection) == 1);
 

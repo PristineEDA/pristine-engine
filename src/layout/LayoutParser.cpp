@@ -1,6 +1,7 @@
 #include "pristine/layout/LayoutParser.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cctype>
 #include <cmath>
 #include <cstdint>
@@ -16,6 +17,32 @@
 
 namespace pristine::layout {
 namespace {
+
+using Clock = std::chrono::steady_clock;
+
+std::uint64_t elapsedMicros(Clock::time_point start) {
+    return static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::microseconds>(Clock::now() - start).count());
+}
+
+void addMicros(std::uint64_t& target, Clock::time_point start) {
+    const auto elapsed = elapsedMicros(start);
+    target = std::numeric_limits<std::uint64_t>::max() - target < elapsed
+        ? std::numeric_limits<std::uint64_t>::max()
+        : target + elapsed;
+}
+
+class ScopedMicros {
+public:
+    explicit ScopedMicros(std::uint64_t& target) : target_(&target), start_(Clock::now()) {}
+    ScopedMicros(const ScopedMicros&) = delete;
+    ScopedMicros& operator=(const ScopedMicros&) = delete;
+    ~ScopedMicros() { addMicros(*target_, start_); }
+
+private:
+    std::uint64_t* target_ = nullptr;
+    Clock::time_point start_;
+};
 
 enum class TokenKind {
     End,
@@ -595,8 +622,18 @@ public:
             addDiagnostic(LayoutDiagnosticSeverity::Error, error.what(), offset_);
         }
 
-        resolveReferences();
-        inferTopCell();
+        {
+            ScopedMicros metric(metrics_.resolve_micros);
+            resolveReferences();
+            inferTopCell();
+        }
+        metrics_.cell_count = static_cast<std::uint32_t>(
+            std::min<std::size_t>(library_.cells.size(), std::numeric_limits<std::uint32_t>::max()));
+        metrics_.reference_count = static_cast<std::uint32_t>(
+            std::min<std::size_t>(library_.references.size(), std::numeric_limits<std::uint32_t>::max()));
+        metrics_.element_count = static_cast<std::uint32_t>(
+            std::min<std::size_t>(library_.elements.size(), std::numeric_limits<std::uint32_t>::max()));
+        library_.parse_metrics = metrics_;
         library_.diagnostics.insert(library_.diagnostics.end(), diagnostics_.begin(), diagnostics_.end());
         return ParseResult<LayoutGdsLibrary>{.value = std::move(library_),
                                              .diagnostics = std::move(diagnostics_)};
@@ -604,6 +641,7 @@ public:
 
 private:
     GdsRecord nextRecord() {
+        ScopedMicros metric(metrics_.read_micros);
         if (bytes_.size() - offset_ < 4U) {
             throw std::runtime_error("Truncated GDS record header");
         }
@@ -618,6 +656,9 @@ private:
         const auto record_type = static_cast<GdsRecordType>(bytes_[offset_ + 2U]);
         const auto data_type = bytes_[offset_ + 3U];
         offset_ += length;
+        if (metrics_.record_count != std::numeric_limits<std::uint32_t>::max()) {
+            ++metrics_.record_count;
+        }
         return GdsRecord{.type = record_type,
                          .data_type = data_type,
                          .data_offset = record_offset + 4U,
@@ -626,6 +667,7 @@ private:
     }
 
     void handleRecord(const GdsRecord& record) {
+        ScopedMicros metric(metrics_.record_micros);
         switch (record.type) {
             case GdsRecordType::Header:
                 if (const auto values = int2Values(record); !values.empty()) {
@@ -804,6 +846,7 @@ private:
         const auto element_index = static_cast<std::uint32_t>(library_.elements.size());
         if (element.cell_index < library_.cells.size()) {
             library_.cells[element.cell_index].element_indices.push_back(element_index);
+            ScopedMicros metric(metrics_.bbox_micros);
             expandCellBounds(library_.cells[element.cell_index].bounds, elementBounds(element));
         }
         library_.elements.push_back(std::move(element));
@@ -816,8 +859,12 @@ private:
         }
         auto& element = currentElement();
         element.points.clear();
+        element.points.reserve(values.size() / 2U);
         for (std::size_t index = 0; index + 1U < values.size(); index += 2U) {
             element.points.push_back(LayoutPoint{.x = values[index], .y = values[index + 1U]});
+            if (metrics_.xy_point_count != std::numeric_limits<std::uint32_t>::max()) {
+                ++metrics_.xy_point_count;
+            }
         }
     }
 
@@ -904,6 +951,9 @@ private:
 
     std::string stringValue(const GdsRecord& record) {
         checkType(record, kGdsString);
+        if (metrics_.string_count != std::numeric_limits<std::uint32_t>::max()) {
+            ++metrics_.string_count;
+        }
         std::string value;
         value.reserve(record.data_size);
         const auto end = record.data_offset + record.data_size;
@@ -1047,6 +1097,7 @@ private:
     std::string file_name_;
     std::size_t offset_ = 0;
     LayoutGdsLibrary library_;
+    LayoutGdsParseMetrics metrics_;
     std::vector<LayoutDiagnostic> diagnostics_;
     std::optional<std::uint32_t> current_cell_;
     std::optional<LayoutGdsElement> current_element_;

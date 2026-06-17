@@ -23,10 +23,10 @@ constexpr std::uint8_t kInspectMagic[] = {'P', 'L', 'I', 'N'};
 constexpr std::uint16_t kFrameHeaderSize = 24;
 constexpr std::uint16_t kCatalogHeaderSize = 136;
 constexpr std::uint16_t kGeometryHeaderSize = 96;
-constexpr std::uint16_t kTileGeometryHeaderSize = 72;
+constexpr std::uint16_t kTileGeometryHeaderSize = 84;
 constexpr std::uint16_t kHitTestHeaderSize = 64;
 constexpr std::uint16_t kHitTestRowStride = 80;
-constexpr std::uint16_t kInspectHeaderSize = 116;
+constexpr std::uint16_t kInspectHeaderSize = 144;
 constexpr std::size_t kMaxPayloadSize = 128U * 1024U * 1024U;
 constexpr std::uint32_t kGdsCatalogCellTopFlag = 1U;
 constexpr std::uint32_t kLayoutCatalogSourceLefDef = 1U;
@@ -804,6 +804,9 @@ std::vector<std::uint8_t> encodeTileGeometryResponsePayload(
     writeU32Header(result, offset, tile_result.element_candidate_count);
     writeU32Header(result, offset, tile_result.reference_candidate_count);
     writeU32Header(result, offset, tile_result.traversed_reference_count);
+    writeU32Header(result, offset, tile_result.lod_shape_count);
+    writeU32Header(result, offset, tile_result.cache_hit_count);
+    writeU32Header(result, offset, tile_result.cache_miss_count);
     return result;
 }
 
@@ -860,6 +863,7 @@ std::vector<std::uint8_t> encodeInspectResponsePayload(const LayoutDataSet& data
     std::vector<std::uint8_t> strings;
     const auto name_offset = appendTableString(strings, inspect.name);
     const auto text_offset = appendTableString(strings, inspect.text);
+    const auto instance_path_offset = appendTableString(strings, inspect.instance_path);
     alignTo(result, 4);
     const auto string_offset = checkedCount(result.size(), "inspect string offset");
     result.insert(result.end(), strings.begin(), strings.end());
@@ -895,6 +899,13 @@ std::vector<std::uint8_t> encodeInspectResponsePayload(const LayoutDataSet& data
     writeF64Header(result, offset, toMicrons(inspect.bounds.y0, data.units_per_micron));
     writeF64Header(result, offset, toMicrons(inspect.bounds.x1, data.units_per_micron));
     writeF64Header(result, offset, toMicrons(inspect.bounds.y1, data.units_per_micron));
+    writeU32Header(result, offset, static_cast<std::uint32_t>(inspect.object_class));
+    writeU32Header(result, offset, inspect.source_cell_index);
+    writeU32Header(result, offset, instance_path_offset);
+    writeU32Header(result, offset, 0);
+    writeU32Header(result, offset, 0);
+    writeU32Header(result, offset, 0);
+    writeU32Header(result, offset, 0);
     return result;
 }
 

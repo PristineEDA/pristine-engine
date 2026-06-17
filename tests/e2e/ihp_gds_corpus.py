@@ -19,6 +19,27 @@ TILE_GEOMETRY_REQUEST = 9
 TILE_GEOMETRY_RESPONSE = 10
 HIT_TEST_REQUEST = 11
 HIT_TEST_RESPONSE = 12
+INSPECT_REQUEST = 13
+INSPECT_RESPONSE = 14
+SELECTION_GEOMETRY_REQUEST = 15
+SELECTION_GEOMETRY_RESPONSE = 16
+
+
+def percentile(values: list[int], pct: float) -> int:
+    if not values:
+        return 0
+    ordered = sorted(values)
+    index = int(round((len(ordered) - 1) * pct))
+    return ordered[max(0, min(index, len(ordered) - 1))]
+
+
+def summary_stats(values: list[int]) -> str:
+    if not values:
+        return "p50/p95/max 0/0/0us"
+    return (
+        f"p50/p95/max {percentile(values, 0.50)}/"
+        f"{percentile(values, 0.95)}/{max(values)}us"
+    )
 
 
 def write_message(process: subprocess.Popen[bytes], message: dict) -> None:
@@ -127,6 +148,28 @@ def hit_payload(root_cell_index: int, x: float, y: float, radius: float) -> byte
     return bytes(payload)
 
 
+def object_payload(
+    kind: int,
+    cell_index: int,
+    reference_index: int,
+    element_index: int,
+    layer_index: int,
+    datatype: int,
+    instance_path_hash: int,
+) -> bytes:
+    return struct.pack(
+        "<IIIIIIIQ",
+        0,
+        kind,
+        cell_index,
+        reference_index,
+        element_index,
+        layer_index,
+        datatype,
+        instance_path_hash,
+    )
+
+
 def sample_spatial_pipe(session: dict) -> dict[str, int]:
     bounds = session.get("bounds") or {}
     x0 = float(bounds.get("x0", 0.0))
@@ -170,7 +213,19 @@ def sample_spatial_pipe(session: dict) -> dict[str, int]:
             "tile_element_candidates": struct.unpack_from("<I", payload, 60)[0],
             "tile_reference_candidates": struct.unpack_from("<I", payload, 64)[0],
             "tile_traversed_refs": struct.unpack_from("<I", payload, 68)[0],
+            "tile_lod_shapes": struct.unpack_from("<I", payload, 72)[0],
+            "tile_cache_hits": struct.unpack_from("<I", payload, 76)[0],
+            "tile_cache_misses": struct.unpack_from("<I", payload, 80)[0],
         }
+        pipe.write(frame(TILE_GEOMETRY_REQUEST, 104, tile_payload(root_cell_index, sample_bbox, 1)))
+        pipe.flush()
+        message_type, request_id, _flags, payload = read_frame(pipe)
+        if message_type == ERROR_RESPONSE:
+            raise AssertionError("cached tile geometry request returned error")
+        assert message_type == TILE_GEOMETRY_RESPONSE
+        assert request_id == 104
+        tile_metrics["tile_cache_hits"] += struct.unpack_from("<I", payload, 76)[0]
+        tile_metrics["tile_cache_misses"] += struct.unpack_from("<I", payload, 80)[0]
 
         pipe.write(frame(HIT_TEST_REQUEST, 102, hit_payload(root_cell_index, (x0 + x1) / 2.0, (y0 + y1) / 2.0, max(x1 - x0, y1 - y0) / 1000.0)))
         pipe.flush()
@@ -188,7 +243,46 @@ def sample_spatial_pipe(session: dict) -> dict[str, int]:
             "hit_encode_micros": struct.unpack_from("<Q", payload, 48)[0],
             "hit_tile_shapes": struct.unpack_from("<I", payload, 56)[0],
             "hit_precise_candidates": struct.unpack_from("<I", payload, 60)[0],
+            "inspect_count": 0,
+            "selection_count": 0,
         }
+        if hit_count:
+            row_offset = struct.unpack_from("<I", payload, 12)[0]
+            kind = struct.unpack_from("<H", payload, row_offset)[0]
+            cell_index = struct.unpack_from("<I", payload, row_offset + 4)[0]
+            reference_index = struct.unpack_from("<I", payload, row_offset + 8)[0]
+            element_index = struct.unpack_from("<I", payload, row_offset + 12)[0]
+            layer_index = struct.unpack_from("<I", payload, row_offset + 16)[0]
+            datatype = struct.unpack_from("<I", payload, row_offset + 20)[0]
+            instance_path_hash = struct.unpack_from("<Q", payload, row_offset + 32)[0]
+            object_id = object_payload(
+                kind,
+                cell_index,
+                reference_index,
+                element_index,
+                layer_index,
+                datatype,
+                instance_path_hash,
+            )
+            pipe.write(frame(INSPECT_REQUEST, 105, object_id))
+            pipe.flush()
+            message_type, request_id, _flags, payload = read_frame(pipe)
+            if message_type == ERROR_RESPONSE:
+                raise AssertionError("inspect request returned error")
+            assert message_type == INSPECT_RESPONSE
+            assert request_id == 105
+            assert payload[:4] == b"PLIN"
+            hit_metrics["inspect_count"] = 1
+
+            pipe.write(frame(SELECTION_GEOMETRY_REQUEST, 106, object_id))
+            pipe.flush()
+            message_type, request_id, _flags, payload = read_frame(pipe)
+            if message_type == ERROR_RESPONSE:
+                raise AssertionError("selection geometry request returned error")
+            assert message_type == SELECTION_GEOMETRY_RESPONSE
+            assert request_id == 106
+            assert payload[:4] == b"PLGE"
+            hit_metrics["selection_count"] = 1
 
         pipe.write(frame(CLOSE, 103))
         pipe.flush()
@@ -241,6 +335,15 @@ def main() -> int:
         total_diagnostics = 0
         total_open_micros = 0
         total_parse_micros = 0
+        open_micros_values: list[int] = []
+        parse_micros_values: list[int] = []
+        parse_record_micros_values: list[int] = []
+        parse_resolve_micros_values: list[int] = []
+        parse_bbox_micros_values: list[int] = []
+        tile_query_values: list[int] = []
+        tile_encode_values: list[int] = []
+        tile_index_values: list[int] = []
+        hit_query_values: list[int] = []
         max_open_micros = 0
         max_parse_micros = 0
         max_open_file = ""
@@ -255,6 +358,11 @@ def main() -> int:
         spatial_tile_element_candidates = 0
         spatial_tile_reference_candidates = 0
         spatial_tile_traversed_refs = 0
+        spatial_tile_lod_shapes = 0
+        spatial_tile_cache_hits = 0
+        spatial_tile_cache_misses = 0
+        spatial_inspects = 0
+        spatial_selections = 0
         failures: list[str] = []
         request_id = 2
         for index, gds in enumerate(gds_files, start=1):
@@ -288,6 +396,12 @@ def main() -> int:
             parse_micros = int(metrics.get("parseMicros", 0))
             total_open_micros += open_micros
             total_parse_micros += parse_micros
+            open_micros_values.append(open_micros)
+            parse_micros_values.append(parse_micros)
+            parse_metrics = metrics.get("parseMetrics", {})
+            parse_record_micros_values.append(int(parse_metrics.get("recordMicros", 0)))
+            parse_resolve_micros_values.append(int(parse_metrics.get("resolveMicros", 0)))
+            parse_bbox_micros_values.append(int(parse_metrics.get("bboxMicros", 0)))
             if open_micros > max_open_micros:
                 max_open_micros = open_micros
                 max_open_file = str(relative)
@@ -309,9 +423,18 @@ def main() -> int:
                     spatial_tile_query_micros += sample["tile_query_micros"]
                     spatial_tile_encode_micros += sample["tile_encode_micros"]
                     spatial_hit_query_micros += sample["hit_query_micros"]
+                    tile_index_values.append(sample["tile_index_build_micros"])
+                    tile_query_values.append(sample["tile_query_micros"])
+                    tile_encode_values.append(sample["tile_encode_micros"])
+                    hit_query_values.append(sample["hit_query_micros"])
                     spatial_tile_element_candidates += sample["tile_element_candidates"]
                     spatial_tile_reference_candidates += sample["tile_reference_candidates"]
                     spatial_tile_traversed_refs += sample["tile_traversed_refs"]
+                    spatial_tile_lod_shapes += sample["tile_lod_shapes"]
+                    spatial_tile_cache_hits += sample["tile_cache_hits"]
+                    spatial_tile_cache_misses += sample["tile_cache_misses"]
+                    spatial_inspects += sample["inspect_count"]
+                    spatial_selections += sample["selection_count"]
                     spatial_samples += 1
                 except AssertionError as exc:
                     failures.append(f"{relative}: spatial sample failed: {exc}")
@@ -354,11 +477,21 @@ def main() -> int:
             f"{spatial_hit_candidates} sampled hit candidates, "
             f"open avg {total_open_micros // len(gds_files)}us max {max_open_micros}us {max_open_file}, "
             f"parse avg {total_parse_micros // len(gds_files)}us max {max_parse_micros}us {max_parse_file}, "
+            f"open {summary_stats(open_micros_values)}, "
+            f"parse {summary_stats(parse_micros_values)}, "
+            f"record {summary_stats(parse_record_micros_values)}, "
+            f"resolve {summary_stats(parse_resolve_micros_values)}, "
+            f"bbox {summary_stats(parse_bbox_micros_values)}, "
             f"tile index/query/encode totals "
             f"{spatial_tile_index_micros}/{spatial_tile_query_micros}/{spatial_tile_encode_micros}us, "
-            f"hit query total {spatial_hit_query_micros}us, "
+            f"tile index/query/encode {summary_stats(tile_index_values)}/"
+            f"{summary_stats(tile_query_values)}/{summary_stats(tile_encode_values)}, "
+            f"hit query total {spatial_hit_query_micros}us ({summary_stats(hit_query_values)}), "
             f"sample candidates elem/ref/traversed "
-            f"{spatial_tile_element_candidates}/{spatial_tile_reference_candidates}/{spatial_tile_traversed_refs}"
+            f"{spatial_tile_element_candidates}/{spatial_tile_reference_candidates}/{spatial_tile_traversed_refs}, "
+            f"lod shapes {spatial_tile_lod_shapes}, cache hit/miss "
+            f"{spatial_tile_cache_hits}/{spatial_tile_cache_misses}, "
+            f"inspect/selection samples {spatial_inspects}/{spatial_selections}"
         )
         return 0
     finally:

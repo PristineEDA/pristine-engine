@@ -154,8 +154,27 @@ def owner_filtered_geometry_payload(
     return bytes(payload)
 
 
-def tile_geometry_payload(root_cell_index: int, bbox: tuple[float, float, float, float], max_shapes: int = 0) -> bytes:
-    payload = bytearray(struct.pack("<IIIIIII", 1, root_cell_index, max_shapes, 0, 0, 2, 0))
+def tile_geometry_payload(
+    root_cell_index: int,
+    bbox: tuple[float, float, float, float],
+    max_shapes: int = 0,
+    max_points: int = 0,
+    max_bytes: int = 0,
+    lod: int = 2,
+    continuation_token: int = 0,
+) -> bytes:
+    payload = bytearray(
+        struct.pack(
+            "<IIIIIII",
+            1,
+            root_cell_index,
+            max_shapes,
+            max_points,
+            max_bytes,
+            lod,
+            continuation_token,
+        )
+    )
     payload += struct.pack("<dddd", *bbox)
     payload += struct.pack("<III", 0, 0, 0)
     return bytes(payload)
@@ -168,8 +187,26 @@ def hit_test_payload(root_cell_index: int, x: float, y: float, radius: float, ma
     return bytes(payload)
 
 
-def object_payload(kind: int, cell_index: int, reference_index: int, element_index: int, layer_index: int = 0xFFFFFFFF, datatype: int = 0) -> bytes:
-    return struct.pack("<IIIIIIIQ", 0, kind, cell_index, reference_index, element_index, layer_index, datatype, 0)
+def object_payload(
+    kind: int,
+    cell_index: int,
+    reference_index: int,
+    element_index: int,
+    layer_index: int = 0xFFFFFFFF,
+    datatype: int = 0,
+    instance_path_hash: int = 0,
+) -> bytes:
+    return struct.pack(
+        "<IIIIIIIQ",
+        0,
+        kind,
+        cell_index,
+        reference_index,
+        element_index,
+        layer_index,
+        datatype,
+        instance_path_hash,
+    )
 
 
 def embedded_tile_geometry(payload: bytes) -> bytes:
@@ -552,7 +589,13 @@ def exercise_gds_pipe(session: dict) -> None:
         assert filtered_owner_kinds == [11, 11, 11]
         assert filtered_macro_indices == [0, 0, 0]
 
-        pipe.write(frame(TILE_GEOMETRY_REQUEST, 24, tile_geometry_payload(top_cell_index, (90, 190, 275, 360), 2)))
+        pipe.write(
+            frame(
+                TILE_GEOMETRY_REQUEST,
+                24,
+                tile_geometry_payload(top_cell_index, (90, 190, 275, 360), max_shapes=2, lod=2),
+            )
+        )
         pipe.flush()
         message_type, request_id, flags, payload = read_frame(pipe)
         assert message_type == TILE_GEOMETRY_RESPONSE
@@ -560,12 +603,81 @@ def exercise_gds_pipe(session: dict) -> None:
         assert flags == 1
         assert payload[:4] == b"PLTG"
         assert struct.unpack_from("<H", payload, 4)[0] == PROTOCOL_VERSION
-        assert struct.unpack_from("<H", payload, 6)[0] >= 72
+        assert struct.unpack_from("<H", payload, 6)[0] >= 84
         assert struct.unpack_from("<I", payload, 24)[0] == 2
         assert struct.unpack_from("<I", payload, 56)[0] >= 1
+        assert struct.unpack_from("<I", payload, 72)[0] == 2
+        assert struct.unpack_from("<I", payload, 76)[0] == 0
+        assert struct.unpack_from("<I", payload, 80)[0] == 1
         tile_geometry = embedded_tile_geometry(payload)
         assert tile_geometry[:4] == b"PLGE"
         assert struct.unpack_from("<I", tile_geometry, 12)[0] == 2
+        far_next_token = struct.unpack_from("<I", payload, 12)[0]
+
+        pipe.write(
+            frame(
+                TILE_GEOMETRY_REQUEST,
+                241,
+                tile_geometry_payload(top_cell_index, (90, 190, 275, 360), max_shapes=2, lod=2),
+            )
+        )
+        pipe.flush()
+        message_type, request_id, flags, payload = read_frame(pipe)
+        assert message_type == TILE_GEOMETRY_RESPONSE
+        assert request_id == 241
+        assert flags == 1
+        assert struct.unpack_from("<I", payload, 76)[0] == 1
+        assert struct.unpack_from("<I", payload, 80)[0] == 0
+
+        pipe.write(
+            frame(
+                TILE_GEOMETRY_REQUEST,
+                242,
+                tile_geometry_payload(top_cell_index, (90, 190, 275, 360), lod=0),
+            )
+        )
+        pipe.flush()
+        message_type, request_id, flags, payload = read_frame(pipe)
+        assert message_type == TILE_GEOMETRY_RESPONSE
+        assert request_id == 242
+        assert flags == 0
+        assert struct.unpack_from("<I", payload, 24)[0] == 3
+        assert struct.unpack_from("<I", payload, 72)[0] == 0
+
+        pipe.write(
+            frame(
+                TILE_GEOMETRY_REQUEST,
+                243,
+                tile_geometry_payload(top_cell_index, (90, 190, 275, 360), lod=1),
+            )
+        )
+        pipe.flush()
+        message_type, request_id, flags, payload = read_frame(pipe)
+        assert message_type == TILE_GEOMETRY_RESPONSE
+        assert request_id == 243
+        assert flags == 0
+        assert struct.unpack_from("<I", payload, 24)[0] == 3
+        assert struct.unpack_from("<I", payload, 72)[0] == 3
+
+        assert far_next_token != 0
+        pipe.write(
+            frame(
+                TILE_GEOMETRY_REQUEST,
+                244,
+                tile_geometry_payload(
+                    top_cell_index,
+                    (90, 190, 275, 360),
+                    max_shapes=2,
+                    lod=2,
+                    continuation_token=far_next_token,
+                ),
+            )
+        )
+        pipe.flush()
+        message_type, request_id, _flags, payload = read_frame(pipe)
+        assert message_type == TILE_GEOMETRY_RESPONSE
+        assert request_id == 244
+        assert struct.unpack_from("<I", payload, 24)[0] >= 1
 
         pipe.write(frame(HIT_TEST_REQUEST, 25, hit_test_payload(top_cell_index, 105, 205, 5)))
         pipe.flush()
@@ -582,20 +694,56 @@ def exercise_gds_pipe(session: dict) -> None:
         assert struct.unpack_from("<I", payload, 56)[0] >= hit_count
         hit_kind = struct.unpack_from("<H", payload, hit_row_offset)[0]
         hit_element_index = struct.unpack_from("<I", payload, hit_row_offset + 12)[0]
+        hit_layer_index = struct.unpack_from("<I", payload, hit_row_offset + 16)[0]
+        hit_datatype = struct.unpack_from("<I", payload, hit_row_offset + 20)[0]
+        hit_instance_hash = struct.unpack_from("<Q", payload, hit_row_offset + 32)[0]
         assert hit_kind == 3
         assert hit_element_index != 0xFFFFFFFF
+        assert hit_instance_hash != 0
 
-        pipe.write(frame(INSPECT_REQUEST, 26, object_payload(3, 0xFFFFFFFF, 0xFFFFFFFF, hit_element_index)))
+        pipe.write(
+            frame(
+                INSPECT_REQUEST,
+                26,
+                object_payload(
+                    3,
+                    0xFFFFFFFF,
+                    0xFFFFFFFF,
+                    hit_element_index,
+                    hit_layer_index,
+                    hit_datatype,
+                    hit_instance_hash,
+                ),
+            )
+        )
         pipe.flush()
         message_type, request_id, flags, payload = read_frame(pipe)
         assert message_type == INSPECT_RESPONSE
         assert request_id == 26
         assert flags == 0
         assert payload[:4] == b"PLIN"
+        assert struct.unpack_from("<H", payload, 6)[0] >= 144
         assert struct.unpack_from("<I", payload, 8)[0] == 3
         assert struct.unpack_from("<I", payload, 20)[0] == hit_element_index
+        assert struct.unpack_from("<Q", payload, 32)[0] == hit_instance_hash
+        assert struct.unpack_from("<I", payload, 116)[0] == 1
+        assert struct.unpack_from("<I", payload, 120)[0] == 0
 
-        pipe.write(frame(SELECTION_GEOMETRY_REQUEST, 27, object_payload(3, 0xFFFFFFFF, 0xFFFFFFFF, hit_element_index)))
+        pipe.write(
+            frame(
+                SELECTION_GEOMETRY_REQUEST,
+                27,
+                object_payload(
+                    3,
+                    0xFFFFFFFF,
+                    0xFFFFFFFF,
+                    hit_element_index,
+                    hit_layer_index,
+                    hit_datatype,
+                    hit_instance_hash,
+                ),
+            )
+        )
         pipe.flush()
         message_type, request_id, flags, payload = read_frame(pipe)
         assert message_type == SELECTION_GEOMETRY_RESPONSE

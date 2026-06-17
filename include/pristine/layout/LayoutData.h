@@ -70,6 +70,8 @@ struct LayoutShape {
     std::uint32_t macro_index = kNoLayoutMacroIndex;
     std::uint32_t layer_index = 0;
     std::uint32_t flags = 0;
+    std::uint32_t datatype = 0;
+    std::uint64_t instance_path_hash = 0;
     LayoutRect rect{};
     LayoutPolygon polygon{};
 };
@@ -247,6 +249,19 @@ struct LayoutGdsCell {
     bool is_top = false;
 };
 
+struct LayoutGdsParseMetrics {
+    std::uint64_t read_micros = 0;
+    std::uint64_t record_micros = 0;
+    std::uint64_t resolve_micros = 0;
+    std::uint64_t bbox_micros = 0;
+    std::uint32_t record_count = 0;
+    std::uint32_t xy_point_count = 0;
+    std::uint32_t string_count = 0;
+    std::uint32_t cell_count = 0;
+    std::uint32_t reference_count = 0;
+    std::uint32_t element_count = 0;
+};
+
 struct LayoutGdsLibrary {
     std::uint16_t version = 0;
     std::string name{};
@@ -258,6 +273,7 @@ struct LayoutGdsLibrary {
     std::vector<LayoutGdsElement> elements{};
     std::vector<LayoutGdsReference> references{};
     std::vector<LayoutDiagnostic> diagnostics{};
+    LayoutGdsParseMetrics parse_metrics{};
 };
 
 struct LayoutGdsOpenMetrics {
@@ -267,6 +283,7 @@ struct LayoutGdsOpenMetrics {
     std::uint64_t open_micros = 0;
     bool flattened_at_open = false;
     bool spatial_index_built_at_open = false;
+    LayoutGdsParseMetrics parse{};
 };
 
 struct LayoutDataSet {
@@ -332,6 +349,7 @@ struct LayoutTileGeometryRequest {
 struct LayoutTileGeometryResult {
     std::vector<LayoutShape> shapes{};
     bool truncated = false;
+    bool cache_hit = false;
     std::uint32_t next_token = 0;
     std::uint64_t index_build_micros = 0;
     std::uint64_t query_micros = 0;
@@ -340,6 +358,9 @@ struct LayoutTileGeometryResult {
     std::uint32_t element_candidate_count = 0;
     std::uint32_t reference_candidate_count = 0;
     std::uint32_t traversed_reference_count = 0;
+    std::uint32_t lod_shape_count = 0;
+    std::uint32_t cache_hit_count = 0;
+    std::uint32_t cache_miss_count = 0;
 };
 
 struct LayoutHitTestRequest {
@@ -368,6 +389,15 @@ struct LayoutHitTestResponse {
     std::uint32_t precise_candidate_count = 0;
 };
 
+enum class LayoutInspectClass : std::uint16_t {
+    Unknown = 0,
+    Shape = 1,
+    Wire = 2,
+    Pad = 3,
+    Label = 4,
+    Cell = 5,
+};
+
 struct LayoutInspectRequest {
     LayoutSpatialObjectId object{};
 };
@@ -377,8 +407,11 @@ struct LayoutInspectResult {
     LayoutRect bounds{};
     std::string name{};
     std::string text{};
+    std::string instance_path{};
+    LayoutInspectClass object_class = LayoutInspectClass::Unknown;
     LayoutGdsElementKind gds_element_kind = LayoutGdsElementKind::Unknown;
     LayoutGdsElementKind gds_reference_kind = LayoutGdsElementKind::Unknown;
+    std::uint32_t source_cell_index = kNoLayoutIndex;
     std::uint32_t layer = 0;
     std::uint32_t datatype = 0;
     std::uint32_t texttype = 0;

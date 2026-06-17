@@ -8,16 +8,20 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <filesystem>
 #include <limits>
+#include <list>
 #include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
 #include <set>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace pristine::layout {
 namespace {
@@ -29,32 +33,93 @@ std::uint64_t elapsedMicros(Clock::time_point start) {
         std::chrono::duration_cast<std::chrono::microseconds>(Clock::now() - start).count());
 }
 
+std::optional<std::string> environmentValue(const char* name) {
+#if defined(_WIN32)
+    char* value = nullptr;
+    std::size_t size = 0;
+    if (_dupenv_s(&value, &size, name) != 0 || value == nullptr) {
+        return std::nullopt;
+    }
+    std::string result(value, size == 0 ? 0 : size - 1U);
+    std::free(value);
+    return result;
+#else
+    const char* value = std::getenv(name);
+    if (value == nullptr) {
+        return std::nullopt;
+    }
+    return std::string(value);
+#endif
+}
+
+std::uint64_t layoutCacheBudgetBytes() {
+    constexpr std::uint64_t kDefaultBudget = 256ULL * 1024ULL * 1024ULL;
+    const auto value = environmentValue("PRISTINE_LAYOUT_CACHE_BYTES");
+    if (!value.has_value() || value->empty()) {
+        return kDefaultBudget;
+    }
+    try {
+        const auto parsed = std::stoull(*value);
+        return parsed;
+    }
+    catch (const std::exception&) {
+        return kDefaultBudget;
+    }
+}
+
+void writeLeU32(std::vector<std::uint8_t>& bytes, std::size_t offset, std::uint32_t value) {
+    if (offset + sizeof(std::uint32_t) > bytes.size()) {
+        return;
+    }
+    bytes[offset] = static_cast<std::uint8_t>(value & 0xffU);
+    bytes[offset + 1U] = static_cast<std::uint8_t>((value >> 8U) & 0xffU);
+    bytes[offset + 2U] = static_cast<std::uint8_t>((value >> 16U) & 0xffU);
+    bytes[offset + 3U] = static_cast<std::uint8_t>((value >> 24U) & 0xffU);
+}
+
+void markTilePayloadCacheHit(std::vector<std::uint8_t>& payload) {
+    constexpr std::size_t kPltgCacheHitCountOffset = 76;
+    constexpr std::size_t kPltgCacheMissCountOffset = 80;
+    writeLeU32(payload, kPltgCacheHitCountOffset, 1U);
+    writeLeU32(payload, kPltgCacheMissCountOffset, 0U);
+}
+
+std::string tileRequestKey(const LayoutTileGeometryRequest& request) {
+    std::ostringstream out;
+    out << "root=" << request.root_cell_index << ";bbox=" << request.has_bbox;
+    if (request.has_bbox) {
+        out << "," << request.bbox.x0 << "," << request.bbox.y0 << "," << request.bbox.x1 << ","
+            << request.bbox.y1;
+    }
+    out << ";maxs=" << request.max_shapes << ";maxp=" << request.max_points
+        << ";maxb=" << request.max_bytes << ";lod=" << request.lod
+        << ";cont=" << request.continuation_token << ";layers=";
+    for (const auto layer : request.layer_indices) {
+        out << layer << ",";
+    }
+    out << ";kinds=";
+    for (const auto kind : request.shape_kinds) {
+        out << static_cast<std::uint32_t>(kind) << ",";
+    }
+    out << ";datatypes=";
+    for (const auto datatype : request.datatypes) {
+        out << datatype << ",";
+    }
+    return out.str();
+}
+
 class DataSetLayoutSource final : public LayoutSource {
 public:
     DataSetLayoutSource(LayoutDataSet data, std::string source_kind) :
         data_(std::move(data)),
-        source_kind_(std::move(source_kind)) {}
+        source_kind_(std::move(source_kind)),
+        tile_cache_budget_bytes_(layoutCacheBudgetBytes()) {}
 
     const LayoutDataSet& dataSet() const override { return data_; }
     std::string_view sourceKind() const override { return source_kind_; }
     std::vector<std::uint8_t> encodeTileGeometryResponse(
         const LayoutTileGeometryRequest& request) const override {
-        std::uint64_t index_build_micros = 0;
-        auto tile = spatialIndex(index_build_micros).queryTile(request);
-        tile.index_build_micros = index_build_micros;
-        if (request.max_bytes != 0U) {
-            for (;;) {
-                const auto payload = encodeTileGeometryResponsePayload(data_, request, tile);
-                if (payload.size() <= request.max_bytes || tile.shapes.empty()) {
-                    return payload;
-                }
-                tile.truncated = true;
-                tile.next_token = request.continuation_token +
-                                  static_cast<std::uint32_t>(tile.shapes.size() / 2U);
-                tile.shapes.resize(tile.shapes.size() / 2U);
-            }
-        }
-        return encodeTileGeometryResponsePayload(data_, request, tile);
+        return encodeCachedTileGeometryResponse(request);
     }
     std::vector<std::uint8_t> encodeHitTestResponse(
         const LayoutHitTestRequest& request) const override {
@@ -92,10 +157,146 @@ private:
         return *spatial_index_;
     }
 
+    [[nodiscard]] std::optional<std::vector<std::uint8_t>> lookupTileCache(
+        const std::string& key) const {
+        std::lock_guard lock(tile_cache_mutex_);
+        const auto found = tile_cache_.find(key);
+        if (found == tile_cache_.end()) {
+            return std::nullopt;
+        }
+        tile_cache_lru_.splice(tile_cache_lru_.begin(), tile_cache_lru_, found->second.lru);
+        auto payload = found->second.payload;
+        markTilePayloadCacheHit(payload);
+        return payload;
+    }
+
+    void insertTileCache(const std::string& key, std::vector<std::uint8_t> payload) const {
+        if (tile_cache_budget_bytes_ == 0U || payload.size() > tile_cache_budget_bytes_) {
+            return;
+        }
+        std::lock_guard lock(tile_cache_mutex_);
+        const auto existing = tile_cache_.find(key);
+        if (existing != tile_cache_.end()) {
+            tile_cache_bytes_ -= existing->second.bytes;
+            tile_cache_lru_.erase(existing->second.lru);
+            tile_cache_.erase(existing);
+        }
+        tile_cache_lru_.push_front(key);
+        const auto payload_size = payload.size();
+        tile_cache_bytes_ += payload_size;
+        tile_cache_.emplace(key,
+                            TileCacheEntry{.payload = std::move(payload),
+                                           .bytes = payload_size,
+                                           .lru = tile_cache_lru_.begin()});
+        while (tile_cache_bytes_ > tile_cache_budget_bytes_ && !tile_cache_lru_.empty()) {
+            const auto evict_key = tile_cache_lru_.back();
+            tile_cache_lru_.pop_back();
+            const auto evict = tile_cache_.find(evict_key);
+            if (evict != tile_cache_.end()) {
+                tile_cache_bytes_ -= evict->second.bytes;
+                tile_cache_.erase(evict);
+            }
+        }
+    }
+
+    [[nodiscard]] LayoutTileGeometryRequest resolveContinuation(
+        const LayoutTileGeometryRequest& request,
+        std::uint32_t& client_token) const {
+        auto resolved = request;
+        client_token = request.continuation_token;
+        if (request.continuation_token == 0U) {
+            return resolved;
+        }
+        auto key_request = request;
+        key_request.continuation_token = 0;
+        const auto continuation_key = tileRequestKey(key_request);
+        std::lock_guard lock(tile_cache_mutex_);
+        const auto found = continuations_.find(request.continuation_token);
+        if (found == continuations_.end() || found->second.key != continuation_key) {
+            throw std::runtime_error("Layout tile continuation token is invalid or expired");
+        }
+        resolved.continuation_token = found->second.skip;
+        return resolved;
+    }
+
+    void updateContinuationToken(const LayoutTileGeometryRequest& original_request,
+                                 LayoutTileGeometryResult& tile,
+                                 std::uint32_t client_token) const {
+        auto key_request = original_request;
+        key_request.continuation_token = 0;
+        const auto continuation_key = tileRequestKey(key_request);
+        std::lock_guard lock(tile_cache_mutex_);
+        if (!tile.truncated || tile.next_token == 0U) {
+            tile.next_token = 0;
+            return;
+        }
+        auto token = client_token;
+        if (token == 0U) {
+            do {
+                token = next_continuation_token_++;
+                if (next_continuation_token_ == 0U) {
+                    next_continuation_token_ = 1U;
+                }
+            } while (continuations_.find(token) != continuations_.end());
+        }
+        continuations_[token] = ContinuationState{.key = continuation_key, .skip = tile.next_token};
+        tile.next_token = token;
+    }
+
+    [[nodiscard]] std::vector<std::uint8_t> encodeCachedTileGeometryResponse(
+        const LayoutTileGeometryRequest& request) const {
+        std::uint32_t client_token = 0;
+        auto spatial_request = resolveContinuation(request, client_token);
+        const auto cache_key = tileRequestKey(spatial_request);
+        if (auto cached = lookupTileCache(cache_key); cached.has_value()) {
+            return *cached;
+        }
+
+        std::uint64_t index_build_micros = 0;
+        auto tile = spatialIndex(index_build_micros).queryTile(spatial_request);
+        tile.index_build_micros = index_build_micros;
+        tile.cache_miss_count = 1;
+        if (request.max_bytes != 0U) {
+            for (;;) {
+                auto payload = encodeTileGeometryResponsePayload(data_, request, tile);
+                if (payload.size() <= request.max_bytes || tile.shapes.size() <= 1U) {
+                    updateContinuationToken(request, tile, client_token);
+                    payload = encodeTileGeometryResponsePayload(data_, request, tile);
+                    insertTileCache(cache_key, payload);
+                    return payload;
+                }
+                tile.truncated = true;
+                tile.next_token = spatial_request.continuation_token +
+                                  static_cast<std::uint32_t>(tile.shapes.size() / 2U);
+                tile.shapes.resize(tile.shapes.size() / 2U);
+            }
+        }
+        updateContinuationToken(request, tile, client_token);
+        auto payload = encodeTileGeometryResponsePayload(data_, request, tile);
+        insertTileCache(cache_key, payload);
+        return payload;
+    }
+
     LayoutDataSet data_;
     std::string source_kind_;
     mutable std::mutex spatial_mutex_;
     mutable std::unique_ptr<LayoutSpatialIndex> spatial_index_;
+    struct TileCacheEntry {
+        std::vector<std::uint8_t> payload{};
+        std::size_t bytes = 0;
+        std::list<std::string>::iterator lru{};
+    };
+    struct ContinuationState {
+        std::string key{};
+        std::uint32_t skip = 0;
+    };
+    std::uint64_t tile_cache_budget_bytes_ = 0;
+    mutable std::mutex tile_cache_mutex_;
+    mutable std::uint64_t tile_cache_bytes_ = 0;
+    mutable std::list<std::string> tile_cache_lru_;
+    mutable std::map<std::string, TileCacheEntry> tile_cache_;
+    mutable std::map<std::uint32_t, ContinuationState> continuations_;
+    mutable std::uint32_t next_continuation_token_ = 1;
 };
 
 std::string gdsLayerName(std::uint32_t layer, std::uint32_t datatype) {
@@ -590,6 +791,7 @@ std::shared_ptr<LayoutSource> openGdsLayoutSource(const std::filesystem::path& g
     const auto parse_start = Clock::now();
     auto result = parseGdsFile(gds_path);
     metrics.parse_micros = elapsedMicros(parse_start);
+    metrics.parse = result.value.parse_metrics;
     LayoutDataSet data;
     data.id = "gds-layout";
     data.title = defaultGdsTitle(gds_path, std::move(title));

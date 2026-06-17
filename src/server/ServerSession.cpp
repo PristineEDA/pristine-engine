@@ -824,7 +824,18 @@ jsonrpc::Json toLayoutSessionJson(const layout::LayoutSessionInfo& info) {
             {"boundsMicros", info.gds_open_metrics.bounds_micros},
             {"openMicros", info.gds_open_metrics.open_micros},
             {"flattenedAtOpen", info.gds_open_metrics.flattened_at_open},
-            {"spatialIndexBuiltAtOpen", info.gds_open_metrics.spatial_index_built_at_open}};
+            {"spatialIndexBuiltAtOpen", info.gds_open_metrics.spatial_index_built_at_open},
+            {"parseMetrics",
+             jsonrpc::Json{{"readMicros", info.gds_open_metrics.parse.read_micros},
+                           {"recordMicros", info.gds_open_metrics.parse.record_micros},
+                           {"resolveMicros", info.gds_open_metrics.parse.resolve_micros},
+                           {"bboxMicros", info.gds_open_metrics.parse.bbox_micros},
+                           {"recordCount", info.gds_open_metrics.parse.record_count},
+                           {"xyPointCount", info.gds_open_metrics.parse.xy_point_count},
+                           {"stringCount", info.gds_open_metrics.parse.string_count},
+                           {"cellCount", info.gds_open_metrics.parse.cell_count},
+                           {"referenceCount", info.gds_open_metrics.parse.reference_count},
+                           {"elementCount", info.gds_open_metrics.parse.element_count}}}};
     }
     return result;
 }
