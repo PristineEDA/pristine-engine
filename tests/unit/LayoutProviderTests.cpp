@@ -252,6 +252,34 @@ std::uint32_t tileCacheMissCount(const std::vector<std::uint8_t>& payload) {
     return readU32(payload.data(), payload.size(), 80);
 }
 
+std::uint64_t tileGridBuildMicros(const std::vector<std::uint8_t>& payload) {
+    if (readU16(payload.data(), payload.size(), 6) < 108) {
+        return 0;
+    }
+    return readU64(payload.data(), payload.size(), 84);
+}
+
+std::uint32_t tileGridHitCount(const std::vector<std::uint8_t>& payload) {
+    if (readU16(payload.data(), payload.size(), 6) < 108) {
+        return 0;
+    }
+    return readU32(payload.data(), payload.size(), 92);
+}
+
+std::uint32_t tileGridMissCount(const std::vector<std::uint8_t>& payload) {
+    if (readU16(payload.data(), payload.size(), 6) < 108) {
+        return 0;
+    }
+    return readU32(payload.data(), payload.size(), 96);
+}
+
+std::uint32_t tileGridCandidateCount(const std::vector<std::uint8_t>& payload) {
+    if (readU16(payload.data(), payload.size(), 6) < 108) {
+        return 0;
+    }
+    return readU32(payload.data(), payload.size(), 100);
+}
+
 std::uint32_t searchResultCount(const std::vector<std::uint8_t>& payload) {
     return readU32(payload.data(), payload.size(), 8);
 }
@@ -412,6 +440,31 @@ std::vector<std::uint8_t> tinyGds() {
     return bytes;
 }
 
+std::vector<std::uint8_t> flatGds(std::uint32_t element_count) {
+    std::vector<std::uint8_t> bytes;
+    appendGdsRecord(bytes, 0x00, 0x02, gdsInt2({600}));
+    appendGdsRecord(bytes, 0x01, 0x02, gdsInt2({0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}));
+    appendGdsRecord(bytes, 0x02, 0x06, gdsString("FLAT"));
+    appendGdsRecord(bytes, 0x03, 0x05, gdsReal8({1.0e-6, 1.0e-9}));
+    appendGdsRecord(bytes, 0x05, 0x02, gdsInt2({0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}));
+    appendGdsRecord(bytes, 0x06, 0x06, gdsString("TOP"));
+    for (std::uint32_t index = 0; index < element_count; ++index) {
+        const auto x = static_cast<std::int32_t>((index % 128U) * 20U);
+        const auto y = static_cast<std::int32_t>((index / 128U) * 20U);
+        appendGdsRecord(bytes, 0x08, 0x00);
+        appendGdsRecord(bytes, 0x0d, 0x02, gdsInt2({static_cast<std::uint16_t>(index % 4U)}));
+        appendGdsRecord(bytes, 0x0e, 0x02, gdsInt2({0}));
+        appendGdsRecord(bytes,
+                        0x10,
+                        0x03,
+                        gdsInt4({x, y, x + 10, y, x + 10, y + 10, x, y + 10, x, y}));
+        appendGdsRecord(bytes, 0x11, 0x00);
+    }
+    appendGdsRecord(bytes, 0x07, 0x00);
+    appendGdsRecord(bytes, 0x04, 0x00);
+    return bytes;
+}
+
 std::vector<std::uint8_t> missingTargetGds() {
     std::vector<std::uint8_t> bytes;
     appendGdsRecord(bytes, 0x00, 0x02, gdsInt2({600}));
@@ -499,6 +552,8 @@ TEST_CASE("GDS parser captures hierarchy elements references and source v3 catal
     CHECK(parsed.value.parse_metrics.reference_count == 2);
     CHECK(parsed.value.parse_metrics.element_count == 5);
     CHECK(parsed.value.parse_metrics.element_finalize_micros > 0);
+    CHECK(parsed.value.text_element_indices.size() == 1);
+    CHECK(parsed.value.layer_samples.size() == 3);
     REQUIRE(parsed.value.references.size() == 2);
     CHECK(parsed.value.references[0].target_cell_index == 0);
     CHECK(parsed.value.references[1].kind == LayoutGdsElementKind::Aref);
@@ -898,6 +953,45 @@ TEST_CASE("GDS spatial index serves tile hit inspect and selection payloads",
     unsupported.push_back(0);
     CHECK_THROWS_WITH(decodeTileGeometryRequestPayload(unsupported),
                       Catch::Matchers::ContainsSubstring("trailing bytes"));
+
+    std::error_code error;
+    std::filesystem::remove(gds_path, error);
+}
+
+TEST_CASE("GDS large flat tile requests use grid index before streaming",
+          "[layout][gds][spatial][grid]") {
+    const auto gds_path = std::filesystem::temp_directory_path() / "pristine-layout-flat-grid.gds";
+    {
+        std::ofstream output(gds_path, std::ios::binary);
+        const auto bytes = flatGds(5000);
+        output.write(reinterpret_cast<const char*>(bytes.data()),
+                     static_cast<std::streamsize>(bytes.size()));
+    }
+
+    auto source = openGdsLayoutSource(gds_path, "file:///flat-grid.gds", "flat-grid-gds");
+    const auto& data = source->dataSet();
+    REQUIRE(data.gds.has_value());
+    CHECK(data.gds->layer_samples.size() == 4);
+    const auto tile_request = decodeTileGeometryRequestPayload(tileGeometryRequest(
+        data.gds->top_cell_index,
+        LayoutRect{.x0 = 0, .y0 = 0, .x1 = 400, .y1 = 400},
+        128,
+        0,
+        0,
+        0,
+        1));
+    auto tile = source->encodeTileGeometryResponse(tile_request);
+    CHECK(std::string(reinterpret_cast<const char*>(tile.data()), 4) == "PLTG");
+    CHECK(readU16(tile.data(), tile.size(), 6) >= 108);
+    CHECK(tileShapeCount(tile) > 0);
+    CHECK(tileGridMissCount(tile) == 1);
+    CHECK(tileGridHitCount(tile) == 0);
+    CHECK(tileGridCandidateCount(tile) > 0);
+    CHECK(tileGridBuildMicros(tile) > 0);
+
+    const auto cached_tile = source->encodeTileGeometryResponse(tile_request);
+    CHECK(tileCacheHitCount(cached_tile) == 1);
+    CHECK(tileCacheMissCount(cached_tile) == 0);
 
     std::error_code error;
     std::filesystem::remove(gds_path, error);

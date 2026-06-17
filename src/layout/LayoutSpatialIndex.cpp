@@ -32,6 +32,8 @@ using BoostBox = bg::model::box<BoostPoint>;
 
 constexpr std::uint64_t kFnvOffset = 1469598103934665603ULL;
 constexpr std::uint64_t kFnvPrime = 1099511628211ULL;
+constexpr std::size_t kTileGridElementThreshold = 4096U;
+constexpr std::uint32_t kTileGridMaxAxisBins = 256U;
 
 using Clock = std::chrono::steady_clock;
 
@@ -66,11 +68,48 @@ struct SpatialEntry {
 using SpatialValue = std::pair<BoostBox, SpatialEntry>;
 using SpatialTree = bgi::rtree<SpatialValue, bgi::rstar<16>>;
 
+struct GdsTileGridEntry {
+    std::uint32_t element_index = kNoLayoutIndex;
+    LayoutRect bounds{};
+    LayoutShapeKind shape_kind = LayoutShapeKind::Polygon;
+    std::uint32_t layer_index = kNoLayoutIndex;
+    std::uint32_t datatype = 0;
+};
+
+struct GdsTileGridIndex {
+    LayoutRect bounds{};
+    std::int64_t bin_width = 1;
+    std::int64_t bin_height = 1;
+    std::uint32_t columns = 1;
+    std::uint32_t rows = 1;
+    std::vector<GdsTileGridEntry> entries{};
+    std::vector<std::vector<std::uint32_t>> bins{};
+    std::uint64_t build_micros = 0;
+};
+
+struct GdsReferenceGridEntry {
+    std::uint32_t reference_index = kNoLayoutIndex;
+    LayoutRect bounds{};
+};
+
+struct GdsReferenceGridIndex {
+    LayoutRect bounds{};
+    std::int64_t bin_width = 1;
+    std::int64_t bin_height = 1;
+    std::uint32_t columns = 1;
+    std::uint32_t rows = 1;
+    std::vector<GdsReferenceGridEntry> entries{};
+    std::vector<std::vector<std::uint32_t>> bins{};
+    std::uint64_t build_micros = 0;
+};
+
 struct CellSpatialIndex {
     SpatialTree elements;
     SpatialTree references;
     bool elements_built = false;
     bool references_built = false;
+    mutable std::unique_ptr<GdsTileGridIndex> tile_grid;
+    mutable std::unique_ptr<GdsReferenceGridIndex> reference_grid;
 };
 
 struct InstanceRecord {
@@ -448,6 +487,15 @@ void incrementCounter(std::uint32_t& counter, std::size_t amount = 1) {
 std::uint32_t saturatingU32(std::size_t value) {
     return static_cast<std::uint32_t>(
         std::min<std::size_t>(value, std::numeric_limits<std::uint32_t>::max()));
+}
+
+std::uint32_t ceilSqrtU32(std::size_t value) {
+    if (value <= 1U) {
+        return 1U;
+    }
+    auto root = static_cast<std::uint32_t>(
+        std::ceil(std::sqrt(static_cast<double>(value))));
+    return std::max<std::uint32_t>(1U, root);
 }
 
 bool pointOnSegment(const LayoutPoint& point,
@@ -1143,6 +1191,350 @@ private:
         index.references_built = true;
     }
 
+    [[nodiscard]] GdsTileGridIndex& ensureTileGridBuilt(std::uint32_t cell_index,
+                                                        LayoutTileGeometryResult& result) const {
+        auto& index = cells_[cell_index];
+        if (index.tile_grid != nullptr) {
+            incrementCounter(result.grid_hit_count);
+            return *index.tile_grid;
+        }
+
+        incrementCounter(result.grid_miss_count);
+        const auto start = Clock::now();
+        const auto& gds = requireGds();
+        const auto& cell = gds.cells[cell_index];
+        auto grid = std::make_unique<GdsTileGridIndex>();
+        grid->bounds = normalize(cell.bounds.value_or(LayoutRect{}));
+        const auto width = std::max<std::int64_t>(1, grid->bounds.x1 - grid->bounds.x0 + 1);
+        const auto height = std::max<std::int64_t>(1, grid->bounds.y1 - grid->bounds.y0 + 1);
+        const auto target_axis = std::clamp<std::uint32_t>(
+            ceilSqrtU32(cell.element_indices.size() / 64U + 1U), 16U, kTileGridMaxAxisBins);
+        grid->columns = target_axis;
+        grid->rows = target_axis;
+        grid->bin_width =
+            std::max<std::int64_t>(1, (width + static_cast<std::int64_t>(grid->columns) - 1) /
+                                        static_cast<std::int64_t>(grid->columns));
+        grid->bin_height =
+            std::max<std::int64_t>(1, (height + static_cast<std::int64_t>(grid->rows) - 1) /
+                                        static_cast<std::int64_t>(grid->rows));
+        grid->bins.resize(static_cast<std::size_t>(grid->columns) * grid->rows);
+        grid->entries.reserve(cell.element_indices.size());
+
+        const auto binRange = [&](const LayoutRect& bounds) {
+            const auto normalized = normalize(bounds);
+            auto first_column = normalized.x0 <= grid->bounds.x0
+                ? 0U
+                : static_cast<std::uint32_t>(
+                      std::min<std::int64_t>((normalized.x0 - grid->bounds.x0) / grid->bin_width,
+                                             static_cast<std::int64_t>(grid->columns - 1U)));
+            auto last_column = normalized.x1 <= grid->bounds.x0
+                ? 0U
+                : static_cast<std::uint32_t>(
+                      std::min<std::int64_t>((normalized.x1 - grid->bounds.x0) / grid->bin_width,
+                                             static_cast<std::int64_t>(grid->columns - 1U)));
+            auto first_row = normalized.y0 <= grid->bounds.y0
+                ? 0U
+                : static_cast<std::uint32_t>(
+                      std::min<std::int64_t>((normalized.y0 - grid->bounds.y0) / grid->bin_height,
+                                             static_cast<std::int64_t>(grid->rows - 1U)));
+            auto last_row = normalized.y1 <= grid->bounds.y0
+                ? 0U
+                : static_cast<std::uint32_t>(
+                      std::min<std::int64_t>((normalized.y1 - grid->bounds.y0) / grid->bin_height,
+                                             static_cast<std::int64_t>(grid->rows - 1U)));
+            if (first_column > last_column) {
+                std::swap(first_column, last_column);
+            }
+            if (first_row > last_row) {
+                std::swap(first_row, last_row);
+            }
+            struct Range {
+                std::uint32_t first_column = 0;
+                std::uint32_t last_column = 0;
+                std::uint32_t first_row = 0;
+                std::uint32_t last_row = 0;
+            };
+            return Range{.first_column = first_column,
+                         .last_column = last_column,
+                         .first_row = first_row,
+                         .last_row = last_row};
+        };
+
+        for (const auto element_index : cell.element_indices) {
+            if (element_index >= gds.elements.size()) {
+                continue;
+            }
+            const auto& element = gds.elements[element_index];
+            if (!isDrawableGdsElement(element)) {
+                continue;
+            }
+            const auto local_bounds = elementBounds(element);
+            const auto entry_index = static_cast<std::uint32_t>(grid->entries.size());
+            grid->entries.push_back(GdsTileGridEntry{.element_index = element_index,
+                                                     .bounds = local_bounds,
+                                                     .shape_kind = shapeKindForGdsElement(element),
+                                                     .layer_index = layerIndexFor(element),
+                                                     .datatype = element.datatype});
+            const auto range = binRange(local_bounds);
+            for (auto column = range.first_column; column <= range.last_column; ++column) {
+                for (auto row = range.first_row; row <= range.last_row; ++row) {
+                    grid->bins[static_cast<std::size_t>(row) * grid->columns + column].push_back(entry_index);
+                }
+            }
+        }
+
+        grid->build_micros = elapsedMicros(start);
+        result.grid_build_micros += grid->build_micros;
+        result.grid_bin_count = saturatingU32(grid->bins.size());
+        index.tile_grid = std::move(grid);
+        return *index.tile_grid;
+    }
+
+    template <typename AppendElement>
+    [[nodiscard]] bool queryTileGrid(std::uint32_t cell_index,
+                                     const LayoutRect& local_bbox,
+                                     LayoutTileGeometryResult& result,
+                                     AppendElement append_element) const {
+        auto& grid = ensureTileGridBuilt(cell_index, result);
+        if (grid.entries.empty() || grid.bins.empty()) {
+            return true;
+        }
+        result.grid_bin_count = saturatingU32(grid.bins.size());
+        const auto normalized = normalize(local_bbox);
+        const auto first_column = normalized.x0 <= grid.bounds.x0
+            ? 0U
+            : static_cast<std::uint32_t>(
+                  std::min<std::int64_t>((normalized.x0 - grid.bounds.x0) / grid.bin_width,
+                                         static_cast<std::int64_t>(grid.columns - 1U)));
+        const auto last_column = normalized.x1 <= grid.bounds.x0
+            ? 0U
+            : static_cast<std::uint32_t>(
+                  std::min<std::int64_t>((normalized.x1 - grid.bounds.x0) / grid.bin_width,
+                                         static_cast<std::int64_t>(grid.columns - 1U)));
+        const auto first_row = normalized.y0 <= grid.bounds.y0
+            ? 0U
+            : static_cast<std::uint32_t>(
+                  std::min<std::int64_t>((normalized.y0 - grid.bounds.y0) / grid.bin_height,
+                                         static_cast<std::int64_t>(grid.rows - 1U)));
+        const auto last_row = normalized.y1 <= grid.bounds.y0
+            ? 0U
+            : static_cast<std::uint32_t>(
+                  std::min<std::int64_t>((normalized.y1 - grid.bounds.y0) / grid.bin_height,
+                                         static_cast<std::int64_t>(grid.rows - 1U)));
+        const auto column0 = std::min(first_column, last_column);
+        const auto column1 = std::max(first_column, last_column);
+        const auto row0 = std::min(first_row, last_row);
+        const auto row1 = std::max(first_row, last_row);
+
+        std::vector<std::uint32_t> candidates;
+        for (auto column = column0; column <= column1; ++column) {
+            for (auto row = row0; row <= row1; ++row) {
+                const auto& bin = grid.bins[static_cast<std::size_t>(row) * grid.columns + column];
+                candidates.insert(candidates.end(), bin.begin(), bin.end());
+            }
+        }
+        std::sort(candidates.begin(), candidates.end());
+        candidates.erase(std::unique(candidates.begin(), candidates.end()), candidates.end());
+        incrementCounter(result.grid_candidate_count, candidates.size());
+        incrementCounter(result.element_candidate_count, candidates.size());
+        for (const auto entry_index : candidates) {
+            if (entry_index >= grid.entries.size()) {
+                continue;
+            }
+            const auto& entry = grid.entries[entry_index];
+            if (!intersects(entry.bounds, local_bbox)) {
+                continue;
+            }
+            if (!append_element(entry.element_index,
+                                entry.bounds,
+                                entry.layer_index,
+                                entry.shape_kind,
+                                entry.datatype)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    [[nodiscard]] GdsReferenceGridIndex& ensureReferenceGridBuilt(std::uint32_t cell_index,
+                                                                  LayoutTileGeometryResult& result) const {
+        auto& index = cells_[cell_index];
+        if (index.reference_grid != nullptr) {
+            incrementCounter(result.grid_hit_count);
+            return *index.reference_grid;
+        }
+
+        incrementCounter(result.grid_miss_count);
+        const auto start = Clock::now();
+        const auto& gds = requireGds();
+        const auto& cell = gds.cells[cell_index];
+        auto grid = std::make_unique<GdsReferenceGridIndex>();
+        grid->bounds = normalize(cell.bounds.value_or(LayoutRect{}));
+        const auto width = std::max<std::int64_t>(1, grid->bounds.x1 - grid->bounds.x0 + 1);
+        const auto height = std::max<std::int64_t>(1, grid->bounds.y1 - grid->bounds.y0 + 1);
+        const auto target_axis = std::clamp<std::uint32_t>(
+            ceilSqrtU32(cell.reference_indices.size() / 64U + 1U), 16U, kTileGridMaxAxisBins);
+        grid->columns = target_axis;
+        grid->rows = target_axis;
+        grid->bin_width =
+            std::max<std::int64_t>(1, (width + static_cast<std::int64_t>(grid->columns) - 1) /
+                                        static_cast<std::int64_t>(grid->columns));
+        grid->bin_height =
+            std::max<std::int64_t>(1, (height + static_cast<std::int64_t>(grid->rows) - 1) /
+                                        static_cast<std::int64_t>(grid->rows));
+        grid->bins.resize(static_cast<std::size_t>(grid->columns) * grid->rows);
+        grid->entries.reserve(cell.reference_indices.size());
+
+        const auto binRange = [&](const LayoutRect& bounds) {
+            const auto normalized = normalize(bounds);
+            auto first_column = normalized.x0 <= grid->bounds.x0
+                ? 0U
+                : static_cast<std::uint32_t>(
+                      std::min<std::int64_t>((normalized.x0 - grid->bounds.x0) / grid->bin_width,
+                                             static_cast<std::int64_t>(grid->columns - 1U)));
+            auto last_column = normalized.x1 <= grid->bounds.x0
+                ? 0U
+                : static_cast<std::uint32_t>(
+                      std::min<std::int64_t>((normalized.x1 - grid->bounds.x0) / grid->bin_width,
+                                             static_cast<std::int64_t>(grid->columns - 1U)));
+            auto first_row = normalized.y0 <= grid->bounds.y0
+                ? 0U
+                : static_cast<std::uint32_t>(
+                      std::min<std::int64_t>((normalized.y0 - grid->bounds.y0) / grid->bin_height,
+                                             static_cast<std::int64_t>(grid->rows - 1U)));
+            auto last_row = normalized.y1 <= grid->bounds.y0
+                ? 0U
+                : static_cast<std::uint32_t>(
+                      std::min<std::int64_t>((normalized.y1 - grid->bounds.y0) / grid->bin_height,
+                                             static_cast<std::int64_t>(grid->rows - 1U)));
+            if (first_column > last_column) {
+                std::swap(first_column, last_column);
+            }
+            if (first_row > last_row) {
+                std::swap(first_row, last_row);
+            }
+            struct Range {
+                std::uint32_t first_column = 0;
+                std::uint32_t last_column = 0;
+                std::uint32_t first_row = 0;
+                std::uint32_t last_row = 0;
+            };
+            return Range{.first_column = first_column,
+                         .last_column = last_column,
+                         .first_row = first_row,
+                         .last_row = last_row};
+        };
+
+        for (const auto reference_index : cell.reference_indices) {
+            if (reference_index >= gds.references.size()) {
+                continue;
+            }
+            const auto& reference = gds.references[reference_index];
+            if (reference.target_cell_index >= gds.cells.size()) {
+                continue;
+            }
+            const auto& target = gds.cells[reference.target_cell_index];
+            if (!target.bounds.has_value()) {
+                continue;
+            }
+            std::optional<LayoutRect> bounds;
+            const auto columns = std::max<std::uint32_t>(reference.columns, 1U);
+            const auto rows = std::max<std::uint32_t>(reference.rows, 1U);
+            for (const auto column : std::array<std::uint32_t, 2>{0U, columns - 1U}) {
+                for (const auto row : std::array<std::uint32_t, 2>{0U, rows - 1U}) {
+                    const auto transformed =
+                        transformBounds(referenceTransform(reference, column, row), *target.bounds);
+                    bounds = bounds.has_value() ? mergeBounds(*bounds, transformed) : transformed;
+                }
+            }
+            if (!bounds.has_value()) {
+                continue;
+            }
+            const auto entry_index = static_cast<std::uint32_t>(grid->entries.size());
+            grid->entries.push_back(GdsReferenceGridEntry{.reference_index = reference_index,
+                                                          .bounds = *bounds});
+            const auto range = binRange(*bounds);
+            for (auto column = range.first_column; column <= range.last_column; ++column) {
+                for (auto row = range.first_row; row <= range.last_row; ++row) {
+                    grid->bins[static_cast<std::size_t>(row) * grid->columns + column].push_back(entry_index);
+                }
+            }
+        }
+
+        grid->build_micros = elapsedMicros(start);
+        result.grid_build_micros += grid->build_micros;
+        result.grid_bin_count = saturatingU32(grid->bins.size());
+        index.reference_grid = std::move(grid);
+        return *index.reference_grid;
+    }
+
+    [[nodiscard]] std::vector<SpatialEntry> queryReferenceGrid(std::uint32_t cell_index,
+                                                               const LayoutRect& local_bbox,
+                                                               LayoutTileGeometryResult& result) const {
+        auto& grid = ensureReferenceGridBuilt(cell_index, result);
+        result.grid_bin_count = std::max(result.grid_bin_count, saturatingU32(grid.bins.size()));
+        if (grid.entries.empty() || grid.bins.empty()) {
+            return {};
+        }
+        const auto normalized = normalize(local_bbox);
+        const auto first_column = normalized.x0 <= grid.bounds.x0
+            ? 0U
+            : static_cast<std::uint32_t>(
+                  std::min<std::int64_t>((normalized.x0 - grid.bounds.x0) / grid.bin_width,
+                                         static_cast<std::int64_t>(grid.columns - 1U)));
+        const auto last_column = normalized.x1 <= grid.bounds.x0
+            ? 0U
+            : static_cast<std::uint32_t>(
+                  std::min<std::int64_t>((normalized.x1 - grid.bounds.x0) / grid.bin_width,
+                                         static_cast<std::int64_t>(grid.columns - 1U)));
+        const auto first_row = normalized.y0 <= grid.bounds.y0
+            ? 0U
+            : static_cast<std::uint32_t>(
+                  std::min<std::int64_t>((normalized.y0 - grid.bounds.y0) / grid.bin_height,
+                                         static_cast<std::int64_t>(grid.rows - 1U)));
+        const auto last_row = normalized.y1 <= grid.bounds.y0
+            ? 0U
+            : static_cast<std::uint32_t>(
+                  std::min<std::int64_t>((normalized.y1 - grid.bounds.y0) / grid.bin_height,
+                                         static_cast<std::int64_t>(grid.rows - 1U)));
+        const auto column0 = std::min(first_column, last_column);
+        const auto column1 = std::max(first_column, last_column);
+        const auto row0 = std::min(first_row, last_row);
+        const auto row1 = std::max(first_row, last_row);
+
+        std::vector<std::uint32_t> candidates;
+        for (auto column = column0; column <= column1; ++column) {
+            for (auto row = row0; row <= row1; ++row) {
+                const auto& bin = grid.bins[static_cast<std::size_t>(row) * grid.columns + column];
+                candidates.insert(candidates.end(), bin.begin(), bin.end());
+            }
+        }
+        std::sort(candidates.begin(), candidates.end());
+        candidates.erase(std::unique(candidates.begin(), candidates.end()), candidates.end());
+        incrementCounter(result.grid_candidate_count, candidates.size());
+        std::vector<SpatialEntry> entries;
+        entries.reserve(candidates.size());
+        for (const auto entry_index : candidates) {
+            if (entry_index >= grid.entries.size()) {
+                continue;
+            }
+            const auto& entry = grid.entries[entry_index];
+            if (!intersects(entry.bounds, local_bbox)) {
+                continue;
+            }
+            entries.push_back(SpatialEntry{.object = LayoutSpatialObjectId{
+                                               .kind = LayoutSpatialObjectKind::Reference,
+                                               .cell_index = kNoLayoutIndex,
+                                               .reference_index = entry.reference_index,
+                                               .element_index = kNoLayoutIndex,
+                                               .layer_index = kNoLayoutIndex,
+                                               .datatype = 0,
+                                               .instance_path_hash = 0},
+                                           .bounds = entry.bounds});
+        }
+        return entries;
+    }
+
     [[nodiscard]] LayoutShape makeElementShape(const LayoutGdsElement& element,
                                                const GdsAffineTransform& transform,
                                                std::uint32_t element_index,
@@ -1283,7 +1675,6 @@ private:
         }
 
         if (request.lod < 2U) {
-            constexpr std::size_t kStreamingElementThreshold = 4096U;
             const auto& cell = gds.cells[cell_index];
             const auto appendElement = [&](std::uint32_t element_index,
                                            LayoutRect local_element_bounds,
@@ -1321,29 +1712,10 @@ private:
             };
 
             if (budget.bounded() && request.has_bbox &&
-                cell.element_indices.size() >= kStreamingElementThreshold) {
-                for (const auto element_index : cell.element_indices) {
-                    if (element_index >= gds.elements.size()) {
-                        continue;
-                    }
-                    const auto& element = gds.elements[element_index];
-                    if (!isDrawableGdsElement(element)) {
-                        continue;
-                    }
-                    const auto local_element_bounds = elementBounds(element);
-                    if (!intersects(local_element_bounds, local_bbox)) {
-                        continue;
-                    }
-                    const auto layer_index = layerIndexFor(element);
-                    incrementCounter(result.element_candidate_count);
-                    if (!appendElement(element_index,
-                                       local_element_bounds,
-                                       layer_index,
-                                       shapeKindForGdsElement(element),
-                                       element.datatype)) {
-                        stack.erase(cell_index);
-                        return;
-                    }
+                cell.element_indices.size() >= kTileGridElementThreshold) {
+                if (!queryTileGrid(cell_index, local_bbox, result, appendElement)) {
+                    stack.erase(cell_index);
+                    return;
                 }
             }
             else {
@@ -1372,19 +1744,31 @@ private:
             }
         }
 
-        ensureReferencesBuilt(cell_index);
-        std::vector<SpatialValue> reference_candidates;
-        cells_[cell_index].references.query(bgi::intersects(query_box),
-                                            std::back_inserter(reference_candidates));
+        std::vector<SpatialEntry> reference_candidates;
+        const auto use_reference_grid =
+            request.has_bbox && gds.cells[cell_index].reference_indices.size() >= kTileGridElementThreshold;
+        if (use_reference_grid) {
+            reference_candidates = queryReferenceGrid(cell_index, local_bbox, result);
+        }
+        else {
+            ensureReferencesBuilt(cell_index);
+            std::vector<SpatialValue> spatial_candidates;
+            cells_[cell_index].references.query(bgi::intersects(query_box),
+                                                std::back_inserter(spatial_candidates));
+            std::sort(spatial_candidates.begin(),
+                      spatial_candidates.end(),
+                      [](const auto& lhs, const auto& rhs) {
+                          return lhs.second.object.reference_index <
+                                 rhs.second.object.reference_index;
+                      });
+            reference_candidates.reserve(spatial_candidates.size());
+            for (const auto& value : spatial_candidates) {
+                reference_candidates.push_back(value.second);
+            }
+        }
         incrementCounter(result.reference_candidate_count, reference_candidates.size());
-        std::sort(reference_candidates.begin(),
-                  reference_candidates.end(),
-                  [](const auto& lhs, const auto& rhs) {
-                      return lhs.second.object.reference_index <
-                             rhs.second.object.reference_index;
-                  });
-        for (const auto& value : reference_candidates) {
-            const auto reference_index = value.second.object.reference_index;
+        for (const auto& entry : reference_candidates) {
+            const auto reference_index = entry.object.reference_index;
             if (reference_index >= gds.references.size()) {
                 continue;
             }

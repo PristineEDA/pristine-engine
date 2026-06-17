@@ -64,6 +64,10 @@ def metric_summary(values: list[int]) -> dict[str, int]:
 def tile_group(name: str) -> str:
     if name.startswith("full_lod2") or name.startswith("overview_"):
         return "overview"
+    if name.startswith("wide_lod1_cold"):
+        return "cold_wide_zoom"
+    if name.startswith("wide_lod1_warm"):
+        return "warm_wide_zoom"
     if name.startswith("center_") or name.startswith("quadrant_"):
         return "zoom"
     if name.startswith("pan_"):
@@ -88,6 +92,11 @@ def tile_group_summary(entries: list[dict]) -> dict:
         "point_count": metric_summary([entry["point_count"] for entry in entries]),
         "cache_hits": sum(entry["cache_hits"] for entry in entries),
         "cache_misses": sum(entry["cache_misses"] for entry in entries),
+        "grid_build_micros": metric_summary([entry.get("grid_build_micros", 0) for entry in entries]),
+        "grid_candidates": metric_summary([entry.get("grid_candidates", 0) for entry in entries]),
+        "grid_hits": sum(entry.get("grid_hits", 0) for entry in entries),
+        "grid_misses": sum(entry.get("grid_misses", 0) for entry in entries),
+        "grid_bins": metric_summary([entry.get("grid_bins", 0) for entry in entries]),
         "truncated": sum(1 for entry in entries if entry["truncated"]),
         "tokens": sum(1 for entry in entries if entry["next_token"]),
     }
@@ -124,6 +133,13 @@ def summarize_before_after(previous: dict, current: dict) -> dict:
         "before": before_full,
         "after": after_full,
         "delta_percent": delta_percent(before_full, after_full),
+    }
+    before_wide = previous_summary.get("tile_groups", {}).get("cold_wide_zoom", {}).get("query_micros", {}).get("max", 0)
+    after_wide = current_summary.get("tile_groups", {}).get("cold_wide_zoom", {}).get("query_micros", {}).get("max", 0)
+    result["wide_lod1_cold_query_micros_max"] = {
+        "before": before_wide,
+        "after": after_wide,
+        "delta_percent": delta_percent(before_wide, after_wide),
     }
     return result
 
@@ -465,6 +481,7 @@ def parse_catalog(payload: bytes) -> dict:
 def parse_tile(payload: bytes, wall_micros: int, flags: int) -> dict:
     if payload[:4] != b"PLTG":
         raise AssertionError("tile payload missing PLTG magic")
+    header_size = struct.unpack_from("<H", payload, 6)[0]
     geometry_offset = struct.unpack_from("<I", payload, 16)[0]
     geometry_size = struct.unpack_from("<I", payload, 20)[0]
     shape_count = struct.unpack_from("<I", payload, 24)[0]
@@ -484,7 +501,7 @@ def parse_tile(payload: bytes, wall_micros: int, flags: int) -> dict:
             y1 = struct.unpack_from("<d", geometry, y1_offset + index * 8)[0]
             if math.isfinite(x0) and math.isfinite(y0) and math.isfinite(x1) and math.isfinite(y1):
                 sample_points.append([(x0 + x1) / 2.0, (y0 + y1) / 2.0])
-    return {
+    result = {
         "wall_micros": wall_micros,
         "frame_flags": flags,
         "truncated": bool(struct.unpack_from("<I", payload, 8)[0] & 1),
@@ -503,8 +520,20 @@ def parse_tile(payload: bytes, wall_micros: int, flags: int) -> dict:
         "lod_shapes": struct.unpack_from("<I", payload, 72)[0],
         "cache_hits": struct.unpack_from("<I", payload, 76)[0],
         "cache_misses": struct.unpack_from("<I", payload, 80)[0],
+        "grid_build_micros": 0,
+        "grid_hits": 0,
+        "grid_misses": 0,
+        "grid_candidates": 0,
+        "grid_bins": 0,
         "sample_points": sample_points,
     }
+    if header_size >= 108:
+        result["grid_build_micros"] = struct.unpack_from("<Q", payload, 84)[0]
+        result["grid_hits"] = struct.unpack_from("<I", payload, 92)[0]
+        result["grid_misses"] = struct.unpack_from("<I", payload, 96)[0]
+        result["grid_candidates"] = struct.unpack_from("<I", payload, 100)[0]
+        result["grid_bins"] = struct.unpack_from("<I", payload, 104)[0]
+    return result
 
 
 def parse_hit(payload: bytes, wall_micros: int) -> dict:
@@ -740,6 +769,9 @@ def run_interaction(server_path: pathlib.Path, gds_path: pathlib.Path) -> dict:
             for dx in (-0.25, 0.25):
                 for dy in (-0.25, 0.25):
                     scenarios.append((f"overview_quadrant_{dx}_{dy}", make_bbox(bounds, 0.35, dx, dy), 2))
+            scenarios.append(("wide_lod1_cold", make_bbox(bounds, 0.20), 1))
+            scenarios.append(("wide_lod1_warm_overlap", make_bbox(bounds, 0.18, 0.03, -0.02), 1))
+            scenarios.append(("wide_lod1_warm_neighbor", make_bbox(bounds, 0.18, -0.03, 0.02), 1))
             for scale, lod in [(0.05, 1), (0.02, 0), (0.01, 0)]:
                 scenarios.append((f"center_s{scale}_lod{lod}", make_bbox(bounds, scale), lod))
             for dx in (-0.25, 0.25):
@@ -996,6 +1028,14 @@ def run_interaction(server_path: pathlib.Path, gds_path: pathlib.Path) -> dict:
             "tile_payload_bytes": metric_summary([entry["payload_bytes"] for entry in metrics["tiles"]]),
             "tile_shape_count": metric_summary([entry["shape_count"] for entry in metrics["tiles"]]),
             "tile_point_count": metric_summary([entry["point_count"] for entry in metrics["tiles"]]),
+            "tile_grid_build_micros": metric_summary(
+                [entry.get("grid_build_micros", 0) for entry in metrics["tiles"]]
+            ),
+            "tile_grid_candidates": metric_summary(
+                [entry.get("grid_candidates", 0) for entry in metrics["tiles"]]
+            ),
+            "tile_grid_hits": sum(entry.get("grid_hits", 0) for entry in metrics["tiles"]),
+            "tile_grid_misses": sum(entry.get("grid_misses", 0) for entry in metrics["tiles"]),
             "tile_groups": {
                 name: tile_group_summary(entries) for name, entries in sorted(tile_groups.items())
             },

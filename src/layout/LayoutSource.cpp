@@ -434,7 +434,7 @@ private:
         const auto& gds = *data_.gds;
         search_index_.clear();
         search_index_.reserve(gds.cells.size() + gds.references.size() + data_.layers.size() +
-                              std::min<std::size_t>(gds.elements.size(), 1'000'000U));
+                              gds.text_element_indices.size() + gds.layer_samples.size());
         auto addEntry = [&](std::string label,
                             LayoutSearchResult result,
                             std::uint32_t kind_bit,
@@ -493,63 +493,62 @@ private:
                      reference.parent_cell_index);
         }
 
-        std::map<std::pair<std::uint32_t, std::uint32_t>, std::uint32_t> layer_indices;
-        std::set<std::uint32_t> reported_layers;
-        for (std::uint32_t element_index = 0; element_index < gds.elements.size(); ++element_index) {
+        for (const auto element_index : gds.text_element_indices) {
+            if (element_index >= gds.elements.size()) {
+                continue;
+            }
             const auto& element = gds.elements[element_index];
+            if (element.kind != LayoutGdsElementKind::Text || !isDrawableGdsElement(element)) {
+                continue;
+            }
+            const auto layer_index = findGdsLayer(data_, element.layer, element.datatype);
+            const auto bounds = elementBounds(element);
+            const auto object_class = classifySearchElement(data_, gds, element, layer_index);
+            LayoutSearchResult result;
+            result.object = LayoutSpatialObjectId{.kind = LayoutSpatialObjectKind::Element,
+                                                  .cell_index = element.cell_index,
+                                                  .reference_index = kNoLayoutIndex,
+                                                  .element_index = element_index,
+                                                  .layer_index = layer_index,
+                                                  .datatype = element.datatype};
+            result.bounds = bounds;
+            result.label = element.text;
+            result.object_class = object_class;
+            result.source_cell_index = element.cell_index;
+            result.rank = 200U;
+            addEntry(element.text, std::move(result), kSearchKindText, element.cell_index);
+        }
+
+        for (const auto& sample : gds.layer_samples) {
+            if (sample.element_index >= gds.elements.size()) {
+                continue;
+            }
+            const auto& element = gds.elements[sample.element_index];
             if (!isDrawableGdsElement(element)) {
                 continue;
             }
-            const auto layer_key = std::make_pair(element.layer, element.datatype);
-            auto found_layer = layer_indices.find(layer_key);
-            if (found_layer == layer_indices.end()) {
-                found_layer = layer_indices
-                                  .emplace(layer_key,
-                                           findGdsLayer(data_, element.layer, element.datatype))
-                                  .first;
+            const auto layer_index = findGdsLayer(data_, sample.layer, sample.datatype);
+            if (layer_index >= data_.layers.size()) {
+                continue;
             }
-            const auto layer_index = found_layer->second;
-
-            if (element.kind == LayoutGdsElementKind::Text) {
-                const auto bounds = elementBounds(element);
-                const auto object_class = classifySearchElement(data_, gds, element, layer_index);
-                LayoutSearchResult result;
-                result.object = LayoutSpatialObjectId{.kind = LayoutSpatialObjectKind::Element,
-                                                      .cell_index = element.cell_index,
-                                                      .reference_index = kNoLayoutIndex,
-                                                      .element_index = element_index,
-                                                      .layer_index = layer_index,
-                                                      .datatype = element.datatype};
-                result.bounds = bounds;
-                result.label = element.text;
-                result.object_class = object_class;
-                result.source_cell_index = element.cell_index;
-                result.rank = 200U;
-                addEntry(element.text, std::move(result), kSearchKindText, element.cell_index);
-            }
-
-            if (layer_index < data_.layers.size() &&
-                reported_layers.find(layer_index) == reported_layers.end()) {
-                const auto bounds = elementBounds(element);
-                const auto object_class = classifySearchElement(data_, gds, element, layer_index);
-                LayoutSearchResult result;
-                result.object = LayoutSpatialObjectId{.kind = LayoutSpatialObjectKind::Element,
-                                                      .cell_index = element.cell_index,
-                                                      .reference_index = kNoLayoutIndex,
-                                                      .element_index = element_index,
-                                                      .layer_index = layer_index,
-                                                      .datatype = element.datatype};
-                result.bounds = bounds;
-                result.label = data_.layers[layer_index].name;
-                result.object_class = object_class;
-                result.source_cell_index = element.cell_index;
-                result.rank = 300U;
-                addEntry(data_.layers[layer_index].name,
-                         std::move(result),
-                         kSearchKindLayer,
-                         element.cell_index);
-                reported_layers.insert(layer_index);
-            }
+            const auto bounds = elementBounds(element);
+            const auto object_class = classifySearchElement(data_, gds, element, layer_index);
+            LayoutSearchResult result;
+            result.object = LayoutSpatialObjectId{.kind = LayoutSpatialObjectKind::Element,
+                                                  .cell_index = element.cell_index,
+                                                  .reference_index = kNoLayoutIndex,
+                                                  .element_index = sample.element_index,
+                                                  .layer_index = layer_index,
+                                                  .datatype = element.datatype};
+            result.bounds = bounds;
+            result.label = data_.layers[layer_index].name;
+            result.object_class = object_class;
+            result.source_cell_index = element.cell_index;
+            result.rank = 300U;
+            addEntry(data_.layers[layer_index].name,
+                     std::move(result),
+                     kSearchKindLayer,
+                     element.cell_index);
         }
 
         search_index_built_ = true;
@@ -746,8 +745,20 @@ bool isDrawableGdsElement(const LayoutGdsElement& element) {
 }
 
 void registerGdsLayers(LayoutDataSet& data, const LayoutGdsLibrary& gds) {
+    if (!gds.layer_samples.empty()) {
+        for (const auto& sample : gds.layer_samples) {
+            findOrAddGdsLayer(data, sample.layer, sample.datatype);
+        }
+        return;
+    }
+
+    std::set<std::pair<std::uint32_t, std::uint32_t>> registered;
     for (const auto& element : gds.elements) {
-        if (isDrawableGdsElement(element)) {
+        if (!isDrawableGdsElement(element)) {
+            continue;
+        }
+        const auto key = std::make_pair(element.layer, element.datatype);
+        if (registered.insert(key).second) {
             findOrAddGdsLayer(data, element.layer, element.datatype);
         }
     }

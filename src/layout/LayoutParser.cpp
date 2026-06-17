@@ -10,6 +10,7 @@
 #include <limits>
 #include <map>
 #include <optional>
+#include <set>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -606,6 +607,9 @@ public:
             std::min<std::size_t>(bytes_.size() / 512U + 16U, 1'000'000U));
         library_.elements.reserve(
             std::min<std::size_t>(bytes_.size() / 64U + 16U, 4'000'000U));
+        library_.text_element_indices.reserve(
+            std::min<std::size_t>(bytes_.size() / 2048U + 16U, 1'000'000U));
+        library_.layer_samples.reserve(4096U);
     }
 
     ParseResult<LayoutGdsLibrary> parse() {
@@ -677,8 +681,8 @@ private:
     void handleRecord(const GdsRecord& record) {
         switch (record.type) {
             case GdsRecordType::Header:
-                if (const auto values = int2Values(record); !values.empty()) {
-                    library_.version = values.front();
+                if (auto version = firstInt2(record); version.has_value()) {
+                    library_.version = static_cast<std::uint16_t>(*version);
                 }
                 return;
             case GdsRecordType::LibName:
@@ -739,10 +743,10 @@ private:
                 parseStrans(record);
                 return;
             case GdsRecordType::Mag:
-                currentReference().transform.magnification = real8Value(record).value_or(1.0);
+                currentReference().transform.magnification = firstReal8(record).value_or(1.0);
                 return;
             case GdsRecordType::Angle:
-                currentReference().transform.angle = real8Value(record).value_or(0.0);
+                currentReference().transform.angle = firstReal8(record).value_or(0.0);
                 return;
             case GdsRecordType::String:
                 currentElement().text = stringValue(record);
@@ -860,19 +864,37 @@ private:
             library_.cells[element.cell_index].element_indices.push_back(element_index);
             expandCellBounds(library_.cells[element.cell_index].bounds, element.bounds);
         }
+        if (isDrawableElement(element)) {
+            const auto key = std::make_pair(element.layer, element.datatype);
+            if (seen_layer_samples_.insert(key).second) {
+                library_.layer_samples.push_back(LayoutGdsLayerSample{.layer = element.layer,
+                                                                      .datatype = element.datatype,
+                                                                      .element_index = element_index});
+            }
+            if (element.kind == LayoutGdsElementKind::Text) {
+                library_.text_element_indices.push_back(element_index);
+            }
+        }
         library_.elements.push_back(std::move(element));
     }
 
     void parseXy(const GdsRecord& record) {
-        const auto values = int4Values(record);
-        if (values.size() % 2U != 0U) {
+        ScopedMicros metric(metrics_.xy_decode_micros);
+        checkType(record, kGdsInt4);
+        if (record.data_size % 4U != 0U) {
+            warning("GDS " + gdsRecordName(record.type) + " has a truncated 4-byte integer", record.offset);
+        }
+        const auto value_count = record.data_size / 4U;
+        if (value_count % 2U != 0U) {
             warning("GDS XY record has an odd coordinate count", record.offset);
         }
         auto& element = currentElement();
         element.points.clear();
-        element.points.reserve(values.size() / 2U);
-        for (std::size_t index = 0; index + 1U < values.size(); index += 2U) {
-            element.points.push_back(LayoutPoint{.x = values[index], .y = values[index + 1U]});
+        const auto point_count = value_count / 2U;
+        element.points.reserve(point_count);
+        for (std::size_t index = 0; index < point_count; ++index) {
+            const auto offset = record.data_offset + index * 8U;
+            element.points.push_back(LayoutPoint{.x = readI32(offset), .y = readI32(offset + 4U)});
             if (metrics_.xy_point_count != std::numeric_limits<std::uint32_t>::max()) {
                 ++metrics_.xy_point_count;
             }
@@ -880,65 +902,49 @@ private:
     }
 
     void parseColRow(const GdsRecord& record) {
-        const auto values = int2Values(record);
-        if (values.size() < 2U) {
-            warning("GDS COLROW record is missing values", record.offset);
-            return;
-        }
-        currentReference().columns = values[0] == 0U ? 1U : values[0];
-        currentReference().rows = values[1] == 0U ? 1U : values[1];
-    }
-
-    void parseStrans(const GdsRecord& record) {
-        checkType(record, kGdsBitArray);
-        const auto values = rawU16Values(record);
-        if (values.empty()) {
-            warning("GDS STRANS record is missing flags", record.offset);
-            return;
-        }
-        currentReference().transform.reflected = (values[0] & 0x8000U) != 0U;
-    }
-
-    std::vector<std::uint16_t> int2Values(const GdsRecord& record) {
+        ScopedMicros metric(metrics_.scalar_decode_micros);
         checkType(record, kGdsInt2);
-        return rawU16Values(record);
-    }
-
-    std::vector<std::uint16_t> rawU16Values(const GdsRecord& record) {
         if (record.data_size % 2U != 0U) {
             warning("GDS " + gdsRecordName(record.type) + " has a truncated 2-byte integer", record.offset);
         }
-        std::vector<std::uint16_t> result;
-        for (std::size_t offset = record.data_offset; offset + 1U < record.data_offset + record.data_size;
-             offset += 2U) {
-            result.push_back(readU16(offset));
+        if (record.data_size < 4U) {
+            warning("GDS COLROW record is missing values", record.offset);
+            return;
         }
-        return result;
+        const auto columns = readU16(record.data_offset);
+        const auto rows = readU16(record.data_offset + 2U);
+        currentReference().columns = columns == 0U ? 1U : columns;
+        currentReference().rows = rows == 0U ? 1U : rows;
+    }
+
+    void parseStrans(const GdsRecord& record) {
+        ScopedMicros metric(metrics_.scalar_decode_micros);
+        checkType(record, kGdsBitArray);
+        if (record.data_size % 2U != 0U) {
+            warning("GDS " + gdsRecordName(record.type) + " has a truncated 2-byte integer", record.offset);
+        }
+        if (record.data_size < 2U) {
+            warning("GDS STRANS record is missing flags", record.offset);
+            return;
+        }
+        currentReference().transform.reflected = (readU16(record.data_offset) & 0x8000U) != 0U;
     }
 
     std::optional<std::uint32_t> firstInt2(const GdsRecord& record) {
-        const auto values = int2Values(record);
-        if (values.empty()) {
+        ScopedMicros metric(metrics_.scalar_decode_micros);
+        checkType(record, kGdsInt2);
+        if (record.data_size % 2U != 0U) {
+            warning("GDS " + gdsRecordName(record.type) + " has a truncated 2-byte integer", record.offset);
+        }
+        if (record.data_size < 2U) {
             warning("GDS " + gdsRecordName(record.type) + " is missing an integer value", record.offset);
             return std::nullopt;
         }
-        return values.front();
-    }
-
-    std::vector<std::int32_t> int4Values(const GdsRecord& record) {
-        checkType(record, kGdsInt4);
-        if (record.data_size % 4U != 0U) {
-            warning("GDS " + gdsRecordName(record.type) + " has a truncated 4-byte integer", record.offset);
-        }
-        std::vector<std::int32_t> result;
-        for (std::size_t offset = record.data_offset; offset + 3U < record.data_offset + record.data_size;
-             offset += 4U) {
-            result.push_back(readI32(offset));
-        }
-        return result;
+        return readU16(record.data_offset);
     }
 
     std::vector<double> real8Values(const GdsRecord& record) {
+        ScopedMicros metric(metrics_.scalar_decode_micros);
         checkType(record, kGdsReal8);
         if (record.data_size % 8U != 0U) {
             warning("GDS " + gdsRecordName(record.type) + " has a truncated 8-byte real", record.offset);
@@ -951,16 +957,21 @@ private:
         return result;
     }
 
-    std::optional<double> real8Value(const GdsRecord& record) {
-        const auto values = real8Values(record);
-        if (values.empty()) {
+    std::optional<double> firstReal8(const GdsRecord& record) {
+        ScopedMicros metric(metrics_.scalar_decode_micros);
+        checkType(record, kGdsReal8);
+        if (record.data_size % 8U != 0U) {
+            warning("GDS " + gdsRecordName(record.type) + " has a truncated 8-byte real", record.offset);
+        }
+        if (record.data_size < 8U) {
             warning("GDS " + gdsRecordName(record.type) + " is missing a real value", record.offset);
             return std::nullopt;
         }
-        return values.front();
+        return readReal8(record.data_offset);
     }
 
     std::string stringValue(const GdsRecord& record) {
+        ScopedMicros metric(metrics_.string_decode_micros);
         checkType(record, kGdsString);
         if (metrics_.string_count != std::numeric_limits<std::uint32_t>::max()) {
             ++metrics_.string_count;
@@ -1090,6 +1101,11 @@ private:
         return bounds;
     }
 
+    static bool isDrawableElement(const LayoutGdsElement& element) {
+        return element.kind != LayoutGdsElementKind::Sref &&
+               element.kind != LayoutGdsElementKind::Aref && !element.points.empty();
+    }
+
     void warning(std::string message, std::size_t offset) {
         addDiagnostic(LayoutDiagnosticSeverity::Warning, std::move(message), offset);
     }
@@ -1139,6 +1155,7 @@ private:
     std::optional<LayoutGdsReference> current_reference_;
     LayoutGdsElement scratch_element_;
     LayoutGdsReference scratch_reference_;
+    std::set<std::pair<std::uint32_t, std::uint32_t>> seen_layer_samples_;
     static constexpr std::size_t kUnsupportedRecordSampleLimit = 4U;
     struct UnsupportedRecordAggregate {
         std::size_t count = 0;

@@ -250,9 +250,18 @@ struct LayoutGdsCell {
     bool is_top = false;
 };
 
+struct LayoutGdsLayerSample {
+    std::uint32_t layer = 0;
+    std::uint32_t datatype = 0;
+    std::uint32_t element_index = kNoLayoutIndex;
+};
+
 struct LayoutGdsParseMetrics {
     std::uint64_t read_micros = 0;
     std::uint64_t record_micros = 0;
+    std::uint64_t xy_decode_micros = 0;
+    std::uint64_t scalar_decode_micros = 0;
+    std::uint64_t string_decode_micros = 0;
     std::uint64_t element_finalize_micros = 0;
     std::uint64_t diagnostic_micros = 0;
     std::uint64_t resolve_micros = 0;
@@ -275,6 +284,8 @@ struct LayoutGdsLibrary {
     std::vector<LayoutGdsCell> cells{};
     std::vector<LayoutGdsElement> elements{};
     std::vector<LayoutGdsReference> references{};
+    std::vector<std::uint32_t> text_element_indices{};
+    std::vector<LayoutGdsLayerSample> layer_samples{};
     std::vector<LayoutDiagnostic> diagnostics{};
     LayoutGdsParseMetrics parse_metrics{};
 };
@@ -381,6 +392,11 @@ struct LayoutTileGeometryResult {
     std::uint32_t lod_shape_count = 0;
     std::uint32_t cache_hit_count = 0;
     std::uint32_t cache_miss_count = 0;
+    std::uint64_t grid_build_micros = 0;
+    std::uint32_t grid_hit_count = 0;
+    std::uint32_t grid_miss_count = 0;
+    std::uint32_t grid_candidate_count = 0;
+    std::uint32_t grid_bin_count = 0;
 };
 
 struct LayoutHitTestRequest {

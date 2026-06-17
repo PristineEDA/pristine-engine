@@ -28,7 +28,7 @@ constexpr std::uint16_t kCatalogHeaderSize = 136;
 constexpr std::uint16_t kCatalogSummaryHeaderSize = 152;
 constexpr std::uint16_t kCatalogPageHeaderSize = 40;
 constexpr std::uint16_t kGeometryHeaderSize = 96;
-constexpr std::uint16_t kTileGeometryHeaderSize = 84;
+constexpr std::uint16_t kTileGeometryHeaderSize = 108;
 constexpr std::uint16_t kHitTestHeaderSize = 64;
 constexpr std::uint16_t kHitTestRowStride = 80;
 constexpr std::uint16_t kInspectHeaderSize = 144;
@@ -1245,6 +1245,11 @@ std::vector<std::uint8_t> encodeTileGeometryResponsePayload(
     writeU32Header(result, offset, tile_result.lod_shape_count);
     writeU32Header(result, offset, tile_result.cache_hit_count);
     writeU32Header(result, offset, tile_result.cache_miss_count);
+    writeU64Header(result, offset, tile_result.grid_build_micros);
+    writeU32Header(result, offset, tile_result.grid_hit_count);
+    writeU32Header(result, offset, tile_result.grid_miss_count);
+    writeU32Header(result, offset, tile_result.grid_candidate_count);
+    writeU32Header(result, offset, tile_result.grid_bin_count);
     return result;
 }
 
