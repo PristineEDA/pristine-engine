@@ -6,11 +6,11 @@
 #include <cmath>
 #include <cstdint>
 #include <fstream>
-#include <iterator>
 #include <limits>
 #include <map>
 #include <optional>
 #include <set>
+#include <span>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -607,6 +607,8 @@ public:
             std::min<std::size_t>(bytes_.size() / 512U + 16U, 1'000'000U));
         library_.elements.reserve(
             std::min<std::size_t>(bytes_.size() / 64U + 16U, 4'000'000U));
+        library_.points.reserve(
+            std::min<std::size_t>(bytes_.size() / 8U + 16U, 16'000'000U));
         library_.text_element_indices.reserve(
             std::min<std::size_t>(bytes_.size() / 2048U + 16U, 1'000'000U));
         library_.layer_samples.reserve(4096U);
@@ -841,15 +843,16 @@ private:
         if (current_reference_.has_value()) {
             auto reference = std::move(*current_reference_);
             current_reference_.reset();
-            if (!element.points.empty()) {
-                reference.origin = element.points.front();
-                if (reference.kind == LayoutGdsElementKind::Aref && element.points.size() >= 3U) {
+            const auto points = elementPoints(element);
+            if (!points.empty()) {
+                reference.origin = points.front();
+                if (reference.kind == LayoutGdsElementKind::Aref && points.size() >= 3U) {
                     reference.column_vector =
-                        LayoutPoint{.x = element.points[1].x - element.points[0].x,
-                                    .y = element.points[1].y - element.points[0].y};
+                        LayoutPoint{.x = points[1].x - points[0].x,
+                                    .y = points[1].y - points[0].y};
                     reference.row_vector =
-                        LayoutPoint{.x = element.points[2].x - element.points[0].x,
-                                    .y = element.points[2].y - element.points[0].y};
+                        LayoutPoint{.x = points[2].x - points[0].x,
+                                    .y = points[2].y - points[0].y};
                 }
             }
             const auto ref_index = static_cast<std::uint32_t>(library_.references.size());
@@ -889,12 +892,28 @@ private:
             warning("GDS XY record has an odd coordinate count", record.offset);
         }
         auto& element = currentElement();
-        element.points.clear();
         const auto point_count = value_count / 2U;
-        element.points.reserve(point_count);
+        element.points.clear();
+        element.first_point = static_cast<std::uint32_t>(
+            std::min<std::size_t>(library_.points.size(), std::numeric_limits<std::uint32_t>::max()));
+        element.point_count = static_cast<std::uint32_t>(
+            std::min<std::size_t>(point_count, std::numeric_limits<std::uint32_t>::max()));
+        if (library_.points.size() + point_count > std::numeric_limits<std::uint32_t>::max()) {
+            warning("GDS point arena exceeds uint32 range", record.offset);
+            element.first_point = 0;
+            element.point_count = 0;
+            return;
+        }
+        const auto needed_capacity = library_.points.size() + point_count;
+        if (needed_capacity > library_.points.capacity()) {
+            const auto doubled = library_.points.capacity() > 0U
+                ? library_.points.capacity() * 2U
+                : needed_capacity;
+            library_.points.reserve(std::max(needed_capacity, doubled));
+        }
         for (std::size_t index = 0; index < point_count; ++index) {
             const auto offset = record.data_offset + index * 8U;
-            element.points.push_back(LayoutPoint{.x = readI32(offset), .y = readI32(offset + 4U)});
+            library_.points.push_back(LayoutPoint{.x = readI32(offset), .y = readI32(offset + 4U)});
             if (metrics_.xy_point_count != std::numeric_limits<std::uint32_t>::max()) {
                 ++metrics_.xy_point_count;
             }
@@ -1084,15 +1103,25 @@ private:
         bounds->y1 = std::max(bounds->y1, rect->y1);
     }
 
-    static std::optional<LayoutRect> elementBounds(const LayoutGdsElement& element) {
-        if (element.points.empty()) {
+    std::span<const LayoutPoint> elementPoints(const LayoutGdsElement& element) const {
+        if (element.point_count > 0U && element.first_point < library_.points.size()) {
+            const auto available = library_.points.size() - element.first_point;
+            const auto count = std::min<std::size_t>(element.point_count, available);
+            return std::span<const LayoutPoint>(library_.points.data() + element.first_point, count);
+        }
+        return std::span<const LayoutPoint>(element.points.data(), element.points.size());
+    }
+
+    std::optional<LayoutRect> elementBounds(const LayoutGdsElement& element) const {
+        const auto points = elementPoints(element);
+        if (points.empty()) {
             return std::nullopt;
         }
-        LayoutRect bounds{.x0 = element.points.front().x,
-                          .y0 = element.points.front().y,
-                          .x1 = element.points.front().x,
-                          .y1 = element.points.front().y};
-        for (const auto& point : element.points) {
+        LayoutRect bounds{.x0 = points.front().x,
+                          .y0 = points.front().y,
+                          .x1 = points.front().x,
+                          .y1 = points.front().y};
+        for (const auto& point : points) {
             bounds.x0 = std::min(bounds.x0, point.x);
             bounds.y0 = std::min(bounds.y0, point.y);
             bounds.x1 = std::max(bounds.x1, point.x);
@@ -1101,9 +1130,9 @@ private:
         return bounds;
     }
 
-    static bool isDrawableElement(const LayoutGdsElement& element) {
+    bool isDrawableElement(const LayoutGdsElement& element) const {
         return element.kind != LayoutGdsElementKind::Sref &&
-               element.kind != LayoutGdsElementKind::Aref && !element.points.empty();
+               element.kind != LayoutGdsElementKind::Aref && !elementPoints(element).empty();
     }
 
     void warning(std::string message, std::size_t offset) {
@@ -1966,12 +1995,23 @@ std::string readTextFile(const std::filesystem::path& path) {
 }
 
 std::vector<std::uint8_t> readBinaryFile(const std::filesystem::path& path) {
-    std::ifstream input(path, std::ios::binary);
+    std::ifstream input(path, std::ios::binary | std::ios::ate);
     if (!input) {
         throw std::runtime_error("Failed to read layout file: " + path.generic_string());
     }
-    return std::vector<std::uint8_t>(std::istreambuf_iterator<char>(input),
-                                     std::istreambuf_iterator<char>());
+    const auto end = input.tellg();
+    if (end < 0) {
+        throw std::runtime_error("Failed to determine layout file size: " + path.generic_string());
+    }
+    std::vector<std::uint8_t> bytes(static_cast<std::size_t>(end));
+    input.seekg(0, std::ios::beg);
+    if (!bytes.empty()) {
+        input.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+        if (input.gcount() != static_cast<std::streamsize>(bytes.size())) {
+            throw std::runtime_error("Failed to read complete layout file: " + path.generic_string());
+        }
+    }
+    return bytes;
 }
 
 } // namespace

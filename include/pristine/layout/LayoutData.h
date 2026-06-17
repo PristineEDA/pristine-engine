@@ -224,6 +224,8 @@ struct LayoutGdsElement {
     std::uint32_t datatype = 0;
     std::uint32_t texttype = 0;
     std::uint32_t reference_index = kNoLayoutIndex;
+    std::uint32_t first_point = 0;
+    std::uint32_t point_count = 0;
     std::vector<LayoutPoint> points{};
     std::string text{};
     std::optional<LayoutRect> bounds{};
@@ -284,6 +286,7 @@ struct LayoutGdsLibrary {
     std::vector<LayoutGdsCell> cells{};
     std::vector<LayoutGdsElement> elements{};
     std::vector<LayoutGdsReference> references{};
+    std::vector<LayoutPoint> points{};
     std::vector<std::uint32_t> text_element_indices{};
     std::vector<LayoutGdsLayerSample> layer_samples{};
     std::vector<LayoutDiagnostic> diagnostics{};
@@ -297,6 +300,8 @@ struct LayoutGdsOpenMetrics {
     std::uint64_t open_micros = 0;
     bool flattened_at_open = false;
     bool spatial_index_built_at_open = false;
+    bool warmup_scheduled = false;
+    std::uint32_t point_arena_count = 0;
     LayoutGdsParseMetrics parse{};
 };
 

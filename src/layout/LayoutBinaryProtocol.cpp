@@ -8,6 +8,7 @@
 #include <limits>
 #include <map>
 #include <set>
+#include <span>
 #include <stdexcept>
 #include <string>
 
@@ -281,11 +282,24 @@ std::uint32_t gdsPointCount(const LayoutGdsLibrary* gds) {
     if (gds == nullptr) {
         return 0U;
     }
+    if (!gds->points.empty()) {
+        return checkedCount(gds->points.size(), "GDS point count");
+    }
     std::size_t count = 0;
     for (const auto& element : gds->elements) {
         count += element.points.size();
     }
     return checkedCount(count, "GDS point count");
+}
+
+std::span<const LayoutPoint> gdsElementPoints(const LayoutGdsLibrary& gds,
+                                              const LayoutGdsElement& element) {
+    if (element.point_count > 0U && element.first_point < gds.points.size()) {
+        const auto available = gds.points.size() - element.first_point;
+        const auto count = std::min<std::size_t>(element.point_count, available);
+        return std::span<const LayoutPoint>(gds.points.data() + element.first_point, count);
+    }
+    return std::span<const LayoutPoint>(element.points.data(), element.points.size());
 }
 
 void appendLayerCatalogRow(std::vector<std::uint8_t>& result,
@@ -345,9 +359,15 @@ void appendGdsReferenceCatalogRow(std::vector<std::uint8_t>& result,
 }
 
 std::uint32_t firstPointIndexForElement(const LayoutGdsLibrary& gds, std::size_t element_index) {
+    if (!gds.points.empty()) {
+        if (element_index >= gds.elements.size()) {
+            throw std::runtime_error("Layout GDS element index exceeds element table");
+        }
+        return gds.elements[element_index].first_point;
+    }
     std::size_t first_point_index = 0;
     for (std::size_t index = 0; index < element_index; ++index) {
-        first_point_index += gds.elements[index].points.size();
+        first_point_index += gdsElementPoints(gds, gds.elements[index]).size();
     }
     return checkedCount(first_point_index, "GDS first point index");
 }
@@ -357,7 +377,7 @@ void appendGdsElementCatalogRow(std::vector<std::uint8_t>& result,
                                 const LayoutGdsLibrary& gds,
                                 std::size_t element_index) {
     const auto& element = gds.elements[element_index];
-    const auto point_count = checkedCount(element.points.size(), "GDS point count");
+    const auto point_count = checkedCount(gdsElementPoints(gds, element).size(), "GDS point count");
     appendU32(result, element.cell_index);
     appendU16(result, static_cast<std::uint16_t>(element.kind));
     appendU16(result, 0);
@@ -569,8 +589,9 @@ std::vector<std::uint8_t> encodeCatalogV3ResponsePayload(const LayoutDataSet& da
     const auto element_offset = checkedCount(result.size(), "GDS element offset");
     std::uint32_t first_point_index = 0;
     if (gds != nullptr) {
-        for (const auto& element : gds->elements) {
-            const auto point_count = checkedCount(element.points.size(), "GDS point count");
+        for (std::size_t element_index = 0; element_index < gds->elements.size(); ++element_index) {
+            const auto& element = gds->elements[element_index];
+            const auto point_count = checkedCount(gdsElementPoints(*gds, element).size(), "GDS point count");
             appendU32(result, element.cell_index);
             appendU16(result, static_cast<std::uint16_t>(element.kind));
             appendU16(result, 0);
@@ -578,7 +599,7 @@ std::vector<std::uint8_t> encodeCatalogV3ResponsePayload(const LayoutDataSet& da
             appendU32(result, element.datatype);
             appendU32(result, element.texttype);
             appendU32(result, element.reference_index);
-            appendU32(result, first_point_index);
+            appendU32(result, firstPointIndexForElement(*gds, element_index));
             appendU32(result, point_count);
             appendU32(result, appendTableString(strings, element.text));
             if (first_point_index > std::numeric_limits<std::uint32_t>::max() - point_count) {
@@ -590,10 +611,18 @@ std::vector<std::uint8_t> encodeCatalogV3ResponsePayload(const LayoutDataSet& da
 
     const auto point_offset = checkedCount(result.size(), "GDS point offset");
     if (gds != nullptr) {
-        for (const auto& element : gds->elements) {
-            for (const auto& point : element.points) {
+        if (!gds->points.empty()) {
+            for (const auto& point : gds->points) {
                 appendF64(result, toMicrons(point.x, data.units_per_micron));
                 appendF64(result, toMicrons(point.y, data.units_per_micron));
+            }
+        }
+        else {
+            for (const auto& element : gds->elements) {
+                for (const auto& point : element.points) {
+                    appendF64(result, toMicrons(point.x, data.units_per_micron));
+                    appendF64(result, toMicrons(point.y, data.units_per_micron));
+                }
             }
         }
     }
@@ -647,7 +676,7 @@ std::vector<std::uint8_t> encodeCatalogV3ResponsePayload(const LayoutDataSet& da
     writeU32Header(result, offset, reference_offset);
     writeU32Header(result, offset, gds != nullptr ? checkedCount(gds->elements.size(), "GDS element count") : 0U);
     writeU32Header(result, offset, element_offset);
-    writeU32Header(result, offset, first_point_index);
+    writeU32Header(result, offset, gdsPointCount(gds));
     writeU32Header(result, offset, point_offset);
     writeU32Header(result, offset, checkedCount(data.diagnostics.size(), "diagnostic count"));
     writeU32Header(result, offset, diagnostic_offset);
@@ -832,26 +861,40 @@ std::vector<std::uint8_t> encodeCatalogPageV3ResponsePayload(
         if (gds == nullptr) {
             throw std::runtime_error("GDS catalog point pages require a GDS layout source");
         }
-        std::uint32_t point_index = 0;
-        for (const auto& element : gds->elements) {
-            for (const auto& point : element.points) {
-                if (point_index >= request.offset && point_index < end) {
-                    const auto size_before = result.size();
-                    appendF64(result, toMicrons(point.x, data.units_per_micron));
-                    appendF64(result, toMicrons(point.y, data.units_per_micron));
-                    if (wouldExceed()) {
-                        result.resize(size_before);
-                        break;
-                    }
-                    ++written_count;
-                }
-                ++point_index;
-                if (point_index >= end || result.size() + strings.size() > max_bytes) {
+        auto appendPointPageRow = [&](const LayoutPoint& point) {
+            const auto size_before = result.size();
+            appendF64(result, toMicrons(point.x, data.units_per_micron));
+            appendF64(result, toMicrons(point.y, data.units_per_micron));
+            if (wouldExceed()) {
+                result.resize(size_before);
+                return false;
+            }
+            ++written_count;
+            return true;
+        };
+        if (!gds->points.empty()) {
+            for (std::uint32_t point_index = request.offset; point_index < end; ++point_index) {
+                if (!appendPointPageRow(gds->points[point_index])) {
                     break;
                 }
             }
-            if (point_index >= end || result.size() + strings.size() > max_bytes) {
-                break;
+        }
+        else {
+            std::uint32_t point_index = 0;
+            for (const auto& element : gds->elements) {
+                for (const auto& point : element.points) {
+                    if (point_index >= request.offset && point_index < end &&
+                        !appendPointPageRow(point)) {
+                        break;
+                    }
+                    ++point_index;
+                    if (point_index >= end || result.size() + strings.size() > max_bytes) {
+                        break;
+                    }
+                }
+                if (point_index >= end || result.size() + strings.size() > max_bytes) {
+                    break;
+                }
             }
         }
     }

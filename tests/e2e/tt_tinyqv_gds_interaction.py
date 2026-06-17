@@ -141,6 +141,13 @@ def summarize_before_after(previous: dict, current: dict) -> dict:
         "after": after_wide,
         "delta_percent": delta_percent(before_wide, after_wide),
     }
+    before_warm = previous_summary.get("tile_groups", {}).get("warm_wide_zoom", {}).get("query_micros", {}).get("max", 0)
+    after_warm = current_summary.get("tile_groups", {}).get("warm_wide_zoom", {}).get("query_micros", {}).get("max", 0)
+    result["wide_lod1_post_warm_query_micros_max"] = {
+        "before": before_warm,
+        "after": after_warm,
+        "delta_percent": delta_percent(before_warm, after_warm),
+    }
     return result
 
 
@@ -691,6 +698,10 @@ def run_interaction(server_path: pathlib.Path, gds_path: pathlib.Path) -> dict:
                 "diagnosticCount": session.get("diagnosticCount", 0),
                 "gdsMetrics": session.get("gdsMetrics", {}),
             },
+            "warmup": {
+                "scheduled": bool(session.get("gdsMetrics", {}).get("warmupScheduled", False)),
+                "pointArenaCount": int(session.get("gdsMetrics", {}).get("pointArenaCount", 0)),
+            },
             "open_wall_micros": [open_wall_micros],
             "tiles": [],
             "hits": [],
@@ -1010,6 +1021,8 @@ def run_interaction(server_path: pathlib.Path, gds_path: pathlib.Path) -> dict:
         for entry in metrics["tiles"]:
             tile_groups.setdefault(tile_group(entry["name"]), []).append(entry)
         metrics["summary"] = {
+            "warmup_scheduled": metrics.get("warmup", {}).get("scheduled", False),
+            "point_arena_count": metrics.get("warmup", {}).get("pointArenaCount", 0),
             "open_wall_micros": metric_summary(metrics["open_wall_micros"]),
             "catalog_summary_wall_micros": metric_summary(metrics.get("catalog_summary_wall_micros", [])),
             "catalog_page_wall_micros": metric_summary(metrics.get("catalog_page_wall_micros", [])),
@@ -1087,10 +1100,14 @@ def main() -> int:
         "TT tinyQV GDS interaction: "
         f"open p95 {summary['open_wall_micros']['p95']}us, "
         f"overview query max {summary['tile_groups'].get('overview', {}).get('query_micros', {}).get('max', 0)}us, "
+        f"cold wide max {summary['tile_groups'].get('cold_wide_zoom', {}).get('query_micros', {}).get('max', 0)}us, "
+        f"post-warm wide max {summary['tile_groups'].get('warm_wide_zoom', {}).get('query_micros', {}).get('max', 0)}us, "
         f"tile query p50/p95/max {summary['tile_query_micros']['p50']}/"
         f"{summary['tile_query_micros']['p95']}/{summary['tile_query_micros']['max']}us, "
         f"hit query p95 {summary['hit_query_micros']['p95']}us, "
         f"search query p95 {summary['search_query_micros']['p95']}us, "
+        f"warmup scheduled {summary.get('warmup_scheduled')}, "
+        f"point arena {summary.get('point_arena_count')}, "
         f"metrics {output_path}"
     )
     return 0

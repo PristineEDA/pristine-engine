@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <condition_variable>
 #include <cctype>
 #include <cstdint>
 #include <cstdlib>
@@ -18,9 +19,11 @@
 #include <mutex>
 #include <optional>
 #include <set>
+#include <span>
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <tuple>
 #include <utility>
 #include <vector>
@@ -119,6 +122,30 @@ std::string asciiLower(std::string_view value) {
     return result;
 }
 
+bool isTruthyEnvValue(std::string_view value) {
+    const auto lower = asciiLower(value);
+    return lower == "1" || lower == "true" || lower == "on" || lower == "yes";
+}
+
+bool isFalsyEnvValue(std::string_view value) {
+    const auto lower = asciiLower(value);
+    return lower == "0" || lower == "false" || lower == "off" || lower == "no";
+}
+
+bool shouldWarmupGdsLibrary(const LayoutGdsLibrary& gds) {
+    const auto mode = environmentValue("PRISTINE_LAYOUT_WARMUP");
+    if (mode.has_value()) {
+        if (isFalsyEnvValue(*mode)) {
+            return false;
+        }
+        if (isTruthyEnvValue(*mode)) {
+            return true;
+        }
+    }
+    return gds.elements.size() >= 100'000U || gds.points.size() >= 1'000'000U ||
+           gds.references.size() >= 10'000U;
+}
+
 bool containsAsciiCaseInsensitive(std::string_view value, std::string_view needle) {
     if (needle.empty()) {
         return true;
@@ -164,8 +191,10 @@ struct GdsAffineTransform {
 std::uint32_t findGdsLayer(const LayoutDataSet& data,
                            std::uint32_t layer,
                            std::uint32_t datatype);
-bool isDrawableGdsElement(const LayoutGdsElement& element);
-LayoutRect elementBounds(const LayoutGdsElement& element);
+std::span<const LayoutPoint> gdsElementPoints(const LayoutGdsLibrary& gds,
+                                              const LayoutGdsElement& element);
+bool isDrawableGdsElement(const LayoutGdsLibrary& gds, const LayoutGdsElement& element);
+LayoutRect elementBounds(const LayoutGdsLibrary& gds, const LayoutGdsElement& element);
 LayoutRect transformBounds(const GdsAffineTransform& transform, const LayoutRect& rect);
 GdsAffineTransform referenceTransform(const LayoutGdsReference& reference,
                                       std::uint32_t column,
@@ -181,7 +210,11 @@ public:
     DataSetLayoutSource(LayoutDataSet data, std::string source_kind) :
         data_(std::move(data)),
         source_kind_(std::move(source_kind)),
-        tile_cache_budget_bytes_(layoutCacheBudgetBytes()) {}
+        tile_cache_budget_bytes_(layoutCacheBudgetBytes()) {
+        startWarmupIfNeeded();
+    }
+
+    ~DataSetLayoutSource() override { stopWarmup(); }
 
     const LayoutDataSet& dataSet() const override { return data_; }
     std::string_view sourceKind() const override { return source_kind_; }
@@ -192,20 +225,20 @@ public:
     std::vector<std::uint8_t> encodeHitTestResponse(
         const LayoutHitTestRequest& request) const override {
         std::uint64_t index_build_micros = 0;
-        auto response = spatialIndex(index_build_micros).hitTest(request);
+        auto response = hitTestSpatial(request, index_build_micros);
         response.index_build_micros = index_build_micros;
         return encodeHitTestResponsePayload(data_, response);
     }
     std::vector<std::uint8_t> encodeInspectResponse(
         const LayoutInspectRequest& request) const override {
         std::uint64_t index_build_micros = 0;
-        return encodeInspectResponsePayload(data_, spatialIndex(index_build_micros).inspect(request));
+        return encodeInspectResponsePayload(data_, inspectSpatial(request, index_build_micros));
     }
     std::vector<std::uint8_t> encodeSelectionGeometryResponse(
         const LayoutSelectionGeometryRequest& request) const override {
         LayoutGeometryRequest geometry_request;
         std::uint64_t index_build_micros = 0;
-        auto selection = spatialIndex(index_build_micros).selectionGeometry(request);
+        auto selection = selectionSpatial(request, index_build_micros);
         selection.index_build_micros = index_build_micros;
         return encodeGeometryResponsePayload(data_, geometry_request, selection.shapes, selection.truncated);
     }
@@ -227,9 +260,86 @@ private:
         LayoutSearchResponse response{};
     };
 
-    const LayoutSpatialIndex& spatialIndex(std::uint64_t& build_micros) const {
+    [[nodiscard]] bool shouldWarmup() const {
+        if (source_kind_ != "gds" || !data_.gds.has_value()) {
+            return false;
+        }
+        return shouldWarmupGdsLibrary(*data_.gds);
+    }
+
+    void startWarmupIfNeeded() const {
+        if (!shouldWarmup()) {
+            return;
+        }
+        {
+            std::lock_guard lock(warmup_mutex_);
+            if (warmup_started_) {
+                return;
+            }
+            warmup_started_ = true;
+            warmup_done_ = false;
+        }
+        warmup_thread_ = std::thread([this]() { runWarmup(); });
+    }
+
+    void stopWarmup() const {
+        {
+            std::lock_guard lock(warmup_mutex_);
+            warmup_cancel_requested_ = true;
+        }
+        warmup_cv_.notify_all();
+        if (warmup_thread_.joinable()) {
+            warmup_thread_.join();
+        }
+    }
+
+    [[nodiscard]] bool warmupCancelled() const {
+        std::lock_guard lock(warmup_mutex_);
+        return warmup_cancel_requested_;
+    }
+
+    void markWarmupDone() const {
+        {
+            std::lock_guard lock(warmup_mutex_);
+            warmup_done_ = true;
+        }
+        warmup_cv_.notify_all();
+    }
+
+    void runWarmup() const {
+        try {
+            if (!data_.gds.has_value() || data_.gds->top_cell_index >= data_.gds->cells.size()) {
+                markWarmupDone();
+                return;
+            }
+            if (warmupCancelled()) {
+                markWarmupDone();
+                return;
+            }
+            const auto& gds = *data_.gds;
+            LayoutTileGeometryRequest request;
+            request.root_cell_index = gds.top_cell_index;
+            request.lod = 1U;
+            request.max_shapes = 1U;
+            request.max_points = 4U;
+            if (data_.bounds.has_value()) {
+                request.has_bbox = true;
+                request.bbox = *data_.bounds;
+            }
+            std::uint64_t build_micros = 0;
+            (void)queryTileSpatial(request, build_micros);
+            if (!warmupCancelled()) {
+                std::uint64_t search_build_micros = 0;
+                ensureSearchIndex(search_build_micros);
+            }
+        }
+        catch (const std::exception&) {
+        }
+        markWarmupDone();
+    }
+
+    LayoutSpatialIndex& ensureSpatialIndexLocked(std::uint64_t& build_micros) const {
         build_micros = 0;
-        std::lock_guard lock(spatial_mutex_);
         if (!spatial_index_) {
             const auto start = Clock::now();
             spatial_index_ = LayoutSpatialIndex::build(data_);
@@ -239,6 +349,34 @@ private:
             throw std::runtime_error("Layout spatial index requires a GDS layout source");
         }
         return *spatial_index_;
+    }
+
+    [[nodiscard]] LayoutTileGeometryResult queryTileSpatial(
+        const LayoutTileGeometryRequest& request,
+        std::uint64_t& build_micros) const {
+        std::lock_guard lock(spatial_mutex_);
+        return ensureSpatialIndexLocked(build_micros).queryTile(request);
+    }
+
+    [[nodiscard]] LayoutHitTestResponse hitTestSpatial(
+        const LayoutHitTestRequest& request,
+        std::uint64_t& build_micros) const {
+        std::lock_guard lock(spatial_mutex_);
+        return ensureSpatialIndexLocked(build_micros).hitTest(request);
+    }
+
+    [[nodiscard]] LayoutInspectResult inspectSpatial(
+        const LayoutInspectRequest& request,
+        std::uint64_t& build_micros) const {
+        std::lock_guard lock(spatial_mutex_);
+        return ensureSpatialIndexLocked(build_micros).inspect(request);
+    }
+
+    [[nodiscard]] LayoutTileGeometryResult selectionSpatial(
+        const LayoutSelectionGeometryRequest& request,
+        std::uint64_t& build_micros) const {
+        std::lock_guard lock(spatial_mutex_);
+        return ensureSpatialIndexLocked(build_micros).selectionGeometry(request);
     }
 
     [[nodiscard]] std::optional<std::vector<std::uint8_t>> lookupTileCache(
@@ -337,7 +475,7 @@ private:
         }
 
         std::uint64_t index_build_micros = 0;
-        auto tile = spatialIndex(index_build_micros).queryTile(spatial_request);
+        auto tile = queryTileSpatial(spatial_request, index_build_micros);
         tile.index_build_micros = index_build_micros;
         tile.cache_miss_count = 1;
         if (request.max_bytes != 0U) {
@@ -498,11 +636,11 @@ private:
                 continue;
             }
             const auto& element = gds.elements[element_index];
-            if (element.kind != LayoutGdsElementKind::Text || !isDrawableGdsElement(element)) {
+            if (element.kind != LayoutGdsElementKind::Text || !isDrawableGdsElement(gds, element)) {
                 continue;
             }
             const auto layer_index = findGdsLayer(data_, element.layer, element.datatype);
-            const auto bounds = elementBounds(element);
+            const auto bounds = elementBounds(gds, element);
             const auto object_class = classifySearchElement(data_, gds, element, layer_index);
             LayoutSearchResult result;
             result.object = LayoutSpatialObjectId{.kind = LayoutSpatialObjectKind::Element,
@@ -524,14 +662,14 @@ private:
                 continue;
             }
             const auto& element = gds.elements[sample.element_index];
-            if (!isDrawableGdsElement(element)) {
+            if (!isDrawableGdsElement(gds, element)) {
                 continue;
             }
             const auto layer_index = findGdsLayer(data_, sample.layer, sample.datatype);
             if (layer_index >= data_.layers.size()) {
                 continue;
             }
-            const auto bounds = elementBounds(element);
+            const auto bounds = elementBounds(gds, element);
             const auto object_class = classifySearchElement(data_, gds, element, layer_index);
             LayoutSearchResult result;
             result.object = LayoutSpatialObjectId{.kind = LayoutSpatialObjectKind::Element,
@@ -628,6 +766,12 @@ private:
     std::string source_kind_;
     mutable std::mutex spatial_mutex_;
     mutable std::unique_ptr<LayoutSpatialIndex> spatial_index_;
+    mutable std::mutex warmup_mutex_;
+    mutable std::condition_variable warmup_cv_;
+    mutable std::thread warmup_thread_;
+    mutable bool warmup_started_ = false;
+    mutable bool warmup_done_ = false;
+    mutable bool warmup_cancel_requested_ = false;
     struct TileCacheEntry {
         std::vector<std::uint8_t> payload{};
         std::size_t bytes = 0;
@@ -739,9 +883,19 @@ std::uint32_t findGdsLayer(const LayoutDataSet& data,
     throw std::runtime_error("GDS layer is missing from layout catalog");
 }
 
-bool isDrawableGdsElement(const LayoutGdsElement& element) {
+std::span<const LayoutPoint> gdsElementPoints(const LayoutGdsLibrary& gds,
+                                              const LayoutGdsElement& element) {
+    if (element.point_count > 0U && element.first_point < gds.points.size()) {
+        const auto available = gds.points.size() - element.first_point;
+        const auto count = std::min<std::size_t>(element.point_count, available);
+        return std::span<const LayoutPoint>(gds.points.data() + element.first_point, count);
+    }
+    return std::span<const LayoutPoint>(element.points.data(), element.points.size());
+}
+
+bool isDrawableGdsElement(const LayoutGdsLibrary& gds, const LayoutGdsElement& element) {
     return element.kind != LayoutGdsElementKind::Sref &&
-           element.kind != LayoutGdsElementKind::Aref && !element.points.empty();
+           element.kind != LayoutGdsElementKind::Aref && !gdsElementPoints(gds, element).empty();
 }
 
 void registerGdsLayers(LayoutDataSet& data, const LayoutGdsLibrary& gds) {
@@ -754,7 +908,7 @@ void registerGdsLayers(LayoutDataSet& data, const LayoutGdsLibrary& gds) {
 
     std::set<std::pair<std::uint32_t, std::uint32_t>> registered;
     for (const auto& element : gds.elements) {
-        if (!isDrawableGdsElement(element)) {
+        if (!isDrawableGdsElement(gds, element)) {
             continue;
         }
         const auto key = std::make_pair(element.layer, element.datatype);
@@ -773,7 +927,7 @@ LayoutPoint applyTransform(const GdsAffineTransform& transform, const LayoutPoin
                                         transform.d * static_cast<double>(point.y) + transform.ty))};
 }
 
-LayoutRect pointBounds(const std::vector<LayoutPoint>& points) {
+LayoutRect pointBounds(std::span<const LayoutPoint> points) {
     if (points.empty()) {
         return {};
     }
@@ -790,8 +944,8 @@ LayoutRect pointBounds(const std::vector<LayoutPoint>& points) {
     return bounds;
 }
 
-LayoutRect elementBounds(const LayoutGdsElement& element) {
-    return element.bounds.value_or(pointBounds(element.points));
+LayoutRect elementBounds(const LayoutGdsLibrary& gds, const LayoutGdsElement& element) {
+    return element.bounds.value_or(pointBounds(gdsElementPoints(gds, element)));
 }
 
 GdsAffineTransform composeTransforms(const GdsAffineTransform& parent,
@@ -865,8 +1019,8 @@ std::optional<LayoutRect> directDrawableGdsCellBounds(const LayoutGdsLibrary& gd
             continue;
         }
         const auto& element = gds.elements[element_index];
-        if (isDrawableGdsElement(element)) {
-            expandBounds(bounds, elementBounds(element));
+        if (isDrawableGdsElement(gds, element)) {
+            expandBounds(bounds, elementBounds(gds, element));
         }
     }
     return bounds;
@@ -938,10 +1092,12 @@ LayoutShapeKind shapeKindForGdsElement(const LayoutGdsElement& element) {
 
 void appendGdsElementShape(std::vector<LayoutShape>& shapes,
                            const LayoutDataSet& data,
+                           const LayoutGdsLibrary& gds,
                            const LayoutGdsElement& element,
                            const GdsAffineTransform& transform,
                            std::uint32_t element_index) {
-    if (!isDrawableGdsElement(element)) {
+    const auto points = gdsElementPoints(gds, element);
+    if (!isDrawableGdsElement(gds, element)) {
         return;
     }
 
@@ -951,8 +1107,8 @@ void appendGdsElementShape(std::vector<LayoutShape>& shapes,
                       .macro_index = element.cell_index,
                       .layer_index = findGdsLayer(data, element.layer, element.datatype),
                       .flags = element.texttype};
-    shape.polygon.points.reserve(element.points.size());
-    for (const auto& point : element.points) {
+    shape.polygon.points.reserve(points.size());
+    for (const auto& point : points) {
         shape.polygon.points.push_back(applyTransform(transform, point));
     }
     if (!shape.polygon.points.empty()) {
@@ -978,7 +1134,7 @@ void flattenGdsCell(std::vector<LayoutShape>& shapes,
         if (element_index >= gds.elements.size()) {
             continue;
         }
-        appendGdsElementShape(shapes, data, gds.elements[element_index], transform, element_index);
+        appendGdsElementShape(shapes, data, gds, gds.elements[element_index], transform, element_index);
     }
     for (const auto reference_index : cell.reference_indices) {
         if (reference_index >= gds.references.size()) {
@@ -1328,6 +1484,12 @@ std::shared_ptr<LayoutSource> openGdsLayoutSource(const std::filesystem::path& g
     metrics.open_micros = elapsedMicros(open_start);
     metrics.flattened_at_open = false;
     metrics.spatial_index_built_at_open = false;
+    if (data.gds.has_value()) {
+        metrics.warmup_scheduled = shouldWarmupGdsLibrary(*data.gds);
+        metrics.point_arena_count =
+            static_cast<std::uint32_t>(std::min<std::size_t>(
+                data.gds->points.size(), std::numeric_limits<std::uint32_t>::max()));
+    }
     data.gds_open_metrics = metrics;
     return std::make_shared<DataSetLayoutSource>(std::move(data), "gds");
 }

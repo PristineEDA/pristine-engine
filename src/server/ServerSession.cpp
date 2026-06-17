@@ -825,6 +825,8 @@ jsonrpc::Json toLayoutSessionJson(const layout::LayoutSessionInfo& info) {
             {"openMicros", info.gds_open_metrics.open_micros},
             {"flattenedAtOpen", info.gds_open_metrics.flattened_at_open},
             {"spatialIndexBuiltAtOpen", info.gds_open_metrics.spatial_index_built_at_open},
+            {"warmupScheduled", info.gds_open_metrics.warmup_scheduled},
+            {"pointArenaCount", info.gds_open_metrics.point_arena_count},
             {"parseMetrics",
              jsonrpc::Json{{"readMicros", info.gds_open_metrics.parse.read_micros},
                            {"recordMicros", info.gds_open_metrics.parse.record_micros},

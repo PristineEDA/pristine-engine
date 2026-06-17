@@ -877,6 +877,8 @@ def main() -> int:
         assert gds_session["layerCount"] >= 1
         assert gds_session["gdsMetrics"]["flattenedAtOpen"] is False
         assert gds_session["gdsMetrics"]["spatialIndexBuiltAtOpen"] is False
+        assert gds_session["gdsMetrics"]["warmupScheduled"] is False
+        assert gds_session["gdsMetrics"]["pointArenaCount"] >= 1
         assert gds_session["gdsMetrics"]["openMicros"] >= gds_session["gdsMetrics"]["parseMicros"]
         exercise_gds_pipe(gds_session)
 

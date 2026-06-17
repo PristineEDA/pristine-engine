@@ -15,6 +15,7 @@
 #include <mutex>
 #include <optional>
 #include <set>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -120,9 +121,19 @@ struct InstanceRecord {
     std::string path{};
 };
 
-bool isDrawableGdsElement(const LayoutGdsElement& element) {
+std::span<const LayoutPoint> gdsElementPoints(const LayoutGdsLibrary& gds,
+                                              const LayoutGdsElement& element) {
+    if (element.point_count > 0U && element.first_point < gds.points.size()) {
+        const auto available = gds.points.size() - element.first_point;
+        const auto count = std::min<std::size_t>(element.point_count, available);
+        return std::span<const LayoutPoint>(gds.points.data() + element.first_point, count);
+    }
+    return std::span<const LayoutPoint>(element.points.data(), element.points.size());
+}
+
+bool isDrawableGdsElement(const LayoutGdsLibrary& gds, const LayoutGdsElement& element) {
     return element.kind != LayoutGdsElementKind::Sref &&
-           element.kind != LayoutGdsElementKind::Aref && !element.points.empty();
+           element.kind != LayoutGdsElementKind::Aref && !gdsElementPoints(gds, element).empty();
 }
 
 LayoutShapeKind shapeKindForGdsElement(const LayoutGdsElement& element) {
@@ -171,7 +182,7 @@ bool intersects(const LayoutRect& lhs, const LayoutRect& rhs) {
     return lhs.x0 <= rhs.x1 && lhs.x1 >= rhs.x0 && lhs.y0 <= rhs.y1 && lhs.y1 >= rhs.y0;
 }
 
-LayoutRect pointBounds(const std::vector<LayoutPoint>& points) {
+LayoutRect pointBounds(std::span<const LayoutPoint> points) {
     if (points.empty()) {
         return {};
     }
@@ -188,8 +199,8 @@ LayoutRect pointBounds(const std::vector<LayoutPoint>& points) {
     return bounds;
 }
 
-LayoutRect elementBounds(const LayoutGdsElement& element) {
-    return element.bounds.value_or(pointBounds(element.points));
+LayoutRect elementBounds(const LayoutGdsLibrary& gds, const LayoutGdsElement& element) {
+    return element.bounds.value_or(pointBounds(gdsElementPoints(gds, element)));
 }
 
 LayoutRect shapeBounds(const LayoutShape& shape) {
@@ -839,10 +850,10 @@ public:
                 if (request.object.instance_path_hash != 0U) {
                     const auto instance = requireInstance(request.object.instance_path_hash);
                     result.instance_path = instance.path;
-                    result.bounds = transformBounds(instance.transform, elementBounds(element));
+                    result.bounds = transformBounds(instance.transform, elementBounds(gds, element));
                 }
                 else {
-                    result.bounds = elementBounds(element);
+                    result.bounds = elementBounds(gds, element);
                 }
                 break;
             }
@@ -862,7 +873,7 @@ public:
                 throw std::runtime_error("Layout selection element index is out of range");
             }
             const auto& element = gds.elements[request.object.element_index];
-            if (!isDrawableGdsElement(element)) {
+            if (!isDrawableGdsElement(gds, element)) {
                 return {};
             }
             GdsAffineTransform transform{};
@@ -1108,10 +1119,10 @@ private:
                 continue;
             }
             const auto& element = gds.elements[element_index];
-            if (!isDrawableGdsElement(element)) {
+            if (!isDrawableGdsElement(gds, element)) {
                 continue;
             }
-            const auto bounds = elementBounds(element);
+            const auto bounds = elementBounds(gds, element);
             const auto layer_index = layerIndexFor(element);
             SpatialEntry entry{.object = LayoutSpatialObjectId{.kind =
                                                                    LayoutSpatialObjectKind::Element,
@@ -1265,10 +1276,10 @@ private:
                 continue;
             }
             const auto& element = gds.elements[element_index];
-            if (!isDrawableGdsElement(element)) {
+            if (!isDrawableGdsElement(gds, element)) {
                 continue;
             }
-            const auto local_bounds = elementBounds(element);
+            const auto local_bounds = elementBounds(gds, element);
             const auto entry_index = static_cast<std::uint32_t>(grid->entries.size());
             grid->entries.push_back(GdsTileGridEntry{.element_index = element_index,
                                                      .bounds = local_bounds,
@@ -1554,8 +1565,9 @@ private:
                           .flags = element.texttype,
                           .datatype = element.datatype,
                           .instance_path_hash = stable_hash};
-        shape.polygon.points.reserve(element.points.size());
-        for (const auto& point : element.points) {
+        const auto points = gdsElementPoints(requireGds(), element);
+        shape.polygon.points.reserve(points.size());
+        for (const auto& point : points) {
             shape.polygon.points.push_back(applyTransform(transform, point));
         }
         shape.rect = shapeBounds(shape);
