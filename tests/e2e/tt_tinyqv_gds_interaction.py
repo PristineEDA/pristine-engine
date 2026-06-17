@@ -61,6 +61,73 @@ def metric_summary(values: list[int]) -> dict[str, int]:
     }
 
 
+def tile_group(name: str) -> str:
+    if name.startswith("full_lod2") or name.startswith("overview_"):
+        return "overview"
+    if name.startswith("center_") or name.startswith("quadrant_"):
+        return "zoom"
+    if name.startswith("pan_"):
+        return "pan_grid"
+    if name.startswith("burst_"):
+        return "burst"
+    if name.startswith("repeat_cache_"):
+        return "cache_repeat"
+    if name.startswith("continuation_"):
+        return "continuation"
+    return "other"
+
+
+def tile_group_summary(entries: list[dict]) -> dict:
+    return {
+        "count": len(entries),
+        "query_micros": metric_summary([entry["query_micros"] for entry in entries]),
+        "encode_micros": metric_summary([entry["encode_micros"] for entry in entries]),
+        "wall_micros": metric_summary([entry["wall_micros"] for entry in entries]),
+        "payload_bytes": metric_summary([entry["payload_bytes"] for entry in entries]),
+        "shape_count": metric_summary([entry["shape_count"] for entry in entries]),
+        "point_count": metric_summary([entry["point_count"] for entry in entries]),
+        "cache_hits": sum(entry["cache_hits"] for entry in entries),
+        "cache_misses": sum(entry["cache_misses"] for entry in entries),
+        "truncated": sum(1 for entry in entries if entry["truncated"]),
+        "tokens": sum(1 for entry in entries if entry["next_token"]),
+    }
+
+
+def delta_percent(previous: int, current: int) -> float | None:
+    if previous == 0:
+        return None
+    return round(((current - previous) * 100.0) / previous, 2)
+
+
+def summarize_before_after(previous: dict, current: dict) -> dict:
+    keys = [
+        ("open_wall_micros", "p95"),
+        ("tile_query_micros", "p95"),
+        ("tile_query_micros", "max"),
+        ("hit_query_micros", "p95"),
+        ("search_query_micros", "p95"),
+    ]
+    result = {}
+    previous_summary = previous.get("summary", {})
+    current_summary = current.get("summary", {})
+    for key, field in keys:
+        before = previous_summary.get(key, {}).get(field, 0)
+        after = current_summary.get(key, {}).get(field, 0)
+        result[f"{key}_{field}"] = {
+            "before": before,
+            "after": after,
+            "delta_percent": delta_percent(before, after),
+        }
+    before_full = previous_summary.get("tile_groups", {}).get("overview", {}).get("query_micros", {}).get("max", 0)
+    after_full = current_summary.get("tile_groups", {}).get("overview", {}).get("query_micros", {}).get("max", 0)
+    result["overview_query_micros_max"] = {
+        "before": before_full,
+        "after": after_full,
+        "delta_percent": delta_percent(before_full, after_full),
+    }
+    return result
+
+
 def trace(message: str) -> None:
     print(f"[tt-tinyqv] {message}", flush=True)
 
@@ -907,6 +974,9 @@ def run_interaction(server_path: pathlib.Path, gds_path: pathlib.Path) -> dict:
         tile_encode = [entry["encode_micros"] for entry in metrics["tiles"]]
         hit_query = [entry["query_micros"] for entry in metrics["hits"]]
         search_query = [entry["query_micros"] for entry in metrics["searches"]]
+        tile_groups: dict[str, list[dict]] = {}
+        for entry in metrics["tiles"]:
+            tile_groups.setdefault(tile_group(entry["name"]), []).append(entry)
         metrics["summary"] = {
             "open_wall_micros": metric_summary(metrics["open_wall_micros"]),
             "catalog_summary_wall_micros": metric_summary(metrics.get("catalog_summary_wall_micros", [])),
@@ -926,6 +996,9 @@ def run_interaction(server_path: pathlib.Path, gds_path: pathlib.Path) -> dict:
             "tile_payload_bytes": metric_summary([entry["payload_bytes"] for entry in metrics["tiles"]]),
             "tile_shape_count": metric_summary([entry["shape_count"] for entry in metrics["tiles"]]),
             "tile_point_count": metric_summary([entry["point_count"] for entry in metrics["tiles"]]),
+            "tile_groups": {
+                name: tile_group_summary(entries) for name, entries in sorted(tile_groups.items())
+            },
         }
         return metrics
     finally:
@@ -952,8 +1025,20 @@ def main() -> int:
         print(f"SKIP: missing optional TT tinyQV GDS fixture at {gds_path}")
         return 77
 
-    metrics = run_interaction(server_path, gds_path)
     output_path = server_path.parent / "tt_tinyqv_gds_interaction_metrics.json"
+    previous_metrics = None
+    if output_path.is_file():
+        try:
+            previous_metrics = json.loads(output_path.read_text(encoding="utf-8"))
+            previous_path = output_path.with_suffix(".previous.json")
+            previous_path.write_text(json.dumps(previous_metrics, indent=2, sort_keys=True), encoding="utf-8")
+        except Exception:
+            previous_metrics = None
+
+    metrics = run_interaction(server_path, gds_path)
+    if previous_metrics:
+        metrics["previous_summary"] = previous_metrics.get("summary", {})
+        metrics["before_after_delta_percent"] = summarize_before_after(previous_metrics, metrics)
     output_path.write_text(json.dumps(metrics, indent=2, sort_keys=True), encoding="utf-8")
     compare_baseline(metrics)
 
@@ -961,6 +1046,7 @@ def main() -> int:
     print(
         "TT tinyQV GDS interaction: "
         f"open p95 {summary['open_wall_micros']['p95']}us, "
+        f"overview query max {summary['tile_groups'].get('overview', {}).get('query_micros', {}).get('max', 0)}us, "
         f"tile query p50/p95/max {summary['tile_query_micros']['p50']}/"
         f"{summary['tile_query_micros']['p95']}/{summary['tile_query_micros']['max']}us, "
         f"hit query p95 {summary['hit_query_micros']['p95']}us, "

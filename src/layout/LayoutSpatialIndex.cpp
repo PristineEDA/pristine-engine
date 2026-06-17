@@ -149,6 +149,10 @@ LayoutRect pointBounds(const std::vector<LayoutPoint>& points) {
     return bounds;
 }
 
+LayoutRect elementBounds(const LayoutGdsElement& element) {
+    return element.bounds.value_or(pointBounds(element.points));
+}
+
 LayoutRect shapeBounds(const LayoutShape& shape) {
     if (!shape.polygon.points.empty()) {
         return pointBounds(shape.polygon.points);
@@ -182,6 +186,14 @@ LayoutRect transformBounds(const GdsAffineTransform& transform, const LayoutRect
     points.push_back(applyTransform(transform, LayoutPoint{.x = normalized.x1, .y = normalized.y1}));
     points.push_back(applyTransform(transform, LayoutPoint{.x = normalized.x0, .y = normalized.y1}));
     return pointBounds(points);
+}
+
+LayoutRect mergeBounds(LayoutRect bounds, const LayoutRect& rect) {
+    bounds.x0 = std::min(bounds.x0, rect.x0);
+    bounds.y0 = std::min(bounds.y0, rect.y0);
+    bounds.x1 = std::max(bounds.x1, rect.x1);
+    bounds.y1 = std::max(bounds.y1, rect.y1);
+    return bounds;
 }
 
 struct IndexRange {
@@ -779,10 +791,10 @@ public:
                 if (request.object.instance_path_hash != 0U) {
                     const auto instance = requireInstance(request.object.instance_path_hash);
                     result.instance_path = instance.path;
-                    result.bounds = transformBounds(instance.transform, pointBounds(element.points));
+                    result.bounds = transformBounds(instance.transform, elementBounds(element));
                 }
                 else {
-                    result.bounds = pointBounds(element.points);
+                    result.bounds = elementBounds(element);
                 }
                 break;
             }
@@ -959,6 +971,80 @@ private:
                            .rect = transformBounds(transform, target_bounds)};
     }
 
+    [[nodiscard]] LayoutShape makeReferenceShapeForBounds(const LayoutGdsReference& reference,
+                                                          const LayoutRect& world_bounds,
+                                                          const GdsAffineTransform& transform,
+                                                          std::uint32_t reference_index,
+                                                          std::uint64_t path_hash,
+                                                          std::string_view path) const {
+        const auto stable_hash = rememberInstance(path_hash,
+                                                  reference.target_cell_index,
+                                                  reference_index,
+                                                  kNoLayoutIndex,
+                                                  transform,
+                                                  path);
+        return LayoutShape{.kind = LayoutShapeKind::Placement,
+                           .owner_kind = LayoutOwnerKind::GdsReference,
+                           .owner_index = reference_index,
+                           .macro_index = reference.target_cell_index,
+                           .layer_index = kNoLayoutIndex,
+                           .flags = 0,
+                           .datatype = 0,
+                           .instance_path_hash = stable_hash,
+                           .rect = world_bounds};
+    }
+
+    [[nodiscard]] LayoutShape makeCellOverviewShape(std::uint32_t cell_index,
+                                                    const LayoutRect& cell_bounds,
+                                                    const GdsAffineTransform& transform,
+                                                    std::uint64_t path_hash,
+                                                    std::string_view path) const {
+        const auto stable_hash = rememberInstance(path_hash,
+                                                  cell_index,
+                                                  kNoLayoutIndex,
+                                                  kNoLayoutIndex,
+                                                  transform,
+                                                  path);
+        return LayoutShape{.kind = LayoutShapeKind::Placement,
+                           .owner_kind = LayoutOwnerKind::GdsCell,
+                           .owner_index = cell_index,
+                           .macro_index = cell_index,
+                           .layer_index = kNoLayoutIndex,
+                           .flags = 0,
+                           .datatype = 0,
+                           .instance_path_hash = stable_hash,
+                           .rect = transformBounds(transform, cell_bounds)};
+    }
+
+    [[nodiscard]] LayoutRect visibleReferenceBounds(const LayoutGdsReference& reference,
+                                                    const LayoutRect& target_bounds,
+                                                    const GdsAffineTransform& parent_transform,
+                                                    std::uint32_t first_column,
+                                                    std::uint32_t last_column,
+                                                    std::uint32_t first_row,
+                                                    std::uint32_t last_row) const {
+        std::optional<LayoutRect> bounds;
+        const auto expandInstance = [&](std::uint32_t column, std::uint32_t row) {
+            const auto child_transform =
+                composeTransforms(parent_transform, referenceTransform(reference, column, row));
+            const auto transformed = transformBounds(child_transform, target_bounds);
+            bounds = bounds.has_value() ? mergeBounds(*bounds, transformed) : transformed;
+        };
+        expandInstance(first_column, first_row);
+        if (first_column != last_column) {
+            expandInstance(last_column, first_row);
+        }
+        if (first_row != last_row) {
+            expandInstance(first_column, last_row);
+        }
+        if (first_column != last_column && first_row != last_row) {
+            expandInstance(last_column, last_row);
+        }
+        return bounds.value_or(transformBounds(
+            composeTransforms(parent_transform, referenceTransform(reference, first_column, first_row)),
+            target_bounds));
+    }
+
     void ensureElementsBuilt(std::uint32_t cell_index) const {
         auto& index = cells_[cell_index];
         if (index.elements_built) {
@@ -977,7 +1063,7 @@ private:
             if (!isDrawableGdsElement(element)) {
                 continue;
             }
-            const auto bounds = pointBounds(element.points);
+            const auto bounds = elementBounds(element);
             const auto layer_index = layerIndexFor(element);
             SpatialEntry entry{.object = LayoutSpatialObjectId{.kind =
                                                                    LayoutSpatialObjectKind::Element,
@@ -1107,6 +1193,95 @@ private:
                   .y1 = std::numeric_limits<std::int64_t>::max() / 4}));
         const auto query_box = toBoostBox(local_bbox);
 
+        if (request.lod >= 2U && request.layer_indices.empty() && request.datatypes.empty() &&
+            containsKind(request.shape_kinds, LayoutShapeKind::Placement)) {
+            const auto& cell = gds.cells[cell_index];
+            if (!cell.reference_indices.empty()) {
+                for (const auto reference_index : cell.reference_indices) {
+                    if (reference_index >= gds.references.size()) {
+                        continue;
+                    }
+                    const auto& reference = gds.references[reference_index];
+                    if (reference.target_cell_index >= gds.cells.size()) {
+                        continue;
+                    }
+                    const auto& target = gds.cells[reference.target_cell_index];
+                    if (!target.bounds.has_value()) {
+                        continue;
+                    }
+                    const auto columns = std::max<std::uint32_t>(reference.columns, 1U);
+                    const auto rows = std::max<std::uint32_t>(reference.rows, 1U);
+                    const auto visible_range =
+                        visibleArrayRange(request, transform, reference, *target.bounds, columns, rows);
+                    if (visible_range.has_value() &&
+                        (visible_range->columns.empty || visible_range->rows.empty)) {
+                        continue;
+                    }
+                    const auto first_column = visible_range.has_value()
+                        ? visible_range->columns.first
+                        : 0U;
+                    const auto last_column = visible_range.has_value()
+                        ? visible_range->columns.last
+                        : columns - 1U;
+                    const auto first_row = visible_range.has_value() ? visible_range->rows.first : 0U;
+                    const auto last_row = visible_range.has_value() ? visible_range->rows.last : rows - 1U;
+                    auto child_hash = mixPathHash(path_hash, reference_index);
+                    child_hash = mixPathHash(child_hash, first_column);
+                    child_hash = mixPathHash(child_hash, first_row);
+                    const auto child_path =
+                        childInstancePath(path, reference_index, first_column, first_row);
+                    const auto overview_bounds = visibleReferenceBounds(reference,
+                                                                        *target.bounds,
+                                                                        transform,
+                                                                        first_column,
+                                                                        last_column,
+                                                                        first_row,
+                                                                        last_row);
+                    if (request.has_bbox && !intersects(overview_bounds, request.bbox)) {
+                        continue;
+                    }
+                    const auto overview_transform = composeTransforms(
+                        transform, referenceTransform(reference, first_column, first_row));
+                    auto shape = makeReferenceShapeForBounds(reference,
+                                                            overview_bounds,
+                                                            overview_transform,
+                                                            reference_index,
+                                                            child_hash,
+                                                            child_path);
+                    incrementCounter(result.reference_candidate_count);
+                    incrementCounter(result.traversed_reference_count);
+                    if (budget.shouldSkip()) {
+                        continue;
+                    }
+                    if (!budget.canAppend(shape)) {
+                        stack.erase(cell_index);
+                        return;
+                    }
+                    budget.appended(shape);
+                    incrementCounter(result.lod_shape_count);
+                    result.shapes.push_back(std::move(shape));
+                }
+                stack.erase(cell_index);
+                return;
+            }
+            if (cell.bounds.has_value()) {
+                auto shape = makeCellOverviewShape(cell_index, *cell.bounds, transform, path_hash, path);
+                if (!request.has_bbox || intersects(shape.rect, request.bbox)) {
+                    if (!budget.shouldSkip()) {
+                        if (!budget.canAppend(shape)) {
+                            stack.erase(cell_index);
+                            return;
+                        }
+                        budget.appended(shape);
+                        incrementCounter(result.lod_shape_count);
+                        result.shapes.push_back(std::move(shape));
+                    }
+                }
+                stack.erase(cell_index);
+                return;
+            }
+        }
+
         if (request.lod < 2U) {
             constexpr std::size_t kStreamingElementThreshold = 4096U;
             const auto& cell = gds.cells[cell_index];
@@ -1155,7 +1330,7 @@ private:
                     if (!isDrawableGdsElement(element)) {
                         continue;
                     }
-                    const auto local_element_bounds = pointBounds(element.points);
+                    const auto local_element_bounds = elementBounds(element);
                     if (!intersects(local_element_bounds, local_bbox)) {
                         continue;
                     }
@@ -1232,6 +1407,44 @@ private:
             const auto last_row = visible_range.has_value() ? visible_range->rows.last : rows - 1U;
             if (visible_range.has_value() &&
                 (visible_range->columns.empty || visible_range->rows.empty)) {
+                continue;
+            }
+            if (request.lod >= 2U && request.layer_indices.empty() &&
+                request.datatypes.empty() &&
+                containsKind(request.shape_kinds, LayoutShapeKind::Placement)) {
+                auto child_hash = mixPathHash(path_hash, reference_index);
+                child_hash = mixPathHash(child_hash, first_column);
+                child_hash = mixPathHash(child_hash, first_row);
+                const auto child_path =
+                    childInstancePath(path, reference_index, first_column, first_row);
+                const auto overview_bounds = visibleReferenceBounds(reference,
+                                                                    *target.bounds,
+                                                                    transform,
+                                                                    first_column,
+                                                                    last_column,
+                                                                    first_row,
+                                                                    last_row);
+                auto overview_transform = composeTransforms(
+                    transform, referenceTransform(reference, first_column, first_row));
+                auto shape = makeReferenceShapeForBounds(reference,
+                                                        overview_bounds,
+                                                        overview_transform,
+                                                        reference_index,
+                                                        child_hash,
+                                                        child_path);
+                if (request.has_bbox && !intersects(shape.rect, request.bbox)) {
+                    continue;
+                }
+                incrementCounter(result.traversed_reference_count);
+                if (!budget.shouldSkip()) {
+                    if (!budget.canAppend(shape)) {
+                        stack.erase(cell_index);
+                        return;
+                    }
+                    budget.appended(shape);
+                    incrementCounter(result.lod_shape_count);
+                    result.shapes.push_back(std::move(shape));
+                }
                 continue;
             }
             for (std::uint32_t column = first_column;; ++column) {

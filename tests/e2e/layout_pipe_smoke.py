@@ -615,7 +615,7 @@ def exercise_gds_pipe(session: dict) -> None:
         message_type, request_id, flags, payload = read_frame(pipe)
         assert message_type == TILE_GEOMETRY_RESPONSE
         assert request_id == 24
-        assert flags == 1
+        assert flags == 0
         assert payload[:4] == b"PLTG"
         assert struct.unpack_from("<H", payload, 4)[0] == PROTOCOL_VERSION
         assert struct.unpack_from("<H", payload, 6)[0] >= 84
@@ -628,6 +628,7 @@ def exercise_gds_pipe(session: dict) -> None:
         assert tile_geometry[:4] == b"PLGE"
         assert struct.unpack_from("<I", tile_geometry, 12)[0] == 2
         far_next_token = struct.unpack_from("<I", payload, 12)[0]
+        assert far_next_token == 0
 
         pipe.write(
             frame(
@@ -640,7 +641,7 @@ def exercise_gds_pipe(session: dict) -> None:
         message_type, request_id, flags, payload = read_frame(pipe)
         assert message_type == TILE_GEOMETRY_RESPONSE
         assert request_id == 241
-        assert flags == 1
+        assert flags == 0
         assert struct.unpack_from("<I", payload, 76)[0] == 1
         assert struct.unpack_from("<I", payload, 80)[0] == 0
 
@@ -674,25 +675,40 @@ def exercise_gds_pipe(session: dict) -> None:
         assert struct.unpack_from("<I", payload, 24)[0] == 3
         assert struct.unpack_from("<I", payload, 72)[0] == 3
 
-        assert far_next_token != 0
         pipe.write(
             frame(
                 TILE_GEOMETRY_REQUEST,
                 244,
+                tile_geometry_payload(top_cell_index, (90, 190, 275, 360), max_shapes=1, lod=0),
+            )
+        )
+        pipe.flush()
+        message_type, request_id, flags, payload = read_frame(pipe)
+        assert message_type == TILE_GEOMETRY_RESPONSE
+        assert request_id == 244
+        assert flags == 1
+        precise_next_token = struct.unpack_from("<I", payload, 12)[0]
+        assert precise_next_token != 0
+        assert struct.unpack_from("<I", payload, 24)[0] == 1
+
+        pipe.write(
+            frame(
+                TILE_GEOMETRY_REQUEST,
+                245,
                 tile_geometry_payload(
                     top_cell_index,
                     (90, 190, 275, 360),
-                    max_shapes=2,
-                    lod=2,
-                    continuation_token=far_next_token,
+                    max_shapes=1,
+                    lod=0,
+                    continuation_token=precise_next_token,
                 ),
             )
         )
         pipe.flush()
         message_type, request_id, _flags, payload = read_frame(pipe)
         assert message_type == TILE_GEOMETRY_RESPONSE
-        assert request_id == 244
-        assert struct.unpack_from("<I", payload, 24)[0] >= 1
+        assert request_id == 245
+        assert struct.unpack_from("<I", payload, 24)[0] == 1
 
         pipe.write(frame(HIT_TEST_REQUEST, 25, hit_test_payload(top_cell_index, 105, 205, 5)))
         pipe.flush()

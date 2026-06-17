@@ -226,6 +226,7 @@ struct LayoutGdsElement {
     std::uint32_t reference_index = kNoLayoutIndex;
     std::vector<LayoutPoint> points{};
     std::string text{};
+    std::optional<LayoutRect> bounds{};
 };
 
 struct LayoutGdsReference {
@@ -252,6 +253,8 @@ struct LayoutGdsCell {
 struct LayoutGdsParseMetrics {
     std::uint64_t read_micros = 0;
     std::uint64_t record_micros = 0;
+    std::uint64_t element_finalize_micros = 0;
+    std::uint64_t diagnostic_micros = 0;
     std::uint64_t resolve_micros = 0;
     std::uint64_t bbox_micros = 0;
     std::uint32_t record_count = 0;

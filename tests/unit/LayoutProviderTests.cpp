@@ -5,6 +5,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
@@ -497,10 +498,16 @@ TEST_CASE("GDS parser captures hierarchy elements references and source v3 catal
     CHECK(parsed.value.parse_metrics.cell_count == 2);
     CHECK(parsed.value.parse_metrics.reference_count == 2);
     CHECK(parsed.value.parse_metrics.element_count == 5);
+    CHECK(parsed.value.parse_metrics.element_finalize_micros > 0);
     REQUIRE(parsed.value.references.size() == 2);
     CHECK(parsed.value.references[0].target_cell_index == 0);
     CHECK(parsed.value.references[1].kind == LayoutGdsElementKind::Aref);
     CHECK(parsed.value.references[1].columns == 2);
+    REQUIRE(parsed.value.elements[0].bounds.has_value());
+    CHECK(parsed.value.elements[0].bounds->x0 == 0);
+    CHECK(parsed.value.elements[0].bounds->y0 == 0);
+    CHECK(parsed.value.elements[0].bounds->x1 == 10);
+    CHECK(parsed.value.elements[0].bounds->y1 == 10);
 
     auto source = openGdsLayoutSource(gds_path, "file:///tiny.gds", "tiny-gds");
     CHECK(source->sourceKind() == "gds");
@@ -677,7 +684,7 @@ TEST_CASE("GDS spatial index serves tile hit inspect and selection payloads",
     CHECK(std::string(reinterpret_cast<const char*>(tile.data()), 4) == "PLTG");
     CHECK(readU16(tile.data(), tile.size(), 4) == kLayoutProtocolVersion);
     CHECK(readU16(tile.data(), tile.size(), 6) >= 84);
-    CHECK(readU32(tile.data(), tile.size(), 8) == kLayoutFrameFlagTruncated);
+    CHECK(readU32(tile.data(), tile.size(), 8) == 0);
     CHECK(tileShapeCount(tile) == 2);
     CHECK(readU32(tile.data(), tile.size(), 56) >= 1);
     CHECK(tileLodShapeCount(tile) == 2);
@@ -686,6 +693,7 @@ TEST_CASE("GDS spatial index serves tile hit inspect and selection payloads",
     auto tile_geometry = tileGeometryPayload(tile);
     CHECK(std::string(reinterpret_cast<const char*>(tile_geometry.data()), 4) == "PLGE");
     CHECK(geometryShapeCount(tile_geometry) == 2);
+    CHECK(tileNextToken(tile) == 0);
 
     const auto cached_tile = source->encodeTileGeometryResponse(tile_request);
     CHECK(tileCacheHitCount(cached_tile) == 1);
@@ -833,6 +841,11 @@ TEST_CASE("GDS spatial index serves tile hit inspect and selection payloads",
     CHECK(readTableString(cell_search,
                           cell_strings,
                           readU32(cell_search.data(), cell_search.size(), cell_row + 24)) == "TOP");
+    CHECK(readU64(cell_search.data(), cell_search.size(), 32) > 0);
+    const auto cached_cell_search = source->encodeSearchResponse(
+        decodeSearchRequestPayload(searchRequest("TOP", 4, kSearchKindCell, 1)));
+    CHECK(readU64(cached_cell_search.data(), cached_cell_search.size(), 32) == 0);
+    CHECK(searchResultCount(cached_cell_search) == searchResultCount(cell_search));
 
     const auto text_search = source->encodeSearchResponse(
         decodeSearchRequestPayload(searchRequest("label", 4, kSearchKindText, 1)));
@@ -900,6 +913,21 @@ TEST_CASE("GDS parser reports recoverable and hard malformed input", "[layout][g
     auto failed = parseGds(truncated, "truncated.gds");
     REQUIRE_FALSE(failed.value.diagnostics.empty());
     CHECK(failed.value.diagnostics.front().severity == LayoutDiagnosticSeverity::Error);
+
+    auto noisy = tinyGds();
+    noisy.erase(noisy.end() - 4, noisy.end());
+    for (int index = 0; index < 10; ++index) {
+        appendGdsRecord(noisy, 0x2f, 0x00);
+    }
+    appendGdsRecord(noisy, 0x04, 0x00);
+    auto noisy_parsed = parseGds(noisy, "noisy.gds");
+    const auto suppressed = std::count_if(noisy_parsed.value.diagnostics.begin(),
+                                          noisy_parsed.value.diagnostics.end(),
+                                          [](const auto& diagnostic) {
+                                              return diagnostic.message.find("Suppressed 6") !=
+                                                     std::string::npos;
+                                          });
+    CHECK(suppressed == 1);
 }
 
 TEST_CASE("Layout source aggregates LEF DEF data and encodes catalog geometry", "[layout][protocol]") {

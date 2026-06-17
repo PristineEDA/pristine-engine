@@ -600,7 +600,13 @@ std::string gdsRecordName(GdsRecordType type) {
 class GdsParser final {
 public:
     GdsParser(const std::vector<std::uint8_t>& bytes, std::string_view file_name) :
-        bytes_(bytes), file_name_(file_name) {}
+        bytes_(bytes), file_name_(file_name) {
+        library_.cells.reserve(std::min<std::size_t>(bytes_.size() / 4096U + 16U, 1'000'000U));
+        library_.references.reserve(
+            std::min<std::size_t>(bytes_.size() / 512U + 16U, 1'000'000U));
+        library_.elements.reserve(
+            std::min<std::size_t>(bytes_.size() / 64U + 16U, 4'000'000U));
+    }
 
     ParseResult<LayoutGdsLibrary> parse() {
         try {
@@ -622,6 +628,8 @@ public:
             addDiagnostic(LayoutDiagnosticSeverity::Error, error.what(), offset_);
         }
 
+        flushUnsupportedRecordDiagnostics();
+
         {
             ScopedMicros metric(metrics_.resolve_micros);
             resolveReferences();
@@ -641,10 +649,10 @@ public:
 
 private:
     GdsRecord nextRecord() {
-        ScopedMicros metric(metrics_.read_micros);
         if (bytes_.size() - offset_ < 4U) {
             throw std::runtime_error("Truncated GDS record header");
         }
+        ScopedMicros metric(metrics_.record_micros);
         const auto record_offset = offset_;
         const auto length = readU16(record_offset);
         if (length < 4U) {
@@ -667,7 +675,6 @@ private:
     }
 
     void handleRecord(const GdsRecord& record) {
-        ScopedMicros metric(metrics_.record_micros);
         switch (record.type) {
             case GdsRecordType::Header:
                 if (const auto values = int2Values(record); !values.empty()) {
@@ -749,7 +756,7 @@ private:
             case GdsRecordType::Presentation:
                 return;
         }
-        warning("Skipping unsupported GDS record " + gdsRecordName(record.type), record.offset);
+        unsupportedRecordWarning(record);
     }
 
     void parseUnits(const GdsRecord& record) {
@@ -816,12 +823,17 @@ private:
     }
 
     void finishElement(std::size_t record_offset) {
+        ScopedMicros finalize_metric(metrics_.element_finalize_micros);
         if (!current_element_.has_value()) {
             warning("ENDEL appeared without an active GDS element", record_offset);
             return;
         }
         auto element = std::move(*current_element_);
         current_element_.reset();
+        {
+            ScopedMicros bbox_metric(metrics_.bbox_micros);
+            element.bounds = elementBounds(element);
+        }
         if (current_reference_.has_value()) {
             auto reference = std::move(*current_reference_);
             current_reference_.reset();
@@ -846,8 +858,7 @@ private:
         const auto element_index = static_cast<std::uint32_t>(library_.elements.size());
         if (element.cell_index < library_.cells.size()) {
             library_.cells[element.cell_index].element_indices.push_back(element_index);
-            ScopedMicros metric(metrics_.bbox_micros);
-            expandCellBounds(library_.cells[element.cell_index].bounds, elementBounds(element));
+            expandCellBounds(library_.cells[element.cell_index].bounds, element.bounds);
         }
         library_.elements.push_back(std::move(element));
     }
@@ -1084,6 +1095,7 @@ private:
     }
 
     void addDiagnostic(LayoutDiagnosticSeverity severity, std::string message, std::size_t offset) {
+        ScopedMicros metric(metrics_.diagnostic_micros);
         if (!file_name_.empty()) {
             message = std::string(file_name_) + ": " + message;
         }
@@ -1091,6 +1103,29 @@ private:
                                                 .message = std::move(message),
                                                 .line = 1,
                                                 .column = offset + 1U});
+    }
+
+    void unsupportedRecordWarning(const GdsRecord& record) {
+        auto& aggregate = unsupported_records_[record.type];
+        ++aggregate.count;
+        if (aggregate.sample_offsets.size() < kUnsupportedRecordSampleLimit) {
+            aggregate.sample_offsets.push_back(record.offset);
+            warning("Skipping unsupported GDS record " + gdsRecordName(record.type), record.offset);
+        }
+    }
+
+    void flushUnsupportedRecordDiagnostics() {
+        for (const auto& [record_type, aggregate] : unsupported_records_) {
+            if (aggregate.count <= aggregate.sample_offsets.size()) {
+                continue;
+            }
+            const auto suppressed = aggregate.count - aggregate.sample_offsets.size();
+            const auto offset = aggregate.sample_offsets.empty() ? 0U : aggregate.sample_offsets.front();
+            warning("Suppressed " + std::to_string(suppressed) +
+                        " additional unsupported GDS record " + gdsRecordName(record_type) +
+                        " diagnostics",
+                    offset);
+        }
     }
 
     const std::vector<std::uint8_t>& bytes_;
@@ -1104,6 +1139,12 @@ private:
     std::optional<LayoutGdsReference> current_reference_;
     LayoutGdsElement scratch_element_;
     LayoutGdsReference scratch_reference_;
+    static constexpr std::size_t kUnsupportedRecordSampleLimit = 4U;
+    struct UnsupportedRecordAggregate {
+        std::size_t count = 0;
+        std::vector<std::size_t> sample_offsets{};
+    };
+    std::map<GdsRecordType, UnsupportedRecordAggregate> unsupported_records_;
 };
 
 class LefParser final : public ParserBase {
@@ -1940,7 +1981,12 @@ ParseResult<LayoutDefDesign> parseDefFile(const std::filesystem::path& path) {
 }
 
 ParseResult<LayoutGdsLibrary> parseGdsFile(const std::filesystem::path& path) {
-    return parseGds(readBinaryFile(path), path.generic_string());
+    const auto read_start = Clock::now();
+    auto bytes = readBinaryFile(path);
+    const auto read_micros = elapsedMicros(read_start);
+    auto result = parseGds(bytes, path.generic_string());
+    result.value.parse_metrics.read_micros = read_micros;
+    return result;
 }
 
 } // namespace pristine::layout
