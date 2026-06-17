@@ -1,0 +1,816 @@
+import json
+import math
+import os
+import pathlib
+import socket
+import struct
+import subprocess
+import sys
+import time
+from typing import BinaryIO
+
+
+FRAME_HEADER = struct.Struct("<4sHHIIII")
+PROTOCOL_VERSION = 3
+NO_INDEX = 0xFFFFFFFF
+
+HELLO = 1
+HELLO_RESPONSE = 2
+CATALOG_REQUEST = 3
+CATALOG_RESPONSE = 4
+ERROR_RESPONSE = 7
+CLOSE = 8
+TILE_GEOMETRY_REQUEST = 9
+TILE_GEOMETRY_RESPONSE = 10
+HIT_TEST_REQUEST = 11
+HIT_TEST_RESPONSE = 12
+INSPECT_REQUEST = 13
+INSPECT_RESPONSE = 14
+SELECTION_GEOMETRY_REQUEST = 15
+SELECTION_GEOMETRY_RESPONSE = 16
+SEARCH_REQUEST = 17
+SEARCH_RESPONSE = 18
+
+SEARCH_KIND_CELL = 1 << 0
+SEARCH_KIND_REFERENCE = 1 << 1
+SEARCH_KIND_TEXT = 1 << 2
+SEARCH_KIND_LAYER = 1 << 3
+
+
+def percentile(values: list[int], pct: float) -> int:
+    if not values:
+        return 0
+    ordered = sorted(values)
+    index = int(round((len(ordered) - 1) * pct))
+    return ordered[max(0, min(index, len(ordered) - 1))]
+
+
+def metric_summary(values: list[int]) -> dict[str, int]:
+    return {
+        "count": len(values),
+        "p50": percentile(values, 0.50),
+        "p95": percentile(values, 0.95),
+        "max": max(values) if values else 0,
+    }
+
+
+def now_micros() -> int:
+    return time.perf_counter_ns() // 1000
+
+
+def write_message(process: subprocess.Popen[bytes], message: dict) -> None:
+    payload = json.dumps(message, separators=(",", ":")).encode("utf-8")
+    header = f"Content-Length: {len(payload)}\r\n\r\n".encode("ascii")
+    assert process.stdin is not None
+    process.stdin.write(header + payload)
+    process.stdin.flush()
+
+
+def read_message(process: subprocess.Popen[bytes]) -> dict:
+    assert process.stdout is not None
+    content_length = None
+    while True:
+        line = process.stdout.readline()
+        if line == b"":
+            raise RuntimeError("LSP server stdout closed while reading headers")
+        if line in (b"\r\n", b"\n"):
+            break
+        name, _, value = line.decode("ascii").partition(":")
+        if name.lower() == "content-length":
+            content_length = int(value.strip())
+    if content_length is None:
+        raise RuntimeError("LSP message is missing Content-Length")
+    payload = process.stdout.read(content_length)
+    if len(payload) != content_length:
+        raise RuntimeError("LSP server stdout closed while reading payload")
+    return json.loads(payload.decode("utf-8"))
+
+
+def request(process: subprocess.Popen[bytes], request_id: int, method: str, params: dict | None) -> dict:
+    message = {"jsonrpc": "2.0", "id": request_id, "method": method}
+    if params is not None:
+        message["params"] = params
+    write_message(process, message)
+    while True:
+        response = read_message(process)
+        if response.get("id") == request_id:
+            if "error" in response:
+                raise AssertionError(f"{method} failed: {response['error']}")
+            return response
+
+
+def notify(process: subprocess.Popen[bytes], method: str, params: dict | None) -> None:
+    message = {"jsonrpc": "2.0", "method": method}
+    if params is not None:
+        message["params"] = params
+    write_message(process, message)
+
+
+def frame(message_type: int, request_id: int, payload: bytes = b"", flags: int = 0) -> bytes:
+    return FRAME_HEADER.pack(b"PLD1", PROTOCOL_VERSION, message_type, request_id, flags, len(payload), 0) + payload
+
+
+def read_exact(stream: BinaryIO, size: int) -> bytes:
+    chunks = []
+    remaining = size
+    while remaining:
+        chunk = stream.read(remaining)
+        if not chunk:
+            raise RuntimeError("pipe closed while reading layout frame")
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    return b"".join(chunks)
+
+
+def read_frame(stream: BinaryIO) -> tuple[int, int, int, bytes]:
+    header = read_exact(stream, FRAME_HEADER.size)
+    magic, version, message_type, request_id, flags, payload_size, _reserved = FRAME_HEADER.unpack(header)
+    if magic != b"PLD1":
+        raise AssertionError(f"bad layout frame magic: {magic!r}")
+    if version != PROTOCOL_VERSION:
+        raise AssertionError(f"bad layout protocol version: {version}")
+    return message_type, request_id, flags, read_exact(stream, payload_size)
+
+
+def connect_pipe(kind: str, path: str) -> BinaryIO:
+    deadline = time.monotonic() + 10.0
+    last_error: Exception | None = None
+    while time.monotonic() < deadline:
+        try:
+            if kind == "namedPipe":
+                return open(path, "r+b", buffering=0)
+            if kind == "unixSocket":
+                sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                sock.connect(path)
+                return sock.makefile("rwb", buffering=0)
+            raise AssertionError(f"unknown endpoint kind: {kind}")
+        except OSError as error:
+            last_error = error
+            time.sleep(0.05)
+    raise RuntimeError(f"failed to connect layout pipe {path}: {last_error}")
+
+
+def tile_payload(
+    root_cell_index: int,
+    bbox: tuple[float, float, float, float],
+    lod: int,
+    max_shapes: int = 250_000,
+    max_points: int = 2_000_000,
+    max_bytes: int = 8_000_000,
+    continuation_token: int = 0,
+) -> bytes:
+    payload = bytearray(
+        struct.pack(
+            "<IIIIIII",
+            1,
+            root_cell_index,
+            max_shapes,
+            max_points,
+            max_bytes,
+            lod,
+            continuation_token,
+        )
+    )
+    payload += struct.pack("<dddd", *bbox)
+    payload += struct.pack("<III", 0, 0, 0)
+    return bytes(payload)
+
+
+def hit_payload(root_cell_index: int, x: float, y: float, radius: float, max_results: int = 16) -> bytes:
+    payload = bytearray(struct.pack("<III", 0, root_cell_index, max_results))
+    payload += struct.pack("<ddd", x, y, radius)
+    payload += struct.pack("<III", 0, 0, 0)
+    return bytes(payload)
+
+
+def object_payload(
+    kind: int,
+    cell_index: int,
+    reference_index: int,
+    element_index: int,
+    layer_index: int = NO_INDEX,
+    datatype: int = 0,
+    instance_path_hash: int = 0,
+) -> bytes:
+    return struct.pack(
+        "<IIIIIIIQ",
+        0,
+        kind,
+        cell_index,
+        reference_index,
+        element_index,
+        layer_index,
+        datatype,
+        instance_path_hash,
+    )
+
+
+def search_payload(
+    query: str,
+    max_results: int,
+    kind_mask: int,
+    root_cell_index: int = NO_INDEX,
+    bbox: tuple[float, float, float, float] | None = None,
+) -> bytes:
+    query_bytes = query.encode("utf-8")
+    payload = bytearray(struct.pack("<IIII", 1 if bbox else 0, max_results, kind_mask, root_cell_index))
+    if bbox:
+        payload += struct.pack("<dddd", *bbox)
+    payload += struct.pack("<I", len(query_bytes))
+    payload += query_bytes
+    return bytes(payload)
+
+
+def error_text(payload: bytes) -> str:
+    if len(payload) < 8:
+        return "<malformed error payload>"
+    size = struct.unpack_from("<I", payload, 4)[0]
+    return payload[8 : 8 + size].decode("utf-8", errors="replace")
+
+
+def send_pipe(
+    pipe: BinaryIO,
+    message_type: int,
+    request_id: int,
+    payload: bytes = b"",
+    expect: int | None = None,
+) -> tuple[int, int, bytes, int]:
+    start = now_micros()
+    pipe.write(frame(message_type, request_id, payload))
+    pipe.flush()
+    actual_type, actual_request, flags, response = read_frame(pipe)
+    elapsed = now_micros() - start
+    if actual_type == ERROR_RESPONSE:
+        raise AssertionError(f"pipe request {message_type}/{request_id} failed: {error_text(response)}")
+    if expect is not None and actual_type != expect:
+        raise AssertionError(f"expected message type {expect}, got {actual_type}")
+    if actual_request != request_id:
+        raise AssertionError(f"expected request id {request_id}, got {actual_request}")
+    return flags, elapsed, response, actual_type
+
+
+def expect_pipe_error(pipe: BinaryIO, message_type: int, request_id: int, payload: bytes) -> str:
+    pipe.write(frame(message_type, request_id, payload))
+    pipe.flush()
+    actual_type, actual_request, _flags, response = read_frame(pipe)
+    if actual_request != request_id:
+        raise AssertionError(f"expected request id {request_id}, got {actual_request}")
+    if actual_type != ERROR_RESPONSE:
+        raise AssertionError(f"expected pipe error frame, got {actual_type}")
+    return error_text(response)
+
+
+def table_string(payload: bytes, string_table_offset: int, string_offset: int) -> str:
+    start = string_table_offset + string_offset
+    size = struct.unpack_from("<I", payload, start)[0]
+    begin = start + 4
+    return payload[begin : begin + size].decode("utf-8", errors="replace")
+
+
+def parse_catalog(payload: bytes) -> dict:
+    if payload[:4] != b"PLCT":
+        raise AssertionError("catalog payload missing PLCT magic")
+    top_cell_index = struct.unpack_from("<I", payload, 24)[0]
+    string_table_offset = struct.unpack_from("<I", payload, 28)[0]
+    layer_count = struct.unpack_from("<I", payload, 36)[0]
+    layer_offset = struct.unpack_from("<I", payload, 40)[0]
+    cell_count = struct.unpack_from("<I", payload, 92)[0]
+    cell_offset = struct.unpack_from("<I", payload, 96)[0]
+    reference_count = struct.unpack_from("<I", payload, 100)[0]
+    element_count = struct.unpack_from("<I", payload, 108)[0]
+    if cell_count == 0 or element_count == 0 or layer_count == 0:
+        raise AssertionError("GDS catalog is unexpectedly empty")
+    top_name = ""
+    top_bounds = None
+    if top_cell_index < cell_count:
+        top_row = cell_offset + top_cell_index * 56
+        top_name = table_string(payload, string_table_offset, struct.unpack_from("<I", payload, top_row)[0])
+        if struct.unpack_from("<I", payload, top_row + 20)[0]:
+            top_bounds = {
+                "x0": struct.unpack_from("<d", payload, top_row + 24)[0],
+                "y0": struct.unpack_from("<d", payload, top_row + 32)[0],
+                "x1": struct.unpack_from("<d", payload, top_row + 40)[0],
+                "y1": struct.unpack_from("<d", payload, top_row + 48)[0],
+            }
+    layer_names = []
+    for index in range(min(layer_count, 16)):
+        row = layer_offset + index * 32
+        layer_names.append(table_string(payload, string_table_offset, struct.unpack_from("<I", payload, row)[0]))
+    return {
+        "top_cell_index": top_cell_index,
+        "top_name": top_name,
+        "top_bounds": top_bounds,
+        "layer_names": layer_names,
+        "cell_count": cell_count,
+        "reference_count": reference_count,
+        "element_count": element_count,
+        "layer_count": layer_count,
+    }
+
+
+def parse_tile(payload: bytes, wall_micros: int, flags: int) -> dict:
+    if payload[:4] != b"PLTG":
+        raise AssertionError("tile payload missing PLTG magic")
+    geometry_offset = struct.unpack_from("<I", payload, 16)[0]
+    geometry_size = struct.unpack_from("<I", payload, 20)[0]
+    shape_count = struct.unpack_from("<I", payload, 24)[0]
+    point_count = 0
+    sample_points: list[list[float]] = []
+    if geometry_size and payload[geometry_offset : geometry_offset + 4] == b"PLGE":
+        geometry = payload[geometry_offset : geometry_offset + geometry_size]
+        point_count = struct.unpack_from("<I", geometry, 16)[0]
+        x0_offset = struct.unpack_from("<I", geometry, 28)[0]
+        y0_offset = struct.unpack_from("<I", geometry, 32)[0]
+        x1_offset = struct.unpack_from("<I", geometry, 36)[0]
+        y1_offset = struct.unpack_from("<I", geometry, 40)[0]
+        for index in range(min(shape_count, 8)):
+            x0 = struct.unpack_from("<d", geometry, x0_offset + index * 8)[0]
+            y0 = struct.unpack_from("<d", geometry, y0_offset + index * 8)[0]
+            x1 = struct.unpack_from("<d", geometry, x1_offset + index * 8)[0]
+            y1 = struct.unpack_from("<d", geometry, y1_offset + index * 8)[0]
+            if math.isfinite(x0) and math.isfinite(y0) and math.isfinite(x1) and math.isfinite(y1):
+                sample_points.append([(x0 + x1) / 2.0, (y0 + y1) / 2.0])
+    return {
+        "wall_micros": wall_micros,
+        "frame_flags": flags,
+        "truncated": bool(struct.unpack_from("<I", payload, 8)[0] & 1),
+        "next_token": struct.unpack_from("<I", payload, 12)[0],
+        "payload_bytes": len(payload),
+        "geometry_bytes": geometry_size,
+        "shape_count": shape_count,
+        "point_count": point_count,
+        "index_build_micros": struct.unpack_from("<Q", payload, 32)[0],
+        "query_micros": struct.unpack_from("<Q", payload, 40)[0],
+        "encode_micros": struct.unpack_from("<Q", payload, 48)[0],
+        "visited_cells": struct.unpack_from("<I", payload, 56)[0],
+        "element_candidates": struct.unpack_from("<I", payload, 60)[0],
+        "reference_candidates": struct.unpack_from("<I", payload, 64)[0],
+        "traversed_refs": struct.unpack_from("<I", payload, 68)[0],
+        "lod_shapes": struct.unpack_from("<I", payload, 72)[0],
+        "cache_hits": struct.unpack_from("<I", payload, 76)[0],
+        "cache_misses": struct.unpack_from("<I", payload, 80)[0],
+        "sample_points": sample_points,
+    }
+
+
+def parse_hit(payload: bytes, wall_micros: int) -> dict:
+    if payload[:4] != b"PLHT":
+        raise AssertionError("hit payload missing PLHT magic")
+    count = struct.unpack_from("<I", payload, 8)[0]
+    result = {
+        "wall_micros": wall_micros,
+        "payload_bytes": len(payload),
+        "hit_count": count,
+        "index_build_micros": struct.unpack_from("<Q", payload, 32)[0],
+        "query_micros": struct.unpack_from("<Q", payload, 40)[0],
+        "encode_micros": struct.unpack_from("<Q", payload, 48)[0],
+        "tile_shapes": struct.unpack_from("<I", payload, 56)[0],
+        "precise_candidates": struct.unpack_from("<I", payload, 60)[0],
+        "object": None,
+    }
+    if count:
+        row = struct.unpack_from("<I", payload, 12)[0]
+        result["object"] = {
+            "kind": struct.unpack_from("<H", payload, row)[0],
+            "cell_index": struct.unpack_from("<I", payload, row + 4)[0],
+            "reference_index": struct.unpack_from("<I", payload, row + 8)[0],
+            "element_index": struct.unpack_from("<I", payload, row + 12)[0],
+            "layer_index": struct.unpack_from("<I", payload, row + 16)[0],
+            "datatype": struct.unpack_from("<I", payload, row + 20)[0],
+            "instance_path_hash": struct.unpack_from("<Q", payload, row + 32)[0],
+        }
+    return result
+
+
+def parse_search(payload: bytes, wall_micros: int) -> dict:
+    if payload[:4] != b"PLSR":
+        raise AssertionError("search payload missing PLSR magic")
+    count = struct.unpack_from("<I", payload, 8)[0]
+    row_offset = struct.unpack_from("<I", payload, 12)[0]
+    row_stride = struct.unpack_from("<I", payload, 16)[0]
+    string_offset = struct.unpack_from("<I", payload, 20)[0]
+    results = []
+    for index in range(count):
+        row = row_offset + index * row_stride
+        label_offset = struct.unpack_from("<I", payload, row + 24)[0]
+        results.append(
+            {
+                "kind": struct.unpack_from("<H", payload, row)[0],
+                "class": struct.unpack_from("<H", payload, row + 2)[0],
+                "cell_index": struct.unpack_from("<I", payload, row + 4)[0],
+                "reference_index": struct.unpack_from("<I", payload, row + 8)[0],
+                "element_index": struct.unpack_from("<I", payload, row + 12)[0],
+                "layer_index": struct.unpack_from("<I", payload, row + 16)[0],
+                "datatype": struct.unpack_from("<I", payload, row + 20)[0],
+                "label": table_string(payload, string_offset, label_offset),
+                "instance_path_hash": struct.unpack_from("<Q", payload, row + 32)[0],
+                "source_cell_index": struct.unpack_from("<I", payload, row + 40)[0],
+                "rank": struct.unpack_from("<I", payload, row + 44)[0],
+            }
+        )
+    return {
+        "wall_micros": wall_micros,
+        "payload_bytes": len(payload),
+        "result_count": count,
+        "index_build_micros": struct.unpack_from("<Q", payload, 32)[0],
+        "query_micros": struct.unpack_from("<Q", payload, 40)[0],
+        "encode_micros": struct.unpack_from("<Q", payload, 48)[0],
+        "results": results,
+    }
+
+
+def make_bbox(bounds: dict, scale: float, dx: float = 0.0, dy: float = 0.0) -> tuple[float, float, float, float]:
+    x0 = float(bounds["x0"])
+    y0 = float(bounds["y0"])
+    x1 = float(bounds["x1"])
+    y1 = float(bounds["y1"])
+    cx = (x0 + x1) / 2.0 + (x1 - x0) * dx
+    cy = (y0 + y1) / 2.0 + (y1 - y0) * dy
+    width = max((x1 - x0) * scale, 1.0)
+    height = max((y1 - y0) * scale, 1.0)
+    return (cx - width / 2.0, cy - height / 2.0, cx + width / 2.0, cy + height / 2.0)
+
+
+def compare_baseline(metrics: dict) -> None:
+    baseline_path = os.environ.get("PRISTINE_LAYOUT_PERF_BASELINE")
+    enforce = os.environ.get("PRISTINE_LAYOUT_PERF_ENFORCE") == "1"
+    if not baseline_path:
+        return
+    baseline = json.loads(pathlib.Path(baseline_path).read_text(encoding="utf-8"))
+    failures = []
+    for key in [
+        "tile_query_micros",
+        "tile_encode_micros",
+        "hit_query_micros",
+        "search_query_micros",
+        "open_wall_micros",
+    ]:
+        current = metrics.get("summary", {}).get(key, {}).get("p95")
+        previous = baseline.get("summary", {}).get(key, {}).get("p95")
+        if current is None or previous in (None, 0):
+            continue
+        if current > int(math.ceil(previous * 1.25)):
+            failures.append(f"{key} p95 {current}us > baseline {previous}us by more than 25%")
+    if failures and enforce:
+        raise AssertionError("; ".join(failures))
+    if failures:
+        print("PERF WARNING: " + "; ".join(failures))
+
+
+def run_interaction(server_path: pathlib.Path, gds_path: pathlib.Path) -> dict:
+    process: subprocess.Popen[bytes] | None = None
+    request_id = 1
+    try:
+        process = subprocess.Popen(
+            [str(server_path), "--stdio"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        workspace_uri = gds_path.parent.as_uri()
+        request(
+            process,
+            request_id,
+            "initialize",
+            {
+                "processId": None,
+                "rootUri": workspace_uri,
+                "workspaceFolders": [{"uri": workspace_uri, "name": "tt-tinyqv"}],
+                "capabilities": {},
+            },
+        )
+        request_id += 1
+        notify(process, "initialized", {})
+
+        open_start = now_micros()
+        session = request(
+            process,
+            request_id,
+            "systemverilog/layout/open",
+            {"gdsUri": gds_path.as_uri(), "title": gds_path.name},
+        )["result"]
+        open_wall_micros = now_micros() - open_start
+        request_id += 1
+        if session["protocol"] != "pristine-layout-columnar-v3" or session["source"] != "gds":
+            raise AssertionError(f"bad layout session metadata: {session}")
+        metrics: dict = {
+            "fixture": str(gds_path),
+            "session": {
+                "protocol": session["protocol"],
+                "source": session["source"],
+                "cellCount": session.get("cellCount", 0),
+                "referenceCount": session.get("referenceCount", 0),
+                "elementCount": session.get("elementCount", 0),
+                "layerCount": session.get("layerCount", 0),
+                "diagnosticCount": session.get("diagnosticCount", 0),
+                "gdsMetrics": session.get("gdsMetrics", {}),
+            },
+            "open_wall_micros": [open_wall_micros],
+            "tiles": [],
+            "hits": [],
+            "searches": [],
+            "inspect_wall_micros": [],
+            "selection_wall_micros": [],
+            "error_frames": 0,
+        }
+
+        with connect_pipe(session["endpoint"]["kind"], session["endpoint"]["path"]) as pipe:
+            _flags, _wall, hello, _ = send_pipe(pipe, HELLO, 10, expect=HELLO_RESPONSE)
+            if struct.unpack_from("<H", hello, 0)[0] != PROTOCOL_VERSION:
+                raise AssertionError("hello payload did not report v3")
+
+            _flags, _wall, catalog_payload, _ = send_pipe(pipe, CATALOG_REQUEST, 11, expect=CATALOG_RESPONSE)
+            catalog = parse_catalog(catalog_payload)
+            metrics["catalog"] = catalog
+            top = catalog["top_cell_index"]
+            bounds = session.get("bounds") or catalog.get("top_bounds")
+            if not bounds:
+                raise AssertionError("GDS catalog did not report top-cell bounds")
+
+            full_bbox = (
+                float(bounds["x0"]),
+                float(bounds["y0"]),
+                float(bounds["x1"]),
+                float(bounds["y1"]),
+            )
+            if full_bbox[2] <= full_bbox[0] or full_bbox[3] <= full_bbox[1]:
+                raise AssertionError(f"invalid GDS bounds: {bounds}")
+
+            scenarios = [("full_lod2", full_bbox, 2)]
+            for scale, lod in [(0.50, 1), (0.20, 0), (0.10, 0)]:
+                scenarios.append((f"center_s{scale}_lod{lod}", make_bbox(bounds, scale), lod))
+            for dx in (-0.25, 0.25):
+                for dy in (-0.25, 0.25):
+                    scenarios.append((f"quadrant_{dx}_{dy}", make_bbox(bounds, 0.35, dx, dy), 1))
+            for ix in range(5):
+                for iy in range(5):
+                    scenarios.append(
+                        (
+                            f"pan_{ix}_{iy}",
+                            make_bbox(bounds, 0.18, (ix - 2) * 0.12, (iy - 2) * 0.12),
+                            1,
+                        )
+                    )
+            for index in range(60):
+                scale = 0.08 + (index % 6) * 0.035
+                dx = ((index % 10) - 4.5) * 0.035
+                dy = (((index // 10) % 6) - 2.5) * 0.05
+                scenarios.append((f"burst_{index}", make_bbox(bounds, scale, dx, dy), index % 3))
+
+            next_request_id = 100
+            for name, bbox, lod in scenarios:
+                flags, wall, payload, _ = send_pipe(
+                    pipe,
+                    TILE_GEOMETRY_REQUEST,
+                    next_request_id,
+                    tile_payload(top, bbox, lod),
+                    expect=TILE_GEOMETRY_RESPONSE,
+                )
+                next_request_id += 1
+                parsed = parse_tile(payload, wall, flags)
+                parsed["name"] = name
+                parsed["lod"] = lod
+                metrics["tiles"].append(parsed)
+
+            repeat_bbox = make_bbox(bounds, 0.20)
+            for index in range(3):
+                flags, wall, payload, _ = send_pipe(
+                    pipe,
+                    TILE_GEOMETRY_REQUEST,
+                    next_request_id,
+                    tile_payload(top, repeat_bbox, 1),
+                    expect=TILE_GEOMETRY_RESPONSE,
+                )
+                next_request_id += 1
+                parsed = parse_tile(payload, wall, flags)
+                parsed["name"] = f"repeat_cache_{index}"
+                parsed["lod"] = 1
+                metrics["tiles"].append(parsed)
+
+            flags, wall, payload, _ = send_pipe(
+                pipe,
+                TILE_GEOMETRY_REQUEST,
+                next_request_id,
+                tile_payload(top, full_bbox, 2, max_shapes=1, max_bytes=1_000_000),
+                expect=TILE_GEOMETRY_RESPONSE,
+            )
+            next_request_id += 1
+            first_page = parse_tile(payload, wall, flags)
+            first_page["name"] = "continuation_first"
+            first_page["lod"] = 2
+            metrics["tiles"].append(first_page)
+            if first_page["next_token"]:
+                flags, wall, payload, _ = send_pipe(
+                    pipe,
+                    TILE_GEOMETRY_REQUEST,
+                    next_request_id,
+                    tile_payload(
+                        top,
+                        full_bbox,
+                        2,
+                        max_shapes=1,
+                        max_bytes=1_000_000,
+                        continuation_token=first_page["next_token"],
+                    ),
+                    expect=TILE_GEOMETRY_RESPONSE,
+                )
+                next_request_id += 1
+                second_page = parse_tile(payload, wall, flags)
+                second_page["name"] = "continuation_second"
+                second_page["lod"] = 2
+                metrics["tiles"].append(second_page)
+
+            message = expect_pipe_error(
+                pipe,
+                TILE_GEOMETRY_REQUEST,
+                next_request_id,
+                tile_payload(top, full_bbox, 2, max_shapes=1, continuation_token=0x00ABCDEF),
+            )
+            next_request_id += 1
+            if "continuation token" not in message:
+                raise AssertionError(f"bad token returned unexpected error: {message}")
+            metrics["error_frames"] += 1
+
+            hit_object = None
+            hit_radius = max(full_bbox[2] - full_bbox[0], full_bbox[3] - full_bbox[1]) / 1000.0
+            hit_points: list[tuple[float, float]] = []
+            for tile in metrics["tiles"]:
+                for point in tile.get("sample_points", []):
+                    hit_points.append((float(point[0]), float(point[1])))
+                    if len(hit_points) >= 12:
+                        break
+                if len(hit_points) >= 12:
+                    break
+            for dx, dy in [(0.0, 0.0), (-0.25, -0.25), (0.25, 0.25), (-0.25, 0.25), (0.25, -0.25)]:
+                bbox = make_bbox(bounds, 0.01, dx, dy)
+                hit_points.append(((bbox[0] + bbox[2]) / 2.0, (bbox[1] + bbox[3]) / 2.0))
+            for x, y in hit_points:
+                _flags, wall, payload, _ = send_pipe(
+                    pipe,
+                    HIT_TEST_REQUEST,
+                    next_request_id,
+                    hit_payload(top, x, y, hit_radius),
+                    expect=HIT_TEST_RESPONSE,
+                )
+                next_request_id += 1
+                hit = parse_hit(payload, wall)
+                hit["point"] = [x, y]
+                metrics["hits"].append(hit)
+                if hit["object"] is not None:
+                    hit_object = hit["object"]
+                    break
+            if hit_object is None:
+                raise AssertionError("hit-test did not return any selectable object")
+
+            object_bytes = object_payload(
+                hit_object["kind"],
+                hit_object["cell_index"],
+                hit_object["reference_index"],
+                hit_object["element_index"],
+                hit_object["layer_index"],
+                hit_object["datatype"],
+                hit_object["instance_path_hash"],
+            )
+            _flags, wall, inspect_payload_bytes, _ = send_pipe(
+                pipe, INSPECT_REQUEST, next_request_id, object_bytes, expect=INSPECT_RESPONSE
+            )
+            next_request_id += 1
+            if inspect_payload_bytes[:4] != b"PLIN":
+                raise AssertionError("inspect response missing PLIN magic")
+            metrics["inspect_wall_micros"].append(wall)
+
+            _flags, wall, selection_payload, _ = send_pipe(
+                pipe,
+                SELECTION_GEOMETRY_REQUEST,
+                next_request_id,
+                object_bytes,
+                expect=SELECTION_GEOMETRY_RESPONSE,
+            )
+            next_request_id += 1
+            if selection_payload[:4] != b"PLGE":
+                raise AssertionError("selection response missing PLGE magic")
+            metrics["selection_wall_micros"].append(wall)
+
+            queries = [
+                ("top_cell", catalog["top_name"], SEARCH_KIND_CELL | SEARCH_KIND_REFERENCE),
+                ("generic_tt", "tt", SEARCH_KIND_CELL | SEARCH_KIND_REFERENCE | SEARCH_KIND_TEXT),
+                ("layer", catalog["layer_names"][0] if catalog["layer_names"] else "GDS:", SEARCH_KIND_LAYER),
+            ]
+            search_object = None
+            for name, query, kind_mask in queries:
+                _flags, wall, payload, _ = send_pipe(
+                    pipe,
+                    SEARCH_REQUEST,
+                    next_request_id,
+                    search_payload(query, 16, kind_mask, top),
+                    expect=SEARCH_RESPONSE,
+                )
+                next_request_id += 1
+                search = parse_search(payload, wall)
+                search["name"] = name
+                search["query"] = query
+                metrics["searches"].append(search)
+                if search["result_count"] == 0:
+                    raise AssertionError(f"search {name!r} for {query!r} returned no results")
+                if search_object is None:
+                    search_object = search["results"][0]
+
+            if search_object is None:
+                raise AssertionError("search did not produce an object")
+            search_object_bytes = object_payload(
+                search_object["kind"],
+                search_object["cell_index"],
+                search_object["reference_index"],
+                search_object["element_index"],
+                search_object["layer_index"],
+                search_object["datatype"],
+                search_object["instance_path_hash"],
+            )
+            _flags, wall, payload, _ = send_pipe(
+                pipe, INSPECT_REQUEST, next_request_id, search_object_bytes, expect=INSPECT_RESPONSE
+            )
+            next_request_id += 1
+            if payload[:4] != b"PLIN":
+                raise AssertionError("search inspect response missing PLIN magic")
+            metrics["inspect_wall_micros"].append(wall)
+
+            _flags, wall, payload, _ = send_pipe(
+                pipe,
+                SELECTION_GEOMETRY_REQUEST,
+                next_request_id,
+                search_object_bytes,
+                expect=SELECTION_GEOMETRY_RESPONSE,
+            )
+            next_request_id += 1
+            if payload[:4] != b"PLGE":
+                raise AssertionError("search selection response missing PLGE magic")
+            metrics["selection_wall_micros"].append(wall)
+
+            pipe.write(frame(CLOSE, next_request_id))
+            pipe.flush()
+
+        request(process, request_id, "systemverilog/layout/close", {"sessionId": session["sessionId"]})
+        request_id += 1
+        request(process, request_id, "shutdown", None)
+        notify(process, "exit", None)
+        process.wait(timeout=5)
+        process = None
+
+        tile_query = [entry["query_micros"] for entry in metrics["tiles"]]
+        tile_encode = [entry["encode_micros"] for entry in metrics["tiles"]]
+        hit_query = [entry["query_micros"] for entry in metrics["hits"]]
+        search_query = [entry["query_micros"] for entry in metrics["searches"]]
+        metrics["summary"] = {
+            "open_wall_micros": metric_summary(metrics["open_wall_micros"]),
+            "tile_query_micros": metric_summary(tile_query),
+            "tile_encode_micros": metric_summary(tile_encode),
+            "tile_wall_micros": metric_summary([entry["wall_micros"] for entry in metrics["tiles"]]),
+            "hit_query_micros": metric_summary(hit_query),
+            "hit_wall_micros": metric_summary([entry["wall_micros"] for entry in metrics["hits"]]),
+            "search_query_micros": metric_summary(search_query),
+            "search_wall_micros": metric_summary([entry["wall_micros"] for entry in metrics["searches"]]),
+            "inspect_wall_micros": metric_summary(metrics["inspect_wall_micros"]),
+            "selection_wall_micros": metric_summary(metrics["selection_wall_micros"]),
+            "tile_payload_bytes": metric_summary([entry["payload_bytes"] for entry in metrics["tiles"]]),
+            "tile_shape_count": metric_summary([entry["shape_count"] for entry in metrics["tiles"]]),
+            "tile_point_count": metric_summary([entry["point_count"] for entry in metrics["tiles"]]),
+        }
+        return metrics
+    finally:
+        if process is not None:
+            process.kill()
+
+
+def main() -> int:
+    if len(sys.argv) != 3:
+        print("usage: tt_tinyqv_gds_interaction.py <pristine-engine> <tt_um_tt_tinyQV.gds>", file=sys.stderr)
+        return 2
+    server_path = pathlib.Path(sys.argv[1]).resolve()
+    gds_path = pathlib.Path(sys.argv[2]).resolve()
+    if not gds_path.is_file():
+        if os.environ.get("PRISTINE_REQUIRE_TT_TINYQV_GDS"):
+            print(f"ERROR: required TT tinyQV GDS fixture is missing at {gds_path}", file=sys.stderr)
+            return 1
+        print(f"SKIP: missing optional TT tinyQV GDS fixture at {gds_path}")
+        return 77
+
+    metrics = run_interaction(server_path, gds_path)
+    output_path = server_path.parent / "tt_tinyqv_gds_interaction_metrics.json"
+    output_path.write_text(json.dumps(metrics, indent=2, sort_keys=True), encoding="utf-8")
+    compare_baseline(metrics)
+
+    summary = metrics["summary"]
+    print(
+        "TT tinyQV GDS interaction: "
+        f"open p95 {summary['open_wall_micros']['p95']}us, "
+        f"tile query p50/p95/max {summary['tile_query_micros']['p50']}/"
+        f"{summary['tile_query_micros']['p95']}/{summary['tile_query_micros']['max']}us, "
+        f"hit query p95 {summary['hit_query_micros']['p95']}us, "
+        f"search query p95 {summary['search_query_micros']['p95']}us, "
+        f"metrics {output_path}"
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

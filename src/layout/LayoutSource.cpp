@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cctype>
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
@@ -108,6 +109,51 @@ std::string tileRequestKey(const LayoutTileGeometryRequest& request) {
     return out.str();
 }
 
+std::string asciiLower(std::string_view value) {
+    std::string result;
+    result.reserve(value.size());
+    for (const auto ch : value) {
+        result.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(ch))));
+    }
+    return result;
+}
+
+bool containsAsciiCaseInsensitive(std::string_view value, std::string_view needle) {
+    if (needle.empty()) {
+        return true;
+    }
+    const auto lower_value = asciiLower(value);
+    const auto lower_needle = asciiLower(needle);
+    return lower_value.find(lower_needle) != std::string::npos;
+}
+
+std::uint32_t searchRank(std::string_view value, std::string_view query, std::uint32_t base_rank) {
+    if (query.empty()) {
+        return base_rank + 30U;
+    }
+    const auto lower_value = asciiLower(value);
+    const auto lower_query = asciiLower(query);
+    if (lower_value == lower_query) {
+        return base_rank;
+    }
+    if (lower_value.rfind(lower_query, 0) == 0) {
+        return base_rank + 10U;
+    }
+    return base_rank + 20U;
+}
+
+bool searchKindEnabled(std::uint32_t mask, std::uint32_t bit) {
+    return mask == 0U || (mask & bit) != 0U;
+}
+
+constexpr std::uint32_t kSearchKindCell = 1U << 0U;
+constexpr std::uint32_t kSearchKindReference = 1U << 1U;
+constexpr std::uint32_t kSearchKindText = 1U << 2U;
+constexpr std::uint32_t kSearchKindLayer = 1U << 3U;
+
+LayoutSearchResponse searchGdsLayout(const LayoutDataSet& data,
+                                     const LayoutSearchRequest& request);
+
 class DataSetLayoutSource final : public LayoutSource {
 public:
     DataSetLayoutSource(LayoutDataSet data, std::string source_kind) :
@@ -140,6 +186,10 @@ public:
         auto selection = spatialIndex(index_build_micros).selectionGeometry(request);
         selection.index_build_micros = index_build_micros;
         return encodeGeometryResponsePayload(data_, geometry_request, selection.shapes, selection.truncated);
+    }
+    std::vector<std::uint8_t> encodeSearchResponse(
+        const LayoutSearchRequest& request) const override {
+        return encodeSearchResponsePayload(data_, searchGdsLayout(data_, request));
     }
 
 private:
@@ -336,6 +386,10 @@ void expandBounds(std::optional<LayoutRect>& bounds, const LayoutRect& rect) {
     bounds->y1 = std::max(bounds->y1, rect.y1);
 }
 
+bool intersects(const LayoutRect& lhs, const LayoutRect& rhs) {
+    return lhs.x0 <= rhs.x1 && lhs.x1 >= rhs.x0 && lhs.y0 <= rhs.y1 && lhs.y1 >= rhs.y0;
+}
+
 LayoutRect shapeBounds(const LayoutShape& shape) {
     if (shape.kind == LayoutShapeKind::Polygon && !shape.polygon.points.empty()) {
         LayoutRect bounds{.x0 = shape.polygon.points.front().x,
@@ -414,6 +468,23 @@ LayoutPoint applyTransform(const GdsAffineTransform& transform, const LayoutPoin
                                         transform.d * static_cast<double>(point.y) + transform.ty))};
 }
 
+LayoutRect pointBounds(const std::vector<LayoutPoint>& points) {
+    if (points.empty()) {
+        return {};
+    }
+    LayoutRect bounds{.x0 = points.front().x,
+                      .y0 = points.front().y,
+                      .x1 = points.front().x,
+                      .y1 = points.front().y};
+    for (const auto& point : points) {
+        bounds.x0 = std::min(bounds.x0, point.x);
+        bounds.y0 = std::min(bounds.y0, point.y);
+        bounds.x1 = std::max(bounds.x1, point.x);
+        bounds.y1 = std::max(bounds.y1, point.y);
+    }
+    return bounds;
+}
+
 GdsAffineTransform composeTransforms(const GdsAffineTransform& parent,
                                      const GdsAffineTransform& child) {
     return GdsAffineTransform{.a = parent.a * child.a + parent.c * child.b,
@@ -422,6 +493,15 @@ GdsAffineTransform composeTransforms(const GdsAffineTransform& parent,
                               .d = parent.b * child.c + parent.d * child.d,
                               .tx = parent.a * child.tx + parent.c * child.ty + parent.tx,
                               .ty = parent.b * child.tx + parent.d * child.ty + parent.ty};
+}
+
+LayoutRect transformBounds(const GdsAffineTransform& transform, const LayoutRect& rect) {
+    std::vector<LayoutPoint> points;
+    points.push_back(applyTransform(transform, LayoutPoint{.x = rect.x0, .y = rect.y0}));
+    points.push_back(applyTransform(transform, LayoutPoint{.x = rect.x0, .y = rect.y1}));
+    points.push_back(applyTransform(transform, LayoutPoint{.x = rect.x1, .y = rect.y0}));
+    points.push_back(applyTransform(transform, LayoutPoint{.x = rect.x1, .y = rect.y1}));
+    return pointBounds(points);
 }
 
 GdsAffineTransform referenceTransform(const LayoutGdsReference& reference,
@@ -445,6 +525,90 @@ GdsAffineTransform referenceTransform(const LayoutGdsReference& reference,
                               .d = magnification * cos_angle * reflect,
                               .tx = static_cast<double>(reference.origin.x) + dx,
                               .ty = static_cast<double>(reference.origin.y) + dy};
+}
+
+std::optional<LayoutRect> referenceArrayBounds(const LayoutGdsReference& reference,
+                                               const LayoutRect& target_bounds) {
+    std::optional<LayoutRect> bounds;
+    const auto columns = std::max<std::uint32_t>(reference.columns, 1U);
+    const auto rows = std::max<std::uint32_t>(reference.rows, 1U);
+    const auto expandInstance = [&](std::uint32_t column, std::uint32_t row) {
+        expandBounds(bounds, transformBounds(referenceTransform(reference, column, row), target_bounds));
+    };
+    expandInstance(0U, 0U);
+    if (columns > 1U) {
+        expandInstance(columns - 1U, 0U);
+    }
+    if (rows > 1U) {
+        expandInstance(0U, rows - 1U);
+    }
+    if (columns > 1U && rows > 1U) {
+        expandInstance(columns - 1U, rows - 1U);
+    }
+    return bounds;
+}
+
+std::optional<LayoutRect> directDrawableGdsCellBounds(const LayoutGdsLibrary& gds,
+                                                      const LayoutGdsCell& cell) {
+    std::optional<LayoutRect> bounds;
+    for (const auto element_index : cell.element_indices) {
+        if (element_index >= gds.elements.size()) {
+            continue;
+        }
+        const auto& element = gds.elements[element_index];
+        if (isDrawableGdsElement(element)) {
+            expandBounds(bounds, pointBounds(element.points));
+        }
+    }
+    return bounds;
+}
+
+std::optional<LayoutRect> resolveGdsCellHierarchyBounds(LayoutGdsLibrary& gds,
+                                                        std::uint32_t cell_index,
+                                                        std::vector<std::uint8_t>& visiting,
+                                                        std::vector<std::uint8_t>& resolved) {
+    if (cell_index >= gds.cells.size()) {
+        return std::nullopt;
+    }
+    if (resolved[cell_index] != 0U) {
+        return gds.cells[cell_index].bounds;
+    }
+    if (visiting[cell_index] != 0U) {
+        return gds.cells[cell_index].bounds;
+    }
+
+    visiting[cell_index] = 1U;
+    auto bounds = directDrawableGdsCellBounds(gds, gds.cells[cell_index]);
+    for (const auto reference_index : gds.cells[cell_index].reference_indices) {
+        if (reference_index >= gds.references.size()) {
+            continue;
+        }
+        const auto& reference = gds.references[reference_index];
+        if (reference.target_cell_index >= gds.cells.size()) {
+            continue;
+        }
+        const auto target_bounds =
+            resolveGdsCellHierarchyBounds(gds, reference.target_cell_index, visiting, resolved);
+        if (!target_bounds.has_value()) {
+            continue;
+        }
+        const auto transformed = referenceArrayBounds(reference, *target_bounds);
+        if (transformed.has_value()) {
+            expandBounds(bounds, *transformed);
+        }
+    }
+    visiting[cell_index] = 0U;
+    resolved[cell_index] = 1U;
+    gds.cells[cell_index].bounds = bounds;
+    return bounds;
+}
+
+void resolveGdsHierarchyBounds(LayoutGdsLibrary& gds) {
+    std::vector<std::uint8_t> visiting(gds.cells.size(), 0U);
+    std::vector<std::uint8_t> resolved(gds.cells.size(), 0U);
+    for (std::uint32_t cell_index = 0; cell_index < gds.cells.size(); ++cell_index) {
+        (void)resolveGdsCellHierarchyBounds(gds, cell_index, visiting, resolved);
+    }
 }
 
 LayoutShapeKind shapeKindForGdsElement(const LayoutGdsElement& element) {
@@ -555,6 +719,216 @@ std::vector<LayoutShape> flattenRequestedGdsCells(const LayoutDataSet& data,
         flattenGdsCell(shapes, data, gds, cell_index, GdsAffineTransform{}, stack);
     }
     return shapes;
+}
+
+void collectReachableCells(const LayoutGdsLibrary& gds,
+                           std::uint32_t cell_index,
+                           std::set<std::uint32_t>& reachable,
+                           std::set<std::uint32_t>& stack) {
+    if (cell_index >= gds.cells.size() || !stack.insert(cell_index).second) {
+        return;
+    }
+    if (reachable.insert(cell_index).second) {
+        const auto& cell = gds.cells[cell_index];
+        for (const auto reference_index : cell.reference_indices) {
+            if (reference_index < gds.references.size()) {
+                collectReachableCells(gds,
+                                      gds.references[reference_index].target_cell_index,
+                                      reachable,
+                                      stack);
+            }
+        }
+    }
+    stack.erase(cell_index);
+}
+
+std::set<std::uint32_t> searchReachableCells(const LayoutGdsLibrary& gds,
+                                             const LayoutSearchRequest& request) {
+    std::set<std::uint32_t> reachable;
+    if (request.root_cell_index == kNoLayoutIndex) {
+        for (std::uint32_t index = 0; index < gds.cells.size(); ++index) {
+            reachable.insert(index);
+        }
+        return reachable;
+    }
+    if (request.root_cell_index >= gds.cells.size()) {
+        throw std::runtime_error("Layout search root cell index is out of range");
+    }
+    std::set<std::uint32_t> stack;
+    collectReachableCells(gds, request.root_cell_index, reachable, stack);
+    return reachable;
+}
+
+LayoutInspectClass classifySearchElement(const LayoutDataSet& data,
+                                         const LayoutGdsLibrary& gds,
+                                         const LayoutGdsElement& element) {
+    if (element.kind == LayoutGdsElementKind::Path) {
+        return LayoutInspectClass::Wire;
+    }
+    if (element.kind == LayoutGdsElementKind::Text) {
+        return LayoutInspectClass::Label;
+    }
+    const auto cell_name = element.cell_index < gds.cells.size()
+        ? std::string_view(gds.cells[element.cell_index].name)
+        : std::string_view{};
+    const auto layer_index = findGdsLayer(data, element.layer, element.datatype);
+    const auto layer_name = layer_index < data.layers.size() ? std::string_view(data.layers[layer_index].name)
+                                                             : std::string_view{};
+    if (containsAsciiCaseInsensitive(cell_name, "pad") ||
+        containsAsciiCaseInsensitive(cell_name, "io") ||
+        containsAsciiCaseInsensitive(layer_name, "pad")) {
+        return LayoutInspectClass::Pad;
+    }
+    return LayoutInspectClass::Shape;
+}
+
+bool matchesSearchBox(const LayoutSearchRequest& request, const std::optional<LayoutRect>& bounds) {
+    if (!request.has_bbox) {
+        return true;
+    }
+    return bounds.has_value() && intersects(*bounds, request.bbox);
+}
+
+bool matchesSearchBox(const LayoutSearchRequest& request, const LayoutRect& bounds) {
+    return !request.has_bbox || intersects(bounds, request.bbox);
+}
+
+LayoutSearchResponse searchGdsLayout(const LayoutDataSet& data,
+                                     const LayoutSearchRequest& request) {
+    const auto query_start = Clock::now();
+    if (!data.gds.has_value()) {
+        throw std::runtime_error("Layout search requires a GDS layout source");
+    }
+    const auto& gds = *data.gds;
+    const auto reachable = searchReachableCells(gds, request);
+
+    LayoutSearchResponse response;
+    auto addResult = [&](LayoutSearchResult result) {
+        response.results.push_back(std::move(result));
+    };
+
+    if (searchKindEnabled(request.kind_mask, kSearchKindCell)) {
+        for (const auto cell_index : reachable) {
+            const auto& cell = gds.cells[cell_index];
+            if (!containsAsciiCaseInsensitive(cell.name, request.query) ||
+                !matchesSearchBox(request, cell.bounds)) {
+                continue;
+            }
+            LayoutSearchResult result;
+            result.object = LayoutSpatialObjectId{.kind = LayoutSpatialObjectKind::Cell,
+                                                  .cell_index = cell_index,
+                                                  .reference_index = kNoLayoutIndex,
+                                                  .element_index = kNoLayoutIndex,
+                                                  .layer_index = kNoLayoutIndex};
+            result.bounds = cell.bounds.value_or(LayoutRect{});
+            result.label = cell.name;
+            result.object_class = LayoutInspectClass::Cell;
+            result.source_cell_index = cell_index;
+            result.rank = searchRank(cell.name, request.query, 0U);
+            addResult(std::move(result));
+        }
+    }
+
+    if (searchKindEnabled(request.kind_mask, kSearchKindReference)) {
+        for (std::uint32_t reference_index = 0; reference_index < gds.references.size();
+             ++reference_index) {
+            const auto& reference = gds.references[reference_index];
+            if (reachable.find(reference.parent_cell_index) == reachable.end() ||
+                reference.target_cell_index >= gds.cells.size() ||
+                !containsAsciiCaseInsensitive(reference.target_name, request.query)) {
+                continue;
+            }
+            std::optional<LayoutRect> bounds;
+            if (gds.cells[reference.target_cell_index].bounds.has_value()) {
+                bounds = transformBounds(referenceTransform(reference, 0U, 0U),
+                                         *gds.cells[reference.target_cell_index].bounds);
+            }
+            if (!matchesSearchBox(request, bounds)) {
+                continue;
+            }
+            LayoutSearchResult result;
+            result.object = LayoutSpatialObjectId{.kind = LayoutSpatialObjectKind::Reference,
+                                                  .cell_index = reference.parent_cell_index,
+                                                  .reference_index = reference_index,
+                                                  .element_index = kNoLayoutIndex,
+                                                  .layer_index = kNoLayoutIndex};
+            result.bounds = bounds.value_or(LayoutRect{});
+            result.label = reference.target_name;
+            result.object_class = LayoutInspectClass::Cell;
+            result.source_cell_index = reference.target_cell_index;
+            result.rank = searchRank(reference.target_name, request.query, 100U);
+            addResult(std::move(result));
+        }
+    }
+
+    std::set<std::uint32_t> reported_layers;
+    for (std::uint32_t element_index = 0; element_index < gds.elements.size(); ++element_index) {
+        const auto& element = gds.elements[element_index];
+        if (reachable.find(element.cell_index) == reachable.end() || !isDrawableGdsElement(element)) {
+            continue;
+        }
+        const auto bounds = pointBounds(element.points);
+        if (!matchesSearchBox(request, bounds)) {
+            continue;
+        }
+        const auto layer_index = findGdsLayer(data, element.layer, element.datatype);
+        const auto object_class = classifySearchElement(data, gds, element);
+        const auto object = LayoutSpatialObjectId{.kind = LayoutSpatialObjectKind::Element,
+                                                  .cell_index = element.cell_index,
+                                                  .reference_index = kNoLayoutIndex,
+                                                  .element_index = element_index,
+                                                  .layer_index = layer_index,
+                                                  .datatype = element.datatype};
+
+        if (element.kind == LayoutGdsElementKind::Text &&
+            searchKindEnabled(request.kind_mask, kSearchKindText) &&
+            containsAsciiCaseInsensitive(element.text, request.query)) {
+            LayoutSearchResult result;
+            result.object = object;
+            result.bounds = bounds;
+            result.label = element.text;
+            result.object_class = object_class;
+            result.source_cell_index = element.cell_index;
+            result.rank = searchRank(element.text, request.query, 200U);
+            addResult(std::move(result));
+        }
+
+        if (searchKindEnabled(request.kind_mask, kSearchKindLayer) &&
+            reported_layers.find(layer_index) == reported_layers.end() &&
+            layer_index < data.layers.size() &&
+            containsAsciiCaseInsensitive(data.layers[layer_index].name, request.query)) {
+            LayoutSearchResult result;
+            result.object = object;
+            result.bounds = bounds;
+            result.label = data.layers[layer_index].name;
+            result.object_class = object_class;
+            result.source_cell_index = element.cell_index;
+            result.rank = searchRank(data.layers[layer_index].name, request.query, 300U);
+            addResult(std::move(result));
+            reported_layers.insert(layer_index);
+        }
+    }
+
+    std::sort(response.results.begin(), response.results.end(), [](const auto& lhs, const auto& rhs) {
+        if (lhs.rank != rhs.rank) {
+            return lhs.rank < rhs.rank;
+        }
+        if (lhs.label != rhs.label) {
+            return lhs.label < rhs.label;
+        }
+        if (lhs.object.cell_index != rhs.object.cell_index) {
+            return lhs.object.cell_index < rhs.object.cell_index;
+        }
+        if (lhs.object.reference_index != rhs.object.reference_index) {
+            return lhs.object.reference_index < rhs.object.reference_index;
+        }
+        return lhs.object.element_index < rhs.object.element_index;
+    });
+    if (request.max_results != 0U && response.results.size() > request.max_results) {
+        response.results.resize(request.max_results);
+    }
+    response.query_micros = elapsedMicros(query_start);
+    return response;
 }
 
 void appendLef(LayoutDataSet& data, const LayoutLefLibrary& lef) {
@@ -746,6 +1120,12 @@ std::vector<std::uint8_t> LayoutSource::encodeSelectionGeometryResponse(
     throw std::runtime_error("Layout selection geometry requires a GDS layout source");
 }
 
+std::vector<std::uint8_t> LayoutSource::encodeSearchResponse(
+    const LayoutSearchRequest& request) const {
+    (void)request;
+    throw std::runtime_error("Layout search requires a GDS layout source");
+}
+
 std::shared_ptr<LayoutSource> makeDataSetLayoutSource(LayoutDataSet data, std::string source_kind) {
     return std::make_shared<DataSetLayoutSource>(std::move(data), std::move(source_kind));
 }
@@ -806,6 +1186,7 @@ std::shared_ptr<LayoutSource> openGdsLayoutSource(const std::filesystem::path& g
     }
     if (data.gds.has_value() && data.gds->top_cell_index < data.gds->cells.size()) {
         const auto bounds_start = Clock::now();
+        resolveGdsHierarchyBounds(*data.gds);
         data.bounds = data.gds->cells[data.gds->top_cell_index].bounds;
         metrics.bounds_micros = elapsedMicros(bounds_start);
     }

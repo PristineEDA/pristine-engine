@@ -126,6 +126,14 @@ std::vector<std::uint8_t> handleRequest(const LayoutSource& source, const Layout
                                                .version = source.protocolVersion(),
                                                .payload = payload});
             }
+            case LayoutMessageType::SearchRequest: {
+                const auto search_request = decodeSearchRequestPayload(request.payload);
+                return encodeFrame(LayoutFrame{.message_type = LayoutMessageType::SearchResponse,
+                                               .request_id = request.request_id,
+                                               .flags = 0,
+                                               .version = source.protocolVersion(),
+                                               .payload = source.encodeSearchResponse(search_request)});
+            }
             case LayoutMessageType::Close:
                 return {};
             default:

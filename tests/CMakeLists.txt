@@ -66,6 +66,17 @@ set_tests_properties(pristine_ihp_gds_corpus PROPERTIES
 	SKIP_REGULAR_EXPRESSION "SKIP:")
 
 add_test(
+	NAME pristine_tt_tinyqv_gds_interaction
+	COMMAND Python3::Interpreter ${CMAKE_CURRENT_SOURCE_DIR}/e2e/tt_tinyqv_gds_interaction.py
+		$<TARGET_FILE:pristine-engine>
+		${PROJECT_SOURCE_DIR}/.deps/src/tinytapeout-sky-25a/projects/tt_um_tt_tinyQV/tt_um_tt_tinyQV.gds)
+set_tests_properties(pristine_tt_tinyqv_gds_interaction PROPERTIES
+	LABELS "layout;gds;tt;perf"
+	TIMEOUT 900
+	SKIP_RETURN_CODE 77
+	SKIP_REGULAR_EXPRESSION "SKIP:")
+
+add_test(
 	NAME pristine_lefdef_corpus
 	COMMAND Python3::Interpreter ${CMAKE_CURRENT_SOURCE_DIR}/e2e/lefdef_corpus.py
 		$<TARGET_FILE:pristine-engine>

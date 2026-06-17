@@ -32,6 +32,8 @@ public:
         const LayoutInspectRequest& request) const;
     [[nodiscard]] virtual std::vector<std::uint8_t> encodeSelectionGeometryResponse(
         const LayoutSelectionGeometryRequest& request) const;
+    [[nodiscard]] virtual std::vector<std::uint8_t> encodeSearchResponse(
+        const LayoutSearchRequest& request) const;
 };
 
 [[nodiscard]] std::shared_ptr<LayoutSource> makeDataSetLayoutSource(LayoutDataSet data,

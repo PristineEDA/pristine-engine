@@ -417,6 +417,31 @@ struct LayoutInspectResult {
     std::uint32_t texttype = 0;
 };
 
+struct LayoutSearchRequest {
+    bool has_bbox = false;
+    LayoutRect bbox{};
+    std::uint32_t max_results = 0;
+    std::uint32_t kind_mask = 0;
+    std::uint32_t root_cell_index = kNoLayoutIndex;
+    std::string query{};
+};
+
+struct LayoutSearchResult {
+    LayoutSpatialObjectId object{};
+    LayoutRect bounds{};
+    std::string label{};
+    LayoutInspectClass object_class = LayoutInspectClass::Unknown;
+    std::uint32_t source_cell_index = kNoLayoutIndex;
+    std::uint32_t rank = 0;
+};
+
+struct LayoutSearchResponse {
+    std::vector<LayoutSearchResult> results{};
+    std::uint64_t index_build_micros = 0;
+    std::uint64_t query_micros = 0;
+    std::uint64_t encode_micros = 0;
+};
+
 struct LayoutSelectionGeometryRequest {
     LayoutSpatialObjectId object{};
 };

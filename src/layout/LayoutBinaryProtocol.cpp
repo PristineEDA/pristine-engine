@@ -20,6 +20,7 @@ constexpr std::uint8_t kGeometryMagic[] = {'P', 'L', 'G', 'E'};
 constexpr std::uint8_t kTileGeometryMagic[] = {'P', 'L', 'T', 'G'};
 constexpr std::uint8_t kHitTestMagic[] = {'P', 'L', 'H', 'T'};
 constexpr std::uint8_t kInspectMagic[] = {'P', 'L', 'I', 'N'};
+constexpr std::uint8_t kSearchMagic[] = {'P', 'L', 'S', 'R'};
 constexpr std::uint16_t kFrameHeaderSize = 24;
 constexpr std::uint16_t kCatalogHeaderSize = 136;
 constexpr std::uint16_t kGeometryHeaderSize = 96;
@@ -27,7 +28,10 @@ constexpr std::uint16_t kTileGeometryHeaderSize = 84;
 constexpr std::uint16_t kHitTestHeaderSize = 64;
 constexpr std::uint16_t kHitTestRowStride = 80;
 constexpr std::uint16_t kInspectHeaderSize = 144;
+constexpr std::uint16_t kSearchHeaderSize = 56;
+constexpr std::uint16_t kSearchRowStride = 88;
 constexpr std::size_t kMaxPayloadSize = 128U * 1024U * 1024U;
+constexpr std::size_t kMaxSearchQueryBytes = 64U * 1024U;
 constexpr std::uint32_t kGdsCatalogCellTopFlag = 1U;
 constexpr std::uint32_t kLayoutCatalogSourceLefDef = 1U;
 constexpr std::uint32_t kLayoutCatalogSourceGds = 2U;
@@ -37,6 +41,8 @@ constexpr std::uint32_t kGeometryRequestSupportedFlags =
     kGeometryRequestFlagHasBbox | kGeometryRequestFlagOwnerFilters;
 constexpr std::uint32_t kTileGeometryRequestFlagHasBbox = 1U;
 constexpr std::uint32_t kTileGeometryRequestSupportedFlags = kTileGeometryRequestFlagHasBbox;
+constexpr std::uint32_t kSearchRequestFlagHasBbox = 1U;
+constexpr std::uint32_t kSearchRequestSupportedFlags = kSearchRequestFlagHasBbox;
 
 using Clock = std::chrono::steady_clock;
 
@@ -909,6 +915,62 @@ std::vector<std::uint8_t> encodeInspectResponsePayload(const LayoutDataSet& data
     return result;
 }
 
+std::vector<std::uint8_t> encodeSearchResponsePayload(
+    const LayoutDataSet& data,
+    const LayoutSearchResponse& response) {
+    const auto encode_start = Clock::now();
+    std::vector<std::uint8_t> result(kSearchHeaderSize, 0);
+    std::vector<std::uint8_t> strings;
+    const auto row_offset = checkedCount(result.size(), "search row offset");
+
+    for (const auto& match : response.results) {
+        const auto label_offset = appendTableString(strings, match.label);
+        appendU16(result, static_cast<std::uint16_t>(match.object.kind));
+        appendU16(result, static_cast<std::uint16_t>(match.object_class));
+        appendU32(result, match.object.cell_index);
+        appendU32(result, match.object.reference_index);
+        appendU32(result, match.object.element_index);
+        appendU32(result, match.object.layer_index);
+        appendU32(result, match.object.datatype);
+        appendU32(result, label_offset);
+        appendU32(result, 0);
+        appendU64(result, match.object.instance_path_hash);
+        appendU32(result, match.source_cell_index);
+        appendU32(result, match.rank);
+        appendU32(result, 0);
+        appendU32(result, 0);
+        appendF64(result, toMicrons(match.bounds.x0, data.units_per_micron));
+        appendF64(result, toMicrons(match.bounds.y0, data.units_per_micron));
+        appendF64(result, toMicrons(match.bounds.x1, data.units_per_micron));
+        appendF64(result, toMicrons(match.bounds.y1, data.units_per_micron));
+    }
+
+    alignTo(result, 4);
+    const auto string_offset = checkedCount(result.size(), "search string offset");
+    result.insert(result.end(), strings.begin(), strings.end());
+
+    std::size_t offset = 0;
+    result[offset++] = kSearchMagic[0];
+    result[offset++] = kSearchMagic[1];
+    result[offset++] = kSearchMagic[2];
+    result[offset++] = kSearchMagic[3];
+    result[offset++] = static_cast<std::uint8_t>(kLayoutProtocolVersion & 0xffU);
+    result[offset++] = static_cast<std::uint8_t>((kLayoutProtocolVersion >> 8U) & 0xffU);
+    result[offset++] = static_cast<std::uint8_t>(kSearchHeaderSize & 0xffU);
+    result[offset++] = static_cast<std::uint8_t>((kSearchHeaderSize >> 8U) & 0xffU);
+    writeU32Header(result, offset, checkedCount(response.results.size(), "search row count"));
+    writeU32Header(result, offset, row_offset);
+    writeU32Header(result, offset, kSearchRowStride);
+    writeU32Header(result, offset, string_offset);
+    writeU32Header(result, offset, checkedCount(strings.size(), "search string table"));
+    writeU32Header(result, offset, checkedCount(result.size(), "search payload size"));
+    writeU64Header(result, offset, response.index_build_micros);
+    writeU64Header(result, offset, response.query_micros);
+    writeU64Header(result, offset, response.encode_micros == 0U ? elapsedMicros(encode_start)
+                                                                : response.encode_micros);
+    return result;
+}
+
 std::vector<std::uint8_t> encodeErrorPayload(LayoutErrorCode code, std::string_view message) {
     std::vector<std::uint8_t> result;
     appendU32(result, static_cast<std::uint32_t>(code));
@@ -1101,6 +1163,55 @@ LayoutSelectionGeometryRequest decodeSelectionGeometryRequestPayload(
     const std::vector<std::uint8_t>& payload) {
     const auto inspect = decodeInspectRequestPayload(payload);
     return LayoutSelectionGeometryRequest{.object = inspect.object};
+}
+
+LayoutSearchRequest decodeSearchRequestPayload(const std::vector<std::uint8_t>& payload) {
+    const auto* bytes = payload.data();
+    const auto size = payload.size();
+    std::size_t offset = 0;
+    requireAvailable(size, offset, 20);
+    const auto flags = readU32(bytes, size, offset);
+    offset += sizeof(std::uint32_t);
+    if ((flags & ~kSearchRequestSupportedFlags) != 0U) {
+        throw std::runtime_error("Layout search request has unsupported flags");
+    }
+
+    LayoutSearchRequest request;
+    request.has_bbox = (flags & kSearchRequestFlagHasBbox) != 0U;
+    request.max_results = readU32(bytes, size, offset);
+    offset += sizeof(std::uint32_t);
+    request.kind_mask = readU32(bytes, size, offset);
+    offset += sizeof(std::uint32_t);
+    request.root_cell_index = readU32(bytes, size, offset);
+    offset += sizeof(std::uint32_t);
+
+    if (request.has_bbox) {
+        const auto x0 = readF64(bytes, size, offset);
+        offset += sizeof(double);
+        const auto y0 = readF64(bytes, size, offset);
+        offset += sizeof(double);
+        const auto x1 = readF64(bytes, size, offset);
+        offset += sizeof(double);
+        const auto y1 = readF64(bytes, size, offset);
+        offset += sizeof(double);
+        request.bbox = LayoutRect{.x0 = static_cast<std::int64_t>(x0),
+                                  .y0 = static_cast<std::int64_t>(y0),
+                                  .x1 = static_cast<std::int64_t>(x1),
+                                  .y1 = static_cast<std::int64_t>(y1)};
+    }
+
+    const auto query_bytes = readU32(bytes, size, offset);
+    offset += sizeof(std::uint32_t);
+    if (query_bytes > kMaxSearchQueryBytes) {
+        throw std::runtime_error("Layout search request query is too large");
+    }
+    requireAvailable(size, offset, query_bytes);
+    request.query.assign(reinterpret_cast<const char*>(bytes + offset), query_bytes);
+    offset += query_bytes;
+    if (offset != size) {
+        throw std::runtime_error("Layout search request has trailing bytes");
+    }
+    return request;
 }
 
 } // namespace pristine::layout

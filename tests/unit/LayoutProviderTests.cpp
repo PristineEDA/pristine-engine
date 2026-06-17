@@ -10,6 +10,7 @@
 #include <filesystem>
 #include <fstream>
 #include <initializer_list>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -187,6 +188,27 @@ std::vector<std::uint8_t> inspectRequest(LayoutSpatialObjectKind kind,
     return payload;
 }
 
+std::vector<std::uint8_t> searchRequest(std::string_view query,
+                                        std::uint32_t max_results = 16,
+                                        std::uint32_t kind_mask = 0,
+                                        std::uint32_t root_cell_index = kNoLayoutIndex,
+                                        std::optional<LayoutRect> bbox = std::nullopt) {
+    std::vector<std::uint8_t> payload;
+    appendU32(payload, bbox.has_value() ? 1U : 0U);
+    appendU32(payload, max_results);
+    appendU32(payload, kind_mask);
+    appendU32(payload, root_cell_index);
+    if (bbox.has_value()) {
+        appendF64(payload, static_cast<double>(bbox->x0));
+        appendF64(payload, static_cast<double>(bbox->y0));
+        appendF64(payload, static_cast<double>(bbox->x1));
+        appendF64(payload, static_cast<double>(bbox->y1));
+    }
+    appendU32(payload, static_cast<std::uint32_t>(query.size()));
+    payload.insert(payload.end(), query.begin(), query.end());
+    return payload;
+}
+
 std::uint32_t geometryShapeCount(const std::vector<std::uint8_t>& payload) {
     return readU32(payload.data(), payload.size(), 12);
 }
@@ -213,6 +235,22 @@ std::uint32_t tileCacheHitCount(const std::vector<std::uint8_t>& payload) {
 
 std::uint32_t tileCacheMissCount(const std::vector<std::uint8_t>& payload) {
     return readU32(payload.data(), payload.size(), 80);
+}
+
+std::uint32_t searchResultCount(const std::vector<std::uint8_t>& payload) {
+    return readU32(payload.data(), payload.size(), 8);
+}
+
+std::uint32_t searchRowOffset(const std::vector<std::uint8_t>& payload) {
+    return readU32(payload.data(), payload.size(), 12);
+}
+
+std::uint32_t searchRowStride(const std::vector<std::uint8_t>& payload) {
+    return readU32(payload.data(), payload.size(), 16);
+}
+
+std::uint32_t searchStringOffset(const std::vector<std::uint8_t>& payload) {
+    return readU32(payload.data(), payload.size(), 20);
 }
 
 std::vector<std::uint8_t> tileGeometryPayload(const std::vector<std::uint8_t>& payload) {
@@ -459,10 +497,15 @@ TEST_CASE("GDS parser captures hierarchy elements references and source v3 catal
     CHECK(data.gds->cells.size() == 2);
     CHECK(data.shapes.empty());
     REQUIRE(data.bounds.has_value());
-    CHECK(data.bounds->x0 >= 100);
-    CHECK(data.bounds->y0 >= 200);
-    CHECK(data.bounds->x1 >= 250);
-    CHECK(data.bounds->y1 >= 310);
+    CHECK(data.bounds->x0 == 100);
+    CHECK(data.bounds->y0 == 200);
+    CHECK(data.bounds->x1 == 270);
+    CHECK(data.bounds->y1 == 320);
+    REQUIRE(data.gds->cells[1].bounds.has_value());
+    CHECK(data.gds->cells[1].bounds->x0 == data.bounds->x0);
+    CHECK(data.gds->cells[1].bounds->y0 == data.bounds->y0);
+    CHECK(data.gds->cells[1].bounds->x1 == data.bounds->x1);
+    CHECK(data.gds->cells[1].bounds->y1 == data.bounds->y1);
 
     const auto frame = encodeFrame(LayoutFrame{.message_type = LayoutMessageType::Hello,
                                                .request_id = 7,
@@ -703,6 +746,65 @@ TEST_CASE("GDS spatial index serves tile hit inspect and selection payloads",
                                                              hit_instance_hash)));
     CHECK(std::string(reinterpret_cast<const char*>(selection.data()), 4) == "PLGE");
     CHECK(geometryShapeCount(selection) == 1);
+
+    constexpr std::uint32_t kSearchKindCell = 1U << 0U;
+    constexpr std::uint32_t kSearchKindText = 1U << 2U;
+    constexpr std::uint32_t kSearchKindLayer = 1U << 3U;
+    const auto cell_search = source->encodeSearchResponse(
+        decodeSearchRequestPayload(searchRequest("TOP", 4, kSearchKindCell, 1)));
+    CHECK(std::string(reinterpret_cast<const char*>(cell_search.data()), 4) == "PLSR");
+    CHECK(readU16(cell_search.data(), cell_search.size(), 4) == kLayoutProtocolVersion);
+    CHECK(readU16(cell_search.data(), cell_search.size(), 6) == 56);
+    REQUIRE(searchResultCount(cell_search) >= 1);
+    CHECK(searchRowStride(cell_search) == 88);
+    const auto cell_row = searchRowOffset(cell_search);
+    const auto cell_strings = searchStringOffset(cell_search);
+    CHECK(readU16(cell_search.data(), cell_search.size(), cell_row) ==
+          static_cast<std::uint16_t>(LayoutSpatialObjectKind::Cell));
+    CHECK(readU16(cell_search.data(), cell_search.size(), cell_row + 2) ==
+          static_cast<std::uint16_t>(LayoutInspectClass::Cell));
+    CHECK(readU32(cell_search.data(), cell_search.size(), cell_row + 4) == 1);
+    CHECK(readTableString(cell_search,
+                          cell_strings,
+                          readU32(cell_search.data(), cell_search.size(), cell_row + 24)) == "TOP");
+
+    const auto text_search = source->encodeSearchResponse(
+        decodeSearchRequestPayload(searchRequest("label", 4, kSearchKindText, 1)));
+    REQUIRE(searchResultCount(text_search) >= 1);
+    const auto text_row = searchRowOffset(text_search);
+    CHECK(readU16(text_search.data(), text_search.size(), text_row) ==
+          static_cast<std::uint16_t>(LayoutSpatialObjectKind::Element));
+    CHECK(readU16(text_search.data(), text_search.size(), text_row + 2) ==
+          static_cast<std::uint16_t>(LayoutInspectClass::Label));
+    const auto text_search_element = readU32(text_search.data(), text_search.size(), text_row + 12);
+    const auto text_search_layer = readU32(text_search.data(), text_search.size(), text_row + 16);
+    const auto text_search_datatype = readU32(text_search.data(), text_search.size(), text_row + 20);
+    const auto text_search_inspect = source->encodeInspectResponse(decodeInspectRequestPayload(
+        inspectRequest(LayoutSpatialObjectKind::Element,
+                       kNoLayoutIndex,
+                       kNoLayoutIndex,
+                       text_search_element,
+                       text_search_layer,
+                       text_search_datatype)));
+    CHECK(readU32(text_search_inspect.data(), text_search_inspect.size(), 116) ==
+          static_cast<std::uint32_t>(LayoutInspectClass::Label));
+    const auto text_search_selection = source->encodeSelectionGeometryResponse(
+        decodeSelectionGeometryRequestPayload(inspectRequest(LayoutSpatialObjectKind::Element,
+                                                             kNoLayoutIndex,
+                                                             kNoLayoutIndex,
+                                                             text_search_element,
+                                                             text_search_layer,
+                                                             text_search_datatype)));
+    CHECK(geometryShapeCount(text_search_selection) == 1);
+
+    const auto layer_search = source->encodeSearchResponse(
+        decodeSearchRequestPayload(searchRequest("GDS:1", 4, kSearchKindLayer, 1)));
+    REQUIRE(searchResultCount(layer_search) >= 1);
+    CHECK(readU16(layer_search.data(), layer_search.size(), searchRowOffset(layer_search)) ==
+          static_cast<std::uint16_t>(LayoutSpatialObjectKind::Element));
+    CHECK_THROWS_WITH(source->encodeSearchResponse(
+                          decodeSearchRequestPayload(searchRequest("TOP", 4, kSearchKindCell, 42))),
+                      Catch::Matchers::ContainsSubstring("root cell index is out of range"));
 
     CHECK_THROWS_WITH(source->encodeTileGeometryResponse(decodeTileGeometryRequestPayload(
                           tileGeometryRequest(42,
@@ -959,6 +1061,43 @@ TEST_CASE("Layout geometry request decodes owner filter extension", "[layout][pr
     truncated.pop_back();
     CHECK_THROWS_WITH(decodeGeometryRequestPayload(truncated),
                       Catch::Matchers::ContainsSubstring("truncated"));
+}
+
+TEST_CASE("Layout search request decodes strict v3 payload", "[layout][protocol]") {
+    const auto request = decodeSearchRequestPayload(searchRequest("leaf",
+                                                                  7,
+                                                                  3,
+                                                                  5,
+                                                                  LayoutRect{.x0 = 1,
+                                                                             .y0 = 2,
+                                                                             .x1 = 3,
+                                                                             .y1 = 4}));
+    CHECK(request.has_bbox);
+    CHECK(request.max_results == 7);
+    CHECK(request.kind_mask == 3);
+    CHECK(request.root_cell_index == 5);
+    CHECK(request.bbox.x0 == 1);
+    CHECK(request.bbox.y1 == 4);
+    CHECK(request.query == "leaf");
+
+    auto unsupported = searchRequest("leaf");
+    unsupported[0] = 2;
+    CHECK_THROWS_WITH(decodeSearchRequestPayload(unsupported),
+                      Catch::Matchers::ContainsSubstring("unsupported flags"));
+
+    auto trailing = searchRequest("leaf");
+    trailing.push_back(0);
+    CHECK_THROWS_WITH(decodeSearchRequestPayload(trailing),
+                      Catch::Matchers::ContainsSubstring("trailing bytes"));
+
+    auto oversized = searchRequest("leaf");
+    const auto query_size_offset = oversized.size() - 4U - std::string_view("leaf").size();
+    oversized[query_size_offset] = 0x01;
+    oversized[query_size_offset + 1U] = 0x00;
+    oversized[query_size_offset + 2U] = 0x01;
+    oversized[query_size_offset + 3U] = 0x00;
+    CHECK_THROWS_WITH(decodeSearchRequestPayload(oversized),
+                      Catch::Matchers::ContainsSubstring("query is too large"));
 }
 
 } // namespace pristine::layout

@@ -33,6 +33,8 @@ INSPECT_REQUEST = 13
 INSPECT_RESPONSE = 14
 SELECTION_GEOMETRY_REQUEST = 15
 SELECTION_GEOMETRY_RESPONSE = 16
+SEARCH_REQUEST = 17
+SEARCH_RESPONSE = 18
 
 
 def write_message(process: subprocess.Popen[bytes], message: dict) -> None:
@@ -207,6 +209,19 @@ def object_payload(
         datatype,
         instance_path_hash,
     )
+
+
+def search_payload(
+    query: str,
+    max_results: int,
+    kind_mask: int,
+    root_cell_index: int = 0xFFFFFFFF,
+) -> bytes:
+    query_bytes = query.encode("utf-8")
+    payload = bytearray(struct.pack("<IIII", 0, max_results, kind_mask, root_cell_index))
+    payload += struct.pack("<I", len(query_bytes))
+    payload += query_bytes
+    return bytes(payload)
 
 
 def embedded_tile_geometry(payload: bytes) -> bytes:
@@ -752,7 +767,19 @@ def exercise_gds_pipe(session: dict) -> None:
         assert payload[:4] == b"PLGE"
         assert struct.unpack_from("<I", payload, 12)[0] == 1
 
-        pipe.write(frame(CLOSE, 28))
+        pipe.write(frame(SEARCH_REQUEST, 28, search_payload("TOP", 8, 1, top_cell_index)))
+        pipe.flush()
+        message_type, request_id, flags, payload = read_frame(pipe)
+        assert message_type == SEARCH_RESPONSE
+        assert request_id == 28
+        assert flags == 0
+        assert payload[:4] == b"PLSR"
+        assert struct.unpack_from("<H", payload, 4)[0] == PROTOCOL_VERSION
+        assert struct.unpack_from("<H", payload, 6)[0] == 56
+        assert struct.unpack_from("<I", payload, 8)[0] >= 1
+        assert struct.unpack_from("<I", payload, 16)[0] == 88
+
+        pipe.write(frame(CLOSE, 29))
         pipe.flush()
 
 
