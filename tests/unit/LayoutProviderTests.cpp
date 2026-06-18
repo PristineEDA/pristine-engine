@@ -328,6 +328,10 @@ std::uint64_t statusElapsedMicros(const std::vector<std::uint8_t>& payload) {
     return readU64(payload.data(), payload.size(), 60);
 }
 
+bool statusWarmupReady(const std::vector<std::uint8_t>& payload) {
+    return readU32(payload.data(), payload.size(), 88) != 0U;
+}
+
 std::vector<std::uint8_t> tileGeometryPayload(const std::vector<std::uint8_t>& payload) {
     const auto offset = readU32(payload.data(), payload.size(), 16);
     const auto size = readU32(payload.data(), payload.size(), 20);
@@ -770,11 +774,21 @@ TEST_CASE("GDS parser publishes progress and honors cancellation", "[layout][gds
     CHECK(std::any_of(progress_samples.begin(), progress_samples.end(), [](const auto& progress) {
         return progress.phase == LayoutSourcePhase::Resolve;
     }));
+    CHECK(progress_samples.size() >= 3);
     std::uint32_t previous_records = 0;
     for (const auto& progress : progress_samples) {
         CHECK(progress.record_count >= previous_records);
         previous_records = progress.record_count;
     }
+
+    std::vector<LayoutGdsParseProgress> default_interval_samples;
+    LayoutGdsParseControl default_interval_control;
+    default_interval_control.publish_progress = [&](const LayoutGdsParseProgress& progress) {
+        default_interval_samples.push_back(progress);
+    };
+    auto default_parsed = parseGds(tinyGds(), "default-progress.gds", &default_interval_control);
+    CHECK(default_parsed.value.parse_metrics.record_count > 0);
+    CHECK(default_interval_samples.size() <= 4);
 
     LayoutGdsParseControl cancel_control;
     cancel_control.should_cancel = [] { return true; };
@@ -824,6 +838,7 @@ TEST_CASE("GDS staged open exposes status until ready", "[layout][gds][protocol]
     CHECK(statusCellCount(ready_status) == 2);
     CHECK(statusElementCount(ready_status) == 5);
     CHECK(statusElapsedMicros(ready_status) > 0);
+    CHECK(statusWarmupReady(ready_status));
 
     const auto top_geometry = source->encodeGeometryResponse(decodeGeometryRequestPayload(
         ownerFilteredGeometryRequest(0, {}, {1})));

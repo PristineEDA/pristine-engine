@@ -676,6 +676,21 @@ public:
         return result;
     }
 
+    void warmupTopCell() const {
+        const auto& gds = requireGds();
+        if (gds.top_cell_index >= gds.cells.size()) {
+            return;
+        }
+        LayoutTileGeometryResult scratch;
+        const auto& cell = gds.cells[gds.top_cell_index];
+        if (!cell.reference_indices.empty()) {
+            (void)ensureReferenceGridBuilt(gds.top_cell_index, scratch);
+        }
+        if (!cell.element_indices.empty()) {
+            (void)ensureTileGridBuilt(gds.top_cell_index, scratch);
+        }
+    }
+
     [[nodiscard]] LayoutHitTestResponse hitTest(
         const LayoutHitTestRequest& request) const {
         const auto start = Clock::now();
@@ -1979,6 +1994,13 @@ LayoutTileGeometryResult LayoutSpatialIndex::queryTile(
         throw std::runtime_error("Layout spatial index is not available");
     }
     return impl_->queryTile(request);
+}
+
+void LayoutSpatialIndex::warmupTopCell() const {
+    if (!impl_) {
+        throw std::runtime_error("Layout spatial index is not available");
+    }
+    impl_->warmupTopCell();
 }
 
 LayoutHitTestResponse LayoutSpatialIndex::hitTest(

@@ -271,6 +271,11 @@ public:
 
     const LayoutDataSet& dataSet() const override { return data_; }
     std::string_view sourceKind() const override { return source_kind_; }
+    LayoutStatus status() const override {
+        auto status = LayoutSource::status();
+        status.warmup_ready = warmupReady();
+        return status;
+    }
     std::vector<std::uint8_t> encodeTileGeometryResponse(
         const LayoutTileGeometryRequest& request) const override {
         return encodeCachedTileGeometryResponse(request);
@@ -351,6 +356,11 @@ private:
         return warmup_cancel_requested_;
     }
 
+    [[nodiscard]] bool warmupReady() const {
+        std::lock_guard lock(warmup_mutex_);
+        return !warmup_started_ || warmup_done_;
+    }
+
     void markWarmupDone() const {
         {
             std::lock_guard lock(warmup_mutex_);
@@ -369,18 +379,8 @@ private:
                 markWarmupDone();
                 return;
             }
-            const auto& gds = *data_.gds;
-            LayoutTileGeometryRequest request;
-            request.root_cell_index = gds.top_cell_index;
-            request.lod = 1U;
-            request.max_shapes = 1U;
-            request.max_points = 4U;
-            if (data_.bounds.has_value()) {
-                request.has_bbox = true;
-                request.bbox = *data_.bounds;
-            }
             std::uint64_t build_micros = 0;
-            (void)queryTileSpatial(request, build_micros);
+            warmupSpatialIndex(build_micros);
             if (!warmupCancelled()) {
                 std::uint64_t search_build_micros = 0;
                 ensureSearchIndex(search_build_micros);
@@ -409,6 +409,12 @@ private:
         std::uint64_t& build_micros) const {
         std::lock_guard lock(spatial_mutex_);
         return ensureSpatialIndexLocked(build_micros).queryTile(request);
+    }
+
+    void warmupSpatialIndex(std::uint64_t& build_micros) const {
+        std::lock_guard lock(spatial_mutex_);
+        auto& index = ensureSpatialIndexLocked(build_micros);
+        index.warmupTopCell();
     }
 
     [[nodiscard]] LayoutHitTestResponse hitTestSpatial(
@@ -992,7 +998,7 @@ private:
             status.open_micros = data.gds_open_metrics.open_micros;
             status.parse_micros = data.gds_open_metrics.parse_micros;
             status.warmup_scheduled = data.gds_open_metrics.warmup_scheduled;
-            status.warmup_ready = true;
+            status.warmup_ready = ready_source_->status().warmup_ready;
         }
         return status;
     }
@@ -1010,6 +1016,7 @@ private:
             control.publish_progress = [this](const LayoutGdsParseProgress& progress) {
                 publishParseProgress(progress);
             };
+            control.progress_record_interval = 32768U;
             auto data = loadGdsLayoutDataSet(gds_path_, gds_uri_, title_, &control);
             auto source = std::make_shared<DataSetLayoutSource>(std::move(data), "gds");
             {
@@ -1698,7 +1705,7 @@ LayoutStatus LayoutSource::status() const {
     status.open_micros = data.gds_open_metrics.open_micros;
     status.parse_micros = data.gds_open_metrics.parse_micros;
     status.warmup_scheduled = data.gds_open_metrics.warmup_scheduled;
-    status.warmup_ready = true;
+    status.warmup_ready = !data.gds_open_metrics.warmup_scheduled;
     return status;
 }
 

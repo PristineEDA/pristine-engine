@@ -26,6 +26,7 @@ public:
 
     [[nodiscard]] LayoutSpatialIndexStats stats() const;
     [[nodiscard]] LayoutTileGeometryResult queryTile(const LayoutTileGeometryRequest& request) const;
+    void warmupTopCell() const;
     [[nodiscard]] LayoutHitTestResponse hitTest(
         const LayoutHitTestRequest& request) const;
     [[nodiscard]] LayoutInspectResult inspect(const LayoutInspectRequest& request) const;

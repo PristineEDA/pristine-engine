@@ -920,8 +920,32 @@ def run_interaction(server_path: pathlib.Path, gds_path: pathlib.Path) -> dict:
             metrics["ready_status"] = ready_status
             metrics["status_progress"] = status_progress_summary(metrics["status_samples"])
             metrics["warmup"]["scheduled"] = ready_status["warmup_scheduled"]
+            metrics["warmup"]["ready_at_layout_ready"] = ready_status["warmup_ready"]
             metrics["warmup"]["ready"] = ready_status["warmup_ready"]
             metrics["warmup"]["pointArenaCount"] = ready_status["point_count"]
+            warmup_wait_start = now_micros()
+            warmup_ready_status = ready_status
+            if ready_status["warmup_scheduled"] and not ready_status["warmup_ready"]:
+                for warmup_poll in range(200):
+                    _flags, status_wall, status_bytes, _ = send_pipe(
+                        pipe,
+                        STATUS_REQUEST,
+                        12_000 + warmup_poll,
+                        status_payload(),
+                        expect=STATUS_RESPONSE,
+                    )
+                    status = parse_status(status_bytes)
+                    metrics["status_wall_micros"].append(status_wall)
+                    metrics["status_samples"].append(status)
+                    if status["state"] == STATUS_STATE_FAILED:
+                        raise AssertionError(f"GDS warmup status failed: {status.get('error', '<missing error>')}")
+                    if status["warmup_ready"]:
+                        warmup_ready_status = status
+                        metrics["warmup"]["ready"] = True
+                        break
+                    time.sleep(0.01)
+            metrics["warmup"]["readyWallMicros"] = now_micros() - warmup_wait_start
+            metrics["warmup"]["readyStatus"] = warmup_ready_status
             trace(
                 "ready after "
                 f"{ready_wall_micros}us ({len(metrics['status_samples'])} status polls, "
@@ -1225,6 +1249,23 @@ def run_interaction(server_path: pathlib.Path, gds_path: pathlib.Path) -> dict:
                 raise AssertionError("search selection response missing PLGE magic")
             metrics["selection_wall_micros"].append(wall)
 
+            _flags, status_wall, status_bytes, _ = send_pipe(
+                pipe,
+                STATUS_REQUEST,
+                next_request_id,
+                status_payload(),
+                expect=STATUS_RESPONSE,
+            )
+            next_request_id += 1
+            final_status = parse_status(status_bytes)
+            metrics["status_wall_micros"].append(status_wall)
+            metrics["status_samples"].append(final_status)
+            metrics["final_status"] = final_status
+            if final_status["warmup_ready"]:
+                metrics["warmup"]["ready"] = True
+                metrics["warmup"]["readyStatus"] = final_status
+                metrics["warmup"]["readyWallMicros"] = now_micros() - warmup_wait_start
+
             pipe.write(frame(CLOSE, next_request_id))
             pipe.flush()
 
@@ -1245,7 +1286,13 @@ def run_interaction(server_path: pathlib.Path, gds_path: pathlib.Path) -> dict:
         parse_metrics = metrics["session"].get("gdsMetrics", {}).get("parseMetrics", {})
         metrics["summary"] = {
             "warmup_scheduled": metrics.get("warmup", {}).get("scheduled", False),
+            "warmup_ready_at_layout_ready": metrics.get("warmup", {}).get(
+                "ready_at_layout_ready", False
+            ),
             "warmup_ready": metrics.get("warmup", {}).get("ready", False),
+            "warmup_ready_wall_micros": metric_summary(
+                [int(metrics.get("warmup", {}).get("readyWallMicros", 0))]
+            ),
             "point_arena_count": metrics.get("warmup", {}).get("pointArenaCount", 0),
             "lsp_open_wall_micros": metric_summary(metrics["lsp_open_wall_micros"]),
             "cancel_lsp_open_wall_micros": metric_summary(metrics["cancel_lsp_open_wall_micros"]),
@@ -1367,7 +1414,9 @@ def main() -> int:
         f"points/s {summary.get('status_progress', {}).get('points_per_second', 0)}, "
         f"pending errors {summary.get('pending_error_count')}, "
         f"warmup scheduled {summary.get('warmup_scheduled')}, "
+        f"warmup ready-at-ready {summary.get('warmup_ready_at_layout_ready')}, "
         f"warmup ready {summary.get('warmup_ready')}, "
+        f"warmup wait {summary.get('warmup_ready_wall_micros', {}).get('p95', 0)}us, "
         f"point arena {summary.get('point_arena_count')}, "
         f"metrics {output_path}"
     )

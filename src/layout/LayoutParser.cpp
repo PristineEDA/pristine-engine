@@ -21,6 +21,7 @@ namespace pristine::layout {
 namespace {
 
 using Clock = std::chrono::steady_clock;
+constexpr std::uint32_t kDefaultGdsProgressRecordInterval = 32768U;
 
 std::uint64_t elapsedMicros(Clock::time_point start) {
     return static_cast<std::uint64_t>(
@@ -74,6 +75,24 @@ public:
     ScopedMicros(const ScopedMicros&) = delete;
     ScopedMicros& operator=(const ScopedMicros&) = delete;
     ~ScopedMicros() { addMicros(*target_, start_); }
+
+private:
+    std::uint64_t* target_ = nullptr;
+    Clock::time_point start_;
+};
+
+class OptionalScopedMicros {
+public:
+    OptionalScopedMicros(bool enabled, std::uint64_t& target) :
+        target_(enabled ? &target : nullptr),
+        start_(enabled ? Clock::now() : Clock::time_point{}) {}
+    OptionalScopedMicros(const OptionalScopedMicros&) = delete;
+    OptionalScopedMicros& operator=(const OptionalScopedMicros&) = delete;
+    ~OptionalScopedMicros() {
+        if (target_ != nullptr) {
+            addMicros(*target_, start_);
+        }
+    }
 
 private:
     std::uint64_t* target_ = nullptr;
@@ -646,11 +665,11 @@ public:
         bytes_(bytes), file_name_(file_name), control_(control) {
         library_.cells.reserve(std::min<std::size_t>(bytes_.size() / 4096U + 16U, 1'000'000U));
         library_.references.reserve(
-            std::min<std::size_t>(bytes_.size() / 512U + 16U, 1'000'000U));
+            std::min<std::size_t>(bytes_.size() / 1024U + 16U, 1'000'000U));
         library_.elements.reserve(
             std::min<std::size_t>(bytes_.size() / 64U + 16U, 4'000'000U));
         library_.points.reserve(
-            std::min<std::size_t>(bytes_.size() / 8U + 16U, 16'000'000U));
+            std::min<std::size_t>(bytes_.size() / 12U + 16U, 16'000'000U));
         library_.text_element_indices.reserve(
             std::min<std::size_t>(bytes_.size() / 2048U + 16U, 1'000'000U));
         library_.layer_samples.reserve(4096U);
@@ -659,11 +678,14 @@ public:
     ParseResult<LayoutGdsLibrary> parse() {
         try {
             publishProgress(LayoutSourcePhase::Records, true);
-            while (offset_ < bytes_.size()) {
-                maybeCheckCancelled();
-                const auto record = nextRecord();
-                handleRecord(record);
-                maybePublishRecordProgress();
+            {
+                ScopedMicros records_metric(metrics_.record_micros);
+                while (offset_ < bytes_.size()) {
+                    maybeCheckCancelled();
+                    const auto record = nextRecord();
+                    handleRecord(record);
+                    maybePublishRecordProgress();
+                }
             }
             publishProgress(LayoutSourcePhase::Finalize, true);
             if (current_cell_.has_value()) {
@@ -727,7 +749,7 @@ private:
             return;
         }
         const auto interval = control_->progress_record_interval == 0U
-                                  ? 4096U
+                                  ? kDefaultGdsProgressRecordInterval
                                   : control_->progress_record_interval;
         if (metrics_.record_count == 0U || (metrics_.record_count % interval) == 0U) {
             checkCancelled();
@@ -739,7 +761,7 @@ private:
             return;
         }
         const auto interval = control_->progress_record_interval == 0U
-                                  ? 4096U
+                                  ? kDefaultGdsProgressRecordInterval
                                   : control_->progress_record_interval;
         if (metrics_.record_count == last_progress_record_count_ ||
             (metrics_.record_count % interval) != 0U) {
@@ -782,7 +804,7 @@ private:
         if (bytes_.size() - offset_ < 4U) {
             throw std::runtime_error("Truncated GDS record header");
         }
-        ScopedMicros metric(metrics_.record_micros);
+        OptionalScopedMicros metric(detailed_finalize_probes_, metrics_.record_micros);
         const auto record_offset = offset_;
         const auto length = readU16(record_offset);
         if (length < 4U) {
@@ -1103,7 +1125,7 @@ private:
     }
 
     void parseXy(const GdsRecord& record) {
-        ScopedMicros metric(metrics_.xy_decode_micros);
+        OptionalScopedMicros metric(detailed_finalize_probes_, metrics_.xy_decode_micros);
         checkType(record, kGdsInt4);
         if (record.data_size % 4U != 0U) {
             warning("GDS " + gdsRecordName(record.type) + " has a truncated 4-byte integer", record.offset);
@@ -1145,7 +1167,7 @@ private:
     }
 
     void parseColRow(const GdsRecord& record) {
-        ScopedMicros metric(metrics_.scalar_decode_micros);
+        OptionalScopedMicros metric(detailed_finalize_probes_, metrics_.scalar_decode_micros);
         checkType(record, kGdsInt2);
         if (record.data_size % 2U != 0U) {
             warning("GDS " + gdsRecordName(record.type) + " has a truncated 2-byte integer", record.offset);
@@ -1161,7 +1183,7 @@ private:
     }
 
     void parseStrans(const GdsRecord& record) {
-        ScopedMicros metric(metrics_.scalar_decode_micros);
+        OptionalScopedMicros metric(detailed_finalize_probes_, metrics_.scalar_decode_micros);
         checkType(record, kGdsBitArray);
         if (record.data_size % 2U != 0U) {
             warning("GDS " + gdsRecordName(record.type) + " has a truncated 2-byte integer", record.offset);
@@ -1174,7 +1196,7 @@ private:
     }
 
     std::optional<std::uint32_t> firstInt2(const GdsRecord& record) {
-        ScopedMicros metric(metrics_.scalar_decode_micros);
+        OptionalScopedMicros metric(detailed_finalize_probes_, metrics_.scalar_decode_micros);
         checkType(record, kGdsInt2);
         if (record.data_size % 2U != 0U) {
             warning("GDS " + gdsRecordName(record.type) + " has a truncated 2-byte integer", record.offset);
@@ -1187,7 +1209,7 @@ private:
     }
 
     std::vector<double> real8Values(const GdsRecord& record) {
-        ScopedMicros metric(metrics_.scalar_decode_micros);
+        OptionalScopedMicros metric(detailed_finalize_probes_, metrics_.scalar_decode_micros);
         checkType(record, kGdsReal8);
         if (record.data_size % 8U != 0U) {
             warning("GDS " + gdsRecordName(record.type) + " has a truncated 8-byte real", record.offset);
@@ -1201,7 +1223,7 @@ private:
     }
 
     std::optional<double> firstReal8(const GdsRecord& record) {
-        ScopedMicros metric(metrics_.scalar_decode_micros);
+        OptionalScopedMicros metric(detailed_finalize_probes_, metrics_.scalar_decode_micros);
         checkType(record, kGdsReal8);
         if (record.data_size % 8U != 0U) {
             warning("GDS " + gdsRecordName(record.type) + " has a truncated 8-byte real", record.offset);
@@ -1214,7 +1236,7 @@ private:
     }
 
     std::string stringValue(const GdsRecord& record) {
-        ScopedMicros metric(metrics_.string_decode_micros);
+        OptionalScopedMicros metric(detailed_finalize_probes_, metrics_.string_decode_micros);
         checkType(record, kGdsString);
         if (metrics_.string_count != std::numeric_limits<std::uint32_t>::max()) {
             ++metrics_.string_count;
