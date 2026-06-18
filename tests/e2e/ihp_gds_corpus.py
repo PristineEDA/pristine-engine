@@ -23,6 +23,13 @@ INSPECT_REQUEST = 13
 INSPECT_RESPONSE = 14
 SELECTION_GEOMETRY_REQUEST = 15
 SELECTION_GEOMETRY_RESPONSE = 16
+CATALOG_SUMMARY_REQUEST = 19
+CATALOG_SUMMARY_RESPONSE = 20
+STATUS_REQUEST = 23
+STATUS_RESPONSE = 24
+
+STATUS_STATE_READY = 2
+STATUS_STATE_FAILED = 3
 
 
 def percentile(values: list[int], pct: float) -> int:
@@ -148,6 +155,51 @@ def hit_payload(root_cell_index: int, x: float, y: float, radius: float) -> byte
     return bytes(payload)
 
 
+def status_payload(flags: int = 0) -> bytes:
+    return struct.pack("<I", flags)
+
+
+def parse_status(payload: bytes) -> dict[str, int | str]:
+    if payload[:4] != b"PLST":
+        raise AssertionError("status payload missing PLST magic")
+    return {
+        "state": struct.unpack_from("<I", payload, 8)[0],
+        "cellCount": struct.unpack_from("<I", payload, 36)[0],
+        "referenceCount": struct.unpack_from("<I", payload, 40)[0],
+        "elementCount": struct.unpack_from("<I", payload, 44)[0],
+        "pointCount": struct.unpack_from("<I", payload, 48)[0],
+        "diagnosticCount": struct.unpack_from("<I", payload, 56)[0],
+        "openMicros": struct.unpack_from("<Q", payload, 68)[0],
+        "parseMicros": struct.unpack_from("<Q", payload, 76)[0],
+    }
+
+
+def parse_catalog_summary(payload: bytes) -> dict:
+    if payload[:4] != b"PLCS":
+        raise AssertionError("catalog summary payload missing PLCS magic")
+    bounds = None
+    if struct.unpack_from("<I", payload, 20)[0]:
+        bounds = {
+            "x0": struct.unpack_from("<d", payload, 28)[0],
+            "y0": struct.unpack_from("<d", payload, 36)[0],
+            "x1": struct.unpack_from("<d", payload, 44)[0],
+            "y1": struct.unpack_from("<d", payload, 52)[0],
+        }
+    return {
+        "shapeCount": struct.unpack_from("<I", payload, 16)[0],
+        "topCellIndex": struct.unpack_from("<I", payload, 24)[0],
+        "bounds": bounds,
+        "layerCount": struct.unpack_from("<I", payload, 60)[0],
+        "cellCount": struct.unpack_from("<I", payload, 88)[0],
+        "referenceCount": struct.unpack_from("<I", payload, 92)[0],
+        "elementCount": struct.unpack_from("<I", payload, 96)[0],
+        "pointCount": struct.unpack_from("<I", payload, 100)[0],
+        "diagnosticCount": struct.unpack_from("<I", payload, 108)[0],
+        "parseMicros": struct.unpack_from("<Q", payload, 120)[0],
+        "openMicros": struct.unpack_from("<Q", payload, 144)[0],
+    }
+
+
 def object_payload(
     kind: int,
     cell_index: int,
@@ -168,6 +220,35 @@ def object_payload(
         datatype,
         instance_path_hash,
     )
+
+
+def wait_ready_and_summary(session: dict) -> dict:
+    with connect_pipe(session["endpoint"]["kind"], session["endpoint"]["path"]) as pipe:
+        for index in range(2400):
+            pipe.write(frame(STATUS_REQUEST, 9000 + index, status_payload()))
+            pipe.flush()
+            message_type, _request_id, _flags, payload = read_frame(pipe)
+            if message_type == ERROR_RESPONSE:
+                raise AssertionError("status request returned error")
+            assert message_type == STATUS_RESPONSE
+            status = parse_status(payload)
+            if status["state"] == STATUS_STATE_READY:
+                pipe.write(frame(CATALOG_SUMMARY_REQUEST, 12_000))
+                pipe.flush()
+                message_type, _request_id, _flags, payload = read_frame(pipe)
+                if message_type == ERROR_RESPONSE:
+                    raise AssertionError("catalog summary request returned error")
+                assert message_type == CATALOG_SUMMARY_RESPONSE
+                summary = parse_catalog_summary(payload)
+                summary["gdsMetrics"] = {
+                    "openMicros": int(summary.get("openMicros", 0)),
+                    "parseMicros": int(summary.get("parseMicros", 0)),
+                }
+                return summary
+            if status["state"] == STATUS_STATE_FAILED:
+                raise AssertionError("staged GDS parse failed")
+            time.sleep(0.05)
+    raise AssertionError("staged GDS did not become ready within 120s")
 
 
 def sample_spatial_pipe(session: dict) -> dict[str, int]:
@@ -386,11 +467,34 @@ def main() -> int:
             if result["source"] != "gds":
                 failures.append(f"{relative}: expected source 'gds', got {result['source']!r}")
 
-            total_cells += int(result["cellCount"])
-            total_references += int(result["referenceCount"])
-            total_elements += int(result["elementCount"])
-            total_layers += int(result["layerCount"])
-            total_diagnostics += int(result["diagnosticCount"])
+            if result.get("deferred"):
+                try:
+                    ready_summary = wait_ready_and_summary(result)
+                except AssertionError as exc:
+                    failures.append(f"{relative}: staged ready failed: {exc}")
+                    ready_summary = {}
+                if ready_summary:
+                    result["cellCount"] = ready_summary.get("cellCount", result.get("cellCount", 0))
+                    result["referenceCount"] = ready_summary.get(
+                        "referenceCount", result.get("referenceCount", 0)
+                    )
+                    result["elementCount"] = ready_summary.get("elementCount", result.get("elementCount", 0))
+                    result["layerCount"] = ready_summary.get("layerCount", result.get("layerCount", 0))
+                    result["diagnosticCount"] = ready_summary.get(
+                        "diagnosticCount", result.get("diagnosticCount", 0)
+                    )
+                    if ready_summary.get("bounds"):
+                        result["bounds"] = ready_summary["bounds"]
+                    result["gdsMetrics"] = {
+                        **result.get("gdsMetrics", {}),
+                        **ready_summary.get("gdsMetrics", {}),
+                    }
+
+            total_cells += int(result.get("cellCount", 0))
+            total_references += int(result.get("referenceCount", 0))
+            total_elements += int(result.get("elementCount", 0))
+            total_layers += int(result.get("layerCount", 0))
+            total_diagnostics += int(result.get("diagnosticCount", 0))
             metrics = result.get("gdsMetrics", {})
             open_micros = int(metrics.get("openMicros", 0))
             parse_micros = int(metrics.get("parseMicros", 0))

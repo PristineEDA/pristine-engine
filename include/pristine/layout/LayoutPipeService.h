@@ -37,6 +37,8 @@ struct LayoutSessionInfo {
     std::size_t element_count = 0;
     std::size_t diagnostic_count = 0;
     LayoutGdsOpenMetrics gds_open_metrics{};
+    std::string status = "ready";
+    bool deferred = false;
     std::vector<std::string> messages{};
     std::vector<std::string> file_uris{};
 };

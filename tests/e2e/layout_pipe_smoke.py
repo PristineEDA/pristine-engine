@@ -35,6 +35,10 @@ SELECTION_GEOMETRY_REQUEST = 15
 SELECTION_GEOMETRY_RESPONSE = 16
 SEARCH_REQUEST = 17
 SEARCH_RESPONSE = 18
+STATUS_REQUEST = 23
+STATUS_RESPONSE = 24
+
+STATUS_STATE_READY = 2
 
 
 def write_message(process: subprocess.Popen[bytes], message: dict) -> None:
@@ -224,6 +228,23 @@ def search_payload(
     return bytes(payload)
 
 
+def status_payload(flags: int = 0) -> bytes:
+    return struct.pack("<I", flags)
+
+
+def assert_ready_status(pipe: BinaryIO, request_id: int, min_cells: int = 0, min_elements: int = 0) -> None:
+    pipe.write(frame(STATUS_REQUEST, request_id, status_payload()))
+    pipe.flush()
+    message_type, actual_request_id, _flags, payload = read_frame(pipe)
+    assert message_type == STATUS_RESPONSE
+    assert actual_request_id == request_id
+    assert payload[:4] == b"PLST"
+    assert struct.unpack_from("<H", payload, 4)[0] == PROTOCOL_VERSION
+    assert struct.unpack_from("<I", payload, 8)[0] == STATUS_STATE_READY
+    assert struct.unpack_from("<I", payload, 36)[0] >= min_cells
+    assert struct.unpack_from("<I", payload, 44)[0] >= min_elements
+
+
 def embedded_tile_geometry(payload: bytes) -> bytes:
     assert payload[:4] == b"PLTG"
     offset = struct.unpack_from("<I", payload, 16)[0]
@@ -403,6 +424,8 @@ def exercise_layout_pipe(session: dict) -> None:
         assert struct.unpack_from("<I", payload, 4)[0] == 1000
         assert struct.unpack_from("<I", payload, 8)[0] == 1
 
+        assert_ready_status(pipe, 101)
+
         pipe.write(frame(CATALOG_REQUEST, 11))
         pipe.flush()
         message_type, request_id, _flags, payload = read_frame(pipe)
@@ -525,6 +548,8 @@ def exercise_gds_pipe(session: dict) -> None:
         assert struct.unpack_from("<H", payload, 0)[0] == PROTOCOL_VERSION
         assert struct.unpack_from("<I", payload, 8)[0] >= 1
         assert struct.unpack_from("<I", payload, 12)[0] == 2
+
+        assert_ready_status(pipe, 201, min_cells=2, min_elements=3)
 
         pipe.write(frame(CATALOG_REQUEST, 21))
         pipe.flush()

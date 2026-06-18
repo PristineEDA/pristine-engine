@@ -161,6 +161,13 @@ std::vector<std::uint8_t> handleRequest(const LayoutSource& source, const Layout
                                                .version = source.protocolVersion(),
                                                .payload = source.encodeSearchResponse(search_request)});
             }
+            case LayoutMessageType::StatusRequest:
+                decodeStatusRequestPayload(request.payload);
+                return encodeFrame(LayoutFrame{.message_type = LayoutMessageType::StatusResponse,
+                                               .request_id = request.request_id,
+                                               .flags = 0,
+                                               .version = source.protocolVersion(),
+                                               .payload = source.encodeStatusResponse()});
             case LayoutMessageType::Close:
                 return {};
             default:
@@ -391,6 +398,7 @@ LayoutSessionInfo LayoutPipeService::openSession(std::shared_ptr<LayoutSource> s
     stop();
 
     const auto& data = source->dataSet();
+    const auto status = source->status();
     LayoutSessionInfo info{.session_id = std::to_string(next_session_number_++),
                            .protocol = std::string(source->protocolName()),
                            .endpoint = LayoutPipeEndpoint{},
@@ -409,6 +417,13 @@ LayoutSessionInfo LayoutPipeService::openSession(std::shared_ptr<LayoutSource> s
                            .element_count = data.gds.has_value() ? data.gds->elements.size() : 0U,
                            .diagnostic_count = data.diagnostics.size(),
                            .gds_open_metrics = data.gds_open_metrics,
+                           .status = status.state == LayoutSourceState::Ready
+                               ? "ready"
+                               : status.state == LayoutSourceState::Failed
+                                     ? "failed"
+                                     : status.state == LayoutSourceState::Closing ? "closing"
+                                                                                  : "parsing",
+                           .deferred = status.state != LayoutSourceState::Ready,
                            .file_uris = data.file_uris};
     info.endpoint.kind = endpointKind();
     info.endpoint.path = endpointPath(info.session_id);

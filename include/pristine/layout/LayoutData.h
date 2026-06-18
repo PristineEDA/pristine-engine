@@ -309,6 +309,43 @@ struct LayoutGdsOpenMetrics {
     LayoutGdsParseMetrics parse{};
 };
 
+enum class LayoutSourceState : std::uint32_t {
+    Parsing = 1,
+    Ready = 2,
+    Failed = 3,
+    Closing = 4,
+};
+
+enum class LayoutSourcePhase : std::uint32_t {
+    Unknown = 0,
+    Read = 1,
+    Records = 2,
+    Finalize = 3,
+    Resolve = 4,
+    Ready = 5,
+    Failed = 6,
+};
+
+struct LayoutStatus {
+    LayoutSourceState state = LayoutSourceState::Ready;
+    LayoutSourcePhase phase = LayoutSourcePhase::Ready;
+    std::uint64_t file_size_bytes = 0;
+    std::uint64_t bytes_read = 0;
+    std::uint32_t record_count = 0;
+    std::uint32_t cell_count = 0;
+    std::uint32_t reference_count = 0;
+    std::uint32_t element_count = 0;
+    std::uint32_t point_count = 0;
+    std::uint32_t string_count = 0;
+    std::uint32_t diagnostic_count = 0;
+    std::uint64_t elapsed_micros = 0;
+    std::uint64_t open_micros = 0;
+    std::uint64_t parse_micros = 0;
+    bool warmup_scheduled = false;
+    bool warmup_ready = false;
+    std::string error{};
+};
+
 struct LayoutDataSet {
     std::string id{};
     std::string title{};

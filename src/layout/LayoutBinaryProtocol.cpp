@@ -24,6 +24,7 @@ constexpr std::uint8_t kTileGeometryMagic[] = {'P', 'L', 'T', 'G'};
 constexpr std::uint8_t kHitTestMagic[] = {'P', 'L', 'H', 'T'};
 constexpr std::uint8_t kInspectMagic[] = {'P', 'L', 'I', 'N'};
 constexpr std::uint8_t kSearchMagic[] = {'P', 'L', 'S', 'R'};
+constexpr std::uint8_t kStatusMagic[] = {'P', 'L', 'S', 'T'};
 constexpr std::uint16_t kFrameHeaderSize = 24;
 constexpr std::uint16_t kCatalogHeaderSize = 136;
 constexpr std::uint16_t kCatalogSummaryHeaderSize = 152;
@@ -35,6 +36,7 @@ constexpr std::uint16_t kHitTestRowStride = 80;
 constexpr std::uint16_t kInspectHeaderSize = 144;
 constexpr std::uint16_t kSearchHeaderSize = 56;
 constexpr std::uint16_t kSearchRowStride = 88;
+constexpr std::uint16_t kStatusHeaderSize = 116;
 constexpr std::size_t kMaxPayloadSize = 128U * 1024U * 1024U;
 constexpr std::size_t kMaxSearchQueryBytes = 64U * 1024U;
 constexpr std::uint32_t kGdsCatalogCellTopFlag = 1U;
@@ -49,6 +51,7 @@ constexpr std::uint32_t kTileGeometryRequestSupportedFlags = kTileGeometryReques
 constexpr std::uint32_t kSearchRequestFlagHasBbox = 1U;
 constexpr std::uint32_t kSearchRequestSupportedFlags = kSearchRequestFlagHasBbox;
 constexpr std::uint32_t kCatalogPageRequestSupportedFlags = 0U;
+constexpr std::uint32_t kStatusRequestSupportedFlags = 0U;
 constexpr std::uint32_t kDefaultCatalogPageLimit = 4096U;
 
 using Clock = std::chrono::steady_clock;
@@ -1451,6 +1454,48 @@ std::vector<std::uint8_t> encodeSearchResponsePayload(
     return result;
 }
 
+std::vector<std::uint8_t> encodeStatusResponsePayload(const LayoutStatus& status) {
+    std::vector<std::uint8_t> strings;
+    const auto error_offset = appendTableString(strings, status.error);
+
+    std::vector<std::uint8_t> result(kStatusHeaderSize, 0);
+    const auto string_offset = static_cast<std::uint32_t>(result.size());
+    result.insert(result.end(), strings.begin(), strings.end());
+
+    std::size_t offset = 0;
+    result[offset++] = kStatusMagic[0];
+    result[offset++] = kStatusMagic[1];
+    result[offset++] = kStatusMagic[2];
+    result[offset++] = kStatusMagic[3];
+    result[offset++] = static_cast<std::uint8_t>(kLayoutProtocolVersion & 0xffU);
+    result[offset++] = static_cast<std::uint8_t>((kLayoutProtocolVersion >> 8U) & 0xffU);
+    result[offset++] = static_cast<std::uint8_t>(kStatusHeaderSize & 0xffU);
+    result[offset++] = static_cast<std::uint8_t>((kStatusHeaderSize >> 8U) & 0xffU);
+    writeU32Header(result, offset, static_cast<std::uint32_t>(status.state));
+    writeU32Header(result, offset, static_cast<std::uint32_t>(status.phase));
+    writeU64Header(result, offset, status.file_size_bytes);
+    writeU64Header(result, offset, status.bytes_read);
+    writeU32Header(result, offset, status.record_count);
+    writeU32Header(result, offset, status.cell_count);
+    writeU32Header(result, offset, status.reference_count);
+    writeU32Header(result, offset, status.element_count);
+    writeU32Header(result, offset, status.point_count);
+    writeU32Header(result, offset, status.string_count);
+    writeU32Header(result, offset, status.diagnostic_count);
+    writeU64Header(result, offset, status.elapsed_micros);
+    writeU64Header(result, offset, status.open_micros);
+    writeU64Header(result, offset, status.parse_micros);
+    writeU32Header(result, offset, status.warmup_scheduled ? 1U : 0U);
+    writeU32Header(result, offset, status.warmup_ready ? 1U : 0U);
+    writeU32Header(result, offset, string_offset);
+    writeU32Header(result, offset, checkedCount(strings.size(), "status string table"));
+    writeU32Header(result, offset, error_offset);
+    writeU32Header(result, offset, 0);
+    writeU32Header(result, offset, 0);
+    writeU32Header(result, offset, 0);
+    return result;
+}
+
 std::vector<std::uint8_t> encodeErrorPayload(LayoutErrorCode code, std::string_view message) {
     std::vector<std::uint8_t> result;
     appendU32(result, static_cast<std::uint32_t>(code));
@@ -1734,6 +1779,21 @@ LayoutCatalogPageRequest decodeCatalogPageRequestPayload(
         throw std::runtime_error("Layout catalog page request has trailing bytes");
     }
     return request;
+}
+
+void decodeStatusRequestPayload(const std::vector<std::uint8_t>& payload) {
+    const auto* bytes = payload.data();
+    const auto size = payload.size();
+    std::size_t offset = 0;
+    requireAvailable(size, offset, 4);
+    const auto flags = readU32(bytes, size, offset);
+    offset += sizeof(std::uint32_t);
+    if ((flags & ~kStatusRequestSupportedFlags) != 0U) {
+        throw std::runtime_error("Layout status request has unsupported flags");
+    }
+    if (offset != size) {
+        throw std::runtime_error("Layout status request has trailing bytes");
+    }
 }
 
 } // namespace pristine::layout

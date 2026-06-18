@@ -34,6 +34,12 @@ CATALOG_SUMMARY_REQUEST = 19
 CATALOG_SUMMARY_RESPONSE = 20
 CATALOG_PAGE_REQUEST = 21
 CATALOG_PAGE_RESPONSE = 22
+STATUS_REQUEST = 23
+STATUS_RESPONSE = 24
+
+STATUS_STATE_PARSING = 1
+STATUS_STATE_READY = 2
+STATUS_STATE_FAILED = 3
 
 CATALOG_PAGE_LAYERS = 1
 CATALOG_PAGE_CELLS = 2
@@ -110,7 +116,9 @@ def delta_percent(previous: int, current: int) -> float | None:
 
 def summarize_before_after(previous: dict, current: dict) -> dict:
     keys = [
+        ("lsp_open_wall_micros", "p95"),
         ("open_wall_micros", "p95"),
+        ("ready_wall_micros", "p95"),
         ("element_finalize_micros", "p95"),
         ("tile_query_micros", "p95"),
         ("tile_query_micros", "max"),
@@ -369,6 +377,17 @@ def expect_pipe_error(pipe: BinaryIO, message_type: int, request_id: int, payloa
     return error_text(response)
 
 
+def maybe_pipe_error(pipe: BinaryIO, message_type: int, request_id: int, payload: bytes) -> str | None:
+    pipe.write(frame(message_type, request_id, payload))
+    pipe.flush()
+    actual_type, actual_request, _flags, response = read_frame(pipe)
+    if actual_request != request_id:
+        raise AssertionError(f"expected request id {request_id}, got {actual_request}")
+    if actual_type == ERROR_RESPONSE:
+        return error_text(response)
+    return None
+
+
 def table_string(payload: bytes, string_table_offset: int, string_offset: int) -> str:
     start = string_table_offset + string_offset
     size = struct.unpack_from("<I", payload, start)[0]
@@ -378,6 +397,43 @@ def table_string(payload: bytes, string_table_offset: int, string_offset: int) -
 
 def catalog_page_payload(table_kind: int, offset: int = 0, limit: int = 4096, max_bytes: int = 8_000_000) -> bytes:
     return struct.pack("<IIIII", 0, table_kind, offset, limit, max_bytes)
+
+
+def status_payload(flags: int = 0) -> bytes:
+    return struct.pack("<I", flags)
+
+
+def parse_status(payload: bytes) -> dict:
+    if payload[:4] != b"PLST":
+        raise AssertionError("status payload missing PLST magic")
+    if len(payload) < 116:
+        raise AssertionError("status payload truncated")
+    string_offset = struct.unpack_from("<I", payload, 92)[0]
+    error_offset = struct.unpack_from("<I", payload, 100)[0]
+    error = ""
+    if string_offset and error_offset != NO_INDEX:
+        error = table_string(payload, string_offset, error_offset)
+    return {
+        "version": struct.unpack_from("<H", payload, 4)[0],
+        "state": struct.unpack_from("<I", payload, 8)[0],
+        "phase": struct.unpack_from("<I", payload, 12)[0],
+        "file_size_bytes": struct.unpack_from("<Q", payload, 16)[0],
+        "bytes_read": struct.unpack_from("<Q", payload, 24)[0],
+        "record_count": struct.unpack_from("<I", payload, 32)[0],
+        "cell_count": struct.unpack_from("<I", payload, 36)[0],
+        "reference_count": struct.unpack_from("<I", payload, 40)[0],
+        "element_count": struct.unpack_from("<I", payload, 44)[0],
+        "point_count": struct.unpack_from("<I", payload, 48)[0],
+        "string_count": struct.unpack_from("<I", payload, 52)[0],
+        "diagnostic_count": struct.unpack_from("<I", payload, 56)[0],
+        "elapsed_micros": struct.unpack_from("<Q", payload, 60)[0],
+        "open_micros": struct.unpack_from("<Q", payload, 68)[0],
+        "parse_micros": struct.unpack_from("<Q", payload, 76)[0],
+        "warmup_scheduled": bool(struct.unpack_from("<I", payload, 84)[0]),
+        "warmup_ready": bool(struct.unpack_from("<I", payload, 88)[0]),
+        "error": error,
+        "payload_bytes": len(payload),
+    }
 
 
 def parse_catalog_summary(payload: bytes) -> dict:
@@ -688,9 +744,9 @@ def run_interaction(server_path: pathlib.Path, gds_path: pathlib.Path) -> dict:
             process,
             request_id,
             "systemverilog/layout/open",
-            {"gdsUri": gds_path.as_uri(), "title": gds_path.name},
+            {"gdsUri": gds_path.as_uri(), "title": gds_path.name, "openMode": "auto"},
         )["result"]
-        open_wall_micros = now_micros() - open_start
+        lsp_open_wall_micros = now_micros() - open_start
         request_id += 1
         if session["protocol"] != "pristine-layout-columnar-v3" or session["source"] != "gds":
             raise AssertionError(f"bad layout session metadata: {session}")
@@ -705,12 +761,19 @@ def run_interaction(server_path: pathlib.Path, gds_path: pathlib.Path) -> dict:
                 "layerCount": session.get("layerCount", 0),
                 "diagnosticCount": session.get("diagnosticCount", 0),
                 "gdsMetrics": session.get("gdsMetrics", {}),
+                "status": session.get("status"),
+                "deferred": bool(session.get("deferred", False)),
             },
             "warmup": {
                 "scheduled": bool(session.get("gdsMetrics", {}).get("warmupScheduled", False)),
                 "pointArenaCount": int(session.get("gdsMetrics", {}).get("pointArenaCount", 0)),
             },
-            "open_wall_micros": [open_wall_micros],
+            "lsp_open_wall_micros": [lsp_open_wall_micros],
+            "open_wall_micros": [],
+            "ready_wall_micros": [],
+            "status_wall_micros": [],
+            "status_samples": [],
+            "pending_errors": 0,
             "tiles": [],
             "hits": [],
             "searches": [],
@@ -725,11 +788,59 @@ def run_interaction(server_path: pathlib.Path, gds_path: pathlib.Path) -> dict:
             if struct.unpack_from("<H", hello, 0)[0] != PROTOCOL_VERSION:
                 raise AssertionError("hello payload did not report v3")
 
+            if metrics["session"]["deferred"]:
+                pending = maybe_pipe_error(pipe, CATALOG_SUMMARY_REQUEST, 9000, b"")
+                if pending is not None:
+                    metrics["pending_errors"] += 1
+
+            trace("status until ready")
+            ready_status = None
+            status_start = now_micros()
+            for poll_index in range(2400):
+                _flags, status_wall, status_bytes, _ = send_pipe(
+                    pipe, STATUS_REQUEST, 10_000 + poll_index, status_payload(), expect=STATUS_RESPONSE
+                )
+                status = parse_status(status_bytes)
+                metrics["status_wall_micros"].append(status_wall)
+                metrics["status_samples"].append(status)
+                if status["state"] == STATUS_STATE_READY:
+                    ready_status = status
+                    break
+                if status["state"] == STATUS_STATE_FAILED:
+                    raise AssertionError(f"GDS staged open failed: {status.get('error', '<missing error>')}")
+                time.sleep(0.05)
+            if ready_status is None:
+                raise AssertionError("GDS staged open did not reach ready within 120s")
+            ready_wall_micros = now_micros() - open_start
+            metrics["ready_wall_micros"].append(ready_wall_micros)
+            metrics["open_wall_micros"].append(ready_wall_micros)
+            metrics["status_poll_count"] = len(metrics["status_samples"])
+            metrics["ready_status"] = ready_status
+            metrics["warmup"]["scheduled"] = ready_status["warmup_scheduled"]
+            metrics["warmup"]["ready"] = ready_status["warmup_ready"]
+            metrics["warmup"]["pointArenaCount"] = ready_status["point_count"]
+            trace(
+                "ready after "
+                f"{ready_wall_micros}us ({len(metrics['status_samples'])} status polls, "
+                f"parse {ready_status['parse_micros']}us)"
+            )
+
             trace("catalog summary")
             _flags, summary_wall, summary_payload, _ = send_pipe(
                 pipe, CATALOG_SUMMARY_REQUEST, 11, expect=CATALOG_SUMMARY_RESPONSE
             )
             catalog = parse_catalog_summary(summary_payload)
+            metrics["session"]["cellCount"] = catalog.get("cell_count", metrics["session"].get("cellCount", 0))
+            metrics["session"]["referenceCount"] = catalog.get(
+                "reference_count", metrics["session"].get("referenceCount", 0)
+            )
+            metrics["session"]["elementCount"] = catalog.get(
+                "element_count", metrics["session"].get("elementCount", 0)
+            )
+            metrics["session"]["layerCount"] = catalog.get("layer_count", metrics["session"].get("layerCount", 0))
+            metrics["session"]["diagnosticCount"] = catalog.get(
+                "diagnostic_count", metrics["session"].get("diagnosticCount", 0)
+            )
             metrics["catalog_summary_wall_micros"] = [summary_wall]
             trace("catalog layer page")
             _flags, layer_page_wall, layer_page_payload_bytes, _ = send_pipe(
@@ -1031,8 +1142,20 @@ def run_interaction(server_path: pathlib.Path, gds_path: pathlib.Path) -> dict:
         parse_metrics = metrics["session"].get("gdsMetrics", {}).get("parseMetrics", {})
         metrics["summary"] = {
             "warmup_scheduled": metrics.get("warmup", {}).get("scheduled", False),
+            "warmup_ready": metrics.get("warmup", {}).get("ready", False),
             "point_arena_count": metrics.get("warmup", {}).get("pointArenaCount", 0),
+            "lsp_open_wall_micros": metric_summary(metrics["lsp_open_wall_micros"]),
             "open_wall_micros": metric_summary(metrics["open_wall_micros"]),
+            "ready_wall_micros": metric_summary(metrics["ready_wall_micros"]),
+            "status_wall_micros": metric_summary(metrics["status_wall_micros"]),
+            "status_poll_count": metrics.get("status_poll_count", 0),
+            "pending_error_count": metrics.get("pending_errors", 0),
+            "status_parse_micros": metric_summary(
+                [int(metrics.get("ready_status", {}).get("parse_micros", 0))]
+            ),
+            "status_open_micros": metric_summary(
+                [int(metrics.get("ready_status", {}).get("open_micros", 0))]
+            ),
             "element_finalize_micros": metric_summary([int(parse_metrics.get("elementFinalizeMicros", 0))]),
             "element_finalize_bbox_micros": metric_summary(
                 [int(parse_metrics.get("elementFinalizeBboxMicros", 0))]
@@ -1120,7 +1243,9 @@ def main() -> int:
     summary = metrics["summary"]
     print(
         "TT tinyQV GDS interaction: "
-        f"open p95 {summary['open_wall_micros']['p95']}us, "
+        f"LSP open p95 {summary['lsp_open_wall_micros']['p95']}us, "
+        f"ready wall p95 {summary['ready_wall_micros']['p95']}us, "
+        f"status parse {summary['status_parse_micros']['p95']}us, "
         f"element finalize {summary['element_finalize_micros']['p95']}us, "
         f"overview query max {summary['tile_groups'].get('overview', {}).get('query_micros', {}).get('max', 0)}us, "
         f"cold wide max {summary['tile_groups'].get('cold_wide_zoom', {}).get('query_micros', {}).get('max', 0)}us, "
@@ -1130,7 +1255,10 @@ def main() -> int:
         f"{summary['tile_query_micros']['p95']}/{summary['tile_query_micros']['max']}us, "
         f"hit query p95 {summary['hit_query_micros']['p95']}us, "
         f"search query p95 {summary['search_query_micros']['p95']}us, "
+        f"status polls {summary.get('status_poll_count')}, "
+        f"pending errors {summary.get('pending_error_count')}, "
         f"warmup scheduled {summary.get('warmup_scheduled')}, "
+        f"warmup ready {summary.get('warmup_ready')}, "
         f"point arena {summary.get('point_arena_count')}, "
         f"metrics {output_path}"
     )

@@ -800,6 +800,8 @@ jsonrpc::Json toLayoutSessionJson(const layout::LayoutSessionInfo& info) {
                          jsonrpc::Json{{"kind", info.endpoint.kind}, {"path", info.endpoint.path}}},
                          {"title", info.title},
                          {"source", info.source},
+                         {"status", info.status},
+                         {"deferred", info.deferred},
                          {"lefCount", info.lef_count},
                          {"defPresent", info.def_present},
                          {"unitsPerMicron", info.units_per_micron},
@@ -1368,6 +1370,7 @@ jsonrpc::Json ServerSession::handleLayoutOpen(const jsonrpc::Json& params) {
     const auto def_uri = jsonStringField(params, "defUri");
     const auto gds_uri = jsonStringField(params, "gdsUri");
     const auto title = jsonStringField(params, "title").value_or("");
+    const auto open_mode = jsonStringField(params, "openMode").value_or("auto");
     if (gds_uri.has_value() && (!lef_uris.empty() || def_uri.has_value())) {
         throw std::runtime_error("Layout open does not support mixing GDS with LEF/DEF inputs");
     }
@@ -1388,7 +1391,7 @@ jsonrpc::Json ServerSession::handleLayoutOpen(const jsonrpc::Json& params) {
         if (!isPathInsideRoot(*path, *workspace_state.root_path)) {
             throw std::runtime_error("GDS file must be inside the workspace root");
         }
-        auto source = layout::openGdsLayoutSource(*path, *gds_uri, title);
+        auto source = layout::openGdsLayoutSource(*path, *gds_uri, title, open_mode);
         return toLayoutSessionJson(layout_service_.openSession(std::move(source), 0, false));
     }
 

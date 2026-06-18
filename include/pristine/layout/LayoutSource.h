@@ -19,6 +19,7 @@ public:
     [[nodiscard]] virtual std::string_view sourceKind() const = 0;
     [[nodiscard]] virtual std::uint16_t protocolVersion() const;
     [[nodiscard]] virtual std::string_view protocolName() const;
+    [[nodiscard]] virtual LayoutStatus status() const;
 
     [[nodiscard]] virtual std::vector<std::uint8_t> encodeHelloResponse() const;
     [[nodiscard]] virtual std::vector<std::uint8_t> encodeCatalogResponse() const;
@@ -37,6 +38,7 @@ public:
         const LayoutSelectionGeometryRequest& request) const;
     [[nodiscard]] virtual std::vector<std::uint8_t> encodeSearchResponse(
         const LayoutSearchRequest& request) const;
+    [[nodiscard]] virtual std::vector<std::uint8_t> encodeStatusResponse() const;
 };
 
 [[nodiscard]] std::shared_ptr<LayoutSource> makeDataSetLayoutSource(LayoutDataSet data,
@@ -53,5 +55,11 @@ public:
     const std::filesystem::path& gds_path,
     std::string gds_uri,
     std::string title);
+
+[[nodiscard]] std::shared_ptr<LayoutSource> openGdsLayoutSource(
+    const std::filesystem::path& gds_path,
+    std::string gds_uri,
+    std::string title,
+    std::string open_mode);
 
 } // namespace pristine::layout

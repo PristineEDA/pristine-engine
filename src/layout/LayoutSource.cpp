@@ -23,6 +23,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <tuple>
 #include <utility>
@@ -166,6 +167,32 @@ bool shouldWarmupGdsLibrary(const LayoutGdsLibrary& gds) {
            gds.references.size() >= 10'000U;
 }
 
+std::uint64_t stagedOpenThresholdBytes() {
+    constexpr std::uint64_t kDefaultThreshold = 64ULL * 1024ULL * 1024ULL;
+    const auto value = environmentValue("PRISTINE_LAYOUT_STAGED_OPEN_BYTES");
+    if (!value.has_value() || value->empty()) {
+        return kDefaultThreshold;
+    }
+    try {
+        return std::stoull(*value);
+    }
+    catch (const std::exception&) {
+        return kDefaultThreshold;
+    }
+}
+
+bool isSyncOpenMode(std::string_view mode) {
+    return mode.empty() || mode == "sync";
+}
+
+bool isStagedOpenMode(std::string_view mode) {
+    return mode == "staged";
+}
+
+bool isAutoOpenMode(std::string_view mode) {
+    return mode.empty() || mode == "auto";
+}
+
 bool containsAsciiCaseInsensitive(std::string_view value, std::string_view needle) {
     if (needle.empty()) {
         return true;
@@ -211,6 +238,10 @@ struct GdsAffineTransform {
 std::uint32_t findGdsLayer(const LayoutDataSet& data,
                            std::uint32_t layer,
                            std::uint32_t datatype);
+std::string defaultGdsTitle(const std::filesystem::path& gds_path, std::string title);
+LayoutDataSet loadGdsLayoutDataSet(const std::filesystem::path& gds_path,
+                                   std::string gds_uri,
+                                   std::string title);
 std::span<const LayoutPoint> gdsElementPoints(const LayoutGdsLibrary& gds,
                                               const LayoutGdsElement& element);
 bool isDrawableGdsElement(const LayoutGdsLibrary& gds, const LayoutGdsElement& element);
@@ -815,6 +846,194 @@ private:
     mutable std::map<std::string, SearchCacheEntry> search_cache_;
 };
 
+class StagedGdsLayoutSource final : public LayoutSource {
+public:
+    StagedGdsLayoutSource(std::filesystem::path gds_path, std::string gds_uri, std::string title) :
+        gds_path_(std::move(gds_path)),
+        gds_uri_(std::move(gds_uri)),
+        title_(defaultGdsTitle(gds_path_, std::move(title))),
+        start_(Clock::now()) {
+        placeholder_.id = "gds-layout";
+        placeholder_.title = title_;
+        placeholder_.file_uris.push_back(gds_uri_);
+        std::error_code error;
+        status_.file_size_bytes = std::filesystem::file_size(gds_path_, error);
+        if (error) {
+            status_.file_size_bytes = 0;
+        }
+        status_.state = LayoutSourceState::Parsing;
+        status_.phase = LayoutSourcePhase::Read;
+        parse_thread_ = std::thread([this]() { runParse(); });
+    }
+
+    ~StagedGdsLayoutSource() override {
+        {
+            std::lock_guard lock(mutex_);
+            closing_ = true;
+            if (status_.state == LayoutSourceState::Parsing) {
+                status_.state = LayoutSourceState::Closing;
+                status_.phase = LayoutSourcePhase::Unknown;
+            }
+        }
+        if (parse_thread_.joinable()) {
+            parse_thread_.join();
+        }
+    }
+
+    const LayoutDataSet& dataSet() const override {
+        std::lock_guard lock(mutex_);
+        if (ready_source_) {
+            return ready_source_->dataSet();
+        }
+        return placeholder_;
+    }
+
+    std::string_view sourceKind() const override { return "gds"; }
+
+    LayoutStatus status() const override {
+        return statusSnapshot();
+    }
+
+    std::vector<std::uint8_t> encodeHelloResponse() const override {
+        return encodeHelloResponsePayload(dataSet());
+    }
+
+    std::vector<std::uint8_t> encodeCatalogResponse() const override {
+        return readySourceOrThrow().encodeCatalogResponse();
+    }
+
+    std::vector<std::uint8_t> encodeCatalogSummaryResponse() const override {
+        return readySourceOrThrow().encodeCatalogSummaryResponse();
+    }
+
+    std::vector<std::uint8_t> encodeCatalogPageResponse(
+        const LayoutCatalogPageRequest& request) const override {
+        return readySourceOrThrow().encodeCatalogPageResponse(request);
+    }
+
+    std::vector<std::uint8_t> encodeGeometryResponse(
+        const LayoutGeometryRequest& request) const override {
+        return readySourceOrThrow().encodeGeometryResponse(request);
+    }
+
+    std::vector<std::uint8_t> encodeTileGeometryResponse(
+        const LayoutTileGeometryRequest& request) const override {
+        return readySourceOrThrow().encodeTileGeometryResponse(request);
+    }
+
+    std::vector<std::uint8_t> encodeHitTestResponse(
+        const LayoutHitTestRequest& request) const override {
+        return readySourceOrThrow().encodeHitTestResponse(request);
+    }
+
+    std::vector<std::uint8_t> encodeInspectResponse(
+        const LayoutInspectRequest& request) const override {
+        return readySourceOrThrow().encodeInspectResponse(request);
+    }
+
+    std::vector<std::uint8_t> encodeSelectionGeometryResponse(
+        const LayoutSelectionGeometryRequest& request) const override {
+        return readySourceOrThrow().encodeSelectionGeometryResponse(request);
+    }
+
+    std::vector<std::uint8_t> encodeSearchResponse(
+        const LayoutSearchRequest& request) const override {
+        return readySourceOrThrow().encodeSearchResponse(request);
+    }
+
+    std::vector<std::uint8_t> encodeStatusResponse() const override {
+        return encodeStatusResponsePayload(status());
+    }
+
+private:
+    [[nodiscard]] const LayoutSource& readySourceOrThrow() const {
+        std::lock_guard lock(mutex_);
+        if (ready_source_) {
+            return *ready_source_;
+        }
+        if (status_.state == LayoutSourceState::Failed) {
+            throw std::runtime_error(status_.error.empty() ? "Layout GDS parse failed" : status_.error);
+        }
+        throw std::runtime_error("Layout source is still parsing; use status requests until ready");
+    }
+
+    [[nodiscard]] LayoutStatus statusSnapshot() const {
+        std::lock_guard lock(mutex_);
+        auto status = status_;
+        status.elapsed_micros = elapsedMicros(start_);
+        if (ready_source_) {
+            const auto& data = ready_source_->dataSet();
+            status.state = LayoutSourceState::Ready;
+            status.phase = LayoutSourcePhase::Ready;
+            status.record_count = data.gds.has_value() ? data.gds->parse_metrics.record_count : 0U;
+            status.cell_count = static_cast<std::uint32_t>(
+                std::min<std::size_t>(data.gds.has_value() ? data.gds->cells.size() : 0U,
+                                      std::numeric_limits<std::uint32_t>::max()));
+            status.reference_count = static_cast<std::uint32_t>(
+                std::min<std::size_t>(data.gds.has_value() ? data.gds->references.size() : 0U,
+                                      std::numeric_limits<std::uint32_t>::max()));
+            status.element_count = static_cast<std::uint32_t>(
+                std::min<std::size_t>(data.gds.has_value() ? data.gds->elements.size() : 0U,
+                                      std::numeric_limits<std::uint32_t>::max()));
+            status.point_count = static_cast<std::uint32_t>(
+                std::min<std::size_t>(data.gds.has_value() ? data.gds->points.size() : 0U,
+                                      std::numeric_limits<std::uint32_t>::max()));
+            status.string_count = data.gds.has_value() ? data.gds->parse_metrics.string_count : 0U;
+            status.diagnostic_count = static_cast<std::uint32_t>(
+                std::min<std::size_t>(data.diagnostics.size(),
+                                      std::numeric_limits<std::uint32_t>::max()));
+            status.open_micros = data.gds_open_metrics.open_micros;
+            status.parse_micros = data.gds_open_metrics.parse_micros;
+            status.warmup_scheduled = data.gds_open_metrics.warmup_scheduled;
+            status.warmup_ready = true;
+        }
+        return status;
+    }
+
+    void runParse() {
+        try {
+            {
+                std::lock_guard lock(mutex_);
+                status_.phase = LayoutSourcePhase::Read;
+                status_.bytes_read = status_.file_size_bytes;
+            }
+            auto data = loadGdsLayoutDataSet(gds_path_, gds_uri_, title_);
+            auto source = std::make_shared<DataSetLayoutSource>(std::move(data), "gds");
+            {
+                std::lock_guard lock(mutex_);
+                if (closing_) {
+                    return;
+                }
+                ready_source_ = std::move(source);
+                status_.state = LayoutSourceState::Ready;
+                status_.phase = LayoutSourcePhase::Ready;
+                status_.elapsed_micros = elapsedMicros(start_);
+            }
+        }
+        catch (const std::exception& error) {
+            std::lock_guard lock(mutex_);
+            if (closing_) {
+                return;
+            }
+            status_.state = LayoutSourceState::Failed;
+            status_.phase = LayoutSourcePhase::Failed;
+            status_.error = error.what();
+            status_.elapsed_micros = elapsedMicros(start_);
+        }
+    }
+
+    std::filesystem::path gds_path_;
+    std::string gds_uri_;
+    std::string title_;
+    Clock::time_point start_;
+    LayoutDataSet placeholder_;
+    mutable std::mutex mutex_;
+    mutable LayoutStatus status_;
+    mutable std::shared_ptr<LayoutSource> ready_source_;
+    std::thread parse_thread_;
+    bool closing_ = false;
+};
+
 std::string gdsLayerName(std::uint32_t layer, std::uint32_t datatype) {
     return "GDS:" + std::to_string(layer) + "/" + std::to_string(datatype);
 }
@@ -1371,6 +1590,46 @@ std::string defaultGdsTitle(const std::filesystem::path& gds_path, std::string t
     return gds_path.filename().generic_string();
 }
 
+LayoutDataSet loadGdsLayoutDataSet(const std::filesystem::path& gds_path,
+                                   std::string gds_uri,
+                                   std::string title) {
+    const auto open_start = Clock::now();
+    LayoutGdsOpenMetrics metrics;
+    const auto parse_start = Clock::now();
+    auto result = parseGdsFile(gds_path);
+    metrics.parse_micros = elapsedMicros(parse_start);
+    metrics.parse = result.value.parse_metrics;
+    LayoutDataSet data;
+    data.id = "gds-layout";
+    data.title = defaultGdsTitle(gds_path, std::move(title));
+    data.units_per_micron = result.value.units_per_micron;
+    data.file_uris.push_back(std::move(gds_uri));
+    data.diagnostics = result.value.diagnostics;
+    data.gds = std::move(result.value);
+    if (data.gds.has_value()) {
+        const auto layer_start = Clock::now();
+        registerGdsLayers(data, *data.gds);
+        metrics.layer_register_micros = elapsedMicros(layer_start);
+    }
+    if (data.gds.has_value() && data.gds->top_cell_index < data.gds->cells.size()) {
+        const auto bounds_start = Clock::now();
+        resolveGdsHierarchyBounds(*data.gds);
+        data.bounds = data.gds->cells[data.gds->top_cell_index].bounds;
+        metrics.bounds_micros = elapsedMicros(bounds_start);
+    }
+    metrics.open_micros = elapsedMicros(open_start);
+    metrics.flattened_at_open = false;
+    metrics.spatial_index_built_at_open = false;
+    if (data.gds.has_value()) {
+        metrics.warmup_scheduled = shouldWarmupGdsLibrary(*data.gds);
+        metrics.point_arena_count =
+            static_cast<std::uint32_t>(std::min<std::size_t>(
+                data.gds->points.size(), std::numeric_limits<std::uint32_t>::max()));
+    }
+    data.gds_open_metrics = metrics;
+    return data;
+}
+
 } // namespace
 
 std::uint16_t LayoutSource::protocolVersion() const {
@@ -1379,6 +1638,34 @@ std::uint16_t LayoutSource::protocolVersion() const {
 
 std::string_view LayoutSource::protocolName() const {
     return kLayoutProtocolName;
+}
+
+LayoutStatus LayoutSource::status() const {
+    const auto& data = dataSet();
+    LayoutStatus status;
+    status.state = LayoutSourceState::Ready;
+    status.phase = LayoutSourcePhase::Ready;
+    status.record_count = data.gds.has_value() ? data.gds->parse_metrics.record_count : 0U;
+    status.cell_count = static_cast<std::uint32_t>(
+        std::min<std::size_t>(data.gds.has_value() ? data.gds->cells.size() : data.macros.size(),
+                              std::numeric_limits<std::uint32_t>::max()));
+    status.reference_count = static_cast<std::uint32_t>(
+        std::min<std::size_t>(data.gds.has_value() ? data.gds->references.size() : 0U,
+                              std::numeric_limits<std::uint32_t>::max()));
+    status.element_count = static_cast<std::uint32_t>(
+        std::min<std::size_t>(data.gds.has_value() ? data.gds->elements.size() : data.shapes.size(),
+                              std::numeric_limits<std::uint32_t>::max()));
+    status.point_count = static_cast<std::uint32_t>(
+        std::min<std::size_t>(data.gds.has_value() ? data.gds->points.size() : 0U,
+                              std::numeric_limits<std::uint32_t>::max()));
+    status.string_count = data.gds.has_value() ? data.gds->parse_metrics.string_count : 0U;
+    status.diagnostic_count = static_cast<std::uint32_t>(
+        std::min<std::size_t>(data.diagnostics.size(), std::numeric_limits<std::uint32_t>::max()));
+    status.open_micros = data.gds_open_metrics.open_micros;
+    status.parse_micros = data.gds_open_metrics.parse_micros;
+    status.warmup_scheduled = data.gds_open_metrics.warmup_scheduled;
+    status.warmup_ready = true;
+    return status;
 }
 
 std::vector<std::uint8_t> LayoutSource::encodeHelloResponse() const {
@@ -1437,6 +1724,10 @@ std::vector<std::uint8_t> LayoutSource::encodeSearchResponse(
     throw std::runtime_error("Layout search requires a GDS layout source");
 }
 
+std::vector<std::uint8_t> LayoutSource::encodeStatusResponse() const {
+    return encodeStatusResponsePayload(status());
+}
+
 std::shared_ptr<LayoutSource> makeDataSetLayoutSource(LayoutDataSet data, std::string source_kind) {
     return std::make_shared<DataSetLayoutSource>(std::move(data), std::move(source_kind));
 }
@@ -1477,41 +1768,29 @@ std::shared_ptr<LayoutSource> openLefDefLayoutSource(
 std::shared_ptr<LayoutSource> openGdsLayoutSource(const std::filesystem::path& gds_path,
                                                   std::string gds_uri,
                                                   std::string title) {
-    const auto open_start = Clock::now();
-    LayoutGdsOpenMetrics metrics;
-    const auto parse_start = Clock::now();
-    auto result = parseGdsFile(gds_path);
-    metrics.parse_micros = elapsedMicros(parse_start);
-    metrics.parse = result.value.parse_metrics;
-    LayoutDataSet data;
-    data.id = "gds-layout";
-    data.title = defaultGdsTitle(gds_path, std::move(title));
-    data.units_per_micron = result.value.units_per_micron;
-    data.file_uris.push_back(std::move(gds_uri));
-    data.diagnostics = result.value.diagnostics;
-    data.gds = std::move(result.value);
-    if (data.gds.has_value()) {
-        const auto layer_start = Clock::now();
-        registerGdsLayers(data, *data.gds);
-        metrics.layer_register_micros = elapsedMicros(layer_start);
-    }
-    if (data.gds.has_value() && data.gds->top_cell_index < data.gds->cells.size()) {
-        const auto bounds_start = Clock::now();
-        resolveGdsHierarchyBounds(*data.gds);
-        data.bounds = data.gds->cells[data.gds->top_cell_index].bounds;
-        metrics.bounds_micros = elapsedMicros(bounds_start);
-    }
-    metrics.open_micros = elapsedMicros(open_start);
-    metrics.flattened_at_open = false;
-    metrics.spatial_index_built_at_open = false;
-    if (data.gds.has_value()) {
-        metrics.warmup_scheduled = shouldWarmupGdsLibrary(*data.gds);
-        metrics.point_arena_count =
-            static_cast<std::uint32_t>(std::min<std::size_t>(
-                data.gds->points.size(), std::numeric_limits<std::uint32_t>::max()));
-    }
-    data.gds_open_metrics = metrics;
+    auto data = loadGdsLayoutDataSet(gds_path, std::move(gds_uri), std::move(title));
     return std::make_shared<DataSetLayoutSource>(std::move(data), "gds");
+}
+
+std::shared_ptr<LayoutSource> openGdsLayoutSource(const std::filesystem::path& gds_path,
+                                                  std::string gds_uri,
+                                                  std::string title,
+                                                  std::string open_mode) {
+    if (isSyncOpenMode(open_mode)) {
+        return openGdsLayoutSource(gds_path, std::move(gds_uri), std::move(title));
+    }
+    if (!isAutoOpenMode(open_mode) && !isStagedOpenMode(open_mode)) {
+        throw std::runtime_error("Layout GDS openMode must be 'sync', 'staged', or 'auto'");
+    }
+    if (isAutoOpenMode(open_mode)) {
+        std::error_code error;
+        const auto file_size = std::filesystem::file_size(gds_path, error);
+        if (error || file_size <= stagedOpenThresholdBytes()) {
+            return openGdsLayoutSource(gds_path, std::move(gds_uri), std::move(title));
+        }
+    }
+    return std::make_shared<StagedGdsLayoutSource>(
+        gds_path, std::move(gds_uri), std::move(title));
 }
 
 } // namespace pristine::layout

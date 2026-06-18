@@ -374,6 +374,8 @@ END DESIGN
     CHECK(result.at("sessionId") == "1");
     CHECK(result.at("protocol") == "pristine-layout-columnar-v3");
     CHECK(result.at("source") == "lefdef");
+    CHECK(result.at("status") == "ready");
+    CHECK(result.at("deferred") == false);
     CHECK(result.at("title") == "tiny-layout");
     CHECK(result.at("lefCount") == 1);
     CHECK(result.at("defPresent") == true);

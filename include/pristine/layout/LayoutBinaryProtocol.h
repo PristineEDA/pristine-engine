@@ -35,6 +35,8 @@ enum class LayoutMessageType : std::uint16_t {
     CatalogSummaryResponse = 20,
     CatalogPageRequest = 21,
     CatalogPageResponse = 22,
+    StatusRequest = 23,
+    StatusResponse = 24,
 };
 
 enum class LayoutErrorCode : std::uint32_t {
@@ -87,6 +89,8 @@ struct LayoutFrame {
 [[nodiscard]] std::vector<std::uint8_t> encodeSearchResponsePayload(
     const LayoutDataSet& data,
     const LayoutSearchResponse& response);
+[[nodiscard]] std::vector<std::uint8_t> encodeStatusResponsePayload(
+    const LayoutStatus& status);
 [[nodiscard]] std::vector<std::uint8_t> encodeErrorPayload(LayoutErrorCode code,
                                                          std::string_view message);
 [[nodiscard]] LayoutGeometryRequest decodeGeometryRequestPayload(
@@ -103,6 +107,7 @@ struct LayoutFrame {
     const std::vector<std::uint8_t>& payload);
 [[nodiscard]] LayoutCatalogPageRequest decodeCatalogPageRequestPayload(
     const std::vector<std::uint8_t>& payload);
+void decodeStatusRequestPayload(const std::vector<std::uint8_t>& payload);
 
 void appendString(std::vector<std::uint8_t>& output, std::string_view value);
 void appendU16(std::vector<std::uint8_t>& output, std::uint16_t value);

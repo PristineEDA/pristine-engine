@@ -6,6 +6,7 @@
 #include <catch2/matchers/catch_matchers_string.hpp>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
@@ -13,6 +14,7 @@
 #include <initializer_list>
 #include <optional>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace pristine::layout {
@@ -139,6 +141,12 @@ std::vector<std::uint8_t> catalogPageRequest(std::uint32_t table_kind,
     appendU32(payload, offset);
     appendU32(payload, limit);
     appendU32(payload, max_bytes);
+    return payload;
+}
+
+std::vector<std::uint8_t> statusRequest(std::uint32_t flags = 0) {
+    std::vector<std::uint8_t> payload;
+    appendU32(payload, flags);
     return payload;
 }
 
@@ -298,6 +306,26 @@ std::uint32_t searchRowStride(const std::vector<std::uint8_t>& payload) {
 
 std::uint32_t searchStringOffset(const std::vector<std::uint8_t>& payload) {
     return readU32(payload.data(), payload.size(), 20);
+}
+
+LayoutSourceState statusState(const std::vector<std::uint8_t>& payload) {
+    return static_cast<LayoutSourceState>(readU32(payload.data(), payload.size(), 8));
+}
+
+LayoutSourcePhase statusPhase(const std::vector<std::uint8_t>& payload) {
+    return static_cast<LayoutSourcePhase>(readU32(payload.data(), payload.size(), 12));
+}
+
+std::uint32_t statusCellCount(const std::vector<std::uint8_t>& payload) {
+    return readU32(payload.data(), payload.size(), 36);
+}
+
+std::uint32_t statusElementCount(const std::vector<std::uint8_t>& payload) {
+    return readU32(payload.data(), payload.size(), 44);
+}
+
+std::uint64_t statusElapsedMicros(const std::vector<std::uint8_t>& payload) {
+    return readU64(payload.data(), payload.size(), 60);
 }
 
 std::vector<std::uint8_t> tileGeometryPayload(const std::vector<std::uint8_t>& payload) {
@@ -717,6 +745,57 @@ TEST_CASE("GDS parser captures hierarchy elements references and source v3 catal
     CHECK_THROWS_WITH(source->encodeGeometryResponse(decodeGeometryRequestPayload(
                           ownerFilteredGeometryRequest(0, {}, {42}))),
                       Catch::Matchers::ContainsSubstring("GDS cell index is out of range"));
+
+    std::error_code error;
+    std::filesystem::remove(gds_path, error);
+}
+
+TEST_CASE("Layout status request decodes strict v3 payload", "[layout][protocol]") {
+    CHECK_NOTHROW(decodeStatusRequestPayload(statusRequest()));
+    CHECK_THROWS_WITH(decodeStatusRequestPayload(statusRequest(1)),
+                      Catch::Matchers::ContainsSubstring("unsupported flags"));
+    auto trailing = statusRequest();
+    appendU32(trailing, 1);
+    CHECK_THROWS_WITH(decodeStatusRequestPayload(trailing),
+                      Catch::Matchers::ContainsSubstring("trailing bytes"));
+    std::vector<std::uint8_t> truncated;
+    appendU16(truncated, 1);
+    CHECK_THROWS_WITH(decodeStatusRequestPayload(truncated),
+                      Catch::Matchers::ContainsSubstring("truncated"));
+}
+
+TEST_CASE("GDS staged open exposes status until ready", "[layout][gds][protocol]") {
+    const auto gds_path = std::filesystem::temp_directory_path() / "pristine-layout-staged.gds";
+    {
+        std::ofstream output(gds_path, std::ios::binary);
+        const auto bytes = tinyGds();
+        output.write(reinterpret_cast<const char*>(bytes.data()),
+                     static_cast<std::streamsize>(bytes.size()));
+    }
+
+    auto source = openGdsLayoutSource(gds_path, "file:///staged.gds", "staged-gds", "staged");
+    REQUIRE(source->sourceKind() == "gds");
+    const auto first_status = source->encodeStatusResponse();
+    CHECK((statusState(first_status) == LayoutSourceState::Parsing ||
+           statusState(first_status) == LayoutSourceState::Ready));
+
+    std::vector<std::uint8_t> ready_status;
+    for (int attempt = 0; attempt < 200; ++attempt) {
+        ready_status = source->encodeStatusResponse();
+        if (statusState(ready_status) == LayoutSourceState::Ready) {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    REQUIRE(statusState(ready_status) == LayoutSourceState::Ready);
+    CHECK(statusPhase(ready_status) == LayoutSourcePhase::Ready);
+    CHECK(statusCellCount(ready_status) == 2);
+    CHECK(statusElementCount(ready_status) == 5);
+    CHECK(statusElapsedMicros(ready_status) > 0);
+
+    const auto top_geometry = source->encodeGeometryResponse(decodeGeometryRequestPayload(
+        ownerFilteredGeometryRequest(0, {}, {1})));
+    CHECK(geometryShapeCount(top_geometry) == 9);
 
     std::error_code error;
     std::filesystem::remove(gds_path, error);
