@@ -262,6 +262,7 @@ struct LayoutGdsParseMetrics {
     std::uint64_t read_micros = 0;
     std::uint64_t record_micros = 0;
     std::uint64_t xy_decode_micros = 0;
+    std::uint64_t xy_bounds_micros = 0;
     std::uint64_t scalar_decode_micros = 0;
     std::uint64_t string_decode_micros = 0;
     std::uint64_t element_finalize_micros = 0;

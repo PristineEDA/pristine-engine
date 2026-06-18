@@ -1018,7 +1018,7 @@ private:
         auto element = std::move(*current_element_);
         current_element_.reset();
         const auto points = elementPoints(element);
-        {
+        if (!element.bounds.has_value()) {
             const auto bbox_sample_start = sample_finalize_probe ? Clock::now() : Clock::time_point{};
             element.bounds = pointBounds(points);
             addSampledMicros(metrics_.bbox_micros, bbox_sample_start);
@@ -1087,7 +1087,7 @@ private:
         auto element = std::move(*current_element_);
         current_element_.reset();
         const auto points = elementPoints(element);
-        {
+        if (!element.bounds.has_value()) {
             ScopedMicros bbox_metric(metrics_.bbox_micros);
             const auto sample_start = sample_finalize_probe ? Clock::now() : Clock::time_point{};
             element.bounds = elementBounds(element);
@@ -1160,6 +1160,7 @@ private:
         auto& element = *current_element_;
         const auto point_count = value_count / 2U;
         element.points.clear();
+        element.bounds.reset();
         element.first_point = static_cast<std::uint32_t>(
             std::min<std::size_t>(library_.points.size(), std::numeric_limits<std::uint32_t>::max()));
         element.point_count = static_cast<std::uint32_t>(
@@ -1180,12 +1181,34 @@ private:
                 : needed_capacity;
             library_.points.reserve(std::max(needed_capacity, doubled));
         }
+        constexpr std::uint64_t kXyBoundsProbeSampleRate = 1024U;
+        const auto sample_bounds_probe =
+            (library_.elements.size() % kXyBoundsProbeSampleRate) == 0U;
+        const auto bounds_sample_start =
+            sample_bounds_probe ? Clock::now() : Clock::time_point{};
         for (std::size_t index = 0; index < point_count; ++index) {
             const auto offset = record.data_offset + index * 8U;
-            library_.points.push_back(LayoutPoint{.x = readI32(offset), .y = readI32(offset + 4U)});
+            const LayoutPoint point{.x = readI32(offset), .y = readI32(offset + 4U)};
+            if (index == 0U) {
+                element.bounds = LayoutRect{.x0 = point.x,
+                                            .y0 = point.y,
+                                            .x1 = point.x,
+                                            .y1 = point.y};
+            }
+            else if (element.bounds.has_value()) {
+                element.bounds->x0 = std::min(element.bounds->x0, point.x);
+                element.bounds->y0 = std::min(element.bounds->y0, point.y);
+                element.bounds->x1 = std::max(element.bounds->x1, point.x);
+                element.bounds->y1 = std::max(element.bounds->y1, point.y);
+            }
+            library_.points.push_back(point);
             if (metrics_.xy_point_count != std::numeric_limits<std::uint32_t>::max()) {
                 ++metrics_.xy_point_count;
             }
+        }
+        if (sample_bounds_probe) {
+            addScaledMicros(metrics_.xy_bounds_micros, bounds_sample_start,
+                            kXyBoundsProbeSampleRate);
         }
     }
 

@@ -180,6 +180,8 @@ def summarize_before_after(previous: dict, current: dict) -> dict:
         ("status_parse_micros", "p95"),
         ("sync_parse_probe_wall_micros", "p95"),
         ("element_finalize_micros", "p95"),
+        ("bbox_micros", "p95"),
+        ("xy_bounds_micros", "p95"),
         ("resolve_micros", "p95"),
         ("resolve_lookup_micros", "p95"),
         ("resolve_reference_micros", "p95"),
@@ -1350,6 +1352,8 @@ def run_interaction(server_path: pathlib.Path, gds_path: pathlib.Path) -> dict:
             "element_finalize_sample_micros": metric_summary(
                 [int(parse_metrics.get("elementFinalizeSampleMicros", 0))]
             ),
+            "bbox_micros": metric_summary([int(parse_metrics.get("bboxMicros", 0))]),
+            "xy_bounds_micros": metric_summary([int(parse_metrics.get("xyBoundsMicros", 0))]),
             "resolve_micros": metric_summary([int(parse_metrics.get("resolveMicros", 0))]),
             "resolve_lookup_micros": metric_summary([int(parse_metrics.get("resolveLookupMicros", 0))]),
             "resolve_reference_micros": metric_summary(
@@ -1438,6 +1442,8 @@ def main() -> int:
         f"sync probe wall {summary['sync_parse_probe_wall_micros']['p95']}us, "
         f"status parse {summary['status_parse_micros']['p95']}us, "
         f"element finalize {summary['element_finalize_micros']['p95']}us, "
+        f"bbox fallback {summary['bbox_micros']['p95']}us, "
+        f"xy bounds {summary['xy_bounds_micros']['p95']}us, "
         f"resolve {summary['resolve_micros']['p95']}us "
         f"(lookup {summary['resolve_lookup_micros']['p95']}us, "
         f"refs {summary['resolve_reference_micros']['p95']}us, "

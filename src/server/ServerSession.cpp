@@ -833,6 +833,7 @@ jsonrpc::Json toLayoutSessionJson(const layout::LayoutSessionInfo& info) {
              jsonrpc::Json{{"readMicros", info.gds_open_metrics.parse.read_micros},
                            {"recordMicros", info.gds_open_metrics.parse.record_micros},
                            {"xyDecodeMicros", info.gds_open_metrics.parse.xy_decode_micros},
+                           {"xyBoundsMicros", info.gds_open_metrics.parse.xy_bounds_micros},
                            {"scalarDecodeMicros", info.gds_open_metrics.parse.scalar_decode_micros},
                            {"stringDecodeMicros", info.gds_open_metrics.parse.string_decode_micros},
                            {"elementFinalizeMicros", info.gds_open_metrics.parse.element_finalize_micros},

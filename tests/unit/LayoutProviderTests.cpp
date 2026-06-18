@@ -476,6 +476,25 @@ std::vector<std::uint8_t> tinyGds() {
     return bytes;
 }
 
+std::vector<std::uint8_t> repeatedXyGds() {
+    std::vector<std::uint8_t> bytes;
+    appendGdsRecord(bytes, 0x00, 0x02, gdsInt2({600}));
+    appendGdsRecord(bytes, 0x01, 0x02, gdsInt2({0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}));
+    appendGdsRecord(bytes, 0x02, 0x06, gdsString("REPEAT"));
+    appendGdsRecord(bytes, 0x03, 0x05, gdsReal8({1.0e-6, 1.0e-9}));
+    appendGdsRecord(bytes, 0x05, 0x02, gdsInt2({0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}));
+    appendGdsRecord(bytes, 0x06, 0x06, gdsString("TOP"));
+    appendGdsRecord(bytes, 0x08, 0x00);
+    appendGdsRecord(bytes, 0x0d, 0x02, gdsInt2({1}));
+    appendGdsRecord(bytes, 0x0e, 0x02, gdsInt2({0}));
+    appendGdsRecord(bytes, 0x10, 0x03, gdsInt4({0, 0, 10, 0, 10, 10, 0, 10, 0, 0}));
+    appendGdsRecord(bytes, 0x10, 0x03, gdsInt4({100, 100, 110, 100, 110, 120, 100, 120, 100, 100}));
+    appendGdsRecord(bytes, 0x11, 0x00);
+    appendGdsRecord(bytes, 0x07, 0x00);
+    appendGdsRecord(bytes, 0x04, 0x00);
+    return bytes;
+}
+
 std::vector<std::uint8_t> flatGds(std::uint32_t element_count) {
     std::vector<std::uint8_t> bytes;
     appendGdsRecord(bytes, 0x00, 0x02, gdsInt2({600}));
@@ -755,6 +774,20 @@ TEST_CASE("GDS parser captures hierarchy elements references and source v3 catal
 
     std::error_code error;
     std::filesystem::remove(gds_path, error);
+}
+
+TEST_CASE("GDS parser uses latest XY record for element bounds", "[layout][gds]") {
+    auto parsed = parseGds(repeatedXyGds(), "repeated-xy.gds");
+    REQUIRE(parsed.value.elements.size() == 1);
+    const auto& element = parsed.value.elements[0];
+    REQUIRE(element.bounds.has_value());
+    CHECK(element.first_point == 5);
+    CHECK(element.point_count == 5);
+    CHECK(element.bounds->x0 == 100);
+    CHECK(element.bounds->y0 == 100);
+    CHECK(element.bounds->x1 == 110);
+    CHECK(element.bounds->y1 == 120);
+    CHECK(parsed.value.points.size() == 10);
 }
 
 TEST_CASE("GDS parser publishes progress and honors cancellation", "[layout][gds]") {
