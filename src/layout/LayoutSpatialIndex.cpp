@@ -1546,6 +1546,16 @@ private:
         return entries;
     }
 
+    [[nodiscard]] std::vector<SpatialEntry> queryReferenceGridIfBuilt(
+        std::uint32_t cell_index,
+        const LayoutRect& local_bbox,
+        LayoutTileGeometryResult& result) const {
+        if (cell_index >= cells_.size() || cells_[cell_index].reference_grid == nullptr) {
+            return {};
+        }
+        return queryReferenceGrid(cell_index, local_bbox, result);
+    }
+
     [[nodiscard]] LayoutShape makeElementShape(const LayoutGdsElement& element,
                                                const GdsAffineTransform& transform,
                                                std::uint32_t element_index,
@@ -1601,17 +1611,17 @@ private:
             containsKind(request.shape_kinds, LayoutShapeKind::Placement)) {
             const auto& cell = gds.cells[cell_index];
             if (!cell.reference_indices.empty()) {
-                for (const auto reference_index : cell.reference_indices) {
+                auto appendOverviewReference = [&](std::uint32_t reference_index) -> bool {
                     if (reference_index >= gds.references.size()) {
-                        continue;
+                        return true;
                     }
                     const auto& reference = gds.references[reference_index];
                     if (reference.target_cell_index >= gds.cells.size()) {
-                        continue;
+                        return true;
                     }
                     const auto& target = gds.cells[reference.target_cell_index];
                     if (!target.bounds.has_value()) {
-                        continue;
+                        return true;
                     }
                     const auto columns = std::max<std::uint32_t>(reference.columns, 1U);
                     const auto rows = std::max<std::uint32_t>(reference.rows, 1U);
@@ -1619,7 +1629,7 @@ private:
                         visibleArrayRange(request, transform, reference, *target.bounds, columns, rows);
                     if (visible_range.has_value() &&
                         (visible_range->columns.empty || visible_range->rows.empty)) {
-                        continue;
+                        return true;
                     }
                     const auto first_column = visible_range.has_value()
                         ? visible_range->columns.first
@@ -1642,7 +1652,7 @@ private:
                                                                         first_row,
                                                                         last_row);
                     if (request.has_bbox && !intersects(overview_bounds, request.bbox)) {
-                        continue;
+                        return true;
                     }
                     const auto overview_transform = composeTransforms(
                         transform, referenceTransform(reference, first_column, first_row));
@@ -1655,15 +1665,36 @@ private:
                     incrementCounter(result.reference_candidate_count);
                     incrementCounter(result.traversed_reference_count);
                     if (budget.shouldSkip()) {
-                        continue;
+                        return true;
                     }
                     if (!budget.canAppend(shape)) {
-                        stack.erase(cell_index);
-                        return;
+                        return false;
                     }
                     budget.appended(shape);
                     incrementCounter(result.lod_shape_count);
                     result.shapes.push_back(std::move(shape));
+                    return true;
+                };
+                const auto use_reference_grid =
+                    request.has_bbox && cell.reference_indices.size() >= kTileGridElementThreshold &&
+                    cell_index < cells_.size() && cells_[cell_index].reference_grid != nullptr;
+                if (use_reference_grid) {
+                    const auto reference_candidates =
+                        queryReferenceGridIfBuilt(cell_index, local_bbox, result);
+                    for (const auto& entry : reference_candidates) {
+                        if (!appendOverviewReference(entry.object.reference_index)) {
+                            stack.erase(cell_index);
+                            return;
+                        }
+                    }
+                }
+                else {
+                    for (const auto reference_index : cell.reference_indices) {
+                        if (!appendOverviewReference(reference_index)) {
+                            stack.erase(cell_index);
+                            return;
+                        }
+                    }
                 }
                 stack.erase(cell_index);
                 return;

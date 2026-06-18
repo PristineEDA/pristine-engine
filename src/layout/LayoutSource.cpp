@@ -82,11 +82,31 @@ void writeLeU32(std::vector<std::uint8_t>& bytes, std::size_t offset, std::uint3
     bytes[offset + 3U] = static_cast<std::uint8_t>((value >> 24U) & 0xffU);
 }
 
+void writeLeU64(std::vector<std::uint8_t>& bytes, std::size_t offset, std::uint64_t value) {
+    if (offset + sizeof(std::uint64_t) > bytes.size()) {
+        return;
+    }
+    for (int shift = 0; shift < 64; shift += 8) {
+        bytes[offset + static_cast<std::size_t>(shift / 8)] =
+            static_cast<std::uint8_t>((value >> shift) & 0xffULL);
+    }
+}
+
 void markTilePayloadCacheHit(std::vector<std::uint8_t>& payload) {
+    constexpr std::size_t kPltgIndexBuildMicrosOffset = 32;
+    constexpr std::size_t kPltgQueryMicrosOffset = 40;
     constexpr std::size_t kPltgCacheHitCountOffset = 76;
     constexpr std::size_t kPltgCacheMissCountOffset = 80;
+    constexpr std::size_t kPltgGridBuildMicrosOffset = 84;
+    constexpr std::size_t kPltgGridHitCountOffset = 92;
+    constexpr std::size_t kPltgGridMissCountOffset = 96;
+    writeLeU64(payload, kPltgIndexBuildMicrosOffset, 0U);
+    writeLeU64(payload, kPltgQueryMicrosOffset, 0U);
     writeLeU32(payload, kPltgCacheHitCountOffset, 1U);
     writeLeU32(payload, kPltgCacheMissCountOffset, 0U);
+    writeLeU64(payload, kPltgGridBuildMicrosOffset, 0U);
+    writeLeU32(payload, kPltgGridHitCountOffset, 0U);
+    writeLeU32(payload, kPltgGridMissCountOffset, 0U);
 }
 
 std::string tileRequestKey(const LayoutTileGeometryRequest& request) {

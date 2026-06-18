@@ -111,6 +111,7 @@ def delta_percent(previous: int, current: int) -> float | None:
 def summarize_before_after(previous: dict, current: dict) -> dict:
     keys = [
         ("open_wall_micros", "p95"),
+        ("element_finalize_micros", "p95"),
         ("tile_query_micros", "p95"),
         ("tile_query_micros", "max"),
         ("hit_query_micros", "p95"),
@@ -147,6 +148,13 @@ def summarize_before_after(previous: dict, current: dict) -> dict:
         "before": before_warm,
         "after": after_warm,
         "delta_percent": delta_percent(before_warm, after_warm),
+    }
+    before_cache_wall = previous_summary.get("tile_groups", {}).get("cache_repeat", {}).get("wall_micros", {}).get("max", 0)
+    after_cache_wall = current_summary.get("tile_groups", {}).get("cache_repeat", {}).get("wall_micros", {}).get("max", 0)
+    result["cache_repeat_wall_micros_max"] = {
+        "before": before_cache_wall,
+        "after": after_cache_wall,
+        "delta_percent": delta_percent(before_cache_wall, after_cache_wall),
     }
     return result
 
@@ -1020,10 +1028,24 @@ def run_interaction(server_path: pathlib.Path, gds_path: pathlib.Path) -> dict:
         tile_groups: dict[str, list[dict]] = {}
         for entry in metrics["tiles"]:
             tile_groups.setdefault(tile_group(entry["name"]), []).append(entry)
+        parse_metrics = metrics["session"].get("gdsMetrics", {}).get("parseMetrics", {})
         metrics["summary"] = {
             "warmup_scheduled": metrics.get("warmup", {}).get("scheduled", False),
             "point_arena_count": metrics.get("warmup", {}).get("pointArenaCount", 0),
             "open_wall_micros": metric_summary(metrics["open_wall_micros"]),
+            "element_finalize_micros": metric_summary([int(parse_metrics.get("elementFinalizeMicros", 0))]),
+            "element_finalize_bbox_micros": metric_summary(
+                [int(parse_metrics.get("elementFinalizeBboxMicros", 0))]
+            ),
+            "element_finalize_reference_micros": metric_summary(
+                [int(parse_metrics.get("elementFinalizeReferenceMicros", 0))]
+            ),
+            "element_finalize_index_micros": metric_summary(
+                [int(parse_metrics.get("elementFinalizeIndexMicros", 0))]
+            ),
+            "element_finalize_sample_micros": metric_summary(
+                [int(parse_metrics.get("elementFinalizeSampleMicros", 0))]
+            ),
             "catalog_summary_wall_micros": metric_summary(metrics.get("catalog_summary_wall_micros", [])),
             "catalog_page_wall_micros": metric_summary(metrics.get("catalog_page_wall_micros", [])),
             "catalog_page_payload_bytes": metric_summary(
@@ -1099,9 +1121,11 @@ def main() -> int:
     print(
         "TT tinyQV GDS interaction: "
         f"open p95 {summary['open_wall_micros']['p95']}us, "
+        f"element finalize {summary['element_finalize_micros']['p95']}us, "
         f"overview query max {summary['tile_groups'].get('overview', {}).get('query_micros', {}).get('max', 0)}us, "
         f"cold wide max {summary['tile_groups'].get('cold_wide_zoom', {}).get('query_micros', {}).get('max', 0)}us, "
         f"post-warm wide max {summary['tile_groups'].get('warm_wide_zoom', {}).get('query_micros', {}).get('max', 0)}us, "
+        f"cache repeat wall max {summary['tile_groups'].get('cache_repeat', {}).get('wall_micros', {}).get('max', 0)}us, "
         f"tile query p50/p95/max {summary['tile_query_micros']['p50']}/"
         f"{summary['tile_query_micros']['p95']}/{summary['tile_query_micros']['max']}us, "
         f"hit query p95 {summary['hit_query_micros']['p95']}us, "

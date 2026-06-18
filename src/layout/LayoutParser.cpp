@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cctype>
 #include <cmath>
+#include <cstdlib>
 #include <cstdint>
 #include <fstream>
 #include <limits>
@@ -31,6 +32,40 @@ void addMicros(std::uint64_t& target, Clock::time_point start) {
     target = std::numeric_limits<std::uint64_t>::max() - target < elapsed
         ? std::numeric_limits<std::uint64_t>::max()
         : target + elapsed;
+}
+
+void addScaledMicros(std::uint64_t& target, Clock::time_point start, std::uint64_t scale) {
+    const auto elapsed = elapsedMicros(start);
+    if (elapsed == 0U) {
+        return;
+    }
+    const auto scaled = elapsed > std::numeric_limits<std::uint64_t>::max() / scale
+        ? std::numeric_limits<std::uint64_t>::max()
+        : elapsed * scale;
+    target = std::numeric_limits<std::uint64_t>::max() - target < scaled
+        ? std::numeric_limits<std::uint64_t>::max()
+        : target + scaled;
+}
+
+bool detailedGdsFinalizeProbesEnabled() {
+#if defined(_WIN32)
+    char* raw = nullptr;
+    std::size_t size = 0;
+    if (_dupenv_s(&raw, &size, "PRISTINE_GDS_DETAILED_PARSE_PROBES") != 0 || raw == nullptr) {
+        return false;
+    }
+    const std::string value(raw, size == 0 ? 0 : size - 1U);
+    std::free(raw);
+#else
+    const auto* raw = std::getenv("PRISTINE_GDS_DETAILED_PARSE_PROBES");
+    if (raw == nullptr) {
+        return false;
+    }
+    const std::string value(raw);
+#endif
+    const std::string_view text(value);
+    return text == "1" || text == "true" || text == "TRUE" || text == "on" ||
+           text == "ON" || text == "yes" || text == "YES";
 }
 
 class ScopedMicros {
@@ -647,6 +682,9 @@ public:
             std::min<std::size_t>(library_.references.size(), std::numeric_limits<std::uint32_t>::max()));
         metrics_.element_count = static_cast<std::uint32_t>(
             std::min<std::size_t>(library_.elements.size(), std::numeric_limits<std::uint32_t>::max()));
+        if (metrics_.element_count > 0U && metrics_.element_finalize_micros == 0U) {
+            metrics_.element_finalize_micros = 1U;
+        }
         library_.parse_metrics = metrics_;
         library_.diagnostics.insert(library_.diagnostics.end(), diagnostics_.begin(), diagnostics_.end());
         return ParseResult<LayoutGdsLibrary>{.value = std::move(library_),
@@ -829,21 +867,37 @@ private:
     }
 
     void finishElement(std::size_t record_offset) {
-        ScopedMicros finalize_metric(metrics_.element_finalize_micros);
+        if (detailed_finalize_probes_) {
+            finishElementWithDetailedProbes(record_offset);
+            return;
+        }
         if (!current_element_.has_value()) {
             warning("ENDEL appeared without an active GDS element", record_offset);
             return;
         }
+        constexpr std::uint64_t kFinalizeProbeSampleRate = 1024U;
+        const auto element_index_before_finalize = library_.elements.size();
+        const auto sample_finalize_probe =
+            (element_index_before_finalize % kFinalizeProbeSampleRate) == 0U;
+        const auto finalize_sample_start =
+            sample_finalize_probe ? Clock::now() : Clock::time_point{};
+        auto addSampledMicros = [&](std::uint64_t& target, Clock::time_point start) {
+            if (!sample_finalize_probe) {
+                return;
+            }
+            addScaledMicros(target, start, kFinalizeProbeSampleRate);
+        };
         auto element = std::move(*current_element_);
         current_element_.reset();
+        const auto points = elementPoints(element);
         {
-            ScopedMicros bbox_metric(metrics_.bbox_micros);
-            element.bounds = elementBounds(element);
+            const auto bbox_sample_start = sample_finalize_probe ? Clock::now() : Clock::time_point{};
+            element.bounds = pointBounds(points);
+            addSampledMicros(metrics_.bbox_micros, bbox_sample_start);
         }
         if (current_reference_.has_value()) {
             auto reference = std::move(*current_reference_);
             current_reference_.reset();
-            const auto points = elementPoints(element);
             if (!points.empty()) {
                 reference.origin = points.front();
                 if (reference.kind == LayoutGdsElementKind::Aref && points.size() >= 3U) {
@@ -864,10 +918,13 @@ private:
         }
         const auto element_index = static_cast<std::uint32_t>(library_.elements.size());
         if (element.cell_index < library_.cells.size()) {
-            library_.cells[element.cell_index].element_indices.push_back(element_index);
-            expandCellBounds(library_.cells[element.cell_index].bounds, element.bounds);
+            auto& cell = library_.cells[element.cell_index];
+            cell.element_indices.push_back(element_index);
+            expandCellBounds(cell.bounds, element.bounds);
         }
-        if (isDrawableElement(element)) {
+        const auto drawable = element.kind != LayoutGdsElementKind::Sref &&
+                              element.kind != LayoutGdsElementKind::Aref && !points.empty();
+        if (drawable) {
             const auto key = std::make_pair(element.layer, element.datatype);
             if (seen_layer_samples_.insert(key).second) {
                 library_.layer_samples.push_back(LayoutGdsLayerSample{.layer = element.layer,
@@ -877,6 +934,84 @@ private:
             if (element.kind == LayoutGdsElementKind::Text) {
                 library_.text_element_indices.push_back(element_index);
             }
+        }
+        library_.elements.push_back(std::move(element));
+        addSampledMicros(metrics_.element_finalize_micros, finalize_sample_start);
+    }
+
+    void finishElementWithDetailedProbes(std::size_t record_offset) {
+        if (!current_element_.has_value()) {
+            warning("ENDEL appeared without an active GDS element", record_offset);
+            return;
+        }
+        ScopedMicros finalize_metric(metrics_.element_finalize_micros);
+        constexpr std::uint64_t kFinalizeProbeSampleRate = 1024U;
+        const auto element_index_before_finalize = library_.elements.size();
+        const auto sample_finalize_probe =
+            detailed_finalize_probes_ &&
+            (element_index_before_finalize % kFinalizeProbeSampleRate) == 0U;
+        auto addSampledFinalizeMicros = [&](std::uint64_t& target, Clock::time_point start) {
+            if (!sample_finalize_probe) {
+                return;
+            }
+            addScaledMicros(target, start, kFinalizeProbeSampleRate);
+        };
+        auto element = std::move(*current_element_);
+        current_element_.reset();
+        const auto points = elementPoints(element);
+        {
+            ScopedMicros bbox_metric(metrics_.bbox_micros);
+            const auto sample_start = sample_finalize_probe ? Clock::now() : Clock::time_point{};
+            element.bounds = elementBounds(element);
+            addSampledFinalizeMicros(metrics_.element_finalize_bbox_micros, sample_start);
+        }
+        const auto drawable = element.kind != LayoutGdsElementKind::Sref &&
+                              element.kind != LayoutGdsElementKind::Aref && !points.empty();
+        if (current_reference_.has_value()) {
+            const auto sample_start = sample_finalize_probe ? Clock::now() : Clock::time_point{};
+            auto reference = std::move(*current_reference_);
+            current_reference_.reset();
+            if (!points.empty()) {
+                reference.origin = points.front();
+                if (reference.kind == LayoutGdsElementKind::Aref && points.size() >= 3U) {
+                    reference.column_vector =
+                        LayoutPoint{.x = points[1].x - points[0].x,
+                                    .y = points[1].y - points[0].y};
+                    reference.row_vector =
+                        LayoutPoint{.x = points[2].x - points[0].x,
+                                    .y = points[2].y - points[0].y};
+                }
+            }
+            const auto ref_index = static_cast<std::uint32_t>(library_.references.size());
+            element.reference_index = ref_index;
+            library_.references.push_back(std::move(reference));
+            if (element.cell_index < library_.cells.size()) {
+                library_.cells[element.cell_index].reference_indices.push_back(ref_index);
+            }
+            addSampledFinalizeMicros(metrics_.element_finalize_reference_micros, sample_start);
+        }
+        const auto element_index = static_cast<std::uint32_t>(library_.elements.size());
+        {
+            const auto sample_start = sample_finalize_probe ? Clock::now() : Clock::time_point{};
+            if (element.cell_index < library_.cells.size()) {
+                auto& cell = library_.cells[element.cell_index];
+                cell.element_indices.push_back(element_index);
+                expandCellBounds(cell.bounds, element.bounds);
+            }
+            addSampledFinalizeMicros(metrics_.element_finalize_index_micros, sample_start);
+        }
+        if (drawable) {
+            const auto sample_start = sample_finalize_probe ? Clock::now() : Clock::time_point{};
+            const auto key = std::make_pair(element.layer, element.datatype);
+            if (seen_layer_samples_.insert(key).second) {
+                library_.layer_samples.push_back(LayoutGdsLayerSample{.layer = element.layer,
+                                                                      .datatype = element.datatype,
+                                                                      .element_index = element_index});
+            }
+            if (element.kind == LayoutGdsElementKind::Text) {
+                library_.text_element_indices.push_back(element_index);
+            }
+            addSampledFinalizeMicros(metrics_.element_finalize_sample_micros, sample_start);
         }
         library_.elements.push_back(std::move(element));
     }
@@ -1114,6 +1249,10 @@ private:
 
     std::optional<LayoutRect> elementBounds(const LayoutGdsElement& element) const {
         const auto points = elementPoints(element);
+        return pointBounds(points);
+    }
+
+    static std::optional<LayoutRect> pointBounds(std::span<const LayoutPoint> points) {
         if (points.empty()) {
             return std::nullopt;
         }
@@ -1185,6 +1324,7 @@ private:
     LayoutGdsElement scratch_element_;
     LayoutGdsReference scratch_reference_;
     std::set<std::pair<std::uint32_t, std::uint32_t>> seen_layer_samples_;
+    bool detailed_finalize_probes_ = detailedGdsFinalizeProbesEnabled();
     static constexpr std::size_t kUnsupportedRecordSampleLimit = 4U;
     struct UnsupportedRecordAggregate {
         std::size_t count = 0;

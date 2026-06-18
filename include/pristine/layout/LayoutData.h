@@ -265,6 +265,10 @@ struct LayoutGdsParseMetrics {
     std::uint64_t scalar_decode_micros = 0;
     std::uint64_t string_decode_micros = 0;
     std::uint64_t element_finalize_micros = 0;
+    std::uint64_t element_finalize_bbox_micros = 0;
+    std::uint64_t element_finalize_reference_micros = 0;
+    std::uint64_t element_finalize_index_micros = 0;
+    std::uint64_t element_finalize_sample_micros = 0;
     std::uint64_t diagnostic_micros = 0;
     std::uint64_t resolve_micros = 0;
     std::uint64_t bbox_micros = 0;

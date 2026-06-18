@@ -244,6 +244,10 @@ std::uint32_t tileLodShapeCount(const std::vector<std::uint8_t>& payload) {
     return readU32(payload.data(), payload.size(), 72);
 }
 
+std::uint64_t tileQueryMicros(const std::vector<std::uint8_t>& payload) {
+    return readU64(payload.data(), payload.size(), 40);
+}
+
 std::uint32_t tileCacheHitCount(const std::vector<std::uint8_t>& payload) {
     return readU32(payload.data(), payload.size(), 76);
 }
@@ -753,6 +757,8 @@ TEST_CASE("GDS spatial index serves tile hit inspect and selection payloads",
     const auto cached_tile = source->encodeTileGeometryResponse(tile_request);
     CHECK(tileCacheHitCount(cached_tile) == 1);
     CHECK(tileCacheMissCount(cached_tile) == 0);
+    CHECK(tileQueryMicros(cached_tile) == 0);
+    CHECK(tileGridBuildMicros(cached_tile) == 0);
 
     const auto precise_tile_request = decodeTileGeometryRequestPayload(tileGeometryRequest(
         1,
