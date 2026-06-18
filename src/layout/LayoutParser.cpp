@@ -633,10 +633,17 @@ std::string gdsRecordName(GdsRecordType type) {
     return "UNKNOWN";
 }
 
+class GdsParseCancelled final : public std::runtime_error {
+public:
+    GdsParseCancelled() : std::runtime_error("GDS parse cancelled") {}
+};
+
 class GdsParser final {
 public:
-    GdsParser(const std::vector<std::uint8_t>& bytes, std::string_view file_name) :
-        bytes_(bytes), file_name_(file_name) {
+    GdsParser(const std::vector<std::uint8_t>& bytes,
+              std::string_view file_name,
+              LayoutGdsParseControl* control = nullptr) :
+        bytes_(bytes), file_name_(file_name), control_(control) {
         library_.cells.reserve(std::min<std::size_t>(bytes_.size() / 4096U + 16U, 1'000'000U));
         library_.references.reserve(
             std::min<std::size_t>(bytes_.size() / 512U + 16U, 1'000'000U));
@@ -651,10 +658,14 @@ public:
 
     ParseResult<LayoutGdsLibrary> parse() {
         try {
+            publishProgress(LayoutSourcePhase::Records, true);
             while (offset_ < bytes_.size()) {
+                maybeCheckCancelled();
                 const auto record = nextRecord();
                 handleRecord(record);
+                maybePublishRecordProgress();
             }
+            publishProgress(LayoutSourcePhase::Finalize, true);
             if (current_cell_.has_value()) {
                 warning("GDS ended before ENDSTR for cell '" + library_.cells[*current_cell_].name + "'",
                         bytes_.size());
@@ -665,15 +676,22 @@ public:
                 finishElement(bytes_.size());
             }
         }
+        catch (const GdsParseCancelled&) {
+            throw;
+        }
         catch (const std::exception& error) {
             addDiagnostic(LayoutDiagnosticSeverity::Error, error.what(), offset_);
         }
 
+        checkCancelled();
         flushUnsupportedRecordDiagnostics();
 
         {
+            publishProgress(LayoutSourcePhase::Resolve, true);
+            checkCancelled();
             ScopedMicros metric(metrics_.resolve_micros);
             resolveReferences();
+            checkCancelled();
             inferTopCell();
         }
         metrics_.cell_count = static_cast<std::uint32_t>(
@@ -692,6 +710,74 @@ public:
     }
 
 private:
+    void checkCancelled() {
+        if (control_ == nullptr || !control_->should_cancel) {
+            return;
+        }
+        if (metrics_.cancel_check_count != std::numeric_limits<std::uint32_t>::max()) {
+            ++metrics_.cancel_check_count;
+        }
+        if (control_->should_cancel()) {
+            throw GdsParseCancelled();
+        }
+    }
+
+    void maybeCheckCancelled() {
+        if (control_ == nullptr || !control_->should_cancel) {
+            return;
+        }
+        const auto interval = control_->progress_record_interval == 0U
+                                  ? 4096U
+                                  : control_->progress_record_interval;
+        if (metrics_.record_count == 0U || (metrics_.record_count % interval) == 0U) {
+            checkCancelled();
+        }
+    }
+
+    void maybePublishRecordProgress() {
+        if (control_ == nullptr || !control_->publish_progress) {
+            return;
+        }
+        const auto interval = control_->progress_record_interval == 0U
+                                  ? 4096U
+                                  : control_->progress_record_interval;
+        if (metrics_.record_count == last_progress_record_count_ ||
+            (metrics_.record_count % interval) != 0U) {
+            return;
+        }
+        last_progress_record_count_ = metrics_.record_count;
+        publishProgress(LayoutSourcePhase::Records, false);
+    }
+
+    void publishProgress(LayoutSourcePhase phase, bool force) {
+        if (control_ == nullptr || !control_->publish_progress) {
+            return;
+        }
+        if (!force && metrics_.record_count == last_progress_record_count_) {
+            return;
+        }
+        LayoutGdsParseProgress progress;
+        progress.phase = phase;
+        progress.file_size_bytes = bytes_.size();
+        progress.bytes_read = offset_;
+        progress.record_count = metrics_.record_count;
+        progress.cell_count = static_cast<std::uint32_t>(
+            std::min<std::size_t>(library_.cells.size(), std::numeric_limits<std::uint32_t>::max()));
+        progress.reference_count = static_cast<std::uint32_t>(
+            std::min<std::size_t>(library_.references.size(), std::numeric_limits<std::uint32_t>::max()));
+        progress.element_count = static_cast<std::uint32_t>(
+            std::min<std::size_t>(library_.elements.size(), std::numeric_limits<std::uint32_t>::max()));
+        progress.point_count = static_cast<std::uint32_t>(
+            std::min<std::size_t>(library_.points.size(), std::numeric_limits<std::uint32_t>::max()));
+        progress.string_count = metrics_.string_count;
+        progress.diagnostic_count = static_cast<std::uint32_t>(
+            std::min<std::size_t>(diagnostics_.size(), std::numeric_limits<std::uint32_t>::max()));
+        progress.suppressed_diagnostic_count = metrics_.suppressed_diagnostic_count;
+        progress.arena_growth_count = metrics_.arena_growth_count;
+        progress.cancel_check_count = metrics_.cancel_check_count;
+        control_->publish_progress(progress);
+    }
+
     GdsRecord nextRecord() {
         if (bytes_.size() - offset_ < 4U) {
             throw std::runtime_error("Truncated GDS record header");
@@ -1041,6 +1127,9 @@ private:
         }
         const auto needed_capacity = library_.points.size() + point_count;
         if (needed_capacity > library_.points.capacity()) {
+            if (metrics_.arena_growth_count != std::numeric_limits<std::uint32_t>::max()) {
+                ++metrics_.arena_growth_count;
+            }
             const auto doubled = library_.points.capacity() > 0U
                 ? library_.points.capacity() * 2U
                 : needed_capacity;
@@ -1304,6 +1393,10 @@ private:
                 continue;
             }
             const auto suppressed = aggregate.count - aggregate.sample_offsets.size();
+            const auto available = std::numeric_limits<std::uint32_t>::max() -
+                                   metrics_.suppressed_diagnostic_count;
+            metrics_.suppressed_diagnostic_count += static_cast<std::uint32_t>(
+                std::min<std::size_t>(suppressed, available));
             const auto offset = aggregate.sample_offsets.empty() ? 0U : aggregate.sample_offsets.front();
             warning("Suppressed " + std::to_string(suppressed) +
                         " additional unsupported GDS record " + gdsRecordName(record_type) +
@@ -1315,6 +1408,8 @@ private:
     const std::vector<std::uint8_t>& bytes_;
     std::string file_name_;
     std::size_t offset_ = 0;
+    LayoutGdsParseControl* control_ = nullptr;
+    std::uint32_t last_progress_record_count_ = std::numeric_limits<std::uint32_t>::max();
     LayoutGdsLibrary library_;
     LayoutGdsParseMetrics metrics_;
     std::vector<LayoutDiagnostic> diagnostics_;
@@ -2169,6 +2264,12 @@ ParseResult<LayoutGdsLibrary> parseGds(const std::vector<std::uint8_t>& bytes,
     return GdsParser(bytes, file_name).parse();
 }
 
+ParseResult<LayoutGdsLibrary> parseGds(const std::vector<std::uint8_t>& bytes,
+                                       std::string_view file_name,
+                                       LayoutGdsParseControl* control) {
+    return GdsParser(bytes, file_name, control).parse();
+}
+
 ParseResult<LayoutLefLibrary> parseLefFile(const std::filesystem::path& path) {
     return parseLef(readTextFile(path), path.generic_string());
 }
@@ -2178,10 +2279,22 @@ ParseResult<LayoutDefDesign> parseDefFile(const std::filesystem::path& path) {
 }
 
 ParseResult<LayoutGdsLibrary> parseGdsFile(const std::filesystem::path& path) {
+    return parseGdsFile(path, nullptr);
+}
+
+ParseResult<LayoutGdsLibrary> parseGdsFile(const std::filesystem::path& path,
+                                           LayoutGdsParseControl* control) {
     const auto read_start = Clock::now();
     auto bytes = readBinaryFile(path);
     const auto read_micros = elapsedMicros(read_start);
-    auto result = parseGds(bytes, path.generic_string());
+    if (control != nullptr && control->publish_progress) {
+        control->publish_progress(LayoutGdsParseProgress{
+            .phase = LayoutSourcePhase::Read,
+            .file_size_bytes = bytes.size(),
+            .bytes_read = bytes.size(),
+        });
+    }
+    auto result = parseGds(bytes, path.generic_string(), control);
     result.value.parse_metrics.read_micros = read_micros;
     return result;
 }

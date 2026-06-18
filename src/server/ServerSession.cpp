@@ -852,7 +852,11 @@ jsonrpc::Json toLayoutSessionJson(const layout::LayoutSessionInfo& info) {
                            {"stringCount", info.gds_open_metrics.parse.string_count},
                            {"cellCount", info.gds_open_metrics.parse.cell_count},
                            {"referenceCount", info.gds_open_metrics.parse.reference_count},
-                           {"elementCount", info.gds_open_metrics.parse.element_count}}}};
+                           {"elementCount", info.gds_open_metrics.parse.element_count},
+                           {"suppressedDiagnosticCount",
+                            info.gds_open_metrics.parse.suppressed_diagnostic_count},
+                           {"arenaGrowthCount", info.gds_open_metrics.parse.arena_growth_count},
+                           {"cancelCheckCount", info.gds_open_metrics.parse.cancel_check_count}}}};
     }
     return result;
 }

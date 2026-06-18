@@ -5,6 +5,7 @@
 #include "pristine/layout/LayoutSpatialIndex.h"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
@@ -241,7 +242,8 @@ std::uint32_t findGdsLayer(const LayoutDataSet& data,
 std::string defaultGdsTitle(const std::filesystem::path& gds_path, std::string title);
 LayoutDataSet loadGdsLayoutDataSet(const std::filesystem::path& gds_path,
                                    std::string gds_uri,
-                                   std::string title);
+                                   std::string title,
+                                   LayoutGdsParseControl* parse_control = nullptr);
 std::span<const LayoutPoint> gdsElementPoints(const LayoutGdsLibrary& gds,
                                               const LayoutGdsElement& element);
 bool isDrawableGdsElement(const LayoutGdsLibrary& gds, const LayoutGdsElement& element);
@@ -867,6 +869,14 @@ public:
     }
 
     ~StagedGdsLayoutSource() override {
+        requestCancel();
+        if (parse_thread_.joinable()) {
+            parse_thread_.join();
+        }
+    }
+
+    void requestCancel() {
+        cancel_requested_.store(true);
         {
             std::lock_guard lock(mutex_);
             closing_ = true;
@@ -874,9 +884,6 @@ public:
                 status_.state = LayoutSourceState::Closing;
                 status_.phase = LayoutSourcePhase::Unknown;
             }
-        }
-        if (parse_thread_.joinable()) {
-            parse_thread_.join();
         }
     }
 
@@ -995,9 +1002,15 @@ private:
             {
                 std::lock_guard lock(mutex_);
                 status_.phase = LayoutSourcePhase::Read;
-                status_.bytes_read = status_.file_size_bytes;
             }
-            auto data = loadGdsLayoutDataSet(gds_path_, gds_uri_, title_);
+            LayoutGdsParseControl control;
+            control.should_cancel = [this]() {
+                return cancel_requested_.load();
+            };
+            control.publish_progress = [this](const LayoutGdsParseProgress& progress) {
+                publishParseProgress(progress);
+            };
+            auto data = loadGdsLayoutDataSet(gds_path_, gds_uri_, title_, &control);
             auto source = std::make_shared<DataSetLayoutSource>(std::move(data), "gds");
             {
                 std::lock_guard lock(mutex_);
@@ -1022,6 +1035,25 @@ private:
         }
     }
 
+    void publishParseProgress(const LayoutGdsParseProgress& progress) {
+        std::lock_guard lock(mutex_);
+        if (status_.state != LayoutSourceState::Parsing) {
+            return;
+        }
+        status_.phase = progress.phase;
+        if (progress.file_size_bytes > 0U) {
+            status_.file_size_bytes = progress.file_size_bytes;
+        }
+        status_.bytes_read = std::max(status_.bytes_read, progress.bytes_read);
+        status_.record_count = progress.record_count;
+        status_.cell_count = progress.cell_count;
+        status_.reference_count = progress.reference_count;
+        status_.element_count = progress.element_count;
+        status_.point_count = progress.point_count;
+        status_.string_count = progress.string_count;
+        status_.diagnostic_count = progress.diagnostic_count;
+    }
+
     std::filesystem::path gds_path_;
     std::string gds_uri_;
     std::string title_;
@@ -1032,6 +1064,7 @@ private:
     mutable std::shared_ptr<LayoutSource> ready_source_;
     std::thread parse_thread_;
     bool closing_ = false;
+    std::atomic_bool cancel_requested_{false};
 };
 
 std::string gdsLayerName(std::uint32_t layer, std::uint32_t datatype) {
@@ -1592,11 +1625,12 @@ std::string defaultGdsTitle(const std::filesystem::path& gds_path, std::string t
 
 LayoutDataSet loadGdsLayoutDataSet(const std::filesystem::path& gds_path,
                                    std::string gds_uri,
-                                   std::string title) {
+                                   std::string title,
+                                   LayoutGdsParseControl* parse_control) {
     const auto open_start = Clock::now();
     LayoutGdsOpenMetrics metrics;
     const auto parse_start = Clock::now();
-    auto result = parseGdsFile(gds_path);
+    auto result = parseGdsFile(gds_path, parse_control);
     metrics.parse_micros = elapsedMicros(parse_start);
     metrics.parse = result.value.parse_metrics;
     LayoutDataSet data;

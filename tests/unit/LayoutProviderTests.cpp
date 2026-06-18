@@ -750,6 +750,38 @@ TEST_CASE("GDS parser captures hierarchy elements references and source v3 catal
     std::filesystem::remove(gds_path, error);
 }
 
+TEST_CASE("GDS parser publishes progress and honors cancellation", "[layout][gds]") {
+    std::vector<LayoutGdsParseProgress> progress_samples;
+    LayoutGdsParseControl progress_control;
+    progress_control.progress_record_interval = 1;
+    progress_control.publish_progress = [&](const LayoutGdsParseProgress& progress) {
+        progress_samples.push_back(progress);
+    };
+
+    auto parsed = parseGds(tinyGds(), "progress.gds", &progress_control);
+    CHECK(parsed.value.parse_metrics.record_count > 0);
+    REQUIRE_FALSE(progress_samples.empty());
+    CHECK(std::any_of(progress_samples.begin(), progress_samples.end(), [](const auto& progress) {
+        return progress.phase == LayoutSourcePhase::Records;
+    }));
+    CHECK(std::any_of(progress_samples.begin(), progress_samples.end(), [](const auto& progress) {
+        return progress.phase == LayoutSourcePhase::Finalize;
+    }));
+    CHECK(std::any_of(progress_samples.begin(), progress_samples.end(), [](const auto& progress) {
+        return progress.phase == LayoutSourcePhase::Resolve;
+    }));
+    std::uint32_t previous_records = 0;
+    for (const auto& progress : progress_samples) {
+        CHECK(progress.record_count >= previous_records);
+        previous_records = progress.record_count;
+    }
+
+    LayoutGdsParseControl cancel_control;
+    cancel_control.should_cancel = [] { return true; };
+    CHECK_THROWS_WITH(parseGds(tinyGds(), "cancel.gds", &cancel_control),
+                      Catch::Matchers::ContainsSubstring("GDS parse cancelled"));
+}
+
 TEST_CASE("Layout status request decodes strict v3 payload", "[layout][protocol]") {
     CHECK_NOTHROW(decodeStatusRequestPayload(statusRequest()));
     CHECK_THROWS_WITH(decodeStatusRequestPayload(statusRequest(1)),

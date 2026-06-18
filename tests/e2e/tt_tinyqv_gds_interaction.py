@@ -41,6 +41,14 @@ STATUS_STATE_PARSING = 1
 STATUS_STATE_READY = 2
 STATUS_STATE_FAILED = 3
 
+STATUS_PHASE_UNKNOWN = 0
+STATUS_PHASE_READ = 1
+STATUS_PHASE_RECORDS = 2
+STATUS_PHASE_FINALIZE = 3
+STATUS_PHASE_RESOLVE = 4
+STATUS_PHASE_READY = 5
+STATUS_PHASE_FAILED = 6
+
 CATALOG_PAGE_LAYERS = 1
 CATALOG_PAGE_CELLS = 2
 
@@ -108,6 +116,55 @@ def tile_group_summary(entries: list[dict]) -> dict:
     }
 
 
+def status_phase_name(phase: int) -> str:
+    return {
+        STATUS_PHASE_UNKNOWN: "unknown",
+        STATUS_PHASE_READ: "read",
+        STATUS_PHASE_RECORDS: "records",
+        STATUS_PHASE_FINALIZE: "finalize",
+        STATUS_PHASE_RESOLVE: "resolve",
+        STATUS_PHASE_READY: "ready",
+        STATUS_PHASE_FAILED: "failed",
+    }.get(phase, f"phase_{phase}")
+
+
+def status_progress_summary(samples: list[dict]) -> dict:
+    if not samples:
+        return {}
+    phase_samples: dict[int, list[dict]] = {}
+    for sample in samples:
+        phase_samples.setdefault(sample["phase"], []).append(sample)
+    phase_elapsed = {}
+    for phase, entries in sorted(phase_samples.items()):
+        elapsed = [entry["elapsed_micros"] for entry in entries if entry["elapsed_micros"]]
+        if elapsed:
+            phase_elapsed[status_phase_name(phase)] = {
+                "first_elapsed_micros": min(elapsed),
+                "last_elapsed_micros": max(elapsed),
+                "sample_count": len(entries),
+            }
+    first = samples[0]
+    last = samples[-1]
+    elapsed_delta = max(0, int(last["elapsed_micros"]) - int(first["elapsed_micros"]))
+    record_delta = max(0, int(last["record_count"]) - int(first["record_count"]))
+    point_delta = max(0, int(last["point_count"]) - int(first["point_count"]))
+    return {
+        "phase_elapsed": phase_elapsed,
+        "first_phase": status_phase_name(first["phase"]),
+        "last_phase": status_phase_name(last["phase"]),
+        "first_elapsed_micros": int(first["elapsed_micros"]),
+        "last_elapsed_micros": int(last["elapsed_micros"]),
+        "records_per_second": int(record_delta * 1_000_000 / elapsed_delta) if elapsed_delta else 0,
+        "points_per_second": int(point_delta * 1_000_000 / elapsed_delta) if elapsed_delta else 0,
+        "final_record_count": int(last["record_count"]),
+        "final_point_count": int(last["point_count"]),
+        "final_cell_count": int(last["cell_count"]),
+        "final_reference_count": int(last["reference_count"]),
+        "final_element_count": int(last["element_count"]),
+        "final_diagnostic_count": int(last["diagnostic_count"]),
+    }
+
+
 def delta_percent(previous: int, current: int) -> float | None:
     if previous == 0:
         return None
@@ -117,6 +174,7 @@ def delta_percent(previous: int, current: int) -> float | None:
 def summarize_before_after(previous: dict, current: dict) -> dict:
     keys = [
         ("lsp_open_wall_micros", "p95"),
+        ("cancel_close_wall_micros", "p95"),
         ("open_wall_micros", "p95"),
         ("ready_wall_micros", "p95"),
         ("element_finalize_micros", "p95"),
@@ -738,6 +796,28 @@ def run_interaction(server_path: pathlib.Path, gds_path: pathlib.Path) -> dict:
         request_id += 1
         notify(process, "initialized", {})
 
+        trace("cancel staged GDS layout session")
+        cancel_open_start = now_micros()
+        cancel_session = request(
+            process,
+            request_id,
+            "systemverilog/layout/open",
+            {"gdsUri": gds_path.as_uri(), "title": f"cancel-{gds_path.name}", "openMode": "staged"},
+        )["result"]
+        cancel_lsp_open_wall_micros = now_micros() - cancel_open_start
+        request_id += 1
+        if cancel_session["protocol"] != "pristine-layout-columnar-v3" or cancel_session["source"] != "gds":
+            raise AssertionError(f"bad cancel session metadata: {cancel_session}")
+        cancel_close_start = now_micros()
+        request(
+            process,
+            request_id,
+            "systemverilog/layout/close",
+            {"sessionId": cancel_session["sessionId"]},
+        )
+        cancel_close_wall_micros = now_micros() - cancel_close_start
+        request_id += 1
+
         trace("open GDS layout session")
         open_start = now_micros()
         session = request(
@@ -769,6 +849,8 @@ def run_interaction(server_path: pathlib.Path, gds_path: pathlib.Path) -> dict:
                 "pointArenaCount": int(session.get("gdsMetrics", {}).get("pointArenaCount", 0)),
             },
             "lsp_open_wall_micros": [lsp_open_wall_micros],
+            "cancel_lsp_open_wall_micros": [cancel_lsp_open_wall_micros],
+            "cancel_close_wall_micros": [cancel_close_wall_micros],
             "open_wall_micros": [],
             "ready_wall_micros": [],
             "status_wall_micros": [],
@@ -811,11 +893,32 @@ def run_interaction(server_path: pathlib.Path, gds_path: pathlib.Path) -> dict:
                 time.sleep(0.05)
             if ready_status is None:
                 raise AssertionError("GDS staged open did not reach ready within 120s")
+            previous_phase = 0
+            previous_counts = {
+                "record_count": 0,
+                "cell_count": 0,
+                "reference_count": 0,
+                "element_count": 0,
+                "point_count": 0,
+                "string_count": 0,
+                "diagnostic_count": 0,
+            }
+            for sample in metrics["status_samples"]:
+                phase = sample["phase"]
+                if phase and phase < previous_phase:
+                    raise AssertionError(f"status phase regressed: {phase} < {previous_phase}")
+                previous_phase = max(previous_phase, phase)
+                for field, previous in previous_counts.items():
+                    current = sample[field]
+                    if current < previous:
+                        raise AssertionError(f"status {field} regressed: {current} < {previous}")
+                    previous_counts[field] = current
             ready_wall_micros = now_micros() - open_start
             metrics["ready_wall_micros"].append(ready_wall_micros)
             metrics["open_wall_micros"].append(ready_wall_micros)
             metrics["status_poll_count"] = len(metrics["status_samples"])
             metrics["ready_status"] = ready_status
+            metrics["status_progress"] = status_progress_summary(metrics["status_samples"])
             metrics["warmup"]["scheduled"] = ready_status["warmup_scheduled"]
             metrics["warmup"]["ready"] = ready_status["warmup_ready"]
             metrics["warmup"]["pointArenaCount"] = ready_status["point_count"]
@@ -1145,11 +1248,14 @@ def run_interaction(server_path: pathlib.Path, gds_path: pathlib.Path) -> dict:
             "warmup_ready": metrics.get("warmup", {}).get("ready", False),
             "point_arena_count": metrics.get("warmup", {}).get("pointArenaCount", 0),
             "lsp_open_wall_micros": metric_summary(metrics["lsp_open_wall_micros"]),
+            "cancel_lsp_open_wall_micros": metric_summary(metrics["cancel_lsp_open_wall_micros"]),
+            "cancel_close_wall_micros": metric_summary(metrics["cancel_close_wall_micros"]),
             "open_wall_micros": metric_summary(metrics["open_wall_micros"]),
             "ready_wall_micros": metric_summary(metrics["ready_wall_micros"]),
             "status_wall_micros": metric_summary(metrics["status_wall_micros"]),
             "status_poll_count": metrics.get("status_poll_count", 0),
             "pending_error_count": metrics.get("pending_errors", 0),
+            "status_progress": metrics.get("status_progress", {}),
             "status_parse_micros": metric_summary(
                 [int(metrics.get("ready_status", {}).get("parse_micros", 0))]
             ),
@@ -1244,6 +1350,7 @@ def main() -> int:
     print(
         "TT tinyQV GDS interaction: "
         f"LSP open p95 {summary['lsp_open_wall_micros']['p95']}us, "
+        f"cancel close p95 {summary['cancel_close_wall_micros']['p95']}us, "
         f"ready wall p95 {summary['ready_wall_micros']['p95']}us, "
         f"status parse {summary['status_parse_micros']['p95']}us, "
         f"element finalize {summary['element_finalize_micros']['p95']}us, "
@@ -1256,6 +1363,8 @@ def main() -> int:
         f"hit query p95 {summary['hit_query_micros']['p95']}us, "
         f"search query p95 {summary['search_query_micros']['p95']}us, "
         f"status polls {summary.get('status_poll_count')}, "
+        f"records/s {summary.get('status_progress', {}).get('records_per_second', 0)}, "
+        f"points/s {summary.get('status_progress', {}).get('points_per_second', 0)}, "
         f"pending errors {summary.get('pending_error_count')}, "
         f"warmup scheduled {summary.get('warmup_scheduled')}, "
         f"warmup ready {summary.get('warmup_ready')}, "

@@ -278,6 +278,9 @@ struct LayoutGdsParseMetrics {
     std::uint32_t cell_count = 0;
     std::uint32_t reference_count = 0;
     std::uint32_t element_count = 0;
+    std::uint32_t suppressed_diagnostic_count = 0;
+    std::uint32_t arena_growth_count = 0;
+    std::uint32_t cancel_check_count = 0;
 };
 
 struct LayoutGdsLibrary {
