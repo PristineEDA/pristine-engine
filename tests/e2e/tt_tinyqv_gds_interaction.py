@@ -177,7 +177,13 @@ def summarize_before_after(previous: dict, current: dict) -> dict:
         ("cancel_close_wall_micros", "p95"),
         ("open_wall_micros", "p95"),
         ("ready_wall_micros", "p95"),
+        ("status_parse_micros", "p95"),
+        ("sync_parse_probe_wall_micros", "p95"),
         ("element_finalize_micros", "p95"),
+        ("resolve_micros", "p95"),
+        ("resolve_lookup_micros", "p95"),
+        ("resolve_reference_micros", "p95"),
+        ("resolve_top_cell_micros", "p95"),
         ("tile_query_micros", "p95"),
         ("tile_query_micros", "max"),
         ("hit_query_micros", "p95"),
@@ -1271,6 +1277,22 @@ def run_interaction(server_path: pathlib.Path, gds_path: pathlib.Path) -> dict:
 
         request(process, request_id, "systemverilog/layout/close", {"sessionId": session["sessionId"]})
         request_id += 1
+        trace("sync parse metrics probe")
+        sync_probe_start = now_micros()
+        sync_session = request(
+            process,
+            request_id,
+            "systemverilog/layout/open",
+            {"gdsUri": gds_path.as_uri(), "title": f"sync-probe-{gds_path.name}", "openMode": "sync"},
+        )["result"]
+        request_id += 1
+        sync_probe_wall = now_micros() - sync_probe_start
+        if sync_session["protocol"] != "pristine-layout-columnar-v3" or sync_session["source"] != "gds":
+            raise AssertionError(f"bad sync probe session metadata: {sync_session}")
+        metrics["sync_parse_probe_wall_micros"] = [sync_probe_wall]
+        metrics["sync_parse_probe_gds_metrics"] = sync_session.get("gdsMetrics", {})
+        request(process, request_id, "systemverilog/layout/close", {"sessionId": sync_session["sessionId"]})
+        request_id += 1
         request(process, request_id, "shutdown", None)
         notify(process, "exit", None)
         process.wait(timeout=5)
@@ -1283,7 +1305,10 @@ def run_interaction(server_path: pathlib.Path, gds_path: pathlib.Path) -> dict:
         tile_groups: dict[str, list[dict]] = {}
         for entry in metrics["tiles"]:
             tile_groups.setdefault(tile_group(entry["name"]), []).append(entry)
-        parse_metrics = metrics["session"].get("gdsMetrics", {}).get("parseMetrics", {})
+        parse_metrics = (
+            metrics.get("sync_parse_probe_gds_metrics", {}).get("parseMetrics", {})
+            or metrics["session"].get("gdsMetrics", {}).get("parseMetrics", {})
+        )
         metrics["summary"] = {
             "warmup_scheduled": metrics.get("warmup", {}).get("scheduled", False),
             "warmup_ready_at_layout_ready": metrics.get("warmup", {}).get(
@@ -1309,6 +1334,9 @@ def run_interaction(server_path: pathlib.Path, gds_path: pathlib.Path) -> dict:
             "status_open_micros": metric_summary(
                 [int(metrics.get("ready_status", {}).get("open_micros", 0))]
             ),
+            "sync_parse_probe_wall_micros": metric_summary(
+                metrics.get("sync_parse_probe_wall_micros", [])
+            ),
             "element_finalize_micros": metric_summary([int(parse_metrics.get("elementFinalizeMicros", 0))]),
             "element_finalize_bbox_micros": metric_summary(
                 [int(parse_metrics.get("elementFinalizeBboxMicros", 0))]
@@ -1321,6 +1349,14 @@ def run_interaction(server_path: pathlib.Path, gds_path: pathlib.Path) -> dict:
             ),
             "element_finalize_sample_micros": metric_summary(
                 [int(parse_metrics.get("elementFinalizeSampleMicros", 0))]
+            ),
+            "resolve_micros": metric_summary([int(parse_metrics.get("resolveMicros", 0))]),
+            "resolve_lookup_micros": metric_summary([int(parse_metrics.get("resolveLookupMicros", 0))]),
+            "resolve_reference_micros": metric_summary(
+                [int(parse_metrics.get("resolveReferenceMicros", 0))]
+            ),
+            "resolve_top_cell_micros": metric_summary(
+                [int(parse_metrics.get("resolveTopCellMicros", 0))]
             ),
             "catalog_summary_wall_micros": metric_summary(metrics.get("catalog_summary_wall_micros", [])),
             "catalog_page_wall_micros": metric_summary(metrics.get("catalog_page_wall_micros", [])),
@@ -1399,8 +1435,13 @@ def main() -> int:
         f"LSP open p95 {summary['lsp_open_wall_micros']['p95']}us, "
         f"cancel close p95 {summary['cancel_close_wall_micros']['p95']}us, "
         f"ready wall p95 {summary['ready_wall_micros']['p95']}us, "
+        f"sync probe wall {summary['sync_parse_probe_wall_micros']['p95']}us, "
         f"status parse {summary['status_parse_micros']['p95']}us, "
         f"element finalize {summary['element_finalize_micros']['p95']}us, "
+        f"resolve {summary['resolve_micros']['p95']}us "
+        f"(lookup {summary['resolve_lookup_micros']['p95']}us, "
+        f"refs {summary['resolve_reference_micros']['p95']}us, "
+        f"top {summary['resolve_top_cell_micros']['p95']}us), "
         f"overview query max {summary['tile_groups'].get('overview', {}).get('query_micros', {}).get('max', 0)}us, "
         f"cold wide max {summary['tile_groups'].get('cold_wide_zoom', {}).get('query_micros', {}).get('max', 0)}us, "
         f"post-warm wide max {summary['tile_groups'].get('warm_wide_zoom', {}).get('query_micros', {}).get('max', 0)}us, "

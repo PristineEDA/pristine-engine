@@ -15,6 +15,8 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <string_view>
+#include <unordered_map>
 #include <vector>
 
 namespace pristine::layout {
@@ -865,25 +867,37 @@ private:
                 return;
             case GdsRecordType::Layer:
                 if (auto layer = firstInt2(record); layer.has_value()) {
-                    currentElement().layer = *layer;
+                    if (current_element_.has_value()) {
+                        current_element_->layer = *layer;
+                    }
                 }
                 return;
             case GdsRecordType::Datatype:
                 if (auto datatype = firstInt2(record); datatype.has_value()) {
-                    currentElement().datatype = *datatype;
+                    if (current_element_.has_value()) {
+                        current_element_->datatype = *datatype;
+                    }
                 }
                 return;
             case GdsRecordType::TextType:
                 if (auto texttype = firstInt2(record); texttype.has_value()) {
-                    currentElement().texttype = *texttype;
+                    if (current_element_.has_value()) {
+                        current_element_->texttype = *texttype;
+                    }
                 }
                 return;
             case GdsRecordType::Xy:
                 parseXy(record);
                 return;
             case GdsRecordType::Sname:
-                currentReference().target_name = stringValue(record);
+            {
+                auto name = stringValue(record);
+                if (!current_reference_.has_value()) {
+                    return;
+                }
+                current_reference_->target_name = std::move(name);
                 return;
+            }
             case GdsRecordType::ColRow:
                 parseColRow(record);
                 return;
@@ -891,14 +905,32 @@ private:
                 parseStrans(record);
                 return;
             case GdsRecordType::Mag:
-                currentReference().transform.magnification = firstReal8(record).value_or(1.0);
+            {
+                const auto magnification = real8At(record, 0).value_or(1.0);
+                if (!current_reference_.has_value()) {
+                    return;
+                }
+                current_reference_->transform.magnification = magnification;
                 return;
+            }
             case GdsRecordType::Angle:
-                currentReference().transform.angle = firstReal8(record).value_or(0.0);
+            {
+                const auto angle = real8At(record, 0).value_or(0.0);
+                if (!current_reference_.has_value()) {
+                    return;
+                }
+                current_reference_->transform.angle = angle;
                 return;
+            }
             case GdsRecordType::String:
-                currentElement().text = stringValue(record);
+            {
+                auto text = stringValue(record);
+                if (!current_element_.has_value()) {
+                    return;
+                }
+                current_element_->text = std::move(text);
                 return;
+            }
             case GdsRecordType::EndEl:
                 finishElement(record.offset);
                 return;
@@ -912,13 +944,17 @@ private:
     }
 
     void parseUnits(const GdsRecord& record) {
-        const auto values = real8Values(record);
-        if (values.size() < 2U) {
+        OptionalScopedMicros metric(detailed_finalize_probes_, metrics_.scalar_decode_micros);
+        checkType(record, kGdsReal8);
+        if (record.data_size % 8U != 0U) {
+            warning("GDS " + gdsRecordName(record.type) + " has a truncated 8-byte real", record.offset);
+        }
+        if (record.data_size < 16U) {
             warning("GDS UNITS record is missing values", record.offset);
             return;
         }
-        library_.user_unit_meters = values[0];
-        library_.database_unit_meters = values[1];
+        library_.user_unit_meters = readReal8(record.data_offset);
+        library_.database_unit_meters = readReal8(record.data_offset + 8U);
         if (library_.database_unit_meters > 0.0) {
             const auto units = std::llround(1.0e-6 / library_.database_unit_meters);
             if (units > 0 && units <= std::numeric_limits<std::uint32_t>::max()) {
@@ -956,22 +992,6 @@ private:
         if (kind == LayoutGdsElementKind::Sref || kind == LayoutGdsElementKind::Aref) {
             current_reference_ = LayoutGdsReference{.kind = kind, .parent_cell_index = *current_cell_};
         }
-    }
-
-    LayoutGdsElement& currentElement() {
-        if (!current_element_.has_value()) {
-            scratch_element_ = LayoutGdsElement{};
-            return scratch_element_;
-        }
-        return *current_element_;
-    }
-
-    LayoutGdsReference& currentReference() {
-        if (!current_reference_.has_value()) {
-            scratch_reference_ = LayoutGdsReference{};
-            return scratch_reference_;
-        }
-        return *current_reference_;
     }
 
     void finishElement(std::size_t record_offset) {
@@ -1134,7 +1154,10 @@ private:
         if (value_count % 2U != 0U) {
             warning("GDS XY record has an odd coordinate count", record.offset);
         }
-        auto& element = currentElement();
+        if (!current_element_.has_value()) {
+            return;
+        }
+        auto& element = *current_element_;
         const auto point_count = value_count / 2U;
         element.points.clear();
         element.first_point = static_cast<std::uint32_t>(
@@ -1178,8 +1201,11 @@ private:
         }
         const auto columns = readU16(record.data_offset);
         const auto rows = readU16(record.data_offset + 2U);
-        currentReference().columns = columns == 0U ? 1U : columns;
-        currentReference().rows = rows == 0U ? 1U : rows;
+        if (!current_reference_.has_value()) {
+            return;
+        }
+        current_reference_->columns = columns == 0U ? 1U : columns;
+        current_reference_->rows = rows == 0U ? 1U : rows;
     }
 
     void parseStrans(const GdsRecord& record) {
@@ -1192,7 +1218,11 @@ private:
             warning("GDS STRANS record is missing flags", record.offset);
             return;
         }
-        currentReference().transform.reflected = (readU16(record.data_offset) & 0x8000U) != 0U;
+        const auto reflected = (readU16(record.data_offset) & 0x8000U) != 0U;
+        if (!current_reference_.has_value()) {
+            return;
+        }
+        current_reference_->transform.reflected = reflected;
     }
 
     std::optional<std::uint32_t> firstInt2(const GdsRecord& record) {
@@ -1208,31 +1238,17 @@ private:
         return readU16(record.data_offset);
     }
 
-    std::vector<double> real8Values(const GdsRecord& record) {
+    std::optional<double> real8At(const GdsRecord& record, std::size_t index) {
         OptionalScopedMicros metric(detailed_finalize_probes_, metrics_.scalar_decode_micros);
         checkType(record, kGdsReal8);
         if (record.data_size % 8U != 0U) {
             warning("GDS " + gdsRecordName(record.type) + " has a truncated 8-byte real", record.offset);
         }
-        std::vector<double> result;
-        for (std::size_t offset = record.data_offset; offset + 7U < record.data_offset + record.data_size;
-             offset += 8U) {
-            result.push_back(readReal8(offset));
-        }
-        return result;
-    }
-
-    std::optional<double> firstReal8(const GdsRecord& record) {
-        OptionalScopedMicros metric(detailed_finalize_probes_, metrics_.scalar_decode_micros);
-        checkType(record, kGdsReal8);
-        if (record.data_size % 8U != 0U) {
-            warning("GDS " + gdsRecordName(record.type) + " has a truncated 8-byte real", record.offset);
-        }
-        if (record.data_size < 8U) {
+        if (record.data_size < (index + 1U) * 8U) {
             warning("GDS " + gdsRecordName(record.type) + " is missing a real value", record.offset);
             return std::nullopt;
         }
-        return readReal8(record.data_offset);
+        return readReal8(record.data_offset + index * 8U);
     }
 
     std::string stringValue(const GdsRecord& record) {
@@ -1241,19 +1257,32 @@ private:
         if (metrics_.string_count != std::numeric_limits<std::uint32_t>::max()) {
             ++metrics_.string_count;
         }
+        const auto end = record.data_offset + record.data_size;
+        bool needs_cleanup = false;
+        if (record.data_size > 0U && bytes_[end - 1U] == ' ') {
+            needs_cleanup = true;
+        }
+        if (!needs_cleanup) {
+            for (std::size_t offset = record.data_offset; offset < end; ++offset) {
+                if (bytes_[offset] == 0) {
+                    needs_cleanup = true;
+                    break;
+                }
+            }
+        }
+        if (!needs_cleanup) {
+            return std::string(reinterpret_cast<const char*>(bytes_.data() + record.data_offset),
+                               record.data_size);
+        }
         std::string value;
         value.reserve(record.data_size);
-        const auto end = record.data_offset + record.data_size;
         for (std::size_t offset = record.data_offset; offset < end; ++offset) {
-            if (bytes_[offset] == 0) {
-                continue;
+            if (bytes_[offset] != 0) {
+                value.push_back(static_cast<char>(bytes_[offset]));
             }
-            value.push_back(static_cast<char>(bytes_[offset]));
         }
-        if (!value.empty() && value.back() == ' ') {
-            while (!value.empty() && value.back() == ' ') {
-                value.pop_back();
-            }
+        while (!value.empty() && value.back() == ' ') {
+            value.pop_back();
         }
         return value;
     }
@@ -1293,27 +1322,36 @@ private:
     }
 
     void resolveReferences() {
-        std::map<std::string, std::uint32_t> cell_by_name;
-        for (std::size_t index = 0; index < library_.cells.size(); ++index) {
-            const auto& name = library_.cells[index].name;
-            if (name.empty()) {
-                warning("GDS cell has no STRNAME", 0);
-                continue;
+        std::unordered_map<std::string_view, std::uint32_t> cell_by_name;
+        {
+            ScopedMicros lookup_metric(metrics_.resolve_lookup_micros);
+            cell_by_name.reserve(library_.cells.size());
+            for (std::size_t index = 0; index < library_.cells.size(); ++index) {
+                const auto& name = library_.cells[index].name;
+                if (name.empty()) {
+                    warning("GDS cell has no STRNAME", 0);
+                    continue;
+                }
+                cell_by_name.insert_or_assign(std::string_view(name),
+                                              static_cast<std::uint32_t>(index));
             }
-            cell_by_name[name] = static_cast<std::uint32_t>(index);
         }
 
-        for (auto& reference : library_.references) {
-            const auto found = cell_by_name.find(reference.target_name);
-            if (found == cell_by_name.end()) {
-                warning("GDS reference target '" + reference.target_name + "' is missing", 0);
-                continue;
+        {
+            ScopedMicros reference_metric(metrics_.resolve_reference_micros);
+            for (auto& reference : library_.references) {
+                const auto found = cell_by_name.find(std::string_view(reference.target_name));
+                if (found == cell_by_name.end()) {
+                    warning("GDS reference target '" + reference.target_name + "' is missing", 0);
+                    continue;
+                }
+                reference.target_cell_index = found->second;
             }
-            reference.target_cell_index = found->second;
         }
     }
 
     void inferTopCell() {
+        ScopedMicros top_metric(metrics_.resolve_top_cell_micros);
         std::vector<bool> referenced(library_.cells.size(), false);
         for (const auto& reference : library_.references) {
             if (reference.target_cell_index < referenced.size()) {
@@ -1438,8 +1476,6 @@ private:
     std::optional<std::uint32_t> current_cell_;
     std::optional<LayoutGdsElement> current_element_;
     std::optional<LayoutGdsReference> current_reference_;
-    LayoutGdsElement scratch_element_;
-    LayoutGdsReference scratch_reference_;
     std::set<std::pair<std::uint32_t, std::uint32_t>> seen_layer_samples_;
     bool detailed_finalize_probes_ = detailedGdsFinalizeProbesEnabled();
     static constexpr std::size_t kUnsupportedRecordSampleLimit = 4U;

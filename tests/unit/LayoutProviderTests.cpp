@@ -588,6 +588,9 @@ TEST_CASE("GDS parser captures hierarchy elements references and source v3 catal
     CHECK(parsed.value.parse_metrics.reference_count == 2);
     CHECK(parsed.value.parse_metrics.element_count == 5);
     CHECK(parsed.value.parse_metrics.element_finalize_micros > 0);
+    CHECK(parsed.value.parse_metrics.resolve_lookup_micros <= parsed.value.parse_metrics.resolve_micros);
+    CHECK(parsed.value.parse_metrics.resolve_reference_micros <= parsed.value.parse_metrics.resolve_micros);
+    CHECK(parsed.value.parse_metrics.resolve_top_cell_micros <= parsed.value.parse_metrics.resolve_micros);
     CHECK(parsed.value.text_element_indices.size() == 1);
     CHECK(parsed.value.layer_samples.size() == 3);
     REQUIRE(parsed.value.references.size() == 2);

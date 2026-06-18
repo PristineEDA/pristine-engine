@@ -271,6 +271,9 @@ struct LayoutGdsParseMetrics {
     std::uint64_t element_finalize_sample_micros = 0;
     std::uint64_t diagnostic_micros = 0;
     std::uint64_t resolve_micros = 0;
+    std::uint64_t resolve_lookup_micros = 0;
+    std::uint64_t resolve_reference_micros = 0;
+    std::uint64_t resolve_top_cell_micros = 0;
     std::uint64_t bbox_micros = 0;
     std::uint32_t record_count = 0;
     std::uint32_t xy_point_count = 0;
