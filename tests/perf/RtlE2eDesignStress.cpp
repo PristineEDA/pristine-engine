@@ -19,9 +19,21 @@ namespace {
 
 namespace fs = std::filesystem;
 using Clock = std::chrono::steady_clock;
+const auto kStatusStart = Clock::now();
 
 long long elapsedMicros(Clock::time_point start, Clock::time_point end) {
     return std::chrono::duration_cast<std::chrono::microseconds>(end - start).count();
+}
+
+void emitStatus(std::string_view phase, std::string_view detail = {}) {
+    const auto elapsed =
+        std::chrono::duration_cast<std::chrono::seconds>(Clock::now() - kStatusStart).count();
+    std::cerr << "[pristine-test] test=pristine_rtl_e2e_stress phase=" << phase
+              << " elapsed=" << elapsed << "s";
+    if (!detail.empty()) {
+        std::cerr << " detail=" << detail;
+    }
+    std::cerr << '\n';
 }
 
 std::string jsonString(std::string_view value) {
@@ -178,6 +190,7 @@ int main(int argc, char** argv) {
         std::cerr << "No SystemVerilog or Verilog sources found under " << root << "\n";
         return 2;
     }
+    emitStatus("begin", "files=" + std::to_string(files.size()) + " root=" + root.string());
 
     pristine::analysis::SemanticEngine engine;
     pristine::analysis::SemanticEngineConfig config;
@@ -188,6 +201,7 @@ int main(int argc, char** argv) {
     engine.configure(std::move(config));
 
     size_t byte_count = 0;
+    emitStatus("load-documents", "files=" + std::to_string(files.size()));
     const auto load_start = Clock::now();
     for (const auto& file : files) {
         auto text = readTextFile(file);
@@ -201,10 +215,12 @@ int main(int argc, char** argv) {
     }
     const auto load_end = Clock::now();
 
+    emitStatus("snapshot", "bytes=" + std::to_string(byte_count));
     const auto parse_start = Clock::now();
     const auto& snapshot = engine.snapshot();
     const auto parse_end = Clock::now();
 
+    emitStatus("module-hierarchy", top_module.empty() ? "top=<auto>" : "top=" + top_module);
     const auto hierarchy_start = Clock::now();
     auto hierarchy = engine.moduleHierarchy(maybeTop(top_module), 64);
     const auto hierarchy_end = Clock::now();
@@ -212,6 +228,7 @@ int main(int argc, char** argv) {
         top_module = hierarchy.roots.front().module_name;
     }
 
+    emitStatus("schematic", top_module.empty() ? "top=<auto>" : "top=" + top_module);
     const auto schematic_start = Clock::now();
     const auto schematic = engine.schematic(maybeTop(top_module), 64);
     const auto schematic_end = Clock::now();
@@ -221,6 +238,10 @@ int main(int argc, char** argv) {
 
     const auto cache_stats = engine.queryCacheStats();
     const auto messages_count = hierarchy.messages.size() + schematic.messages.size();
+    emitStatus("summary",
+               "hierarchyRoots=" + std::to_string(hierarchy.roots.size()) +
+                   " schematicModules=" + std::to_string(schematic.modules.size()) +
+                   " messages=" + std::to_string(messages_count));
     std::cout << "{"
               << "\"fileCount\":" << files.size() << ","
               << "\"byteCount\":" << byte_count << ","

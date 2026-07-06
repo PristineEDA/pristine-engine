@@ -301,6 +301,15 @@ ctest --test-dir build/dev --output-on-failure
 
 The full suite must include unit tests, `pristine_lsp_core_e2e`, waveform pipe and FST perf tests, layout pipe and LEF/DEF/GDS corpus tests, RTL E2E gates, and LSP performance/stress tests such as `pristine_rtl_e2e_stress` and `pristine_rtl_e2e_lsp_stress`. `pristine_differential_slang_server` remains optional and may skip when `SLANG_SERVER_ROOT` is unavailable; `pristine_ihp_lef_corpus` and `pristine_ihp_gds_corpus` must not skip in required validation.
 
+For long local or CI validation, prefer the status runner over a silent full CTest invocation:
+
+```powershell
+$env:PRISTINE_REQUIRE_IHP_OPEN_PDK='1'
+python scripts/run_full_tests_with_status.py --build-dir build/dev --include-perf
+```
+
+The runner keeps CTest as the source of truth, runs tests one by one, streams child output, writes per-test logs plus `summary.json` under `build/dev/test-status-logs`, and prints heartbeat lines such as `[pristine-test] test=<name> phase=<phase> elapsed=<Xs> detail=<...>` to stderr. Tune heartbeat cadence with `PRISTINE_TEST_STATUS_INTERVAL_SECONDS` (`30` by default, `0` disables) and set `PRISTINE_TEST_STATUS_JSONL=<path>` when a machine-readable status artifact is useful. Long-running wrappers should emit at least `begin`, major phase changes, `summary`, and `end`; keep payloads small and never print waveform/layout binary data or full LSP traces through status messages.
+
 For changes touching diagnostics, snapshot construction, `AstIndex`, query cache, background workers, or `ServerSession` request ordering, add or update a large-workspace request-order regression. At minimum cover `didOpen -> syntax diagnostics -> outline/documentSymbol -> hover -> background full diagnostics` and a stale `didChange` or `didClose` guard. The fixed reproducible baseline is `pristine_rtl_e2e_large_workspace`: it generates a 300-file RTL corpus, runs the Debug `pristine-engine --stdio` binary through the Pristine request order, records protocol/debug traces, and must not touch the network. E2E diagnostics wait loops must not use `workspace/symbol`, hierarchy, schematic, cone, completion, or other deep semantic requests as a heartbeat; use passive notification reads or syntax-fast-path requests such as `textDocument/documentSymbol` / `systemverilog/outline`.
 
 For optional local slang-server comparison, set `SLANG_SERVER_ROOT` to the local `slang-server v0.2.5` checkout with a built `slang-server` binary, then run:

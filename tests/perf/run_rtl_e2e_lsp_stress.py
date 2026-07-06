@@ -4,6 +4,9 @@ import subprocess
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import test_status
+
 
 def truthy_env(name: str) -> bool:
     return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
@@ -41,6 +44,7 @@ def main() -> int:
     prepare = repo_root / "tests" / "perf" / "prepare_rtl_e2e_corpus.py"
 
     try:
+        test_status.emit("pristine_rtl_e2e_lsp_stress", "prepare-corpus")
         prepared = subprocess.run(
             [sys.executable, str(prepare)],
             stderr=subprocess.STDOUT,
@@ -49,10 +53,12 @@ def main() -> int:
             check=False,
         )
         if prepared.returncode != 0:
+            test_status.emit("pristine_rtl_e2e_lsp_stress", "prepare-failed", f"returncode={prepared.returncode}")
             print(prepared.stdout)
             return prepared.returncode
         root = prepared.stdout.strip().splitlines()[-1]
     except OSError as exc:
+        test_status.emit("pristine_rtl_e2e_lsp_stress", "prepare-error", str(exc))
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
 
@@ -84,6 +90,7 @@ def main() -> int:
         command.append("--trace")
 
     print("RUN:", " ".join(command), flush=True)
+    test_status.emit("pristine_rtl_e2e_lsp_stress", "launch-client", f"mode={command[command.index('--mode') + 1]}")
     child_env = os.environ.copy()
     server_trace = env_value("RTL_E2E_SERVER_DEBUG_TRACE", "RETROSOC_SERVER_DEBUG_TRACE")
     if server_trace is not None:
@@ -98,6 +105,7 @@ def main() -> int:
     if suppress_abort_dialog is not None:
         child_env["PRISTINE_DEBUG_SUPPRESS_ABORT_DIALOG"] = suppress_abort_dialog
     completed = subprocess.run(command, check=False, env=child_env)
+    test_status.emit("pristine_rtl_e2e_lsp_stress", "end", f"returncode={completed.returncode}")
     return completed.returncode
 
 

@@ -3,6 +3,9 @@ import pathlib
 import subprocess
 import sys
 
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
+import test_status
+
 
 def write_message(process: subprocess.Popen[bytes], message: dict) -> None:
     payload = json.dumps(message, separators=(",", ":")).encode("utf-8")
@@ -67,6 +70,11 @@ def main() -> int:
     def_files = sorted(path for path in corpus_root.rglob("*.def") if path.is_file())
     if not lef_files and not def_files:
         raise AssertionError(f"no LEF/DEF files found under {corpus_root}")
+    test_status.emit(
+        "pristine_lefdef_corpus",
+        "begin",
+        f"lef={len(lef_files)} def={len(def_files)} root={corpus_root}",
+    )
 
     process: subprocess.Popen[bytes] | None = None
     try:
@@ -94,7 +102,8 @@ def main() -> int:
         total_components = 0
         total_nets = 0
         request_id = 2
-        for lef in lef_files:
+        for index, lef in enumerate(lef_files, start=1):
+            test_status.emit("pristine_lefdef_corpus", "open-lef", f"{index}/{len(lef_files)} {lef.name}")
             result = request(
                 process,
                 request_id,
@@ -112,7 +121,8 @@ def main() -> int:
             )
             request_id += 1
 
-        for deffile in def_files:
+        for index, deffile in enumerate(def_files, start=1):
+            test_status.emit("pristine_lefdef_corpus", "open-def", f"{index}/{len(def_files)} {deffile.name}")
             result = request(
                 process,
                 request_id,
@@ -143,6 +153,11 @@ def main() -> int:
             f"lefdef corpus parsed {len(lef_files)} LEF and {len(def_files)} DEF files, "
             f"{total_layers} layers, {total_macros} macros, "
             f"{total_components} components, {total_nets} nets"
+        )
+        test_status.emit(
+            "pristine_lefdef_corpus",
+            "summary",
+            f"layers={total_layers} macros={total_macros} components={total_components} nets={total_nets}",
         )
         return 0
     finally:

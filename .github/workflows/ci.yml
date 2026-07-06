@@ -202,8 +202,10 @@ jobs:
       - name: Build
         run: cmake --build --preset dev
 
-      - name: Run unit tests
-        run: ctest --test-dir build/dev --output-on-failure
+      - name: Run full tests with status
+        env:
+          PRISTINE_REQUIRE_IHP_OPEN_PDK: '1'
+        run: python scripts/run_full_tests_with_status.py --build-dir build/dev --include-perf
 
       - name: Run required IHP LEF corpus gate
         env:
@@ -224,6 +226,14 @@ jobs:
 
       - name: Run required RTL E2E gates
         run: ctest --test-dir build/dev -R "pristine_rtl_e2e_large_workspace|pristine_rtl_e2e_real_retrosoc" --output-on-failure
+
+      - name: Upload test status logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pristine-test-status-${{ matrix.id }}
+          path: build/dev/test-status-logs
+          if-no-files-found: ignore
 
       - name: Smoke test server version
         run: |

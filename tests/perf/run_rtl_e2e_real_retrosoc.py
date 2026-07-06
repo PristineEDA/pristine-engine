@@ -5,6 +5,9 @@ import subprocess
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import test_status
+
 
 EXPECTED_CORPUS = "retrosoc"
 
@@ -32,6 +35,7 @@ def main() -> int:
     prepare_env = os.environ.copy()
     prepare_env.setdefault("RTL_E2E_CORPUS", EXPECTED_CORPUS)
     prepare_env["RTL_E2E_REQUIRED"] = "1"
+    test_status.emit("pristine_rtl_e2e_real_retrosoc", "prepare-corpus", EXPECTED_CORPUS)
     prepared = subprocess.run(
         [sys.executable, str(prepare)],
         stderr=subprocess.STDOUT,
@@ -41,6 +45,7 @@ def main() -> int:
         env=prepare_env,
     )
     if prepared.returncode != 0:
+        test_status.emit("pristine_rtl_e2e_real_retrosoc", "prepare-failed", f"returncode={prepared.returncode}")
         print(prepared.stdout)
         return prepared.returncode
     root = prepared.stdout.strip().splitlines()[-1]
@@ -73,6 +78,7 @@ def main() -> int:
     child_env["PRISTINE_DEBUG_TRACE"] = child_env.get("RTL_E2E_SERVER_DEBUG_TRACE", "1")
     child_env["PRISTINE_DEBUG_TRACE_FILE"] = str(debug_trace_file)
     child_env.setdefault("PRISTINE_DEBUG_SUPPRESS_ABORT_DIALOG", "1")
+    test_status.emit("pristine_rtl_e2e_real_retrosoc", "launch-client", f"root={root}")
     completed = subprocess.run(
         command,
         check=False,
@@ -82,11 +88,13 @@ def main() -> int:
         env=child_env,
     )
     if completed.returncode != 0:
+        test_status.emit("pristine_rtl_e2e_real_retrosoc", "failed", f"returncode={completed.returncode}")
         print(completed.stdout)
         print(tail_text(completed.stderr), file=sys.stderr)
         print(f"debugTracePath={debug_trace_file}", file=sys.stderr)
         return completed.returncode
 
+    test_status.emit("pristine_rtl_e2e_real_retrosoc", "validate-summary")
     summary = json.loads(completed.stdout.strip().splitlines()[-1])
     assert summary["mode"] == "real"
     assert summary["corpusName"] == EXPECTED_CORPUS
@@ -116,6 +124,12 @@ def main() -> int:
     assert any('"method":"systemverilog/schematic"' in line for line in trace_lines)
     assert not any('"method":"workspace/symbol"' in line for line in trace_lines)
 
+    test_status.emit(
+        "pristine_rtl_e2e_real_retrosoc",
+        "summary",
+        f"files={summary['fileCount']} outline={summary['outlineMicros']}us "
+        f"hover={summary['hoverMicros']}us hierarchy={summary['moduleHierarchyColdMicros']}us",
+    )
     print(json.dumps(summary, separators=(",", ":")))
     return 0
 

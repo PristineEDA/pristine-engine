@@ -6,6 +6,9 @@ import sys
 import tempfile
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import test_status
+
 
 FILE_COUNT = 300
 TOP_MODULE = "large_top"
@@ -93,6 +96,7 @@ def main() -> int:
 
     with tempfile.TemporaryDirectory(prefix="pristine-rtl-e2e-large-") as temp:
         root = Path(temp) / "workspace"
+        test_status.emit("pristine_rtl_e2e_large_workspace", "generate-corpus", f"files={FILE_COUNT}")
         generate_corpus(root)
 
         log_dir = binary_dir / "rtl-e2e-large-workspace-logs"
@@ -121,6 +125,7 @@ def main() -> int:
         env["PRISTINE_DEBUG_TRACE"] = "1"
         env["PRISTINE_DEBUG_TRACE_FILE"] = str(debug_trace_file)
         env["PRISTINE_DEBUG_SUPPRESS_ABORT_DIALOG"] = "1"
+        test_status.emit("pristine_rtl_e2e_large_workspace", "launch-client", f"logDir={log_dir}")
         completed = subprocess.run(
             command,
             check=False,
@@ -130,11 +135,13 @@ def main() -> int:
             env=env,
         )
         if completed.returncode != 0:
+            test_status.emit("pristine_rtl_e2e_large_workspace", "failed", f"returncode={completed.returncode}")
             print(completed.stdout)
             print(tail_text(completed.stderr), file=sys.stderr)
             print(f"debugTracePath={debug_trace_file}", file=sys.stderr)
             return completed.returncode
 
+        test_status.emit("pristine_rtl_e2e_large_workspace", "validate-summary")
         summary = json.loads(completed.stdout.strip().splitlines()[-1])
         assert summary["mode"] == "large-workspace"
         assert summary["corpusName"] == "synthetic-large-workspace"
@@ -169,6 +176,12 @@ def main() -> int:
         assert not any('"method":"systemverilog/backwardCone"' in line for line in trace_lines)
         assert not any('"method":"textDocument/completion"' in line for line in trace_lines)
 
+        test_status.emit(
+            "pristine_rtl_e2e_large_workspace",
+            "summary",
+            f"outline={summary['outlineMicros']}us hover={summary['hoverMicros']}us "
+            f"hierarchy={summary['moduleHierarchyColdMicros']}us schematic={summary['schematicMicros']}us",
+        )
         print(json.dumps(summary, separators=(",", ":")))
     return 0
 

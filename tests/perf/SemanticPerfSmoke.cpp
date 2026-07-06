@@ -3,6 +3,7 @@
 #include <chrono>
 #include <iostream>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace {
@@ -11,6 +12,21 @@ using Clock = std::chrono::steady_clock;
 
 long long elapsedMicros(Clock::time_point start, Clock::time_point end) {
     return std::chrono::duration_cast<std::chrono::microseconds>(end - start).count();
+}
+
+const auto kStatusStart = Clock::now();
+
+double elapsedSeconds() {
+    return std::chrono::duration<double>(Clock::now() - kStatusStart).count();
+}
+
+void emitStatus(std::string_view phase, std::string_view detail = {}) {
+    std::cerr << "[pristine-test] test=pristine_perf_tests phase=" << phase
+              << " elapsed=" << elapsedSeconds() << "s";
+    if (!detail.empty()) {
+        std::cerr << " detail=" << detail;
+    }
+    std::cerr << '\n';
 }
 
 void writeQueryCacheStats(const pristine::analysis::SemanticQueryCacheStats& stats) {
@@ -36,6 +52,7 @@ int main() {
     bool first_baseline = true;
 
     for (const int workspace_size : workspace_sizes) {
+        emitStatus("baseline", "documents=" + std::to_string(workspace_size));
         engine.clear();
 
         const auto start_index = Clock::now();
@@ -155,5 +172,6 @@ int main() {
     }
 
     std::cout << "]}\n";
+    emitStatus("summary", unresolved ? "status=failed" : "status=passed");
     return unresolved ? 1 : 0;
 }

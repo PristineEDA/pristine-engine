@@ -10,6 +10,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <chrono>
 #include <vector>
 
 namespace {
@@ -18,6 +19,21 @@ namespace fs = std::filesystem;
 namespace fst = pristine::waveform::fst;
 
 constexpr std::string_view kInvalidFixture = "sigrok/libsigrok.vcd.fst";
+const auto kStatusStart = std::chrono::steady_clock::now();
+
+double elapsedSeconds() {
+    const auto elapsed = std::chrono::steady_clock::now() - kStatusStart;
+    return std::chrono::duration<double>(elapsed).count();
+}
+
+void emitStatus(std::string_view phase, std::string_view detail = {}) {
+    std::cerr << "[pristine-test] test=pristine_wellen_fst_perf phase=" << phase
+              << " elapsed=" << elapsedSeconds() << "s";
+    if (!detail.empty()) {
+        std::cerr << " detail=" << detail;
+    }
+    std::cerr << '\n';
+}
 
 std::string jsonEscape(std::string_view value) {
     std::string result;
@@ -249,9 +265,14 @@ int main(int argc, char** argv) {
         }
 
         const auto fixtures = collectFixtures(inputs_dir);
+        emitStatus("begin", "fixtures=" + std::to_string(fixtures.size()));
         std::vector<FixturePerf> results;
         results.reserve(fixtures.size());
-        for (const auto& fixture : fixtures) {
+        for (size_t index = 0; index < fixtures.size(); ++index) {
+            const auto& fixture = fixtures[index];
+            emitStatus("fixture",
+                       std::to_string(index + 1) + "/" + std::to_string(fixtures.size()) + " " +
+                           fixture.lexically_relative(inputs_dir).generic_string());
             auto result = measureFixture(inputs_dir, fixture);
             writeFixtureJson(*output, result);
             results.push_back(std::move(result));
@@ -261,6 +282,7 @@ int main(int argc, char** argv) {
         const auto bad = std::ranges::find_if(results, [](const auto& result) {
             return result.status == "error" || result.status == "unexpected-valid";
         });
+        emitStatus("summary", bad == results.end() ? "status=passed" : "status=failed");
         return bad == results.end() ? 0 : 1;
     }
     catch (const std::exception& error) {

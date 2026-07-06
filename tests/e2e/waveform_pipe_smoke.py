@@ -8,6 +8,9 @@ import sys
 import time
 from typing import BinaryIO
 
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
+import test_status
+
 
 FRAME_HEADER = struct.Struct("<4sHHIIII")
 PROTOCOL_VERSION = 1
@@ -406,6 +409,7 @@ def main() -> int:
         temp_workspace: pathlib.Path | None = None
         try:
             workspace = find_repo_root(server_path).resolve()
+            test_status.emit("pristine_waveform_pipe_e2e", "begin", f"workspace={workspace}")
             temp_workspace = (
                 workspace
                 / "build"
@@ -439,6 +443,7 @@ def main() -> int:
                 "sources": ["mock", "fst"],
             }
 
+            test_status.emit("pristine_waveform_pipe_e2e", "open-mock")
             open_response = request(process, 2, "systemverilog/waveform/open", {"source": "mock"})
             session = open_response["result"]
             assert session["signalCount"] == 168
@@ -464,6 +469,7 @@ def main() -> int:
             )
             assert close_response["result"]["closed"] is True
 
+            test_status.emit("pristine_waveform_pipe_e2e", "open-generated-fst")
             fst_path = write_tiny_fst_fixture(temp_workspace)
             fst_open = request(
                 process,
@@ -495,7 +501,14 @@ def main() -> int:
             )
             assert fst_close["result"]["closed"] is True
 
-            for index, wellen_fixture in enumerate(find_wellen_fixtures(workspace)):
+            wellen_fixtures = find_wellen_fixtures(workspace)
+            test_status.emit("pristine_waveform_pipe_e2e", "wellen-fixtures", f"count={len(wellen_fixtures)}")
+            for index, wellen_fixture in enumerate(wellen_fixtures):
+                test_status.emit(
+                    "pristine_waveform_pipe_e2e",
+                    "open-wellen-fst",
+                    f"{index + 1}/{len(wellen_fixtures)} {wellen_fixture.name}",
+                )
                 request_base = 6 + index * 2
                 wellen_open = request(
                     process,
@@ -532,6 +545,7 @@ def main() -> int:
             notify(process, "exit", None)
             assert process.wait(timeout=5) == 0
             process = None
+            test_status.emit("pristine_waveform_pipe_e2e", "summary", "mock=1 generatedFst=1")
             return 0
         finally:
             if temp_workspace is not None:
