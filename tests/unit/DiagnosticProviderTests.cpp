@@ -190,4 +190,58 @@ TEST_CASE("DiagnosticProvider aggregates UX diagnostics and dedupes snapshot dia
     }));
 }
 
+TEST_CASE("DiagnosticProvider reports ambiguous missing imports without choosing a package",
+          "[analysis][semantic][diagnostic-provider][diagnostics][imports]") {
+    constexpr std::string_view uri = "file:///workspace/top.sv";
+    DiagnosticContext context{
+        .generation = 12,
+        .snapshot_available = true,
+        .workspace_root_uri = "file:///workspace",
+        .document = SemanticEngineDocument{.uri = std::string(uri),
+                                           .text = "module top;\n"
+                                                   "  shared_t value;\n"
+                                                   "endmodule\n"},
+        .symbols_by_id = {{"pkg_a",
+                           DiagnosticSymbol{.identity = SemanticSymbolIdentity{.stable_id = "pkg_a",
+                                                                               .name = "pkg_a",
+                                                                               .kind = "Package",
+                                                                               .location = locationAt("file:///workspace/pkg_a.sv",
+                                                                                                      rangeAt(0, 8, 13))}}},
+                          {"pkg_b",
+                           DiagnosticSymbol{.identity = SemanticSymbolIdentity{.stable_id = "pkg_b",
+                                                                               .name = "pkg_b",
+                                                                               .kind = "Package",
+                                                                               .location = locationAt("file:///workspace/pkg_b.sv",
+                                                                                                      rangeAt(0, 8, 13))}}},
+                          {"shared_a",
+                           DiagnosticSymbol{.identity = SemanticSymbolIdentity{.stable_id = "shared_a",
+                                                                               .name = "shared_t",
+                                                                               .kind = "TypeAlias",
+                                                                               .location = locationAt("file:///workspace/pkg_a.sv",
+                                                                                                      rangeAt(1, 22, 30))}}},
+                          {"shared_b",
+                           DiagnosticSymbol{.identity = SemanticSymbolIdentity{.stable_id = "shared_b",
+                                                                               .name = "shared_t",
+                                                                               .kind = "TypeAlias",
+                                                                               .location = locationAt("file:///workspace/pkg_b.sv",
+                                                                                                      rangeAt(1, 22, 30))}}}},
+        .type_references_by_uri = {{std::string(uri),
+                                    {SnapshotTypeReference{.reference = locationAt(std::string(uri),
+                                                                                   rangeAt(1, 2, 10)),
+                                                           .type_name = "shared_t",
+                                                           .definitions = {}}}}}};
+
+    const auto diagnostics = diagnosticsFor(context);
+
+    CHECK(std::any_of(diagnostics.begin(), diagnostics.end(), [](const SemanticEngineDiagnostic& diagnostic) {
+        return diagnostic.code == "ambiguousMissingImport" &&
+               diagnostic.message.find("'pkg_a'") != std::string::npos &&
+               diagnostic.message.find("'pkg_b'") != std::string::npos &&
+               diagnostic.severity == 2;
+    }));
+    CHECK(std::none_of(diagnostics.begin(), diagnostics.end(), [](const SemanticEngineDiagnostic& diagnostic) {
+        return diagnostic.code == "missingImport";
+    }));
+}
+
 } // namespace pristine::analysis::semantic

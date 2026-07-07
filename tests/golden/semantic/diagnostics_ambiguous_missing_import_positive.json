@@ -1,0 +1,34 @@
+{
+  "name": "diagnostics report ambiguous missing import candidates",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/amb-missing-import-a.sv",
+      "text": "package pkg_a;\n  typedef logic shared_t;\nendpackage\n"
+    },
+    {
+      "uri": "file:///golden/semantic/amb-missing-import-b.sv",
+      "text": "package pkg_b;\n  typedef logic shared_t;\nendpackage\n"
+    },
+    {
+      "uri": "file:///golden/semantic/amb-missing-import-user.sv",
+      "text": "module top;\n  shared_t value;\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "diagnostics"
+  },
+  "expected": {
+    "uri": "file:///golden/semantic/amb-missing-import-user.sv",
+    "diagnostics": [
+      {
+        "code": "ambiguousMissingImport",
+        "severity": 2,
+        "startLine": 1
+      },
+      {
+        "code": "missingImport",
+        "present": false
+      }
+    ]
+  }
+}

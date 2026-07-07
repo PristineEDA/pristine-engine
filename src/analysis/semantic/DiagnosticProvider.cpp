@@ -22,6 +22,7 @@ constexpr std::string_view kUnknownIncludeDiagnosticCode = "unknownInclude";
 constexpr std::string_view kUnresolvedModuleDiagnosticCode = "unresolvedModule";
 constexpr std::string_view kUnresolvedTypeDiagnosticCode = "unresolvedType";
 constexpr std::string_view kMissingImportDiagnosticCode = "missingImport";
+constexpr std::string_view kAmbiguousMissingImportDiagnosticCode = "ambiguousMissingImport";
 
 bool diagnosticLess(const SemanticEngineDiagnostic& lhs, const SemanticEngineDiagnostic& rhs) {
     if (lhs.range.start_line != rhs.range.start_line) {
@@ -126,6 +127,22 @@ std::string unresolvedPackageMessage(std::string_view name) {
 std::string missingImportMessage(std::string_view type_name, std::string_view package_name) {
     return std::string("Type '") + std::string(type_name) + "' is available from package '" +
            std::string(package_name) + "' but is not imported.";
+}
+
+std::string ambiguousMissingImportMessage(std::string_view type_name,
+                                          const std::vector<std::string>& package_names) {
+    std::string message = std::string("Type '") + std::string(type_name) +
+                          "' is available from multiple packages: ";
+    for (size_t index = 0; index < package_names.size(); ++index) {
+        if (index > 0) {
+            message += ", ";
+        }
+        message += "'";
+        message += package_names[index];
+        message += "'";
+    }
+    message += ". Add an explicit import to disambiguate.";
+    return message;
 }
 
 std::string widthMismatchMessage(std::string_view left_name,
@@ -479,6 +496,35 @@ void appendMissingImportDiagnostics(std::vector<SemanticEngineDiagnostic>& resul
     }
 }
 
+void appendAmbiguousMissingImportDiagnostics(std::vector<SemanticEngineDiagnostic>& result,
+                                             const DiagnosticContext& context) {
+    std::set<std::pair<int, int>> reported_type_ranges;
+    const auto references_it = context.type_references_by_uri.find(context.document.uri);
+    if (references_it == context.type_references_by_uri.end()) {
+        return;
+    }
+    for (const auto& reference : references_it->second) {
+        if (!reference.definitions.empty() || !isUserTypeReferenceName(reference.type_name)) {
+            continue;
+        }
+        const auto packages = packageNamesDefiningMember(context, reference.type_name);
+        if (packages.size() < 2) {
+            continue;
+        }
+        const auto range_key = std::pair(reference.reference.range.start_line,
+                                         reference.reference.range.start_character);
+        if (!reported_type_ranges.insert(range_key).second) {
+            continue;
+        }
+        result.push_back(SemanticEngineDiagnostic{
+            .uri = context.document.uri,
+            .code = std::string(kAmbiguousMissingImportDiagnosticCode),
+            .message = ambiguousMissingImportMessage(reference.type_name, packages),
+            .range = reference.reference.range,
+            .severity = 2});
+    }
+}
+
 void appendUnknownIncludeDiagnostics(std::vector<SemanticEngineDiagnostic>& result,
                                      const DiagnosticContext& context) {
     const auto includes_it = context.include_directives_by_uri.find(context.document.uri);
@@ -559,6 +605,7 @@ std::vector<SemanticEngineDiagnostic> diagnosticsFor(const DiagnosticContext& co
         appendUnknownIncludeDiagnostics(result, context);
         appendUnresolvedModuleDiagnostics(result, context);
         appendMissingImportDiagnostics(result, context);
+        appendAmbiguousMissingImportDiagnostics(result, context);
         appendUnresolvedTypeDiagnostics(result, context);
         appendWidthMismatchDiagnostics(result, context);
         appendAmbiguousReferenceDiagnostics(result, context);
