@@ -20,7 +20,7 @@
   },
   "expected": {
     "detailContains": "Parameter",
-    "documentationContains": "DEPTH",
+    "documentationContains": "Value: `16`",
     "insertTextContains": "DEPTH"
   }
 }

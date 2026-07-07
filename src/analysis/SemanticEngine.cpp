@@ -1418,7 +1418,8 @@ SemanticCompletionItem SemanticEngine::resolveCompletion(std::string_view stable
     const auto symbol_it = data->symbols_by_id.find(std::string(stable_id));
     if (symbol_it != data->symbols_by_id.end()) {
         context.symbol = semantic::CompletionResolveSymbol{.identity = symbol_it->second.identity,
-                                                           .type_display = symbol_it->second.type_display};
+                                                           .type_display = symbol_it->second.type_display,
+                                                           .value_display = symbol_it->second.value_display};
     }
     else {
         const auto stable_id_text = std::string(stable_id);
@@ -1432,7 +1433,8 @@ SemanticCompletionItem SemanticEngine::resolveCompletion(std::string_view stable
                 continue;
             }
             context.member = semantic::CompletionResolveSymbol{.identity = member_it->identity,
-                                                               .type_display = member_it->type_display};
+                                                               .type_display = member_it->type_display,
+                                                               .value_display = {}};
             break;
         }
     }

@@ -510,6 +510,9 @@ SemanticCompletionItem resolveCompletionItem(std::string_view stable_id,
     if (!symbol.type_display.empty()) {
         item.documentation += "\n\nType: `" + symbol.type_display + "`";
     }
+    if (!symbol.value_display.empty()) {
+        item.documentation += "\n\nValue: `" + symbol.value_display + "`";
+    }
     return item;
 }
 

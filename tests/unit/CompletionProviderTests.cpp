@@ -412,7 +412,8 @@ TEST_CASE("CompletionProvider resolves completion documentation and snippets",
                                            .name = "child",
                                            .kind = "Definition",
                                            .location = SemanticLocation{}},
-        .type_display = {}};
+        .type_display = {},
+        .value_display = {}};
     const auto resolved_module = resolveCompletionItem("symbol|child", "child", context);
     CHECK(resolved_module.detail == "child(input logic clk, output logic rst_n)");
     CHECK(resolved_module.documentation.find("Declared: `file:///workspace/child.sv:1:8`") !=
@@ -424,10 +425,23 @@ TEST_CASE("CompletionProvider resolves completion documentation and snippets",
                                            .name = "value",
                                            .kind = "Variable",
                                            .location = SemanticLocation{}},
-        .type_display = "logic [7:0]"};
+        .type_display = "logic [7:0]",
+        .value_display = {}};
     const auto resolved_symbol = resolveCompletionItem("symbol|value", "value", context);
     CHECK(resolved_symbol.detail == "Variable");
     CHECK(resolved_symbol.documentation.find("Type: `logic [7:0]`") != std::string::npos);
+
+    context.symbol = CompletionResolveSymbol{
+        .identity = SemanticSymbolIdentity{.stable_id = "symbol|WIDTH",
+                                           .name = "WIDTH",
+                                           .kind = "Parameter",
+                                           .location = SemanticLocation{}},
+        .type_display = "int",
+        .value_display = "8"};
+    const auto resolved_parameter = resolveCompletionItem("symbol|WIDTH", "WIDTH", context);
+    CHECK(resolved_parameter.detail == "Parameter");
+    CHECK(resolved_parameter.documentation.find("Type: `int`") != std::string::npos);
+    CHECK(resolved_parameter.documentation.find("Value: `8`") != std::string::npos);
 
     context.symbol.reset();
     const auto missing = resolveCompletionItem("symbol|missing", "missing", context);
@@ -447,7 +461,8 @@ TEST_CASE("CompletionProvider resolves member completion documentation",
                                                                    .start_character = 8,
                                                                    .end_line = 1,
                                                                    .end_character = 20}}},
-        .type_display = "logic"};
+        .type_display = "logic",
+        .value_display = {}};
 
     const auto resolved = resolveCompletionItem("owner|member|status_ready", "status_ready", context);
 

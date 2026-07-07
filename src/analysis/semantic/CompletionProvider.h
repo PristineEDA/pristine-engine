@@ -24,6 +24,7 @@ struct CompletionContext {
 struct CompletionResolveSymbol {
     SemanticSymbolIdentity identity;
     std::string type_display;
+    std::string value_display;
 };
 
 struct CompletionMemberCandidate {
