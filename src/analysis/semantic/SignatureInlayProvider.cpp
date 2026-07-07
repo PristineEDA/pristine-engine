@@ -456,14 +456,29 @@ SemanticInlayHintResult inlayHints(const SignatureInlayContext& context,
     }
 
     for (const auto& symbol : context.symbols) {
-        if (symbol.identity.location.uri != context.document_uri || symbol.type_display.empty() ||
+        if (symbol.identity.location.uri != context.document_uri ||
             !rangesOverlapOrTouch(symbol.identity.location.range, range)) {
             continue;
         }
-        result.hints.push_back(SemanticInlayHint{.location = symbol.identity.location,
-                                                 .label = ": " + symbol.type_display,
-                                                 .kind = "type",
-                                                 .tooltip = "Resolved type"});
+        if (!symbol.type_display.empty()) {
+            result.hints.push_back(SemanticInlayHint{.location = symbol.identity.location,
+                                                     .label = ": " + symbol.type_display,
+                                                     .kind = "type",
+                                                     .tooltip = "Resolved type"});
+        }
+        if (!symbol.value_display.empty()) {
+            const auto& symbol_range = symbol.identity.location.range;
+            result.hints.push_back(SemanticInlayHint{
+                .location = SemanticLocation{.uri = symbol.identity.location.uri,
+                                             .range = ParseRange{
+                                                 .start_line = symbol_range.end_line,
+                                                 .start_character = symbol_range.end_character,
+                                                 .end_line = symbol_range.end_line,
+                                                 .end_character = symbol_range.end_character}},
+                .label = " = " + symbol.value_display,
+                .kind = "parameter",
+                .tooltip = "Resolved constant value"});
+        }
     }
 
     for (const auto& instance : context.module_instances) {

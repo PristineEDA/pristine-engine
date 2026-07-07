@@ -1,0 +1,29 @@
+{
+  "name": "inlay hints include constant type and value facts",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/inlay-constant-values.sv",
+      "text": "module top;\n  localparam int WIDTH = 8;\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "inlayHint",
+    "uri": "file:///golden/semantic/inlay-constant-values.sv",
+    "range": {
+      "startLine": 0,
+      "startCharacter": 0,
+      "endLine": 3,
+      "endCharacter": 0
+    }
+  },
+  "expected": {
+    "labels": [
+      ": int",
+      " = 8"
+    ],
+    "tooltips": [
+      "Resolved type",
+      "Resolved constant value"
+    ]
+  }
+}

@@ -28,6 +28,7 @@ struct SnapshotIndexedSymbol {
     SemanticSymbolIdentity identity;
     const slang::ast::Symbol* symbol = nullptr;
     std::string type_display;
+    std::string value_display;
 };
 
 struct SnapshotIndexedReference {

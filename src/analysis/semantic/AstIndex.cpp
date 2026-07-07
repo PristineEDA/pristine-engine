@@ -993,6 +993,46 @@ std::string typeDisplayForSymbol(const slang::ast::Symbol& symbol) {
     return {};
 }
 
+std::string normalizedConstantDisplay(std::string value) {
+    value.erase(std::remove(value.begin(), value.end(), '\n'), value.end());
+    value.erase(std::remove(value.begin(), value.end(), '\r'), value.end());
+    while (!value.empty() && std::isspace(static_cast<unsigned char>(value.front()))) {
+        value.erase(value.begin());
+    }
+    while (!value.empty() && std::isspace(static_cast<unsigned char>(value.back()))) {
+        value.pop_back();
+    }
+    for (size_t index = 0; index + 1 < value.size();) {
+        if (std::isspace(static_cast<unsigned char>(value[index])) &&
+            std::isspace(static_cast<unsigned char>(value[index + 1]))) {
+            value.erase(index, 1);
+            continue;
+        }
+        ++index;
+    }
+    return value;
+}
+
+std::string constantValueDisplay(const slang::ConstantValue& value) {
+    if (!value) {
+        return {};
+    }
+    return normalizedConstantDisplay(value.toString());
+}
+
+std::string valueDisplayForSymbol(const slang::ast::Symbol& symbol) {
+    if (symbol.kind == slang::ast::SymbolKind::Parameter) {
+        return constantValueDisplay(symbol.as<slang::ast::ParameterSymbol>().getValue());
+    }
+    if (symbol.kind == slang::ast::SymbolKind::Specparam) {
+        return constantValueDisplay(symbol.as<slang::ast::SpecparamSymbol>().getValue());
+    }
+    if (symbol.kind == slang::ast::SymbolKind::EnumValue) {
+        return constantValueDisplay(symbol.as<slang::ast::EnumValueSymbol>().getValue());
+    }
+    return {};
+}
+
 const slang::ast::Type& unwrapArrayElementType(const slang::ast::Type& type) {
     const auto* current = &type.getCanonicalType();
     while (const auto* element = current->getArrayElementType()) {
@@ -2112,6 +2152,7 @@ void insertSymbol(SnapshotData& data,
     const auto stable_id = symbolStableId(source_manager, symbol, *location);
     if (data.symbols_by_id.find(stable_id) == data.symbols_by_id.end()) {
         auto type_display = typeDisplayForSymbol(symbol);
+        auto value_display = valueDisplayForSymbol(symbol);
 
         data.symbols_by_id.emplace(
             stable_id,
@@ -2120,7 +2161,8 @@ void insertSymbol(SnapshotData& data,
                                                                       .kind = symbolKindName(symbol.kind),
                                                                       .location = *location},
                                   .symbol = &symbol,
-                                  .type_display = std::move(type_display)});
+                                  .type_display = std::move(type_display),
+                                  .value_display = std::move(value_display)});
     }
     data.ids_by_symbol.emplace(&symbol, stable_id);
     indexTypedMemberCompletions(data, source_manager, symbol, *location, stable_id);

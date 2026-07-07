@@ -223,6 +223,39 @@ TEST_CASE("SignatureInlayProvider emits type and instance inlay hints in locatio
     CHECK(result.hints[1].tooltip == "Resolved type");
 }
 
+TEST_CASE("SignatureInlayProvider emits constant value inlay hints",
+          "[analysis][semantic][signature-inlay-provider][inlay][constant]") {
+    const SignatureInlayContext context{
+        .generation = 12,
+        .document_uri = "file:///workspace/top.sv",
+        .symbols = {SignatureInlaySymbol{
+            .identity = SemanticSymbolIdentity{.stable_id = "symbol|WIDTH",
+                                               .name = "WIDTH",
+                                               .kind = "Parameter",
+                                               .location = SemanticLocation{.uri = "file:///workspace/top.sv",
+                                                                            .range = ParseRange{.start_line = 1,
+                                                                                                .start_character = 17,
+                                                                                                .end_line = 1,
+                                                                                                .end_character = 22}}},
+            .type_display = "int",
+            .value_display = "8"}},
+        .snapshot_available = true};
+
+    const auto result = inlayHints(context,
+                                  ParseRange{.start_line = 0,
+                                             .start_character = 0,
+                                             .end_line = 3,
+                                             .end_character = 0});
+
+    REQUIRE_FALSE(result.unresolved);
+    REQUIRE(result.hints.size() == 2);
+    CHECK(result.hints[0].label == ": int");
+    CHECK(result.hints[0].tooltip == "Resolved type");
+    CHECK(result.hints[1].label == " = 8");
+    CHECK(result.hints[1].kind == "parameter");
+    CHECK(result.hints[1].tooltip == "Resolved constant value");
+}
+
 TEST_CASE("SignatureInlayProvider emits AST-derived named and ordered port inlay hints",
           "[analysis][semantic][signature-inlay-provider][inlay][ports]") {
     const ModuleDefinition child{.name = "child",

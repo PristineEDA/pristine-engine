@@ -11,6 +11,7 @@ namespace pristine::analysis::semantic {
 struct SignatureInlaySymbol {
     SemanticSymbolIdentity identity;
     std::string type_display;
+    std::string value_display;
 };
 
 struct SignatureInlayModuleInstance {

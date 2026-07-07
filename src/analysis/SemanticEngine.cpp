@@ -1515,7 +1515,8 @@ SemanticInlayHintResult SemanticEngine::inlayHints(std::string_view uri, ParseRa
         for (const auto& [_, indexed_symbol] : data->symbols_by_id) {
             context.symbols.push_back(semantic::SignatureInlaySymbol{
                 .identity = indexed_symbol.identity,
-                .type_display = indexed_symbol.type_display});
+                .type_display = indexed_symbol.type_display,
+                .value_display = indexed_symbol.value_display});
         }
     }
     if (data != nullptr) {

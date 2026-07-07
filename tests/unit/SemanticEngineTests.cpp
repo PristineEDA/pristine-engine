@@ -593,6 +593,30 @@ TEST_CASE("SemanticEngine exposes second-batch value-type semantic query contrac
     CHECK_FALSE(selection.ranges.empty());
 }
 
+TEST_CASE("SemanticEngine exposes AST-backed constant value inlay hints",
+          "[analysis][semantic-engine][inlay][constant]") {
+    SemanticEngine engine;
+    engine.updateDocument("file:///workspace/constants.sv",
+                          "module top;\n"
+                          "  localparam int WIDTH = 8;\n"
+                          "endmodule\n",
+                          SemanticEngineDocumentState{.version = 1, .is_open = true});
+
+    const auto hints = engine.inlayHints("file:///workspace/constants.sv",
+                                        ParseRange{.start_line = 0,
+                                                   .start_character = 0,
+                                                   .end_line = 3,
+                                                   .end_character = 0});
+
+    REQUIRE_FALSE(hints.unresolved);
+    CHECK(std::any_of(hints.hints.begin(), hints.hints.end(), [](const SemanticInlayHint& hint) {
+        return hint.label == ": int" && hint.tooltip == "Resolved type";
+    }));
+    CHECK(std::any_of(hints.hints.begin(), hints.hints.end(), [](const SemanticInlayHint& hint) {
+        return hint.label == " = 8" && hint.tooltip == "Resolved constant value";
+    }));
+}
+
 TEST_CASE("SemanticEngine provides AST-backed module signature help and port completions",
           "[analysis][semantic-engine][completion][signature]") {
     SemanticEngine engine;
