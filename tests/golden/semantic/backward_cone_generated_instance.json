@@ -1,0 +1,35 @@
+{
+  "name": "backward cone follows generated instance port edges",
+  "config": {
+    "topModules": [
+      "top"
+    ]
+  },
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/cone-generated-instance.sv",
+      "text": "module child(input logic in, output logic out);\n  assign out = in;\nendmodule\nmodule top;\n  logic a;\n  logic y;\n  genvar i;\n  child u_warm();\n  generate\n    for (i = 0; i < 1; i = i + 1) begin : g\n      child u_child(.in(a), .out(y));\n    end\n  endgenerate\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "backwardCone",
+    "uri": "file:///golden/semantic/cone-generated-instance.sv",
+    "line": 5,
+    "character": 8
+  },
+  "expected": {
+    "nodeCount": 4,
+    "edgeCount": 3,
+    "nodes": [
+      "y",
+      "out",
+      "in",
+      "a"
+    ],
+    "expressions": [
+      "y",
+      "in",
+      "a"
+    ]
+  }
+}

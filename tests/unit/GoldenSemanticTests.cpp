@@ -1010,6 +1010,20 @@ void runCodeActionFixture(SemanticEngine& engine, const nlohmann::json& fixture)
                               }));
         }
     }
+    if (expected.contains("absentActionTitles")) {
+        for (const auto& expected_title : expected.at("absentActionTitles")) {
+            const auto title = expected_title.get<std::string>();
+            CAPTURE(title);
+            CHECK(std::none_of(result.actions.begin(),
+                               result.actions.end(),
+                               [&](const SemanticCodeAction& action) {
+                                   return action.title == title;
+                               }));
+        }
+    }
+    if (expected.contains("actionCount")) {
+        CHECK(result.actions.size() == expected.at("actionCount").get<size_t>());
+    }
     if (expected.contains("actions")) {
         for (const auto& expected_action : expected.at("actions")) {
             const auto title = expected_action.at("title").get<std::string>();

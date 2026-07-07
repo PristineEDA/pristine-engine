@@ -1,0 +1,34 @@
+{
+  "name": "code action does not auto-import ambiguous package candidates",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/action-amb-import-a.sv",
+      "text": "package pkg_a;\n  typedef logic shared_t;\nendpackage\n"
+    },
+    {
+      "uri": "file:///golden/semantic/action-amb-import-b.sv",
+      "text": "package pkg_b;\n  typedef logic shared_t;\nendpackage\n"
+    },
+    {
+      "uri": "file:///golden/semantic/action-amb-import-user.sv",
+      "text": "module top;\n  shared_t value;\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "codeAction",
+    "uri": "file:///golden/semantic/action-amb-import-user.sv",
+    "range": {
+      "startLine": 1,
+      "startCharacter": 2,
+      "endLine": 1,
+      "endCharacter": 10
+    }
+  },
+  "expected": {
+    "actionCount": 0,
+    "absentActionTitles": [
+      "Import package 'pkg_a'",
+      "Import package 'pkg_b'"
+    ]
+  }
+}

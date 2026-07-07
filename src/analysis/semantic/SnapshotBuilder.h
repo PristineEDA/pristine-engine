@@ -53,6 +53,7 @@ struct SnapshotModuleInstance {
     ParseRange range;
     ParseRange selection_range;
     ParseRange module_selection_range;
+    std::vector<SchematicConnection> port_connections;
     std::vector<SchematicConnection> parameter_connections;
 };
 
@@ -63,9 +64,11 @@ struct SnapshotModuleEntry {
 
 struct SnapshotAssignmentEdgeSeed {
     std::string uri;
+    ParseRange scope_range;
     ParseRange assignment_range;
     ParseRange left_range;
     ParseRange right_range;
+    std::string left_expression;
     std::string right_expression;
 };
 

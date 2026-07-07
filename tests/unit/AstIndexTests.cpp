@@ -574,6 +574,72 @@ TEST_CASE("AstIndex promotes generated module instances into schematic cells",
                       [](const SchematicCell& cell) {
                           return cell.name == "u_leaf" && cell.type == "leaf" && cell.kind == "module";
                       }));
+    CHECK(std::any_of(top.schematic.cells.begin(),
+                      top.schematic.cells.end(),
+                      [](const SchematicCell& cell) {
+                          return cell.name == "u_leaf" &&
+                                 std::any_of(cell.connections.begin(),
+                                             cell.connections.end(),
+                                             [](const SchematicConnection& connection) {
+                                                 return connection.port_name == "clk" &&
+                                                        connection.signal == "clk";
+                                             });
+                      }));
+}
+
+TEST_CASE("AstIndex exposes generated instance connection facts for backward cone",
+          "[analysis][semantic][ast-index][cone][generate][no-fallback]") {
+    SnapshotBuildInput input{.generation = 39,
+                             .documents = {{"file:///workspace/generated-cone.sv",
+                                            SemanticEngineDocument{
+                                                .uri = "file:///workspace/generated-cone.sv",
+                                                .text = "module child(input logic in, output logic out);\n"
+                                                        "  assign out = in;\n"
+                                                        "endmodule\n"
+                                                        "module top;\n"
+                                                        "  logic a;\n"
+                                                        "  logic y;\n"
+                                                        "  genvar i;\n"
+                                                        "  child u_warm();\n"
+                                                        "  generate\n"
+                                                        "    for (i = 0; i < 1; i = i + 1) begin : g\n"
+                                                        "      child u_child(.in(a), .out(y));\n"
+                                                        "    end\n"
+                                                        "  endgenerate\n"
+                                                        "endmodule\n",
+                                                .version = 1,
+                                                .is_open = true}}}};
+
+    auto output = SnapshotBuilder{}.build(std::move(input));
+    REQUIRE(output.data != nullptr);
+
+    const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
+    REQUIRE(view.module_signatures_by_name.contains("top"));
+    const auto& cells = view.module_signatures_by_name.at("top").schematic.cells;
+    const auto cell_it = std::find_if(cells.begin(), cells.end(), [](const SchematicCell& cell) {
+        return cell.name == "u_child" && cell.type == "child";
+    });
+    REQUIRE(cell_it != cells.end());
+    CHECK(std::any_of(cell_it->connections.begin(),
+                      cell_it->connections.end(),
+                      [](const SchematicConnection& connection) {
+                          return connection.port_name == "in" && connection.signal == "a";
+                      }));
+    CHECK(std::any_of(cell_it->connections.begin(),
+                      cell_it->connections.end(),
+                      [](const SchematicConnection& connection) {
+                          return connection.port_name == "out" && connection.signal == "y";
+                      }));
+
+    const auto edge_it = view.assignment_edges_by_uri.find("file:///workspace/generated-cone.sv");
+    REQUIRE(edge_it != view.assignment_edges_by_uri.end());
+    CHECK(std::any_of(edge_it->second.begin(), edge_it->second.end(), [&](const SnapshotAssignmentEdge& edge) {
+        const auto from_it = view.design_graph_symbols_by_id.find(edge.from_symbol_id);
+        const auto to_it = view.design_graph_symbols_by_id.find(edge.to_symbol_id);
+        return from_it != view.design_graph_symbols_by_id.end() &&
+               to_it != view.design_graph_symbols_by_id.end() &&
+               from_it->second.identity.name == "out" && to_it->second.identity.name == "in";
+    }));
 }
 
 TEST_CASE("AstIndex derives primitive and assignment schematic cells from slang AST",

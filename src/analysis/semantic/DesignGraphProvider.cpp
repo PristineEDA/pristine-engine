@@ -3,9 +3,11 @@
 #include "pristine/analysis/SourceUtil.h"
 
 #include <algorithm>
+#include <cctype>
 #include <map>
 #include <set>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -117,6 +119,24 @@ bool locationLess(const SemanticLocation& lhs, const SemanticLocation& rhs) {
     return lhs.range.end_character < rhs.range.end_character;
 }
 
+bool isSimpleSystemVerilogIdentifier(std::string_view value) {
+    if (value.empty()) {
+        return false;
+    }
+    const auto is_start = [](unsigned char ch) {
+        return std::isalpha(ch) != 0 || ch == '_' || ch == '$';
+    };
+    const auto is_continue = [](unsigned char ch) {
+        return std::isalnum(ch) != 0 || ch == '_' || ch == '$';
+    };
+    if (!is_start(static_cast<unsigned char>(value.front()))) {
+        return false;
+    }
+    return std::all_of(value.begin() + 1, value.end(), [&](char ch) {
+        return is_continue(static_cast<unsigned char>(ch));
+    });
+}
+
 std::optional<std::string> symbolIdForRange(const DesignGraphContext& context,
                                             std::string_view uri,
                                             const ParseRange& range) {
@@ -142,6 +162,30 @@ std::optional<std::string> symbolIdForRange(const DesignGraphContext& context,
     return best->stable_id;
 }
 
+std::optional<std::string> symbolIdForNameInRange(const DesignGraphContext& context,
+                                                  std::string_view uri,
+                                                  const ParseRange& scope_range,
+                                                  std::string_view name) {
+    if (name.empty()) {
+        return std::nullopt;
+    }
+    std::optional<std::string> best_id;
+    std::optional<SemanticLocation> best_location;
+    for (const auto& [stable_id, symbol] : context.symbols_by_id) {
+        const auto& identity = symbol.identity;
+        if (identity.name != name || identity.location.uri != uri ||
+            !rangeContainsRange(scope_range, identity.location.range)) {
+            continue;
+        }
+        if (!best_location.has_value() || locationLess(identity.location, *best_location) ||
+            (sameParseRange(identity.location.range, best_location->range) && stable_id < *best_id)) {
+            best_id = stable_id;
+            best_location = identity.location;
+        }
+    }
+    return best_id;
+}
+
 std::optional<std::string> symbolIdForNameInModule(const DesignGraphContext& context,
                                                    std::string_view uri,
                                                    const ModuleDefinition& module,
@@ -153,20 +197,7 @@ std::optional<std::string> symbolIdForNameInModule(const DesignGraphContext& con
     if (name.empty()) {
         return std::nullopt;
     }
-    std::optional<std::string> best_id;
-    std::optional<SemanticLocation> best_location;
-    for (const auto& [stable_id, symbol] : context.symbols_by_id) {
-        const auto& identity = symbol.identity;
-        if (identity.name != name || identity.location.uri != uri ||
-            !rangeContainsRange(module.range, identity.location.range)) {
-            continue;
-        }
-        if (!best_location.has_value() || locationLess(identity.location, *best_location)) {
-            best_id = stable_id;
-            best_location = identity.location;
-        }
-    }
-    return best_id;
+    return symbolIdForNameInRange(context, uri, module.range, name);
 }
 
 std::optional<std::string> symbolIdForPortFromAssignments(const DesignGraphContext& context,
@@ -215,7 +246,14 @@ std::vector<SnapshotAssignmentEdge> coneEdgesForContext(const DesignGraphContext
                 if (child_port == nullptr) {
                     continue;
                 }
-                const auto parent_signal_id = symbolIdForRange(context, parent_uri, connection.range);
+                auto parent_signal_id = symbolIdForRange(context, parent_uri, connection.range);
+                if (!parent_signal_id.has_value() &&
+                    isSimpleSystemVerilogIdentifier(connection.signal)) {
+                    parent_signal_id = symbolIdForNameInRange(context,
+                                                              parent_uri,
+                                                              parent_signature.definition.range,
+                                                              connection.signal);
+                }
                 auto child_port_id = symbolIdForPortFromAssignments(context,
                                                                     child_signature.uri,
                                                                     child_port->name,

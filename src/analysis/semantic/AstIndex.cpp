@@ -154,6 +154,24 @@ bool rangeContainsRange(const ParseRange& outer, const ParseRange& inner) {
     return true;
 }
 
+bool isSimpleSystemVerilogIdentifier(std::string_view value) {
+    if (value.empty()) {
+        return false;
+    }
+    const auto is_start = [](unsigned char ch) {
+        return std::isalpha(ch) != 0 || ch == '_' || ch == '$';
+    };
+    const auto is_continue = [](unsigned char ch) {
+        return std::isalnum(ch) != 0 || ch == '_' || ch == '$';
+    };
+    if (!is_start(static_cast<unsigned char>(value.front()))) {
+        return false;
+    }
+    return std::all_of(value.begin() + 1, value.end(), [&](char ch) {
+        return is_continue(static_cast<unsigned char>(ch));
+    });
+}
+
 bool rangeLessWideFirst(const ParseRange& lhs, const ParseRange& rhs) {
     if (lhs.start_line != rhs.start_line) {
         return lhs.start_line < rhs.start_line;
@@ -308,6 +326,16 @@ std::optional<std::string> textForRange(std::string_view text, const ParseRange&
     return std::nullopt;
 }
 
+std::string textForRangeOrEmpty(const SemanticEngineDocument* document, const ParseRange& range) {
+    if (document == nullptr) {
+        return {};
+    }
+    if (auto text = textForRange(document->text, range)) {
+        return *text;
+    }
+    return {};
+}
+
 std::string expressionText(const SemanticEngineDocument* document,
                            const slang::SourceManager& source_manager,
                            const slang::ast::Expression& expression) {
@@ -319,6 +347,54 @@ std::string expressionText(const SemanticEngineDocument* document,
         return *text;
     }
     return {};
+}
+
+std::vector<SchematicConnection> syntaxPortConnectionsForInstance(
+    const slang::SourceManager& source_manager,
+    const SemanticEngineDocument* document,
+    const slang::syntax::HierarchicalInstanceSyntax& instance) {
+    std::vector<SchematicConnection> connections;
+    int port_index = 0;
+    for (const auto* connection : instance.connections) {
+        if (connection == nullptr) {
+            ++port_index;
+            continue;
+        }
+        switch (connection->kind) {
+            case slang::syntax::SyntaxKind::NamedPortConnection: {
+                const auto& named = connection->as<slang::syntax::NamedPortConnectionSyntax>();
+                std::string port_name(named.name.valueText());
+                if (port_name.empty()) {
+                    ++port_index;
+                    continue;
+                }
+                auto range = sourceRangeForSourceRange(source_manager, named.name.range());
+                std::string signal = port_name;
+                if (named.expr != nullptr) {
+                    range = sourceRangeForSourceRange(source_manager, named.expr->sourceRange());
+                    signal = textForRangeOrEmpty(document, range);
+                }
+                connections.push_back(SchematicConnection{.port_name = std::move(port_name),
+                                                          .port_index = port_index,
+                                                          .signal = std::move(signal),
+                                                          .range = range});
+                break;
+            }
+            case slang::syntax::SyntaxKind::OrderedPortConnection: {
+                const auto& ordered = connection->as<slang::syntax::OrderedPortConnectionSyntax>();
+                const auto range = sourceRangeForSourceRange(source_manager, ordered.expr->sourceRange());
+                connections.push_back(SchematicConnection{.port_name = {},
+                                                          .port_index = port_index,
+                                                          .signal = textForRangeOrEmpty(document, range),
+                                                          .range = range});
+                break;
+            }
+            default:
+                break;
+        }
+        ++port_index;
+    }
+    return connections;
 }
 
 std::optional<std::string> logicKindForBinary(slang::ast::BinaryOperator op) {
@@ -2052,11 +2128,13 @@ void upsertAstContinuousAssignment(SnapshotData& data,
     if (location.has_value()) {
         data.assignment_edge_seeds.push_back(SnapshotAssignmentEdgeSeed{
             .uri = location->uri,
+            .scope_range = signature_it->second.definition.range,
             .assignment_range = location->range,
             .left_range = sourceRangeForSourceRange(source_manager,
                                                     assignment_expression->left().sourceRange),
             .right_range = sourceRangeForSourceRange(source_manager,
                                                      assignment_expression->right().sourceRange),
+            .left_expression = expressionText(document, source_manager, assignment_expression->left()),
             .right_expression = expressionText(document, source_manager, assignment_expression->right())});
     }
 
@@ -2256,6 +2334,9 @@ void indexModuleInstanceBinding(SnapshotData& data,
             module_instance.module_name = std::string(definition.name);
             module_instance.type_display = type_display;
             module_instance.target_stable_id = definition_id;
+            if (!cell->connections.empty() || module_instance.port_connections.empty()) {
+                module_instance.port_connections = cell->connections;
+            }
             module_instance.parameter_connections =
                 parameterOverrideConnectionsForAstInstance(instance, document, instance_range);
             return;
@@ -2270,6 +2351,7 @@ void indexModuleInstanceBinding(SnapshotData& data,
                                                .range = instance_range,
                                                .selection_range = instance_location->range,
                                                .module_selection_range = module_selection_range,
+                                               .port_connections = std::move(cell->connections),
                                                .parameter_connections =
                                                    parameterOverrideConnectionsForAstInstance(instance,
                                                                                               document,
@@ -2284,7 +2366,8 @@ void upsertModuleInstanceCandidate(SnapshotData& data,
                                    std::string instance_name,
                                    SemanticLocation instance_location,
                                    ParseRange range,
-                                   ParseRange module_selection_range) {
+                                   ParseRange module_selection_range,
+                                   std::vector<SchematicConnection> port_connections) {
     auto& instances = data.module_instances_by_uri[instance_location.uri];
     const auto duplicate = std::find_if(instances.begin(),
                                         instances.end(),
@@ -2301,6 +2384,9 @@ void upsertModuleInstanceCandidate(SnapshotData& data,
             duplicate->range = range;
             duplicate->module_selection_range = module_selection_range;
         }
+        if (duplicate->port_connections.empty()) {
+            duplicate->port_connections = std::move(port_connections);
+        }
         return;
     }
 
@@ -2313,6 +2399,7 @@ void upsertModuleInstanceCandidate(SnapshotData& data,
                                                .range = range,
                                                .selection_range = instance_location.range,
                                                .module_selection_range = module_selection_range,
+                                               .port_connections = std::move(port_connections),
                                                .parameter_connections = {}});
     data.selection_ranges_by_uri[instance_location.uri].push_back(range);
     data.selection_ranges_by_uri[instance_location.uri].push_back(instance_location.range);
@@ -2357,7 +2444,8 @@ void upsertModuleDeclarationCandidate(SnapshotData& data,
 }
 
 void collectSyntaxModuleCandidates(SnapshotData& data,
-                                   const slang::SourceManager& source_manager) {
+                                   const slang::SourceManager& source_manager,
+                                   const std::unordered_map<std::string, SemanticEngineDocument>& documents) {
     for (const auto& tree : data.syntax_trees) {
         if (!tree) {
             continue;
@@ -2393,12 +2481,19 @@ void collectSyntaxModuleCandidates(SnapshotData& data,
                                                     ? statement_location->range
                                                     : sourceRangeForSourceRange(source_manager,
                                                                                 instance->sourceRange());
+                    const auto document_it = instance_location.has_value()
+                                                 ? documents.find(instance_location->uri)
+                                                 : documents.end();
+                    const auto* document = document_it == documents.end() ? nullptr : &document_it->second;
                     upsertModuleInstanceCandidate(data,
                                                   module_name,
                                                   std::string(instance->decl->name.valueText()),
                                                   *instance_location,
                                                   instance_range,
-                                                  module_location->range);
+                                                  module_location->range,
+                                                  syntaxPortConnectionsForInstance(source_manager,
+                                                                                   document,
+                                                                                   *instance));
                 }
                 self.visitDefault(node);
             });
@@ -2498,7 +2593,7 @@ void appendMissingSchematicCellsForInstances(const SnapshotData& data, SemanticM
                                                                                            instance.module_name),
                                                           .range = instance.range,
                                                           .selection_range = instance.selection_range,
-                                                          .connections = {}});
+                                                          .connections = instance.port_connections});
         inserted = true;
     }
     if (inserted) {
@@ -2695,16 +2790,48 @@ std::optional<std::string> symbolIdAtReferenceRangeStart(const SnapshotData& dat
     return best_id;
 }
 
+std::optional<std::string> symbolIdByNameInScope(const SnapshotData& data,
+                                                 std::string_view uri,
+                                                 const ParseRange& scope_range,
+                                                 std::string_view name) {
+    if (!isSimpleSystemVerilogIdentifier(name)) {
+        return std::nullopt;
+    }
+    std::optional<std::string> best_id;
+    std::optional<SemanticLocation> best_location;
+    for (const auto& [stable_id, indexed_symbol] : data.symbols_by_id) {
+        const auto& identity = indexed_symbol.identity;
+        if (identity.name != name || identity.location.uri != uri ||
+            !rangeContainsRange(scope_range, identity.location.range)) {
+            continue;
+        }
+        if (!best_location.has_value() || locationLess(identity.location, *best_location) ||
+            (identity.location.range.start_line == best_location->range.start_line &&
+             identity.location.range.start_character == best_location->range.start_character &&
+             identity.location.range.end_line == best_location->range.end_line &&
+             identity.location.range.end_character == best_location->range.end_character &&
+             stable_id < *best_id)) {
+            best_id = stable_id;
+            best_location = identity.location;
+        }
+    }
+    return best_id;
+}
+
 void buildAssignmentEdges(SnapshotData& data) {
     data.assignment_edges_by_uri.clear();
     std::set<std::string> emitted_edges;
 
     for (const auto& seed : data.assignment_edge_seeds) {
-        const auto left_id = symbolIdAtReferenceRangeStart(data, seed.uri, seed.left_range);
+        auto left_id = symbolIdAtReferenceRangeStart(data, seed.uri, seed.left_range);
+        if (!left_id.has_value()) {
+            left_id = symbolIdByNameInScope(data, seed.uri, seed.scope_range, seed.left_expression);
+        }
         if (!left_id.has_value()) {
             continue;
         }
 
+        bool emitted_right_reference = false;
         for (const auto& reference : data.references) {
             if (reference.location.uri != seed.uri || reference.is_declaration ||
                 reference.stable_id == *left_id ||
@@ -2726,6 +2853,32 @@ void buildAssignmentEdges(SnapshotData& data) {
                 .to_symbol_id = reference.stable_id,
                 .location = SemanticLocation{.uri = seed.uri, .range = seed.assignment_range},
                 .expression_location = reference.location,
+                .expression = seed.right_expression});
+            emitted_right_reference = true;
+        }
+        if (!emitted_right_reference) {
+            const auto right_id = symbolIdByNameInScope(data,
+                                                        seed.uri,
+                                                        seed.scope_range,
+                                                        seed.right_expression);
+            const auto symbol_it = right_id.has_value() ? data.symbols_by_id.find(*right_id)
+                                                        : data.symbols_by_id.end();
+            if (!right_id.has_value() || *right_id == *left_id || symbol_it == data.symbols_by_id.end()) {
+                continue;
+            }
+            const auto edge_key = seed.uri + "\n" + *left_id + "\n" + *right_id + "\n" +
+                                  std::to_string(seed.assignment_range.start_line) + ":" +
+                                  std::to_string(seed.assignment_range.start_character) + "\n" +
+                                  std::to_string(symbol_it->second.identity.location.range.start_line) + ":" +
+                                  std::to_string(symbol_it->second.identity.location.range.start_character);
+            if (!emitted_edges.insert(edge_key).second) {
+                continue;
+            }
+            data.assignment_edges_by_uri[seed.uri].push_back(SnapshotAssignmentEdge{
+                .from_symbol_id = *left_id,
+                .to_symbol_id = *right_id,
+                .location = SemanticLocation{.uri = seed.uri, .range = seed.assignment_range},
+                .expression_location = symbol_it->second.identity.location,
                 .expression = seed.right_expression});
         }
     }
@@ -3087,7 +3240,7 @@ void buildAstIndexes(SnapshotData& data,
     const auto& root = data.compilation->getRoot();
     {
         PRISTINE_DEBUG_TRACE_SCOPE_SIMPLE("astIndex.collectSyntaxModuleCandidates");
-        collectSyntaxModuleCandidates(data, *data.source_manager);
+        collectSyntaxModuleCandidates(data, *data.source_manager, documents);
     }
     {
         PRISTINE_DEBUG_TRACE_SCOPE_SIMPLE("astIndex.visitRoot");
