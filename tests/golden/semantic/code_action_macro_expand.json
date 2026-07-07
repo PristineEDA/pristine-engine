@@ -1,0 +1,27 @@
+{
+  "name": "code action expands indexed function macro",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/action-macro-expand.sv",
+      "text": "`define ADD(lhs, rhs) ((lhs) + (rhs))\nmodule top;\n  assign value = `ADD(ready, valid);\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "codeAction",
+    "uri": "file:///golden/semantic/action-macro-expand.sv",
+    "range": {
+      "startLine": 2,
+      "startCharacter": 17,
+      "endLine": 2,
+      "endCharacter": 21
+    }
+  },
+  "expected": {
+    "actions": [
+      {
+        "title": "Expand macro 'ADD'",
+        "editContains": "((ready) + (valid))"
+      }
+    ]
+  }
+}

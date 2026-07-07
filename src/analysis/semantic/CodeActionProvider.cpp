@@ -7,6 +7,7 @@
 #include <filesystem>
 #include <optional>
 #include <set>
+#include <unordered_map>
 
 namespace pristine::analysis::semantic {
 namespace {
@@ -23,6 +24,8 @@ struct MacroInvocation {
     std::string name;
     bool function_like = false;
     size_t argument_count = 0;
+    std::vector<std::string> arguments;
+    ParseRange range;
 };
 
 int comparePosition(int lhs_line, int lhs_character, int rhs_line, int rhs_character) {
@@ -123,6 +126,90 @@ bool offsetsIntersect(size_t lhs_start, size_t lhs_end, size_t rhs_start, size_t
     return lhs_end > rhs_start && rhs_end > lhs_start;
 }
 
+ParseRange pointRangeAtUtf8Offset(std::string_view text, size_t target_offset);
+
+bool offsetRangeIntersectsSelection(size_t candidate_start,
+                                    size_t candidate_end,
+                                    size_t selection_start,
+                                    size_t selection_end) {
+    if (selection_start == selection_end) {
+        return selection_start >= candidate_start && selection_start <= candidate_end;
+    }
+    return offsetsIntersect(candidate_start, candidate_end, selection_start, selection_end);
+}
+
+std::string trimCopy(std::string_view value) {
+    size_t start = 0;
+    while (start < value.size() && std::isspace(static_cast<unsigned char>(value[start])) != 0) {
+        ++start;
+    }
+    size_t end = value.size();
+    while (end > start && std::isspace(static_cast<unsigned char>(value[end - 1])) != 0) {
+        --end;
+    }
+    return std::string(value.substr(start, end - start));
+}
+
+ParseRange rangeForUtf8Offsets(std::string_view text, size_t start_offset, size_t end_offset) {
+    auto start = pointRangeAtUtf8Offset(text, start_offset);
+    auto end = pointRangeAtUtf8Offset(text, end_offset);
+    return ParseRange{.start_line = start.start_line,
+                      .start_character = start.start_character,
+                      .end_line = end.start_line,
+                      .end_character = end.start_character};
+}
+
+struct MacroArgumentList {
+    std::vector<std::string> arguments;
+    size_t end_offset = 0;
+};
+
+std::optional<MacroArgumentList> parseMacroArgumentList(std::string_view text,
+                                                        size_t open_paren_offset) {
+    if (open_paren_offset >= text.size() || text[open_paren_offset] != '(') {
+        return std::nullopt;
+    }
+
+    std::vector<std::string> arguments;
+    size_t depth = 0;
+    size_t argument_start = open_paren_offset + 1;
+    bool saw_argument_token = false;
+    for (size_t offset = open_paren_offset; offset < text.size(); ++offset) {
+        const char ch = text[offset];
+        if (ch == '(') {
+            ++depth;
+            if (depth == 1) {
+                argument_start = offset + 1;
+            }
+            continue;
+        }
+        if (ch == ')') {
+            if (depth == 0) {
+                return std::nullopt;
+            }
+            if (depth == 1) {
+                if (saw_argument_token) {
+                    arguments.push_back(trimCopy(text.substr(argument_start, offset - argument_start)));
+                }
+                return MacroArgumentList{.arguments = std::move(arguments),
+                                         .end_offset = offset + 1};
+            }
+            --depth;
+            continue;
+        }
+        if (depth == 1 && ch == ',') {
+            arguments.push_back(trimCopy(text.substr(argument_start, offset - argument_start)));
+            argument_start = offset + 1;
+            saw_argument_token = false;
+            continue;
+        }
+        if (depth >= 1 && std::isspace(static_cast<unsigned char>(ch)) == 0) {
+            saw_argument_token = true;
+        }
+    }
+    return std::nullopt;
+}
+
 size_t countMacroArguments(std::string_view text, size_t open_paren_offset) {
     size_t depth = 0;
     size_t argument_count = 0;
@@ -158,6 +245,63 @@ size_t countMacroArguments(std::string_view text, size_t open_paren_offset) {
     return saw_argument_token ? argument_count + 1 : argument_count;
 }
 
+std::optional<MacroInvocation> macroInvocationAtRange(std::string_view text,
+                                                      const ParseRange& range) {
+    const auto start_offset = utf8OffsetAtUtf16Position(text,
+                                                        range.start_line,
+                                                        range.start_character);
+    const auto end_offset = utf8OffsetAtUtf16Position(text,
+                                                      range.end_line,
+                                                      range.end_character);
+    if (!start_offset.has_value() || !end_offset.has_value()) {
+        return std::nullopt;
+    }
+
+    const auto line_start = text.rfind('\n', *start_offset);
+    const size_t search_begin = line_start == std::string_view::npos ? 0 : line_start + 1;
+    const auto line_end = text.find('\n', *start_offset);
+    const size_t search_end = line_end == std::string_view::npos ? text.size() : line_end;
+    auto tick = text.find('`', search_begin);
+    while (tick != std::string_view::npos && tick < search_end) {
+        const size_t name_start = tick + 1;
+        if (name_start < text.size() && isIdentifierStart(text[name_start])) {
+            size_t name_end = name_start + 1;
+            while (name_end < text.size() && isIdentifierContinue(text[name_end])) {
+                ++name_end;
+            }
+
+            size_t invocation_end = name_end;
+            std::vector<std::string> arguments;
+            bool function_like = false;
+            size_t cursor = name_end;
+            while (cursor < search_end && std::isspace(static_cast<unsigned char>(text[cursor])) != 0) {
+                ++cursor;
+            }
+            if (cursor < text.size() && text[cursor] == '(') {
+                if (const auto argument_list = parseMacroArgumentList(text, cursor)) {
+                    function_like = true;
+                    arguments = argument_list->arguments;
+                    invocation_end = argument_list->end_offset;
+                }
+            }
+
+            if (offsetRangeIntersectsSelection(tick,
+                                               invocation_end,
+                                               *start_offset,
+                                               *end_offset)) {
+                return MacroInvocation{
+                    .name = std::string(text.substr(name_start, name_end - name_start)),
+                    .function_like = function_like,
+                    .argument_count = arguments.size(),
+                    .arguments = std::move(arguments),
+                    .range = rangeForUtf8Offsets(text, tick, invocation_end)};
+            }
+        }
+        tick = text.find('`', tick + 1);
+    }
+    return std::nullopt;
+}
+
 std::optional<MacroInvocation> macroInvocationFromDiagnostic(std::string_view text,
                                                              const ParseRange& range) {
     const auto start_offset = utf8OffsetAtUtf16Position(text,
@@ -189,6 +333,7 @@ std::optional<MacroInvocation> macroInvocationFromDiagnostic(std::string_view te
                 invocation.function_like = name_end < text.size() && text[name_end] == '(';
                 invocation.argument_count =
                     invocation.function_like ? countMacroArguments(text, name_end) : 0;
+                invocation.range = rangeForUtf8Offsets(text, tick, name_end);
                 return invocation;
             }
         }
@@ -262,6 +407,82 @@ std::string macroDefinitionInsertionText(const MacroInvocation& invocation) {
     }
     insertion += "\n\n";
     return insertion;
+}
+
+bool macroMatchesInvocation(const MacroDefinition& macro, const MacroInvocation& invocation) {
+    if (macro.name != invocation.name || macro.function_like != invocation.function_like) {
+        return false;
+    }
+    if (macro.function_like && macro.parameters.size() != invocation.arguments.size()) {
+        return false;
+    }
+    return true;
+}
+
+bool rangeStartsBefore(const ParseRange& lhs, const ParseRange& rhs) {
+    return comparePosition(lhs.start_line,
+                           lhs.start_character,
+                           rhs.start_line,
+                           rhs.start_character) < 0;
+}
+
+const MacroDefinition* findMacroDefinition(const CodeActionContext& context,
+                                           const MacroInvocation& invocation) {
+    if (context.macros_by_uri == nullptr) {
+        return nullptr;
+    }
+
+    const MacroDefinition* fallback = nullptr;
+    for (const auto& [uri, macros] : *context.macros_by_uri) {
+        for (const auto& macro : macros) {
+            if (!macroMatchesInvocation(macro, invocation)) {
+                continue;
+            }
+            if (uri == context.document.uri && rangeStartsBefore(macro.range, invocation.range)) {
+                fallback = &macro;
+                continue;
+            }
+            if (fallback == nullptr) {
+                fallback = &macro;
+            }
+        }
+    }
+    return fallback;
+}
+
+std::string expandMacroBody(const MacroDefinition& macro, const MacroInvocation& invocation) {
+    if (!macro.function_like) {
+        return macro.body;
+    }
+
+    std::unordered_map<std::string_view, std::string_view> arguments_by_parameter;
+    for (size_t index = 0; index < macro.parameters.size(); ++index) {
+        arguments_by_parameter.emplace(macro.parameters[index], invocation.arguments[index]);
+    }
+
+    std::string expanded;
+    expanded.reserve(macro.body.size());
+    for (size_t offset = 0; offset < macro.body.size();) {
+        if (isIdentifierStart(macro.body[offset])) {
+            size_t end = offset + 1;
+            while (end < macro.body.size() && isIdentifierContinue(macro.body[end])) {
+                ++end;
+            }
+            const std::string_view token(macro.body.data() + offset, end - offset);
+            if (const auto argument_it = arguments_by_parameter.find(token);
+                argument_it != arguments_by_parameter.end()) {
+                expanded.append(argument_it->second);
+            }
+            else {
+                expanded.append(token);
+            }
+            offset = end;
+            continue;
+        }
+        expanded.push_back(macro.body[offset]);
+        ++offset;
+    }
+    return expanded;
 }
 
 std::string missingPortConnectionText(const std::vector<SchematicPort>& ports,
@@ -558,6 +779,21 @@ SemanticCodeActionResult codeActionsAt(const CodeActionContext& context) {
                 .range = *insertion_range,
                 .new_text = missingPortConnectionText(missing_ports, !cell.connections.empty())});
             result.actions.push_back(std::move(action));
+        }
+    }
+
+    if (const auto invocation = macroInvocationAtRange(context.document.text, context.range)) {
+        if (const auto* macro = findMacroDefinition(context, *invocation); macro != nullptr) {
+            const auto expanded = expandMacroBody(*macro, *invocation);
+            if (!expanded.empty()) {
+                SemanticCodeAction action;
+                action.title = "Expand macro '" + invocation->name + "'";
+                action.kind = "quickfix";
+                action.edits.push_back(SemanticCodeActionEdit{.uri = context.document.uri,
+                                                              .range = invocation->range,
+                                                              .new_text = expanded});
+                result.actions.push_back(std::move(action));
+            }
         }
     }
 

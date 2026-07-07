@@ -22,6 +22,7 @@ struct CodeActionContext {
     std::vector<IncludeDirective> include_directives;
     std::vector<SnapshotModuleInstance> module_instances;
     std::unordered_map<std::string, DiagnosticSymbol> symbols_by_id;
+    const std::unordered_map<std::string, std::vector<MacroDefinition>>* macros_by_uri = nullptr;
     std::unordered_map<std::string, std::vector<PackageImport>> package_imports_by_uri;
     std::vector<SemanticEngineDiagnostic> diagnostics;
 };

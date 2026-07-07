@@ -3,6 +3,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
+#include <unordered_map>
 
 namespace pristine::analysis::semantic {
 namespace {
@@ -222,6 +223,58 @@ TEST_CASE("CodeActionProvider creates macro definitions from slang macro diagnos
     CHECK(action.edits.front().range.start_line == 0);
     CHECK(action.edits.front().new_text.find("`define MISSING(arg0, arg1) arg0") !=
           std::string::npos);
+}
+
+TEST_CASE("CodeActionProvider expands indexed object and function macros",
+          "[analysis][semantic][code-action-provider][macro]") {
+    constexpr std::string_view uri = "file:///workspace/rtl/top.sv";
+    const auto document_text = "`define READY 1'b1\n"
+                               "`define ADD(lhs, rhs) ((lhs) + (rhs))\n"
+                               "module top;\n"
+                               "  assign ready = `READY;\n"
+                               "  assign sum = `ADD(lhs_value, rhs_value);\n"
+                               "endmodule\n";
+    const std::unordered_map<std::string, std::vector<MacroDefinition>> macros_by_uri{
+        {std::string(uri),
+         {MacroDefinition{.name = "READY",
+                          .body = "1'b1",
+                          .range = rangeAt(0, 0, 18),
+                          .selection_range = rangeAt(0, 8, 13),
+                          .function_like = false},
+          MacroDefinition{.name = "ADD",
+                          .parameters = {"lhs", "rhs"},
+                          .body = "((lhs) + (rhs))",
+                          .range = rangeAt(1, 0, 39),
+                          .selection_range = rangeAt(1, 8, 11),
+                          .function_like = true}}}};
+
+    CodeActionContext object_context{.generation = 12,
+                                     .snapshot_available = true,
+                                     .document = SemanticEngineDocument{.uri = std::string(uri),
+                                                                        .text = document_text},
+                                     .range = rangeAt(3, 18, 24),
+                                     .macros_by_uri = &macros_by_uri};
+    const auto object_result = codeActionsAt(object_context);
+
+    REQUIRE_FALSE(object_result.unresolved);
+    REQUIRE(object_result.actions.size() == 1);
+    CHECK(object_result.actions.front().title == "Expand macro 'READY'");
+    REQUIRE(object_result.actions.front().edits.size() == 1);
+    CHECK(object_result.actions.front().edits.front().new_text == "1'b1");
+
+    CodeActionContext function_context{.generation = 12,
+                                       .snapshot_available = true,
+                                       .document = SemanticEngineDocument{.uri = std::string(uri),
+                                                                          .text = document_text},
+                                       .range = rangeAt(4, 15, 19),
+                                       .macros_by_uri = &macros_by_uri};
+    const auto function_result = codeActionsAt(function_context);
+
+    REQUIRE_FALSE(function_result.unresolved);
+    REQUIRE(function_result.actions.size() == 1);
+    CHECK(function_result.actions.front().title == "Expand macro 'ADD'");
+    REQUIRE(function_result.actions.front().edits.size() == 1);
+    CHECK(function_result.actions.front().edits.front().new_text == "((lhs_value) + (rhs_value))");
 }
 
 TEST_CASE("CodeActionProvider reports unavailable snapshot",
