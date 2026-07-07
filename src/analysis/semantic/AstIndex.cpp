@@ -349,6 +349,25 @@ std::string expressionText(const SemanticEngineDocument* document,
     return {};
 }
 
+void appendAssignmentEdgeSeed(SnapshotData& data, SnapshotAssignmentEdgeSeed seed) {
+    const auto duplicate = std::any_of(data.assignment_edge_seeds.begin(),
+                                       data.assignment_edge_seeds.end(),
+                                       [&](const SnapshotAssignmentEdgeSeed& existing) {
+                                           return existing.uri == seed.uri &&
+                                                  sameRange(existing.scope_range, seed.scope_range) &&
+                                                  sameRange(existing.assignment_range,
+                                                            seed.assignment_range) &&
+                                                  sameRange(existing.left_range, seed.left_range) &&
+                                                  sameRange(existing.right_range, seed.right_range) &&
+                                                  existing.left_expression == seed.left_expression &&
+                                                  existing.right_expression == seed.right_expression;
+                                       });
+    if (duplicate) {
+        return;
+    }
+    data.assignment_edge_seeds.push_back(std::move(seed));
+}
+
 std::vector<SchematicConnection> syntaxPortConnectionsForInstance(
     const slang::SourceManager& source_manager,
     const SemanticEngineDocument* document,
@@ -2126,7 +2145,8 @@ void upsertAstContinuousAssignment(SnapshotData& data,
         return;
     }
     if (location.has_value()) {
-        data.assignment_edge_seeds.push_back(SnapshotAssignmentEdgeSeed{
+        appendAssignmentEdgeSeed(data,
+                                 SnapshotAssignmentEdgeSeed{
             .uri = location->uri,
             .scope_range = signature_it->second.definition.range,
             .assignment_range = location->range,
@@ -2443,6 +2463,61 @@ void upsertModuleDeclarationCandidate(SnapshotData& data,
     data.selection_ranges_by_uri[declaration_location->uri].push_back(name_location->range);
 }
 
+void collectSyntaxContinuousAssignmentsForDefinition(
+    SnapshotData& data,
+    const slang::SourceManager& source_manager,
+    const std::unordered_map<std::string, SemanticEngineDocument>& documents,
+    const slang::syntax::ModuleDeclarationSyntax& declaration) {
+    const auto declaration_location = locationForSourceRange(source_manager, declaration.sourceRange());
+    if (!declaration_location.has_value()) {
+        return;
+    }
+
+    const auto document_it = documents.find(declaration_location->uri);
+    const auto* document = document_it == documents.end() ? nullptr : &document_it->second;
+    if (document == nullptr) {
+        return;
+    }
+
+    auto visitor = slang::syntax::makeSyntaxVisitor(
+        [&](auto& self, const slang::syntax::ContinuousAssignSyntax& node) {
+            for (const auto* expression : node.assignments) {
+                if (expression == nullptr ||
+                    expression->kind != slang::syntax::SyntaxKind::AssignmentExpression) {
+                    continue;
+                }
+                const auto& assignment =
+                    expression->as<slang::syntax::BinaryExpressionSyntax>();
+                const auto assignment_location =
+                    locationForSourceRange(source_manager, expression->sourceRange());
+                if (!assignment_location.has_value()) {
+                    continue;
+                }
+                const auto left_range =
+                    sourceRangeForSourceRange(source_manager, assignment.left->sourceRange());
+                const auto right_range =
+                    sourceRangeForSourceRange(source_manager, assignment.right->sourceRange());
+                auto left_expression = textForRangeOrEmpty(document, left_range);
+                auto right_expression = textForRangeOrEmpty(document, right_range);
+                if (!isSimpleSystemVerilogIdentifier(left_expression) ||
+                    !isSimpleSystemVerilogIdentifier(right_expression)) {
+                    continue;
+                }
+                appendAssignmentEdgeSeed(data,
+                                         SnapshotAssignmentEdgeSeed{
+                                             .uri = assignment_location->uri,
+                                             .scope_range = declaration_location->range,
+                                             .assignment_range = assignment_location->range,
+                                             .left_range = left_range,
+                                             .right_range = right_range,
+                                             .left_expression = std::move(left_expression),
+                                             .right_expression = std::move(right_expression)});
+            }
+            self.visitDefault(node);
+        });
+    declaration.visit(visitor);
+}
+
 void collectSyntaxModuleCandidates(SnapshotData& data,
                                    const slang::SourceManager& source_manager,
                                    const std::unordered_map<std::string, SemanticEngineDocument>& documents) {
@@ -2453,6 +2528,10 @@ void collectSyntaxModuleCandidates(SnapshotData& data,
         auto visitor = slang::syntax::makeSyntaxVisitor(
             [&](auto& self, const slang::syntax::ModuleDeclarationSyntax& node) {
                 upsertModuleDeclarationCandidate(data, source_manager, node);
+                collectSyntaxContinuousAssignmentsForDefinition(data,
+                                                                source_manager,
+                                                                documents,
+                                                                node);
                 self.visitDefault(node);
             },
             [&](auto& self, const slang::syntax::HierarchyInstantiationSyntax& node) {
@@ -2701,6 +2780,53 @@ void attachInstancesToModuleDefinitions(SnapshotData& data) {
                                            });
         if (entry_it != data.module_entries.end()) {
             entry_it->definition = definition;
+        }
+    }
+}
+
+std::string signaturePortStableId(std::string_view uri,
+                                  std::string_view module_name,
+                                  const SchematicPort& port) {
+    return std::string(uri) + "|" + std::string(module_name) + "|Port|" + port.name + "|" +
+           std::to_string(port.selection_range.start_line) + ":" +
+           std::to_string(port.selection_range.start_character);
+}
+
+bool hasIndexedSymbolAtLocation(const SnapshotData& data,
+                                std::string_view uri,
+                                std::string_view name,
+                                const ParseRange& range) {
+    return std::any_of(data.symbols_by_id.begin(),
+                       data.symbols_by_id.end(),
+                       [&](const auto& entry) {
+                           const auto& identity = entry.second.identity;
+                           return identity.location.uri == uri && identity.name == name &&
+                                  sameRange(identity.location.range, range);
+                       });
+}
+
+void addMissingSignaturePortSymbols(SnapshotData& data) {
+    for (const auto& [module_name, signature] : data.ast_module_signatures_by_name) {
+        if (signature.uri.empty()) {
+            continue;
+        }
+        for (const auto& port : signature.definition.port_details) {
+            if (port.name.empty() ||
+                hasIndexedSymbolAtLocation(data, signature.uri, port.name, port.selection_range)) {
+                continue;
+            }
+            const auto stable_id = signaturePortStableId(signature.uri, module_name, port);
+            data.symbols_by_id.emplace(
+                stable_id,
+                SnapshotIndexedSymbol{.identity = SemanticSymbolIdentity{
+                                          .stable_id = stable_id,
+                                          .name = port.name,
+                                          .kind = "Port",
+                                          .location = SemanticLocation{.uri = signature.uri,
+                                                                       .range = port.selection_range}},
+                                      .symbol = nullptr,
+                                      .type_display = port.width_text,
+                                      .value_display = {}});
         }
     }
 }
@@ -3258,6 +3384,10 @@ void buildAstIndexes(SnapshotData& data,
     {
         PRISTINE_DEBUG_TRACE_SCOPE_SIMPLE("astIndex.upsertDefinitionSkeletons");
         upsertMissingAstModuleSignatureSkeletonsFromDefinitions(data, *data.source_manager, documents);
+    }
+    {
+        PRISTINE_DEBUG_TRACE_SCOPE_SIMPLE("astIndex.addMissingSignaturePortSymbols");
+        addMissingSignaturePortSymbols(data);
     }
     {
         PRISTINE_DEBUG_TRACE_SCOPE_SIMPLE("astIndex.indexInterfaceMemberCompletions");

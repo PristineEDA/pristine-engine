@@ -587,7 +587,7 @@ TEST_CASE("AstIndex promotes generated module instances into schematic cells",
                       }));
 }
 
-TEST_CASE("AstIndex exposes generated instance connection facts for backward cone",
+TEST_CASE("AstIndex exposes generated-only instance connection facts for backward cone",
           "[analysis][semantic][ast-index][cone][generate][no-fallback]") {
     SnapshotBuildInput input{.generation = 39,
                              .documents = {{"file:///workspace/generated-cone.sv",
@@ -600,7 +600,6 @@ TEST_CASE("AstIndex exposes generated instance connection facts for backward con
                                                         "  logic a;\n"
                                                         "  logic y;\n"
                                                         "  genvar i;\n"
-                                                        "  child u_warm();\n"
                                                         "  generate\n"
                                                         "    for (i = 0; i < 1; i = i + 1) begin : g\n"
                                                         "      child u_child(.in(a), .out(y));\n"
