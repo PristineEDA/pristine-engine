@@ -562,6 +562,64 @@ TEST_CASE("SemanticEngine invalidates package affected completion and code actio
                       }));
 }
 
+TEST_CASE("SemanticEngine invalidates signature and inlay caches after module signature updates",
+          "[analysis][semantic-engine][cache][affected][signature][inlay]") {
+    SemanticEngine engine;
+    engine.updateDocument("file:///workspace/child.sv",
+                          "module child(input logic clk, output logic rst_n);\n"
+                          "endmodule\n",
+                          SemanticEngineDocumentState{.version = 1});
+    engine.updateDocument("file:///workspace/top.sv",
+                          "module top;\n"
+                          "  logic clk;\n"
+                          "  logic rst_n;\n"
+                          "  logic data;\n"
+                          "  child u_named(.clk(clk), .d);\n"
+                          "  child u_ordered(clk, rst_n, data);\n"
+                          "endmodule\n",
+                          SemanticEngineDocumentState{.version = 1, .is_open = true});
+
+    const auto first_signature = engine.signatureHelpAt("file:///workspace/top.sv", 4, 29);
+    const auto first_hints = engine.inlayHints("file:///workspace/top.sv",
+                                              ParseRange{.start_line = 0,
+                                                         .start_character = 0,
+                                                         .end_line = 7,
+                                                         .end_character = 0});
+
+    REQUIRE_FALSE(first_signature.unresolved);
+    REQUIRE_FALSE(first_hints.unresolved);
+    REQUIRE(first_signature.parameters.size() == 2);
+    CHECK(first_signature.label == "child(input logic clk, output logic rst_n)");
+    CHECK(std::none_of(first_hints.hints.begin(),
+                       first_hints.hints.end(),
+                       [](const SemanticInlayHint& hint) {
+                           return hint.kind == "parameter" && hint.label == ".data";
+                       }));
+
+    engine.updateDocument("file:///workspace/child.sv",
+                          "module child(input logic clk, output logic rst_n, input logic data);\n"
+                          "endmodule\n",
+                          SemanticEngineDocumentState{.version = 2});
+
+    const auto updated_signature = engine.signatureHelpAt("file:///workspace/top.sv", 4, 29);
+    const auto updated_hints = engine.inlayHints("file:///workspace/top.sv",
+                                                ParseRange{.start_line = 0,
+                                                           .start_character = 0,
+                                                           .end_line = 7,
+                                                           .end_character = 0});
+
+    CHECK(updated_signature.generation > first_signature.generation);
+    CHECK(updated_hints.generation == updated_signature.generation);
+    REQUIRE(updated_signature.parameters.size() == 3);
+    CHECK(updated_signature.parameters[2] == "input logic data");
+    CHECK(std::any_of(updated_hints.hints.begin(),
+                      updated_hints.hints.end(),
+                      [](const SemanticInlayHint& hint) {
+                          return hint.kind == "parameter" && hint.label == ".data" &&
+                                 hint.tooltip == "input logic data";
+                      }));
+}
+
 TEST_CASE("SemanticEngine uses AST symbol identity to avoid same-name false references",
           "[analysis][semantic-engine][ast-identity]") {
     SemanticEngine engine;

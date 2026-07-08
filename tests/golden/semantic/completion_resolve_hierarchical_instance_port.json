@@ -1,0 +1,25 @@
+{
+  "name": "completion resolve documents hierarchical instance port members",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/hier-resolve-child.sv",
+      "text": "module child(input logic data_i, output logic [3:0] data_o, input logic clk);\nendmodule\n"
+    },
+    {
+      "uri": "file:///golden/semantic/hier-resolve-top.sv",
+      "text": "module top;\n  child u_child();\n  initial begin\n    u_child.data_\n  end\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "completionResolve",
+    "uri": "file:///golden/semantic/hier-resolve-top.sv",
+    "line": 3,
+    "character": 17,
+    "prefix": "data_",
+    "label": "data_i"
+  },
+  "expected": {
+    "documentationContains": "Type: `logic`",
+    "insertTextContains": "data_i"
+  }
+}
