@@ -138,6 +138,12 @@ endpackage
          semantic::DiscoveryDocumentInput{.uri = "file:///workspace/api.sv",
                                           .text = R"(
 package api;
+  export mid::*;
+endpackage
+)"},
+         semantic::DiscoveryDocumentInput{.uri = "file:///workspace/mid.sv",
+                                          .text = R"(
+package mid;
   export defs::*;
 endpackage
 )"},
@@ -150,12 +156,15 @@ endmodule
 
     REQUIRE(index.referenced_files_by_name.contains("api"));
     CHECK(index.referenced_files_by_name.at("api") == std::vector<std::string>{"file:///workspace/top.sv"});
+    REQUIRE(index.referenced_files_by_name.contains("mid"));
+    CHECK(index.referenced_files_by_name.at("mid") == std::vector<std::string>{"file:///workspace/api.sv"});
     REQUIRE(index.referenced_files_by_name.contains("defs"));
-    CHECK(index.referenced_files_by_name.at("defs") == std::vector<std::string>{"file:///workspace/api.sv"});
+    CHECK(index.referenced_files_by_name.at("defs") == std::vector<std::string>{"file:///workspace/mid.sv"});
 
     const auto closure = semantic::discoveryDependencyClosure(index, std::string_view("top"));
     CHECK(closure == std::vector<std::string>{"file:///workspace/api.sv",
                                               "file:///workspace/defs.sv",
+                                              "file:///workspace/mid.sv",
                                               "file:///workspace/top.sv"});
 }
 
