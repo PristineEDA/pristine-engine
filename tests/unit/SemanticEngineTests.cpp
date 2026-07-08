@@ -473,6 +473,95 @@ TEST_CASE("SemanticEngine invalidates query caches for semantic providers after 
     CHECK(updated_actions.generation == updated_references.generation);
 }
 
+TEST_CASE("SemanticEngine invalidates package affected completion and code action caches",
+          "[analysis][semantic-engine][cache][affected][completion][code-action][package]") {
+    SemanticEngine engine;
+    engine.updateDocument("file:///workspace/defs.sv",
+                          "package defs;\n"
+                          "  parameter int DEPTH_OLD = 16;\n"
+                          "endpackage\n",
+                          SemanticEngineDocumentState{.version = 1});
+    engine.updateDocument("file:///workspace/pkg_a.sv",
+                          "package pkg_a;\n"
+                          "  typedef logic missing_t;\n"
+                          "endpackage\n",
+                          SemanticEngineDocumentState{.version = 1});
+    engine.updateDocument("file:///workspace/pkg_b.sv",
+                          "package pkg_b;\n"
+                          "  typedef logic missing_t;\n"
+                          "endpackage\n",
+                          SemanticEngineDocumentState{.version = 1});
+    engine.updateDocument("file:///workspace/top.sv",
+                          "module top;\n"
+                          "  import defs::*;\n"
+                          "  localparam int D = DEPTH_\n"
+                          "  missing_t value;\n"
+                          "endmodule\n",
+                          SemanticEngineDocumentState{.version = 1, .is_open = true});
+
+    const auto first_completion = engine.completionsAt("file:///workspace/top.sv", 2, 29, "DEPTH_");
+    const auto first_actions = engine.codeActionsAt(
+        "file:///workspace/top.sv",
+        ParseRange{.start_line = 3, .start_character = 2, .end_line = 3, .end_character = 11});
+
+    REQUIRE_FALSE(first_completion.unresolved);
+    REQUIRE_FALSE(first_actions.unresolved);
+    CHECK(std::any_of(first_completion.items.begin(),
+                      first_completion.items.end(),
+                      [](const SemanticCompletionItem& item) {
+                          return item.label == "DEPTH_OLD";
+                      }));
+    CHECK(std::none_of(first_completion.items.begin(),
+                       first_completion.items.end(),
+                       [](const SemanticCompletionItem& item) {
+                           return item.label == "DEPTH_NEW";
+                       }));
+    CHECK(std::none_of(first_actions.actions.begin(),
+                       first_actions.actions.end(),
+                       [](const SemanticCodeAction& action) {
+                           return action.title == "Import package 'pkg_a'";
+                       }));
+
+    engine.updateDocument("file:///workspace/defs.sv",
+                          "package defs;\n"
+                          "  parameter int DEPTH_NEW = 32;\n"
+                          "endpackage\n",
+                          SemanticEngineDocumentState{.version = 2});
+    engine.updateDocument("file:///workspace/pkg_b.sv",
+                          "package pkg_b;\n"
+                          "  typedef logic other_t;\n"
+                          "endpackage\n",
+                          SemanticEngineDocumentState{.version = 2});
+
+    const auto updated_completion = engine.completionsAt("file:///workspace/top.sv", 2, 29, "DEPTH_");
+    const auto updated_actions = engine.codeActionsAt(
+        "file:///workspace/top.sv",
+        ParseRange{.start_line = 3, .start_character = 2, .end_line = 3, .end_character = 11});
+
+    CHECK(updated_completion.generation > first_completion.generation);
+    CHECK(updated_actions.generation == updated_completion.generation);
+    CHECK(std::any_of(updated_completion.items.begin(),
+                      updated_completion.items.end(),
+                      [](const SemanticCompletionItem& item) {
+                          return item.label == "DEPTH_NEW";
+                      }));
+    CHECK(std::none_of(updated_completion.items.begin(),
+                       updated_completion.items.end(),
+                       [](const SemanticCompletionItem& item) {
+                           return item.label == "DEPTH_OLD";
+                       }));
+    CHECK(std::any_of(updated_actions.actions.begin(),
+                      updated_actions.actions.end(),
+                      [](const SemanticCodeAction& action) {
+                          return action.title == "Import package 'pkg_a'" &&
+                                 std::any_of(action.diagnostics.begin(),
+                                             action.diagnostics.end(),
+                                             [](const SemanticDiagnosticData& diagnostic) {
+                                                 return diagnostic.code == "missingImport";
+                                             });
+                      }));
+}
+
 TEST_CASE("SemanticEngine uses AST symbol identity to avoid same-name false references",
           "[analysis][semantic-engine][ast-identity]") {
     SemanticEngine engine;
