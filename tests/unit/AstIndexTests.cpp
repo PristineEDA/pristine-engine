@@ -587,6 +587,72 @@ TEST_CASE("AstIndex promotes generated module instances into schematic cells",
                       }));
 }
 
+TEST_CASE("AstIndex preserves generated schematic port width and connection facts",
+          "[analysis][semantic][ast-index][schematic][generate][port-net][no-fallback]") {
+    SnapshotBuildInput input{.generation = 40,
+                             .documents = {{"file:///workspace/generated-port-net.sv",
+                                            SemanticEngineDocument{
+                                                .uri = "file:///workspace/generated-port-net.sv",
+                                                .text = "module child(input logic [3:0] in,\n"
+                                                        "             output logic [3:0] out);\n"
+                                                        "endmodule\n"
+                                                        "module top(input logic [3:0] data_i,\n"
+                                                        "           output logic [3:0] data_o);\n"
+                                                        "  genvar i;\n"
+                                                        "  generate\n"
+                                                        "    for (i = 0; i < 1; i = i + 1) begin : g\n"
+                                                        "      child u_child(.in(data_i), .out(data_o));\n"
+                                                        "    end\n"
+                                                        "  endgenerate\n"
+                                                        "endmodule\n",
+                                                .version = 1,
+                                                .is_open = true}}}};
+
+    auto output = SnapshotBuilder{}.build(std::move(input));
+    REQUIRE(output.data != nullptr);
+
+    const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
+    REQUIRE(view.module_signatures_by_name.contains("child"));
+    const auto& child_ports = view.module_signatures_by_name.at("child").definition.port_details;
+    std::string child_port_dump;
+    for (const auto& port : child_ports) {
+        child_port_dump += port.name + ":" + port.direction + ":" + port.width_text + ";";
+    }
+    INFO(child_port_dump);
+    CHECK(std::any_of(child_ports.begin(), child_ports.end(), [](const SchematicPort& port) {
+        return port.name == "in" && port.direction == "input" && port.width_text == "logic [3:0]";
+    }));
+    CHECK(std::any_of(child_ports.begin(), child_ports.end(), [](const SchematicPort& port) {
+        return port.name == "out" && port.direction == "output" && port.width_text == "logic [3:0]";
+    }));
+
+    REQUIRE(view.module_signatures_by_name.contains("top"));
+    const auto& top = view.module_signatures_by_name.at("top");
+    CHECK(std::any_of(top.schematic.ports.begin(), top.schematic.ports.end(), [](const SchematicPort& port) {
+        return port.name == "data_i" && port.direction == "input" && port.width_text == "logic [3:0]";
+    }));
+    CHECK(std::any_of(top.schematic.ports.begin(), top.schematic.ports.end(), [](const SchematicPort& port) {
+        return port.name == "data_o" && port.direction == "output" && port.width_text == "logic [3:0]";
+    }));
+
+    const auto cell_it = std::find_if(top.schematic.cells.begin(),
+                                      top.schematic.cells.end(),
+                                      [](const SchematicCell& cell) {
+                                          return cell.name == "u_child" && cell.type == "child";
+                                      });
+    REQUIRE(cell_it != top.schematic.cells.end());
+    CHECK(std::any_of(cell_it->connections.begin(),
+                      cell_it->connections.end(),
+                      [](const SchematicConnection& connection) {
+                          return connection.port_name == "in" && connection.signal == "data_i";
+                      }));
+    CHECK(std::any_of(cell_it->connections.begin(),
+                      cell_it->connections.end(),
+                      [](const SchematicConnection& connection) {
+                          return connection.port_name == "out" && connection.signal == "data_o";
+                      }));
+}
+
 TEST_CASE("AstIndex exposes generated-only instance connection facts for backward cone",
           "[analysis][semantic][ast-index][cone][generate][no-fallback]") {
     SnapshotBuildInput input{.generation = 39,

@@ -285,6 +285,14 @@ std::string directionName(slang::ast::ArgumentDirection direction) {
 std::string normalizedTypeDisplay(std::string value) {
     value.erase(std::remove(value.begin(), value.end(), '\n'), value.end());
     value.erase(std::remove(value.begin(), value.end(), '\r'), value.end());
+    const auto first = std::find_if(value.begin(), value.end(), [](unsigned char ch) {
+        return std::isspace(ch) == 0;
+    });
+    value.erase(value.begin(), first);
+    const auto last = std::find_if(value.rbegin(), value.rend(), [](unsigned char ch) {
+        return std::isspace(ch) == 0;
+    }).base();
+    value.erase(last, value.end());
     for (size_t index = 0; index + 1 < value.size();) {
         if (value[index] == ' ' && value[index + 1] == ' ') {
             value.erase(index, 1);
@@ -830,11 +838,27 @@ std::optional<SchematicPort> schematicPortForAstPort(const slang::SourceManager&
         const auto& port = port_symbol.as<slang::ast::PortSymbol>();
         direction = directionName(port.direction);
         type_display = normalizedTypeDisplay(port.getType().toString());
+        if (port.internalSymbol != nullptr) {
+            if (auto internal_type_display = typeDisplayForSymbol(*port.internalSymbol);
+                !internal_type_display.empty()) {
+                type_display = std::move(internal_type_display);
+            }
+        }
     }
     else if (port_symbol.kind == slang::ast::SymbolKind::MultiPort) {
         const auto& port = port_symbol.as<slang::ast::MultiPortSymbol>();
         direction = directionName(port.direction);
         type_display = normalizedTypeDisplay(port.getType().toString());
+        for (const auto* sub_port : port.ports) {
+            if (sub_port == nullptr || sub_port->internalSymbol == nullptr) {
+                continue;
+            }
+            if (auto internal_type_display = typeDisplayForSymbol(*sub_port->internalSymbol);
+                !internal_type_display.empty()) {
+                type_display = std::move(internal_type_display);
+                break;
+            }
+        }
     }
     else if (port_symbol.kind == slang::ast::SymbolKind::InterfacePort) {
         const auto& port = port_symbol.as<slang::ast::InterfacePortSymbol>();
@@ -1841,6 +1865,25 @@ std::string portHeaderWidthText(const slang::syntax::PortHeaderSyntax& header) {
     }
 }
 
+std::string portDeclaratorWidthText(const slang::syntax::PortHeaderSyntax& header,
+                                    const slang::syntax::DeclaratorSyntax& declarator) {
+    auto width_text = portHeaderWidthText(header);
+    for (const auto* dimension : declarator.dimensions) {
+        if (dimension == nullptr) {
+            continue;
+        }
+        auto dimension_text = normalizedTypeDisplay(dimension->toString());
+        if (dimension_text.empty()) {
+            continue;
+        }
+        if (!width_text.empty()) {
+            width_text += " ";
+        }
+        width_text += std::move(dimension_text);
+    }
+    return width_text;
+}
+
 void appendOrUpdatePort(std::vector<SchematicPort>& result, SchematicPort port) {
     const auto existing = std::find_if(result.begin(), result.end(), [&](const SchematicPort& candidate) {
         return candidate.name == port.name;
@@ -1864,11 +1907,11 @@ void appendPortDeclarators(std::vector<SchematicPort>& result,
                            const slang::syntax::PortHeaderSyntax& header,
                            const slang::syntax::SeparatedSyntaxList<slang::syntax::DeclaratorSyntax>& declarators) {
     const auto direction = portHeaderDirection(header);
-    const auto width_text = portHeaderWidthText(header);
     for (const auto* declarator : declarators) {
         if (declarator == nullptr || declarator->name.valueText().empty()) {
             continue;
         }
+        const auto width_text = portDeclaratorWidthText(header, *declarator);
         appendOrUpdatePort(result,
                            SchematicPort{.name = std::string(declarator->name.valueText()),
                                          .direction = direction,
@@ -1904,7 +1947,8 @@ std::vector<SchematicPort> headerSchematicPortsForDefinition(
                                        SchematicPort{
                                            .name = std::string(ansi_port.declarator->name.valueText()),
                                            .direction = portHeaderDirection(*ansi_port.header),
-                                           .width_text = portHeaderWidthText(*ansi_port.header),
+                                           .width_text = portDeclaratorWidthText(*ansi_port.header,
+                                                                                 *ansi_port.declarator),
                                            .range = sourceRangeForSourceRange(source_manager,
                                                                              ansi_port.sourceRange()),
                                            .selection_range = sourceRangeForSourceRange(
