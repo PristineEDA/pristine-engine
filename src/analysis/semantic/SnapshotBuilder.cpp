@@ -212,6 +212,42 @@ SnapshotBuildOutput SnapshotBuilder::build(SnapshotBuildInput input) const {
             }
 
             {
+                PRISTINE_DEBUG_TRACE_SCOPE_SIMPLE("snapshotBuilder.semanticDependencyEdges");
+                std::unordered_map<std::string, std::vector<std::string>> package_uris_by_name;
+                for (const auto& [_, symbol] : data->symbols_by_id) {
+                    if (symbol.identity.kind != "Package" || symbol.identity.location.uri.empty()) {
+                        continue;
+                    }
+                    addUnique(package_uris_by_name[symbol.identity.name], symbol.identity.location.uri);
+                }
+
+                for (const auto& [uri, imports] : data->package_imports_by_uri) {
+                    for (const auto& package_import : imports) {
+                        const auto package_it = package_uris_by_name.find(package_import.package_name);
+                        if (package_it == package_uris_by_name.end()) {
+                            continue;
+                        }
+                        for (const auto& package_uri : package_it->second) {
+                            if (package_uri != uri) {
+                                addUnique(output.reverse_semantic_dependencies[package_uri], uri);
+                            }
+                        }
+                    }
+                }
+
+                for (const auto& [uri, instances] : data->module_instances_by_uri) {
+                    for (const auto& instance : instances) {
+                        const auto module_it = data->module_uris_by_name.find(instance.module_name);
+                        if (module_it == data->module_uris_by_name.end() || module_it->second.empty() ||
+                            module_it->second == uri) {
+                            continue;
+                        }
+                        addUnique(output.reverse_semantic_dependencies[module_it->second], uri);
+                    }
+                }
+            }
+
+            {
                 PRISTINE_DEBUG_TRACE_SCOPE_SIMPLE("snapshotBuilder.semanticDiagnostics");
                 for (const auto& diagnostic : data->compilation->getSemanticDiagnostics()) {
                     const auto uri = diagnosticUri(*data->source_manager, diagnostic);

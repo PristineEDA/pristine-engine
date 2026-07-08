@@ -540,6 +540,7 @@ private:
     std::unordered_map<std::string, SemanticEngineDocument> documents_;
     mutable std::unordered_map<std::string, std::vector<std::string>> includes_;
     mutable std::unordered_map<std::string, std::vector<std::string>> reverse_includes_;
+    mutable std::unordered_map<std::string, std::vector<std::string>> reverse_semantic_dependencies_;
     mutable std::optional<SemanticEngineSnapshot> snapshot_;
     mutable std::unique_ptr<semantic::SnapshotData> snapshot_data_;
     mutable std::unique_ptr<semantic::QueryCache> query_cache_;

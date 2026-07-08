@@ -136,6 +136,7 @@ struct SnapshotBuildOutput {
     std::unique_ptr<SnapshotData> data;
     std::unordered_map<std::string, std::vector<std::string>> includes;
     std::unordered_map<std::string, std::vector<std::string>> reverse_includes;
+    std::unordered_map<std::string, std::vector<std::string>> reverse_semantic_dependencies;
 };
 
 [[nodiscard]] constexpr std::string_view snapshotBuilderProviderName() {

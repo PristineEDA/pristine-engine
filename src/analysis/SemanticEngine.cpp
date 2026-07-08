@@ -515,6 +515,7 @@ void SemanticEngine::clear() {
     documents_.clear();
     includes_.clear();
     reverse_includes_.clear();
+    reverse_semantic_dependencies_.clear();
     snapshot_.reset();
     snapshot_data_.reset();
     discovery_snapshot_cache_.reset();
@@ -609,6 +610,11 @@ void SemanticEngine::removeDocument(std::string_view uri) {
                              including_uris.end());
     }
     reverse_includes_.erase(document_uri);
+    for (auto& [_, dependent_uris] : reverse_semantic_dependencies_) {
+        dependent_uris.erase(std::remove(dependent_uris.begin(), dependent_uris.end(), document_uri),
+                             dependent_uris.end());
+    }
+    reverse_semantic_dependencies_.erase(document_uri);
     discovery_snapshot_cache_.reset();
     discovery_cache_key_ = 0;
     query_cache_->clear();
@@ -666,10 +672,15 @@ std::vector<std::string> SemanticEngine::affectedDocumentUris(std::string_view u
         }
         result.push_back(current);
         const auto reverse_it = reverse_includes_.find(current);
-        if (reverse_it == reverse_includes_.end()) {
-            continue;
+        if (reverse_it != reverse_includes_.end()) {
+            pending.insert(pending.end(), reverse_it->second.begin(), reverse_it->second.end());
         }
-        pending.insert(pending.end(), reverse_it->second.begin(), reverse_it->second.end());
+        const auto semantic_reverse_it = reverse_semantic_dependencies_.find(current);
+        if (semantic_reverse_it != reverse_semantic_dependencies_.end()) {
+            pending.insert(pending.end(),
+                           semantic_reverse_it->second.begin(),
+                           semantic_reverse_it->second.end());
+        }
     }
     std::sort(result.begin(), result.end());
     return result;
@@ -1869,6 +1880,7 @@ void SemanticEngine::rebuildSnapshot() const {
 
     includes_ = std::move(output.includes);
     reverse_includes_ = std::move(output.reverse_includes);
+    reverse_semantic_dependencies_ = std::move(output.reverse_semantic_dependencies);
     snapshot_ = std::move(output.snapshot);
     snapshot_data_ = std::move(output.data);
     snapshot_dirty_ = false;
