@@ -3,6 +3,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
+#include <string>
 
 namespace pristine::analysis {
 
@@ -614,6 +615,38 @@ TEST_CASE("SemanticEngine exposes AST-backed constant value inlay hints",
     }));
     CHECK(std::any_of(hints.hints.begin(), hints.hints.end(), [](const SemanticInlayHint& hint) {
         return hint.label == " = 8" && hint.tooltip == "Resolved constant value";
+    }));
+}
+
+TEST_CASE("SemanticEngine exposes packed localparam type and value inlay hints",
+          "[analysis][semantic-engine][inlay][constant][type][no-fallback]") {
+    SemanticEngine engine;
+    engine.updateDocument("file:///workspace/packed-constants.sv",
+                          "module top;\n"
+                          "  localparam logic [2:0] FSM_DUM = 3'd2;\n"
+                          "endmodule\n",
+                          SemanticEngineDocumentState{.version = 1, .is_open = true});
+
+    const auto hints = engine.inlayHints("file:///workspace/packed-constants.sv",
+                                        ParseRange{.start_line = 0,
+                                                   .start_character = 0,
+                                                   .end_line = 3,
+                                                   .end_character = 0});
+
+    REQUIRE_FALSE(hints.unresolved);
+    std::string labels_dump;
+    for (const auto& hint : hints.hints) {
+        labels_dump += "[";
+        labels_dump += hint.label;
+        labels_dump += "]";
+    }
+    INFO(labels_dump);
+    CHECK(std::any_of(hints.hints.begin(), hints.hints.end(), [](const SemanticInlayHint& hint) {
+        return (hint.label == ": logic[2:0]" || hint.label == ": logic [2:0]") &&
+               hint.tooltip == "Resolved type";
+    }));
+    CHECK(std::any_of(hints.hints.begin(), hints.hints.end(), [](const SemanticInlayHint& hint) {
+        return hint.label == " = 3'b10" && hint.tooltip == "Resolved constant value";
     }));
 }
 
