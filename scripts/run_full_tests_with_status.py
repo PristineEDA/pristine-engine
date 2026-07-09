@@ -19,6 +19,34 @@ from pathlib import Path
 
 OPTIONAL_SKIP_TESTS = {"pristine_differential_slang_server"}
 DEFAULT_HEARTBEAT_SECONDS = 30.0
+REQUIRED_CTEST_GATES = (
+    "pristine_unit_tests",
+    "pristine_lsp_core_e2e",
+    "pristine_waveform_pipe_e2e",
+    "pristine_layout_pipe_e2e",
+    "pristine_ihp_lef_corpus",
+    "pristine_ihp_gds_corpus",
+    "pristine_tt_tinyqv_gds_interaction",
+    "pristine_lefdef_corpus",
+    "pristine_differential_slang_server",
+    "pristine_wellen_fst_perf",
+    "pristine_rtl_e2e_stress",
+    "pristine_rtl_e2e_smoke",
+    "pristine_rtl_e2e_large_workspace",
+    "pristine_rtl_e2e_real_retrosoc",
+    "pristine_rtl_e2e_lsp_stress",
+)
+ENVIRONMENT_SUMMARY_KEYS = (
+    "SLANG_SERVER_ROOT",
+    "PRISTINE_REQUIRE_IHP_OPEN_PDK",
+    "PRISTINE_REQUIRE_TT_TINYQV_GDS",
+    "PRISTINE_TEST_STATUS_INTERVAL_SECONDS",
+    "PRISTINE_TEST_STATUS_JSONL",
+    "RTL_E2E_ROOT",
+    "RTL_E2E_CORPUS",
+    "RTL_E2E_CACHE_DIR",
+    "RTL_E2E_LSP_MODE",
+)
 
 
 @dataclass
@@ -247,12 +275,70 @@ def selected_tests(all_tests: list[str], only: list[str], exclude: list[str]) ->
     return tests
 
 
-def write_summary(results: list[TestResult], path: Path) -> None:
-    payload = {
+def environment_summary(environ: dict[str, str] | os._Environ[str] = os.environ) -> dict[str, str]:
+    return {
+        key: environ[key]
+        for key in ENVIRONMENT_SUMMARY_KEYS
+        if key in environ and str(environ[key]).strip()
+    }
+
+
+def missing_required_tests(all_tests: list[str]) -> list[str]:
+    available = set(all_tests)
+    return [name for name in REQUIRED_CTEST_GATES if name not in available]
+
+
+def required_skip_results(results: list[TestResult]) -> list[TestResult]:
+    return [
+        result
+        for result in results
+        if result.status == "skipped" and result.name not in OPTIONAL_SKIP_TESTS
+    ]
+
+
+def build_summary_payload(
+    results: list[TestResult],
+    *,
+    all_tests: list[str],
+    selected: list[str],
+    build_dir: Path,
+    ctest: str,
+    environment: dict[str, str] | os._Environ[str] = os.environ,
+) -> dict:
+    optional_names = set(OPTIONAL_SKIP_TESTS)
+    required_names = set(REQUIRED_CTEST_GATES) - optional_names
+    required_skipped = [
+        result for result in results if result.status == "skipped" and result.name in required_names
+    ]
+    optional_skipped = [
+        result for result in results if result.status == "skipped" and result.name in optional_names
+    ]
+    return {
         "total": len(results),
         "passed": sum(1 for result in results if result.status == "passed"),
         "failed": sum(1 for result in results if result.status == "failed"),
         "skipped": sum(1 for result in results if result.status == "skipped"),
+        "requiredPassed": sum(
+            1 for result in results if result.status == "passed" and result.name in required_names
+        ),
+        "requiredSkipped": len(required_skipped),
+        "optionalSkipped": len(optional_skipped),
+        "requiredMissing": missing_required_tests(all_tests),
+        "requiredTests": list(REQUIRED_CTEST_GATES),
+        "optionalSkipTests": sorted(OPTIONAL_SKIP_TESTS),
+        "ctestTests": all_tests,
+        "selectedTests": selected,
+        "buildDir": str(build_dir),
+        "ctestPath": ctest,
+        "environment": environment_summary(environment),
+        "requiredSkippedTests": [
+            {"name": result.name, "skipReason": result.skip_reason, "logPath": str(result.log_path)}
+            for result in required_skipped
+        ],
+        "optionalSkippedTests": [
+            {"name": result.name, "skipReason": result.skip_reason, "logPath": str(result.log_path)}
+            for result in optional_skipped
+        ],
         "tests": [
             {
                 "name": result.name,
@@ -265,6 +351,24 @@ def write_summary(results: list[TestResult], path: Path) -> None:
             for result in results
         ],
     }
+
+
+def write_summary(
+    results: list[TestResult],
+    path: Path,
+    *,
+    all_tests: list[str],
+    selected: list[str],
+    build_dir: Path,
+    ctest: str,
+) -> None:
+    payload = build_summary_payload(
+        results,
+        all_tests=all_tests,
+        selected=selected,
+        build_dir=build_dir,
+        ctest=ctest,
+    )
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
@@ -303,21 +407,27 @@ def main() -> int:
         emit_status("suite", "test", suite_started_at, f"{index}/{len(tests)} {name}", jsonl_path)
         results.append(run_one_test(ctest, build_dir, name, logs_dir, heartbeat_seconds, jsonl_path))
 
-    write_summary(results, summary_path)
+    write_summary(
+        results,
+        summary_path,
+        all_tests=all_tests,
+        selected=tests,
+        build_dir=build_dir,
+        ctest=ctest,
+    )
     failed = [result for result in results if result.status == "failed"]
-    required_skips = [
-        result
-        for result in results
-        if result.status == "skipped" and result.name not in OPTIONAL_SKIP_TESTS
-    ]
+    required_skips = required_skip_results(results)
+    required_missing = missing_required_tests(all_tests)
+    enforce_required_manifest = not args.only and not args.exclude
     detail = (
         f"passed={sum(1 for result in results if result.status == 'passed')} "
         f"failed={len(failed)} skipped={sum(1 for result in results if result.status == 'skipped')} "
+        f"requiredMissing={len(required_missing)} "
         f"summary={summary_path}"
     )
     emit_status("suite", "summary", suite_started_at, detail, jsonl_path)
 
-    if failed or required_skips:
+    if failed or required_skips or (enforce_required_manifest and required_missing):
         for result in failed:
             print(f"FAILED {result.name}: log={result.log_path}", file=sys.stderr)
         for result in required_skips:
@@ -325,6 +435,9 @@ def main() -> int:
                 f"REQUIRED-SKIP {result.name}: {result.skip_reason} log={result.log_path}",
                 file=sys.stderr,
             )
+        if enforce_required_manifest:
+            for name in required_missing:
+                print(f"REQUIRED-MISSING {name}", file=sys.stderr)
         return 1
     return 0
 
