@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 import tempfile
 import unittest
@@ -26,68 +27,167 @@ class FullTestStatusRunnerTests(unittest.TestCase):
     def setUpClass(cls):
         cls.runner = load_script("run_full_tests_with_status.py")
 
-    def test_summary_reports_required_missing_and_optional_skip(self) -> None:
-        all_tests = list(self.runner.REQUIRED_CTEST_GATES[:-1])
-        results = [
-            self.runner.TestResult(
-                name="pristine_unit_tests",
-                status="passed",
-                returncode=0,
-                duration_seconds=1.0,
-                log_path=Path("unit.log"),
+    def write_manifest(
+        self,
+        directory: Path,
+        *,
+        required: list[str],
+        optional: list[str] | None = None,
+        runner_self_test: str = "pristine_script_runner_tests",
+    ):
+        manifest_path = directory / "gate_manifest.json"
+        manifest_path.write_text(
+            json.dumps(
+                {
+                    "version": 7,
+                    "runnerSelfTest": runner_self_test,
+                    "requiredTests": required,
+                    "optionalSkipTests": optional or [],
+                    "requiredEnvironment": [{"name": "PRISTINE_REQUIRE_IHP_OPEN_PDK"}],
+                    "groups": {"all": required},
+                }
             ),
-            self.runner.TestResult(
-                name="pristine_differential_slang_server",
-                status="skipped",
-                returncode=0,
-                duration_seconds=0.5,
-                log_path=Path("diff.log"),
-                skip_reason="SKIP: missing server",
-            ),
-        ]
-
-        summary = self.runner.build_summary_payload(
-            results,
-            all_tests=all_tests,
-            selected=all_tests,
-            build_dir=Path("build/dev"),
-            ctest="ctest",
-            environment={
-                "SLANG_SERVER_ROOT": "C:/slang-server",
-                "UNRELATED": "ignored",
-            },
+            encoding="utf-8",
         )
+        return self.runner.load_gate_manifest(manifest_path)
 
-        self.assertIn(self.runner.REQUIRED_CTEST_GATES[-1], summary["requiredMissing"])
+    def test_summary_reports_required_missing_and_optional_skip(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            manifest = self.write_manifest(
+                Path(temp),
+                required=[
+                    "pristine_unit_tests",
+                    "pristine_differential_slang_server",
+                    "pristine_missing_required_gate",
+                ],
+                optional=["pristine_differential_slang_server"],
+            )
+            all_tests = [
+                "pristine_unit_tests",
+                "pristine_differential_slang_server",
+                "pristine_script_runner_tests",
+            ]
+            results = [
+                self.runner.TestResult(
+                    name="pristine_unit_tests",
+                    status="passed",
+                    returncode=0,
+                    duration_seconds=1.0,
+                    log_path=Path("unit.log"),
+                ),
+                self.runner.TestResult(
+                    name="pristine_differential_slang_server",
+                    status="skipped",
+                    returncode=0,
+                    duration_seconds=0.5,
+                    log_path=Path("diff.log"),
+                    skip_reason="SKIP: missing server",
+                ),
+            ]
+
+            summary = self.runner.build_summary_payload(
+                results,
+                all_tests=all_tests,
+                selected=all_tests,
+                build_dir=Path("build/dev"),
+                ctest="ctest",
+                manifest=manifest,
+                full_gate_enforced=True,
+                environment={
+                    "SLANG_SERVER_ROOT": "C:/slang-server",
+                    "UNRELATED": "ignored",
+                },
+            )
+
+        self.assertIn("pristine_missing_required_gate", summary["requiredMissing"])
         self.assertEqual(summary["requiredPassed"], 1)
         self.assertEqual(summary["optionalSkipped"], 1)
         self.assertEqual(summary["requiredSkipped"], 0)
         self.assertEqual(summary["environment"], {"SLANG_SERVER_ROOT": "C:/slang-server"})
         self.assertEqual(summary["ctestPath"], "ctest")
+        self.assertEqual(summary["manifestVersion"], 7)
+        self.assertEqual(summary["requiredGateCount"], 3)
+        self.assertEqual(summary["optionalGateCount"], 1)
+        self.assertTrue(summary["runnerSelfTestPresent"])
+        self.assertTrue(summary["fullGateEnforced"])
 
     def test_required_skip_results_reject_non_optional_skips(self) -> None:
-        results = [
-            self.runner.TestResult(
-                name="pristine_lsp_core_e2e",
-                status="skipped",
-                returncode=0,
-                duration_seconds=0.1,
-                log_path=Path("lsp.log"),
-                skip_reason="SKIP: unexpected",
-            ),
-            self.runner.TestResult(
-                name="pristine_differential_slang_server",
-                status="skipped",
-                returncode=0,
-                duration_seconds=0.1,
-                log_path=Path("diff.log"),
-                skip_reason="SKIP: optional",
-            ),
-        ]
+        with tempfile.TemporaryDirectory() as temp:
+            manifest = self.write_manifest(
+                Path(temp),
+                required=["pristine_lsp_core_e2e", "pristine_differential_slang_server"],
+                optional=["pristine_differential_slang_server"],
+            )
+            results = [
+                self.runner.TestResult(
+                    name="pristine_lsp_core_e2e",
+                    status="skipped",
+                    returncode=0,
+                    duration_seconds=0.1,
+                    log_path=Path("lsp.log"),
+                    skip_reason="SKIP: unexpected",
+                ),
+                self.runner.TestResult(
+                    name="pristine_differential_slang_server",
+                    status="skipped",
+                    returncode=0,
+                    duration_seconds=0.1,
+                    log_path=Path("diff.log"),
+                    skip_reason="SKIP: optional",
+                ),
+            ]
 
-        required_skips = self.runner.required_skip_results(results)
+            required_skips = self.runner.required_skip_results(results, manifest)
 
         self.assertEqual([result.name for result in required_skips], ["pristine_lsp_core_e2e"])
+
+    def test_manifest_validation_rejects_optional_skip_outside_required(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            manifest_path = Path(temp) / "gate_manifest.json"
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "version": 1,
+                        "runnerSelfTest": "pristine_script_runner_tests",
+                        "requiredTests": ["pristine_unit_tests"],
+                        "optionalSkipTests": ["pristine_differential_slang_server"],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "optional skip tests"):
+                self.runner.load_gate_manifest(manifest_path)
+
+    def test_manifest_check_reports_missing_required_and_self_test(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            manifest = self.write_manifest(
+                Path(temp),
+                required=["pristine_unit_tests", "pristine_lsp_core_e2e"],
+            )
+
+            errors = self.runner.manifest_check_errors(["pristine_unit_tests"], manifest)
+
+        self.assertIn("required gate missing from CTest: pristine_lsp_core_e2e", errors)
+        self.assertIn("runner self-test missing from CTest: pristine_script_runner_tests", errors)
+
+    def test_focused_summary_marks_full_gate_not_enforced(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            manifest = self.write_manifest(Path(temp), required=["pristine_unit_tests"])
+
+            summary = self.runner.build_summary_payload(
+                [],
+                all_tests=["pristine_unit_tests", "pristine_script_runner_tests"],
+                selected=["pristine_unit_tests"],
+                build_dir=Path("build/dev"),
+                ctest="ctest",
+                manifest=manifest,
+                full_gate_enforced=False,
+                environment={},
+            )
+
+        self.assertFalse(summary["fullGateEnforced"])
+        self.assertEqual(summary["requiredMissing"], [])
 
 
 class CleanReleaseGateRunnerTests(unittest.TestCase):
@@ -142,6 +242,45 @@ class CleanReleaseGateRunnerTests(unittest.TestCase):
         self.assertIn("tests/e2e/lsp_core_smoke.py", steps[3][1])
         self.assertIn("tests/e2e/waveform_pipe_smoke.py", steps[4][1])
         self.assertIn("tests/e2e/layout_pipe_smoke.py", steps[5][1])
+
+    def test_summary_records_release_traceability_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            workspace = Path(temp) / "repo"
+            workspace.mkdir()
+            summary_path = workspace / "summary.json"
+            build_dir = workspace / "build" / "release"
+            step = self.runner.StepResult(
+                name="version",
+                command=["engine", "--version"],
+                returncode=0,
+                duration_seconds=0.1,
+                log_path=workspace / "version.log",
+                captured_output="pristine-engine 0.1.1 build=release",
+            )
+
+            self.runner.write_summary(
+                summary_path,
+                status="passed",
+                workspace=workspace,
+                build_dir=build_dir,
+                cmake="cmake",
+                preset="release",
+                removed_build_dir=True,
+                deleted_path=str(build_dir),
+                dry_run=False,
+                steps=[step],
+                release_version_output=step.captured_output,
+                planned=[("version", ["engine", "--version"])],
+            )
+
+            payload = json.loads(summary_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(payload["deletedPath"], str(build_dir))
+        self.assertEqual(payload["releaseVersionOutput"], "pristine-engine 0.1.1 build=release")
+        self.assertIn("gitHead", payload)
+        self.assertIn("gitDirty", payload)
+        self.assertEqual(payload["failedStep"], "")
+        self.assertEqual(payload["failedLogPath"], "")
 
 
 if __name__ == "__main__":

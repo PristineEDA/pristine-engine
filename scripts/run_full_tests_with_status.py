@@ -17,25 +17,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
-OPTIONAL_SKIP_TESTS = {"pristine_differential_slang_server"}
 DEFAULT_HEARTBEAT_SECONDS = 30.0
-REQUIRED_CTEST_GATES = (
-    "pristine_unit_tests",
-    "pristine_lsp_core_e2e",
-    "pristine_waveform_pipe_e2e",
-    "pristine_layout_pipe_e2e",
-    "pristine_ihp_lef_corpus",
-    "pristine_ihp_gds_corpus",
-    "pristine_tt_tinyqv_gds_interaction",
-    "pristine_lefdef_corpus",
-    "pristine_differential_slang_server",
-    "pristine_wellen_fst_perf",
-    "pristine_rtl_e2e_stress",
-    "pristine_rtl_e2e_smoke",
-    "pristine_rtl_e2e_large_workspace",
-    "pristine_rtl_e2e_real_retrosoc",
-    "pristine_rtl_e2e_lsp_stress",
-)
+DEFAULT_MANIFEST_PATH = Path(__file__).resolve().parents[1] / "tests" / "gate_manifest.json"
 ENVIRONMENT_SUMMARY_KEYS = (
     "SLANG_SERVER_ROOT",
     "PRISTINE_REQUIRE_IHP_OPEN_PDK",
@@ -49,6 +32,17 @@ ENVIRONMENT_SUMMARY_KEYS = (
 )
 
 
+@dataclass(frozen=True)
+class GateManifest:
+    path: Path
+    version: int
+    required_tests: tuple[str, ...]
+    optional_skip_tests: frozenset[str]
+    runner_self_test: str
+    required_environment: tuple[dict, ...]
+    groups: dict[str, tuple[str, ...]]
+
+
 @dataclass
 class TestResult:
     name: str
@@ -57,6 +51,143 @@ class TestResult:
     duration_seconds: float
     log_path: Path
     skip_reason: str = ""
+
+
+def repository_root() -> Path:
+    return Path(__file__).resolve().parents[1]
+
+
+def _string_list(data: object, field_name: str) -> list[str]:
+    if not isinstance(data, list):
+        raise ValueError(f"manifest field {field_name!r} must be a list")
+    values: list[str] = []
+    for index, value in enumerate(data):
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"manifest field {field_name!r}[{index}] must be a non-empty string")
+        values.append(value)
+    return values
+
+
+def _duplicates(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    duplicates: list[str] = []
+    for value in values:
+        if value in seen and value not in duplicates:
+            duplicates.append(value)
+        seen.add(value)
+    return duplicates
+
+
+def load_gate_manifest(path: Path) -> GateManifest:
+    resolved = path.resolve()
+    try:
+        raw = json.loads(resolved.read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        raise ValueError(f"gate manifest not found: {resolved}") from exc
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"gate manifest is not valid JSON: {resolved}: {exc}") from exc
+
+    if not isinstance(raw, dict):
+        raise ValueError("gate manifest root must be an object")
+    version = raw.get("version")
+    if not isinstance(version, int) or version < 1:
+        raise ValueError("gate manifest field 'version' must be a positive integer")
+
+    required_tests = _string_list(raw.get("requiredTests"), "requiredTests")
+    optional_skip_tests = _string_list(raw.get("optionalSkipTests", []), "optionalSkipTests")
+    runner_self_test = raw.get("runnerSelfTest")
+    if not isinstance(runner_self_test, str) or not runner_self_test.strip():
+        raise ValueError("gate manifest field 'runnerSelfTest' must be a non-empty string")
+
+    required_duplicates = _duplicates(required_tests)
+    optional_duplicates = _duplicates(optional_skip_tests)
+    if required_duplicates:
+        raise ValueError(f"gate manifest has duplicate required tests: {', '.join(required_duplicates)}")
+    if optional_duplicates:
+        raise ValueError(f"gate manifest has duplicate optional skip tests: {', '.join(optional_duplicates)}")
+
+    missing_optional = sorted(set(optional_skip_tests) - set(required_tests))
+    if missing_optional:
+        raise ValueError(
+            "gate manifest optional skip tests must also be required tests: "
+            + ", ".join(missing_optional)
+        )
+
+    required_environment = raw.get("requiredEnvironment", [])
+    if not isinstance(required_environment, list):
+        raise ValueError("gate manifest field 'requiredEnvironment' must be a list")
+    for index, entry in enumerate(required_environment):
+        if not isinstance(entry, dict) or not isinstance(entry.get("name"), str):
+            raise ValueError(f"gate manifest field 'requiredEnvironment'[{index}] must have a name")
+
+    groups: dict[str, tuple[str, ...]] = {}
+    raw_groups = raw.get("groups", {})
+    if not isinstance(raw_groups, dict):
+        raise ValueError("gate manifest field 'groups' must be an object")
+    known_tests = set(required_tests)
+    for group_name, group_tests in raw_groups.items():
+        if not isinstance(group_name, str) or not group_name.strip():
+            raise ValueError("gate manifest group names must be non-empty strings")
+        values = _string_list(group_tests, f"groups.{group_name}")
+        unknown = sorted(set(values) - known_tests)
+        if unknown:
+            raise ValueError(
+                f"gate manifest group {group_name!r} references unknown tests: {', '.join(unknown)}"
+            )
+        groups[group_name] = tuple(values)
+
+    return GateManifest(
+        path=resolved,
+        version=version,
+        required_tests=tuple(required_tests),
+        optional_skip_tests=frozenset(optional_skip_tests),
+        runner_self_test=runner_self_test,
+        required_environment=tuple(required_environment),
+        groups=groups,
+    )
+
+
+def gate_manifest_payload(manifest: GateManifest) -> dict:
+    return {
+        "version": manifest.version,
+        "path": str(manifest.path),
+        "runnerSelfTest": manifest.runner_self_test,
+        "requiredTests": list(manifest.required_tests),
+        "optionalSkipTests": sorted(manifest.optional_skip_tests),
+        "requiredEnvironment": list(manifest.required_environment),
+        "groups": {name: list(values) for name, values in manifest.groups.items()},
+    }
+
+
+def git_output(args: list[str]) -> str:
+    try:
+        completed = subprocess.run(
+            ["git", *args],
+            cwd=str(repository_root()),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return ""
+    if completed.returncode != 0:
+        return ""
+    return completed.stdout.strip()
+
+
+def git_head() -> str:
+    return git_output(["rev-parse", "--short", "HEAD"]) or "unknown"
+
+
+def git_dirty() -> bool | None:
+    output = git_output(["status", "--short"])
+    if output:
+        return True
+    probe = git_output(["rev-parse", "--is-inside-work-tree"])
+    if probe:
+        return False
+    return None
 
 
 def now_seconds() -> float:
@@ -283,17 +414,26 @@ def environment_summary(environ: dict[str, str] | os._Environ[str] = os.environ)
     }
 
 
-def missing_required_tests(all_tests: list[str]) -> list[str]:
+def missing_required_tests(all_tests: list[str], manifest: GateManifest) -> list[str]:
     available = set(all_tests)
-    return [name for name in REQUIRED_CTEST_GATES if name not in available]
+    return [name for name in manifest.required_tests if name not in available]
 
 
-def required_skip_results(results: list[TestResult]) -> list[TestResult]:
+def required_skip_results(results: list[TestResult], manifest: GateManifest) -> list[TestResult]:
     return [
         result
         for result in results
-        if result.status == "skipped" and result.name not in OPTIONAL_SKIP_TESTS
+        if result.status == "skipped" and result.name not in manifest.optional_skip_tests
     ]
+
+
+def manifest_check_errors(all_tests: list[str], manifest: GateManifest) -> list[str]:
+    errors: list[str] = []
+    for name in missing_required_tests(all_tests, manifest):
+        errors.append(f"required gate missing from CTest: {name}")
+    if manifest.runner_self_test not in set(all_tests):
+        errors.append(f"runner self-test missing from CTest: {manifest.runner_self_test}")
+    return errors
 
 
 def build_summary_payload(
@@ -303,10 +443,12 @@ def build_summary_payload(
     selected: list[str],
     build_dir: Path,
     ctest: str,
+    manifest: GateManifest,
+    full_gate_enforced: bool,
     environment: dict[str, str] | os._Environ[str] = os.environ,
 ) -> dict:
-    optional_names = set(OPTIONAL_SKIP_TESTS)
-    required_names = set(REQUIRED_CTEST_GATES) - optional_names
+    optional_names = set(manifest.optional_skip_tests)
+    required_names = set(manifest.required_tests) - optional_names
     required_skipped = [
         result for result in results if result.status == "skipped" and result.name in required_names
     ]
@@ -323,9 +465,21 @@ def build_summary_payload(
         ),
         "requiredSkipped": len(required_skipped),
         "optionalSkipped": len(optional_skipped),
-        "requiredMissing": missing_required_tests(all_tests),
-        "requiredTests": list(REQUIRED_CTEST_GATES),
-        "optionalSkipTests": sorted(OPTIONAL_SKIP_TESTS),
+        "requiredMissing": missing_required_tests(all_tests, manifest),
+        "manifestErrors": manifest_check_errors(all_tests, manifest),
+        "manifestPath": str(manifest.path),
+        "manifestVersion": manifest.version,
+        "requiredGateCount": len(manifest.required_tests),
+        "optionalGateCount": len(manifest.optional_skip_tests),
+        "runnerSelfTest": manifest.runner_self_test,
+        "runnerSelfTestPresent": manifest.runner_self_test in set(all_tests),
+        "fullGateEnforced": full_gate_enforced,
+        "gitHead": git_head(),
+        "gitDirty": git_dirty(),
+        "requiredTests": list(manifest.required_tests),
+        "optionalSkipTests": sorted(manifest.optional_skip_tests),
+        "requiredEnvironment": list(manifest.required_environment),
+        "gateGroups": {name: list(values) for name, values in manifest.groups.items()},
         "ctestTests": all_tests,
         "selectedTests": selected,
         "buildDir": str(build_dir),
@@ -361,6 +515,8 @@ def write_summary(
     selected: list[str],
     build_dir: Path,
     ctest: str,
+    manifest: GateManifest,
+    full_gate_enforced: bool,
 ) -> None:
     payload = build_summary_payload(
         results,
@@ -368,6 +524,8 @@ def write_summary(
         selected=selected,
         build_dir=build_dir,
         ctest=ctest,
+        manifest=manifest,
+        full_gate_enforced=full_gate_enforced,
     )
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
@@ -377,15 +535,29 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--build-dir", default="build/dev", type=Path)
     parser.add_argument("--ctest", default=None)
+    parser.add_argument("--manifest", default=DEFAULT_MANIFEST_PATH, type=Path)
     parser.add_argument("--only", action="append", default=[])
     parser.add_argument("--exclude", action="append", default=[])
     parser.add_argument("--logs-dir", default=None, type=Path)
     parser.add_argument("--summary", default=None, type=Path)
     parser.add_argument("--include-perf", action="store_true", help="accepted for command readability")
+    parser.add_argument("--print-manifest", action="store_true")
+    parser.add_argument("--check-manifest-only", action="store_true")
     args = parser.parse_args()
+
+    try:
+        manifest = load_gate_manifest(args.manifest)
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+
+    if args.print_manifest:
+        print(json.dumps(gate_manifest_payload(manifest), indent=2))
+        return 0
 
     build_dir = args.build_dir.resolve()
     ctest = find_ctest(args.ctest)
+    full_gate_enforced = not args.only and not args.exclude
     heartbeat_seconds = float(os.environ.get("PRISTINE_TEST_STATUS_INTERVAL_SECONDS", DEFAULT_HEARTBEAT_SECONDS))
     jsonl_value = os.environ.get("PRISTINE_TEST_STATUS_JSONL", "").strip()
     jsonl_path = Path(jsonl_value).resolve() if jsonl_value else None
@@ -399,6 +571,31 @@ def main() -> int:
     suite_started_at = now_seconds()
     emit_status("suite", "discover", suite_started_at, f"buildDir={build_dir}", jsonl_path)
     all_tests = list_tests(ctest, build_dir)
+    manifest_errors = manifest_check_errors(all_tests, manifest)
+    if args.check_manifest_only:
+        write_summary(
+            [],
+            summary_path,
+            all_tests=all_tests,
+            selected=[],
+            build_dir=build_dir,
+            ctest=ctest,
+            manifest=manifest,
+            full_gate_enforced=True,
+        )
+        if manifest_errors:
+            for error in manifest_errors:
+                print(f"MANIFEST-ERROR {error}", file=sys.stderr)
+            return 1
+        emit_status(
+            "suite",
+            "manifest-ok",
+            suite_started_at,
+            f"required={len(manifest.required_tests)} optional={len(manifest.optional_skip_tests)}",
+            jsonl_path,
+        )
+        return 0
+
     tests = selected_tests(all_tests, args.only, args.exclude)
     emit_status("suite", "begin", suite_started_at, f"tests={len(tests)}", jsonl_path)
 
@@ -414,11 +611,12 @@ def main() -> int:
         selected=tests,
         build_dir=build_dir,
         ctest=ctest,
+        manifest=manifest,
+        full_gate_enforced=full_gate_enforced,
     )
     failed = [result for result in results if result.status == "failed"]
-    required_skips = required_skip_results(results)
-    required_missing = missing_required_tests(all_tests)
-    enforce_required_manifest = not args.only and not args.exclude
+    required_skips = required_skip_results(results, manifest)
+    required_missing = missing_required_tests(all_tests, manifest)
     detail = (
         f"passed={sum(1 for result in results if result.status == 'passed')} "
         f"failed={len(failed)} skipped={sum(1 for result in results if result.status == 'skipped')} "
@@ -427,7 +625,7 @@ def main() -> int:
     )
     emit_status("suite", "summary", suite_started_at, detail, jsonl_path)
 
-    if failed or required_skips or (enforce_required_manifest and required_missing):
+    if failed or required_skips or (full_gate_enforced and manifest_errors):
         for result in failed:
             print(f"FAILED {result.name}: log={result.log_path}", file=sys.stderr)
         for result in required_skips:
@@ -435,9 +633,11 @@ def main() -> int:
                 f"REQUIRED-SKIP {result.name}: {result.skip_reason} log={result.log_path}",
                 file=sys.stderr,
             )
-        if enforce_required_manifest:
+        if full_gate_enforced:
             for name in required_missing:
                 print(f"REQUIRED-MISSING {name}", file=sys.stderr)
+            for error in manifest_errors:
+                print(f"MANIFEST-ERROR {error}", file=sys.stderr)
         return 1
     return 0
 

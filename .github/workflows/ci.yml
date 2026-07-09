@@ -202,9 +202,13 @@ jobs:
       - name: Build
         run: cmake --build --preset dev
 
+      - name: Check full gate manifest
+        run: python scripts/run_full_tests_with_status.py --build-dir build/dev --check-manifest-only
+
       - name: Run full tests with status
         env:
           PRISTINE_REQUIRE_IHP_OPEN_PDK: '1'
+          PRISTINE_REQUIRE_TT_TINYQV_GDS: '1'
         run: python scripts/run_full_tests_with_status.py --build-dir build/dev --include-perf
 
       - name: Run required IHP LEF corpus gate

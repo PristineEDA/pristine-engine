@@ -24,6 +24,7 @@ class StepResult:
     returncode: int
     duration_seconds: float
     log_path: Path
+    captured_output: str = ""
 
 
 def now_seconds() -> float:
@@ -32,6 +33,37 @@ def now_seconds() -> float:
 
 def workspace_root() -> Path:
     return Path(__file__).resolve().parents[1]
+
+
+def git_output(args: list[str], cwd: Path) -> str:
+    try:
+        completed = subprocess.run(
+            ["git", *args],
+            cwd=str(cwd),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return ""
+    if completed.returncode != 0:
+        return ""
+    return completed.stdout.strip()
+
+
+def git_head(cwd: Path) -> str:
+    return git_output(["rev-parse", "--short", "HEAD"], cwd) or "unknown"
+
+
+def git_dirty(cwd: Path) -> bool | None:
+    status = git_output(["status", "--short"], cwd)
+    if status:
+        return True
+    probe = git_output(["rev-parse", "--is-inside-work-tree"], cwd)
+    if probe:
+        return False
+    return None
 
 
 def is_inside_workspace(path: Path, workspace: Path) -> bool:
@@ -118,7 +150,14 @@ def planned_steps(cmake: str, build_dir: Path, preset: str, engine: Path) -> lis
     ]
 
 
-def run_step(name: str, command: list[str], cwd: Path, logs_dir: Path) -> StepResult:
+def run_step(
+    name: str,
+    command: list[str],
+    cwd: Path,
+    logs_dir: Path,
+    *,
+    capture_output: bool = False,
+) -> StepResult:
     started_at = now_seconds()
     logs_dir.mkdir(parents=True, exist_ok=True)
     log_path = logs_dir / f"{name}.log"
@@ -132,8 +171,11 @@ def run_step(name: str, command: list[str], cwd: Path, logs_dir: Path) -> StepRe
         bufsize=1,
     )
     assert process.stdout is not None
+    captured: list[str] = []
     with log_path.open("w", encoding="utf-8", errors="replace") as log_stream:
         for line in process.stdout:
+            if capture_output:
+                captured.append(line)
             log_stream.write(line)
             log_stream.flush()
             print(line, end="", flush=True)
@@ -147,6 +189,7 @@ def run_step(name: str, command: list[str], cwd: Path, logs_dir: Path) -> StepRe
         returncode=returncode,
         duration_seconds=duration,
         log_path=log_path,
+        captured_output="".join(captured).strip() if capture_output else "",
     )
 
 
@@ -159,9 +202,12 @@ def write_summary(
     cmake: str,
     preset: str,
     removed_build_dir: bool,
+    deleted_path: str,
     dry_run: bool,
     steps: list[StepResult],
     failed_step: str = "",
+    failed_log_path: str = "",
+    release_version_output: str = "",
     planned: list[tuple[str, list[str]]] | None = None,
 ) -> None:
     payload = {
@@ -170,9 +216,14 @@ def write_summary(
         "buildDir": str(build_dir),
         "cmakePath": cmake,
         "preset": preset,
+        "gitHead": git_head(workspace),
+        "gitDirty": git_dirty(workspace),
         "removedBuildDir": removed_build_dir,
+        "deletedPath": deleted_path,
         "dryRun": dry_run,
         "failedStep": failed_step,
+        "failedLogPath": failed_log_path,
+        "releaseVersionOutput": release_version_output,
         "steps": [
             {
                 "name": step.name,
@@ -222,6 +273,7 @@ def main() -> int:
             cmake=cmake,
             preset=args.preset,
             removed_build_dir=False,
+            deleted_path="",
             dry_run=args.dry_run,
             steps=[],
             failed_step="guard-delete",
@@ -229,6 +281,7 @@ def main() -> int:
         print(f"FAILED guard-delete: {exc} summary={summary_path}", file=sys.stderr)
         return 1
 
+    deleted_path = str(build_dir) if removed_build_dir else ""
     steps_to_run = planned_steps(cmake, build_dir, args.preset, engine)
     if args.dry_run:
         write_summary(
@@ -239,6 +292,7 @@ def main() -> int:
             cmake=cmake,
             preset=args.preset,
             removed_build_dir=removed_build_dir,
+            deleted_path=deleted_path,
             dry_run=True,
             steps=[],
             planned=steps_to_run,
@@ -247,9 +301,12 @@ def main() -> int:
         return 0
 
     results: list[StepResult] = []
+    release_version_output = ""
     for name, command in steps_to_run:
-        result = run_step(name, command, workspace, logs_dir)
+        result = run_step(name, command, workspace, logs_dir, capture_output=name == "version")
         results.append(result)
+        if name == "version":
+            release_version_output = result.captured_output
         if result.returncode != 0:
             write_summary(
                 summary_path,
@@ -259,9 +316,12 @@ def main() -> int:
                 cmake=cmake,
                 preset=args.preset,
                 removed_build_dir=removed_build_dir,
+                deleted_path=deleted_path,
                 dry_run=False,
                 steps=results,
                 failed_step=name,
+                failed_log_path=str(result.log_path),
+                release_version_output=release_version_output,
                 planned=steps_to_run,
             )
             print(f"FAILED {name}: exit={result.returncode} log={result.log_path}", file=sys.stderr)
@@ -275,8 +335,10 @@ def main() -> int:
         cmake=cmake,
         preset=args.preset,
         removed_build_dir=removed_build_dir,
+        deleted_path=deleted_path,
         dry_run=False,
         steps=results,
+        release_version_output=release_version_output,
         planned=steps_to_run,
     )
     emit_status("summary", gate_started_at, f"passed summary={summary_path}")

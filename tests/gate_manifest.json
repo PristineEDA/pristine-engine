@@ -1,0 +1,64 @@
+{
+  "version": 1,
+  "description": "Required product and integration CTest gates for pristine-engine full validation.",
+  "runnerSelfTest": "pristine_script_runner_tests",
+  "requiredTests": [
+    "pristine_unit_tests",
+    "pristine_lsp_core_e2e",
+    "pristine_waveform_pipe_e2e",
+    "pristine_layout_pipe_e2e",
+    "pristine_ihp_lef_corpus",
+    "pristine_ihp_gds_corpus",
+    "pristine_tt_tinyqv_gds_interaction",
+    "pristine_lefdef_corpus",
+    "pristine_differential_slang_server",
+    "pristine_wellen_fst_perf",
+    "pristine_rtl_e2e_stress",
+    "pristine_rtl_e2e_smoke",
+    "pristine_rtl_e2e_large_workspace",
+    "pristine_rtl_e2e_real_retrosoc",
+    "pristine_rtl_e2e_lsp_stress"
+  ],
+  "optionalSkipTests": [
+    "pristine_differential_slang_server"
+  ],
+  "requiredEnvironment": [
+    {
+      "name": "PRISTINE_REQUIRE_IHP_OPEN_PDK",
+      "recommendedValue": "1",
+      "reason": "Require IHP LEF/GDS corpus gates instead of allowing silent skips."
+    },
+    {
+      "name": "PRISTINE_REQUIRE_TT_TINYQV_GDS",
+      "recommendedValue": "1",
+      "reason": "Require TinyTapeout tinyQV GDS interaction gate instead of allowing silent skips."
+    }
+  ],
+  "groups": {
+    "core": [
+      "pristine_unit_tests",
+      "pristine_lsp_core_e2e"
+    ],
+    "waveform": [
+      "pristine_waveform_pipe_e2e",
+      "pristine_wellen_fst_perf"
+    ],
+    "layout": [
+      "pristine_layout_pipe_e2e",
+      "pristine_ihp_lef_corpus",
+      "pristine_ihp_gds_corpus",
+      "pristine_tt_tinyqv_gds_interaction",
+      "pristine_lefdef_corpus"
+    ],
+    "rtlE2e": [
+      "pristine_rtl_e2e_stress",
+      "pristine_rtl_e2e_smoke",
+      "pristine_rtl_e2e_large_workspace",
+      "pristine_rtl_e2e_real_retrosoc",
+      "pristine_rtl_e2e_lsp_stress"
+    ],
+    "optionalComparison": [
+      "pristine_differential_slang_server"
+    ]
+  }
+}
