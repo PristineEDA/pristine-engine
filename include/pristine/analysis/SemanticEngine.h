@@ -26,6 +26,7 @@ class SyntaxTree;
 namespace pristine::analysis {
 
 namespace semantic {
+class AffectedDependencyGraph;
 class QueryCache;
 struct SnapshotData;
 }
@@ -458,10 +459,10 @@ public:
     void removeDocument(std::string_view uri);
 
     [[nodiscard]] const SemanticEngineDocument* document(std::string_view uri) const;
-    [[nodiscard]] size_t documentCount() const { return documents_.size(); }
-    [[nodiscard]] std::uint64_t generation() const { return generation_; }
-    [[nodiscard]] bool snapshotDirty() const { return snapshot_dirty_; }
-    [[nodiscard]] bool hasFreshSnapshot() const { return snapshot_.has_value() && !snapshot_dirty_; }
+    [[nodiscard]] size_t documentCount() const;
+    [[nodiscard]] std::uint64_t generation() const;
+    [[nodiscard]] bool snapshotDirty() const;
+    [[nodiscard]] bool hasFreshSnapshot() const;
     [[nodiscard]] std::vector<std::string> includedUris(std::string_view uri) const;
     [[nodiscard]] std::vector<std::string> includingUris(std::string_view uri) const;
     [[nodiscard]] std::vector<std::string> dirtyDocumentUris() const;
@@ -538,9 +539,7 @@ private:
     std::string workspace_root_uri_;
     SemanticEngineConfig config_;
     std::unordered_map<std::string, SemanticEngineDocument> documents_;
-    mutable std::unordered_map<std::string, std::vector<std::string>> includes_;
-    mutable std::unordered_map<std::string, std::vector<std::string>> reverse_includes_;
-    mutable std::unordered_map<std::string, std::vector<std::string>> reverse_semantic_dependencies_;
+    mutable std::unique_ptr<semantic::AffectedDependencyGraph> affected_dependencies_;
     mutable std::optional<SemanticEngineSnapshot> snapshot_;
     mutable std::unique_ptr<semantic::SnapshotData> snapshot_data_;
     mutable std::unique_ptr<semantic::QueryCache> query_cache_;

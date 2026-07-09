@@ -147,10 +147,7 @@ SnapshotBuildOutput SnapshotBuilder::build(SnapshotBuildInput input) const {
             for (const auto& include : include_directives) {
                 addUnique(included_uris, joinFileUri(uriDirectory(uri), include.target));
             }
-            output.includes[uri] = included_uris;
-            for (const auto& included_uri : included_uris) {
-                addUnique(output.reverse_includes[included_uri], uri);
-            }
+            output.affected_dependencies.setIncludedUris(uri, std::move(included_uris));
 
             const auto append_symbol_ranges = [&](const auto& self,
                                                   const std::vector<DocumentSymbol>& symbols) -> void {
@@ -228,9 +225,7 @@ SnapshotBuildOutput SnapshotBuilder::build(SnapshotBuildInput input) const {
                             continue;
                         }
                         for (const auto& package_uri : package_it->second) {
-                            if (package_uri != uri) {
-                                addUnique(output.reverse_semantic_dependencies[package_uri], uri);
-                            }
+                            output.affected_dependencies.addSemanticDependency(package_uri, uri);
                         }
                     }
                 }
@@ -242,7 +237,7 @@ SnapshotBuildOutput SnapshotBuilder::build(SnapshotBuildInput input) const {
                             module_it->second == uri) {
                             continue;
                         }
-                        addUnique(output.reverse_semantic_dependencies[module_it->second], uri);
+                        output.affected_dependencies.addSemanticDependency(module_it->second, uri);
                     }
                 }
             }

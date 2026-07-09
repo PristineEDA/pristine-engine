@@ -1,5 +1,6 @@
 #pragma once
 
+#include "AffectedDependencyGraph.h"
 #include "SignatureInlayProvider.h"
 #include "pristine/analysis/SemanticEngine.h"
 
@@ -134,9 +135,7 @@ struct SnapshotBuildInput {
 struct SnapshotBuildOutput {
     SemanticEngineSnapshot snapshot;
     std::unique_ptr<SnapshotData> data;
-    std::unordered_map<std::string, std::vector<std::string>> includes;
-    std::unordered_map<std::string, std::vector<std::string>> reverse_includes;
-    std::unordered_map<std::string, std::vector<std::string>> reverse_semantic_dependencies;
+    AffectedDependencyGraph affected_dependencies;
 };
 
 [[nodiscard]] constexpr std::string_view snapshotBuilderProviderName() {

@@ -87,9 +87,9 @@ TEST_CASE("SnapshotBuilder builds syntax, diagnostics, and include dependency ed
     CHECK_FALSE(output.snapshot.has_design_ast);
     CHECK(output.snapshot.document_uris == std::vector<std::string>{"file:///workspace/include/defs.svh",
                                                                     "file:///workspace/rtl/top.sv"});
-    CHECK(output.includes.at("file:///workspace/rtl/top.sv") ==
+    CHECK(output.affected_dependencies.includedUris("file:///workspace/rtl/top.sv") ==
           std::vector<std::string>{"file:///workspace/include/defs.svh"});
-    CHECK(output.reverse_includes.at("file:///workspace/include/defs.svh") ==
+    CHECK(output.affected_dependencies.includingUris("file:///workspace/include/defs.svh") ==
           std::vector<std::string>{"file:///workspace/rtl/top.sv"});
     REQUIRE(output.data != nullptr);
     CHECK(output.data->include_directives_by_uri.contains("file:///workspace/rtl/top.sv"));
@@ -126,7 +126,7 @@ TEST_CASE("SnapshotBuilder reuses opened include buffers when included by anothe
     CHECK(output.snapshot.has_design_ast);
     REQUIRE(output.data != nullptr);
     CHECK(output.data->syntax_trees.size() == 2);
-    CHECK(output.includes.at("file:///workspace/a_top.sv") ==
+    CHECK(output.affected_dependencies.includedUris("file:///workspace/a_top.sv") ==
           std::vector<std::string>{"file:///workspace/z_defs.svh"});
 }
 

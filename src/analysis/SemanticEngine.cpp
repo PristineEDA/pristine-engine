@@ -1,6 +1,7 @@
 #include "pristine/analysis/SemanticEngine.h"
 
 #include "semantic/AstIndex.h"
+#include "semantic/AffectedDependencyGraph.h"
 #include "semantic/CodeActionProvider.h"
 #include "semantic/CompletionProvider.h"
 #include "semantic/DebugTrace.h"
@@ -481,7 +482,9 @@ ClosureDesignGraphSnapshot buildClosureDesignGraphSnapshot(
 
 } // namespace
 
-SemanticEngine::SemanticEngine() : query_cache_(std::make_unique<semantic::QueryCache>()) {}
+SemanticEngine::SemanticEngine()
+    : affected_dependencies_(std::make_unique<semantic::AffectedDependencyGraph>()),
+      query_cache_(std::make_unique<semantic::QueryCache>()) {}
 
 SemanticEngine::~SemanticEngine() = default;
 
@@ -513,9 +516,7 @@ void SemanticEngine::clear() {
     workspace_root_uri_.clear();
     config_ = {};
     documents_.clear();
-    includes_.clear();
-    reverse_includes_.clear();
-    reverse_semantic_dependencies_.clear();
+    affected_dependencies_->clear();
     snapshot_.reset();
     snapshot_data_.reset();
     discovery_snapshot_cache_.reset();
@@ -588,11 +589,7 @@ void SemanticEngine::updateDocument(std::string_view uri,
         rebuildDependenciesFor(document_uri, text);
     }
     catch (...) {
-        includes_[document_uri] = {};
-        for (auto& [_, including_uris] : reverse_includes_) {
-            including_uris.erase(std::remove(including_uris.begin(), including_uris.end(), document_uri),
-                                 including_uris.end());
-        }
+        affected_dependencies_->setIncludedUris(document_uri, {});
     }
     discovery_snapshot_cache_.reset();
     discovery_cache_key_ = 0;
@@ -604,17 +601,7 @@ void SemanticEngine::updateDocument(std::string_view uri,
 void SemanticEngine::removeDocument(std::string_view uri) {
     const auto document_uri = withoutTrailingSlash(normalizeFileUri(uri));
     documents_.erase(document_uri);
-    includes_.erase(document_uri);
-    for (auto& [_, including_uris] : reverse_includes_) {
-        including_uris.erase(std::remove(including_uris.begin(), including_uris.end(), document_uri),
-                             including_uris.end());
-    }
-    reverse_includes_.erase(document_uri);
-    for (auto& [_, dependent_uris] : reverse_semantic_dependencies_) {
-        dependent_uris.erase(std::remove(dependent_uris.begin(), dependent_uris.end(), document_uri),
-                             dependent_uris.end());
-    }
-    reverse_semantic_dependencies_.erase(document_uri);
+    affected_dependencies_->removeDocument(document_uri);
     discovery_snapshot_cache_.reset();
     discovery_cache_key_ = 0;
     query_cache_->clear();
@@ -630,22 +617,30 @@ const SemanticEngineDocument* SemanticEngine::document(std::string_view uri) con
     return &document_it->second;
 }
 
+size_t SemanticEngine::documentCount() const {
+    return documents_.size();
+}
+
+std::uint64_t SemanticEngine::generation() const {
+    return generation_;
+}
+
+bool SemanticEngine::snapshotDirty() const {
+    return snapshot_dirty_;
+}
+
+bool SemanticEngine::hasFreshSnapshot() const {
+    return snapshot_.has_value() && !snapshot_dirty_;
+}
+
 std::vector<std::string> SemanticEngine::includedUris(std::string_view uri) const {
     const auto document_uri = withoutTrailingSlash(normalizeFileUri(uri));
-    const auto include_it = includes_.find(document_uri);
-    if (include_it == includes_.end()) {
-        return {};
-    }
-    return include_it->second;
+    return affected_dependencies_->includedUris(document_uri);
 }
 
 std::vector<std::string> SemanticEngine::includingUris(std::string_view uri) const {
     const auto document_uri = withoutTrailingSlash(normalizeFileUri(uri));
-    const auto include_it = reverse_includes_.find(document_uri);
-    if (include_it == reverse_includes_.end()) {
-        return {};
-    }
-    return include_it->second;
+    return affected_dependencies_->includingUris(document_uri);
 }
 
 std::vector<std::string> SemanticEngine::dirtyDocumentUris() const {
@@ -661,29 +656,7 @@ std::vector<std::string> SemanticEngine::dirtyDocumentUris() const {
 
 std::vector<std::string> SemanticEngine::affectedDocumentUris(std::string_view uri) const {
     const auto document_uri = withoutTrailingSlash(normalizeFileUri(uri));
-    std::vector<std::string> result;
-    std::set<std::string> seen;
-    std::vector<std::string> pending{document_uri};
-    while (!pending.empty()) {
-        const auto current = pending.back();
-        pending.pop_back();
-        if (!seen.insert(current).second) {
-            continue;
-        }
-        result.push_back(current);
-        const auto reverse_it = reverse_includes_.find(current);
-        if (reverse_it != reverse_includes_.end()) {
-            pending.insert(pending.end(), reverse_it->second.begin(), reverse_it->second.end());
-        }
-        const auto semantic_reverse_it = reverse_semantic_dependencies_.find(current);
-        if (semantic_reverse_it != reverse_semantic_dependencies_.end()) {
-            pending.insert(pending.end(),
-                           semantic_reverse_it->second.begin(),
-                           semantic_reverse_it->second.end());
-        }
-    }
-    std::sort(result.begin(), result.end());
-    return result;
+    return affected_dependencies_->affectedDocumentUris(document_uri);
 }
 
 const SemanticEngineSnapshot& SemanticEngine::snapshot() const {
@@ -1845,11 +1818,6 @@ SemanticWorkspaceSymbolResult SemanticEngine::workspaceSymbols(std::string_view 
 
 void SemanticEngine::rebuildDependenciesFor(std::string_view document_uri, std::string_view text) {
     const auto normalized_uri = withoutTrailingSlash(normalizeFileUri(document_uri));
-    for (auto& [_, including_uris] : reverse_includes_) {
-        including_uris.erase(std::remove(including_uris.begin(), including_uris.end(), normalized_uri),
-                             including_uris.end());
-    }
-
     CompilationService compilation_service;
     std::vector<std::string> included_uris;
     for (const auto& include : compilation_service.includeDirectives(text)) {
@@ -1857,14 +1825,7 @@ void SemanticEngine::rebuildDependenciesFor(std::string_view document_uri, std::
     }
     std::sort(included_uris.begin(), included_uris.end());
     included_uris.erase(std::unique(included_uris.begin(), included_uris.end()), included_uris.end());
-    includes_[normalized_uri] = included_uris;
-
-    for (const auto& included_uri : included_uris) {
-        auto& including_uris = reverse_includes_[included_uri];
-        including_uris.push_back(normalized_uri);
-        std::sort(including_uris.begin(), including_uris.end());
-        including_uris.erase(std::unique(including_uris.begin(), including_uris.end()), including_uris.end());
-    }
+    affected_dependencies_->setIncludedUris(normalized_uri, std::move(included_uris));
 }
 
 void SemanticEngine::rebuildSnapshot() const {
@@ -1878,9 +1839,7 @@ void SemanticEngine::rebuildSnapshot() const {
     input.documents = documents_;
     auto output = semantic::SnapshotBuilder{}.build(std::move(input));
 
-    includes_ = std::move(output.includes);
-    reverse_includes_ = std::move(output.reverse_includes);
-    reverse_semantic_dependencies_ = std::move(output.reverse_semantic_dependencies);
+    *affected_dependencies_ = std::move(output.affected_dependencies);
     snapshot_ = std::move(output.snapshot);
     snapshot_data_ = std::move(output.data);
     snapshot_dirty_ = false;
