@@ -2303,6 +2303,14 @@ TEST_CASE("ServerSession returns inferred SystemVerilog module hierarchy", "[ser
     const auto& result = hierarchy_response.at("result");
     REQUIRE(result.at("messages").empty());
     REQUIRE(result.at("roots").size() == 2);
+    CHECK(result.contains("queryCacheCompletionEntries"));
+    CHECK(result.contains("queryCacheSignatureHelpEntries"));
+    CHECK(result.contains("queryCacheInlayHintEntries"));
+    CHECK(result.contains("queryCacheCodeActionEntries"));
+    CHECK(result.contains("backgroundDiagnosticsState"));
+    CHECK(result.contains("backgroundDiagnosticsPhase"));
+    CHECK(result.contains("backgroundDiagnosticsElapsedMicros"));
+    CHECK(result.at("backgroundDiagnosticsState").is_string());
 
     const auto& top = result.at("roots").at(0);
     CHECK(top.at("moduleName") == "top");

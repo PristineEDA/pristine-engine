@@ -109,6 +109,62 @@ TEST_CASE("SemanticEngine query cache stats include graph and cone queries",
     CHECK(stats.hits >= 3);
 }
 
+TEST_CASE("SemanticEngine query cache stats include completion signature inlay and code action queries",
+          "[analysis][semantic-engine][query-cache][providers]") {
+    SemanticEngine engine;
+    engine.updateDocument("file:///workspace/top.sv",
+                          "module child(input logic clk, output logic rst_n, input logic data);\n"
+                          "endmodule\n"
+                          "module top;\n"
+                          "  logic clk;\n"
+                          "  logic rst_n;\n"
+                          "  logic data;\n"
+                          "  child u_child(.clk(clk), .r);\n"
+                          "  child u_ordered(clk, rst_n, data);\n"
+                          "endmodule\n",
+                          SemanticEngineDocumentState{.version = 1, .is_open = true});
+
+    engine.resetQueryCacheStats();
+
+    const auto first_completion = engine.completionsAt("file:///workspace/top.sv", 6, 28, "");
+    const auto first_signature = engine.signatureHelpAt("file:///workspace/top.sv", 6, 29);
+    const auto first_hints = engine.inlayHints("file:///workspace/top.sv",
+                                              ParseRange{.start_line = 0,
+                                                         .start_character = 0,
+                                                         .end_line = 9,
+                                                         .end_character = 0});
+    const auto first_actions = engine.codeActionsAt(
+        "file:///workspace/top.sv",
+        ParseRange{.start_line = 6, .start_character = 2, .end_line = 6, .end_character = 24});
+
+    REQUIRE_FALSE(first_completion.unresolved);
+    REQUIRE_FALSE(first_signature.unresolved);
+    REQUIRE_FALSE(first_hints.unresolved);
+    REQUIRE_FALSE(first_actions.unresolved);
+
+    auto stats = engine.queryCacheStats();
+    CHECK(stats.misses >= 4);
+    CHECK(stats.stores >= 4);
+    CHECK(stats.completions_entries >= 1);
+    CHECK(stats.signature_help_entries >= 1);
+    CHECK(stats.inlay_hints_entries >= 1);
+    CHECK(stats.code_actions_entries >= 1);
+
+    (void)engine.completionsAt("file:///workspace/top.sv", 6, 28, "");
+    (void)engine.signatureHelpAt("file:///workspace/top.sv", 6, 29);
+    (void)engine.inlayHints("file:///workspace/top.sv",
+                            ParseRange{.start_line = 0,
+                                       .start_character = 0,
+                                       .end_line = 9,
+                                       .end_character = 0});
+    (void)engine.codeActionsAt(
+        "file:///workspace/top.sv",
+        ParseRange{.start_line = 6, .start_character = 2, .end_line = 6, .end_character = 24});
+
+    stats = engine.queryCacheStats();
+    CHECK(stats.hits >= 4);
+}
+
 TEST_CASE("SemanticEngine owns UX diagnostics formerly produced by workspace metadata",
           "[analysis][semantic-engine][diagnostics]") {
     SemanticEngine engine;

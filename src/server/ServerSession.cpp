@@ -698,10 +698,58 @@ void appendQueryCacheTelemetry(jsonrpc::Json& result,
     result["queryCacheStores"] = stats.stores;
     result["queryCacheEvictions"] = stats.evictions;
     result["queryCacheEntries"] = stats.total_entries;
+    result["queryCacheDiagnosticsEntries"] = stats.diagnostics_entries;
     result["queryCacheWorkspaceSymbolEntries"] = stats.workspace_symbols_entries;
+    result["queryCacheReferencesEntries"] = stats.references_entries;
+    result["queryCacheRenameEntries"] = stats.rename_entries;
+    result["queryCacheCompletionEntries"] = stats.completions_entries;
+    result["queryCacheSignatureHelpEntries"] = stats.signature_help_entries;
+    result["queryCacheInlayHintEntries"] = stats.inlay_hints_entries;
     result["queryCacheModuleHierarchyEntries"] = stats.module_hierarchy_entries;
     result["queryCacheSchematicEntries"] = stats.schematic_entries;
     result["queryCacheBackwardConeEntries"] = stats.backward_cone_entries;
+    result["queryCacheCodeActionEntries"] = stats.code_actions_entries;
+}
+
+std::string backgroundDiagnosticsStateName(BackgroundDiagnosticsWorker::StateKind state) {
+    switch (state) {
+    case BackgroundDiagnosticsWorker::StateKind::Idle:
+        return "idle";
+    case BackgroundDiagnosticsWorker::StateKind::Pending:
+        return "pending";
+    case BackgroundDiagnosticsWorker::StateKind::Running:
+        return "running";
+    case BackgroundDiagnosticsWorker::StateKind::StaleSkipped:
+        return "staleSkipped";
+    case BackgroundDiagnosticsWorker::StateKind::ClosedSkipped:
+        return "closedSkipped";
+    case BackgroundDiagnosticsWorker::StateKind::Published:
+        return "published";
+    case BackgroundDiagnosticsWorker::StateKind::Failed:
+        return "failed";
+    }
+    return "unknown";
+}
+
+void appendBackgroundDiagnosticsTelemetry(jsonrpc::Json& result,
+                                          const BackgroundDiagnosticsWorker* worker) {
+    if (worker == nullptr) {
+        result["backgroundDiagnosticsState"] = "idle";
+        result["backgroundDiagnosticsPhase"] = "";
+        result["backgroundDiagnosticsElapsedMicros"] = 0;
+        result["backgroundDiagnosticsSkippedReason"] = "";
+        result["backgroundDiagnosticsLastUri"] = "";
+        result["backgroundDiagnosticsOpenDocumentCount"] = 0;
+        return;
+    }
+
+    const auto state = worker->stateSnapshot();
+    result["backgroundDiagnosticsState"] = backgroundDiagnosticsStateName(state.state);
+    result["backgroundDiagnosticsPhase"] = state.last_phase;
+    result["backgroundDiagnosticsElapsedMicros"] = state.elapsed_micros;
+    result["backgroundDiagnosticsSkippedReason"] = state.last_skip_reason;
+    result["backgroundDiagnosticsLastUri"] = state.last_uri;
+    result["backgroundDiagnosticsOpenDocumentCount"] = state.open_document_count;
 }
 
 void appendSyntaxCacheTelemetry(jsonrpc::Json& result,
@@ -1255,6 +1303,7 @@ jsonrpc::Json ServerSession::handleModuleHierarchy(const jsonrpc::Json& params) 
         result["discoveryClosureCacheHit"] = hierarchy.discovery_closure_cache_hit;
     }
     appendQueryCacheTelemetry(result, query_cache_stats);
+    appendBackgroundDiagnosticsTelemetry(result, background_diagnostics_worker_.get());
     return result;
 }
 
@@ -1316,6 +1365,7 @@ jsonrpc::Json ServerSession::handleSchematic(const jsonrpc::Json& params) {
         result["discoveryClosureCacheHit"] = schematic.discovery_closure_cache_hit;
     }
     appendQueryCacheTelemetry(result, query_cache_stats);
+    appendBackgroundDiagnosticsTelemetry(result, background_diagnostics_worker_.get());
     return result;
 }
 
@@ -1337,6 +1387,7 @@ jsonrpc::Json ServerSession::handleBackwardCone(const jsonrpc::Json& params) {
     }
     auto result = toConeTraceJson(trace);
     appendQueryCacheTelemetry(result, query_cache_stats);
+    appendBackgroundDiagnosticsTelemetry(result, background_diagnostics_worker_.get());
     return result;
 }
 

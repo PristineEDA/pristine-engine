@@ -150,7 +150,14 @@ def main() -> int:
         assert summary["openedSourcePath"].endswith("large_top.sv")
         assert summary["syntaxDiagnosticsPublished"] is True
         assert "semanticDiagnosticsPublished" in summary
+        assert "backgroundDiagnosticsState" in summary
+        assert "backgroundDiagnosticsPhase" in summary
+        assert "backgroundDiagnosticsElapsedMicros" in summary
         assert "backgroundDiagnosticsSkippedReason" in summary
+        assert "queryCacheCompletionEntries" in summary
+        assert "queryCacheSignatureHelpEntries" in summary
+        assert "queryCacheInlayHintEntries" in summary
+        assert "queryCacheCodeActionEntries" in summary
         assert summary["outlineRootCount"] >= 1
         assert summary["outlineItemCount"] >= 5
         assert summary["outlineMicros"] >= 0

@@ -112,9 +112,17 @@ struct Metrics {
     long long query_cache_stores = 0;
     long long query_cache_evictions = 0;
     long long query_cache_entries = 0;
+    long long query_cache_diagnostics_entries = 0;
+    long long query_cache_workspace_symbol_entries = 0;
+    long long query_cache_references_entries = 0;
+    long long query_cache_rename_entries = 0;
+    long long query_cache_completion_entries = 0;
+    long long query_cache_signature_help_entries = 0;
+    long long query_cache_inlay_hint_entries = 0;
     long long query_cache_hierarchy_entries = 0;
     long long query_cache_schematic_entries = 0;
     long long query_cache_backward_cone_entries = 0;
+    long long query_cache_code_action_entries = 0;
     long long shutdown_micros = 0;
     long long total_micros = 0;
     size_t outline_root_count = 0;
@@ -130,6 +138,9 @@ struct Metrics {
     size_t diagnostics_notification_count = 0;
     bool syntax_diagnostics_published = false;
     bool semantic_diagnostics_published = false;
+    std::string background_diagnostics_state;
+    std::string background_diagnostics_phase;
+    long long background_diagnostics_elapsed_micros = 0;
     std::string background_diagnostics_skipped_reason;
     bool trace_enabled = false;
     std::string trace_path;
@@ -692,9 +703,27 @@ void collectQueryCacheMetrics(const lsp::json::Object& response, Metrics& metric
     metrics.query_cache_stores = integerValue(response, "queryCacheStores");
     metrics.query_cache_evictions = integerValue(response, "queryCacheEvictions");
     metrics.query_cache_entries = integerValue(response, "queryCacheEntries");
+    metrics.query_cache_diagnostics_entries = integerValue(response, "queryCacheDiagnosticsEntries");
+    metrics.query_cache_workspace_symbol_entries =
+        integerValue(response, "queryCacheWorkspaceSymbolEntries");
+    metrics.query_cache_references_entries = integerValue(response, "queryCacheReferencesEntries");
+    metrics.query_cache_rename_entries = integerValue(response, "queryCacheRenameEntries");
+    metrics.query_cache_completion_entries = integerValue(response, "queryCacheCompletionEntries");
+    metrics.query_cache_signature_help_entries =
+        integerValue(response, "queryCacheSignatureHelpEntries");
+    metrics.query_cache_inlay_hint_entries = integerValue(response, "queryCacheInlayHintEntries");
     metrics.query_cache_hierarchy_entries = integerValue(response, "queryCacheModuleHierarchyEntries");
     metrics.query_cache_schematic_entries = integerValue(response, "queryCacheSchematicEntries");
     metrics.query_cache_backward_cone_entries = integerValue(response, "queryCacheBackwardConeEntries");
+    metrics.query_cache_code_action_entries = integerValue(response, "queryCacheCodeActionEntries");
+    metrics.background_diagnostics_state = stringValue(response, "backgroundDiagnosticsState");
+    metrics.background_diagnostics_phase = stringValue(response, "backgroundDiagnosticsPhase");
+    metrics.background_diagnostics_elapsed_micros =
+        integerValue(response, "backgroundDiagnosticsElapsedMicros");
+    const auto response_skip = stringValue(response, "backgroundDiagnosticsSkippedReason");
+    if (!response_skip.empty()) {
+        metrics.background_diagnostics_skipped_reason = response_skip;
+    }
 }
 
 void collectSyntaxCacheMetrics(const lsp::json::Object& response, Metrics& metrics) {
@@ -979,6 +1008,10 @@ std::string summaryJson(const Metrics& metrics) {
         << "\"hoverMicros\":" << metrics.hover_micros << ","
         << "\"semanticDiagnosticsPublished\":" << boolJson(metrics.semantic_diagnostics_published) << ","
         << "\"semanticDiagnosticsMicros\":" << metrics.semantic_diagnostics_micros << ","
+        << "\"backgroundDiagnosticsState\":" << jsonString(metrics.background_diagnostics_state) << ","
+        << "\"backgroundDiagnosticsPhase\":" << jsonString(metrics.background_diagnostics_phase) << ","
+        << "\"backgroundDiagnosticsElapsedMicros\":"
+        << metrics.background_diagnostics_elapsed_micros << ","
         << "\"backgroundDiagnosticsSkippedReason\":"
         << jsonString(metrics.background_diagnostics_skipped_reason) << ","
         << "\"moduleHierarchyColdMicros\":" << metrics.hierarchy_cold_micros << ","
@@ -1040,9 +1073,19 @@ std::string summaryJson(const Metrics& metrics) {
         << "\"queryCacheStores\":" << metrics.query_cache_stores << ","
         << "\"queryCacheEvictions\":" << metrics.query_cache_evictions << ","
         << "\"queryCacheEntries\":" << metrics.query_cache_entries << ","
+        << "\"queryCacheDiagnosticsEntries\":" << metrics.query_cache_diagnostics_entries << ","
+        << "\"queryCacheWorkspaceSymbolEntries\":"
+        << metrics.query_cache_workspace_symbol_entries << ","
+        << "\"queryCacheReferencesEntries\":" << metrics.query_cache_references_entries << ","
+        << "\"queryCacheRenameEntries\":" << metrics.query_cache_rename_entries << ","
+        << "\"queryCacheCompletionEntries\":" << metrics.query_cache_completion_entries << ","
+        << "\"queryCacheSignatureHelpEntries\":"
+        << metrics.query_cache_signature_help_entries << ","
+        << "\"queryCacheInlayHintEntries\":" << metrics.query_cache_inlay_hint_entries << ","
         << "\"queryCacheModuleHierarchyEntries\":" << metrics.query_cache_hierarchy_entries << ","
         << "\"queryCacheSchematicEntries\":" << metrics.query_cache_schematic_entries << ","
         << "\"queryCacheBackwardConeEntries\":" << metrics.query_cache_backward_cone_entries << ","
+        << "\"queryCacheCodeActionEntries\":" << metrics.query_cache_code_action_entries << ","
         << "\"shutdownMicros\":" << metrics.shutdown_micros << ","
         << "\"totalMicros\":" << metrics.total_micros << ","
         << "\"outlineRootCount\":" << metrics.outline_root_count << ","

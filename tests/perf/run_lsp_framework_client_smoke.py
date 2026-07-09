@@ -72,9 +72,16 @@ def main() -> int:
         assert no_trace_summary["queryCacheHits"] >= 1
         assert no_trace_summary["queryCacheMisses"] >= 1
         assert no_trace_summary["queryCacheEntries"] >= 1
+        assert "queryCacheCompletionEntries" in no_trace_summary
+        assert "queryCacheSignatureHelpEntries" in no_trace_summary
+        assert "queryCacheInlayHintEntries" in no_trace_summary
+        assert "queryCacheCodeActionEntries" in no_trace_summary
         assert no_trace_summary["queryCacheModuleHierarchyEntries"] >= 1
         assert no_trace_summary["queryCacheSchematicEntries"] >= 1
         assert no_trace_summary["syntaxDiagnosticsPublished"] is True
+        assert "backgroundDiagnosticsState" in no_trace_summary
+        assert "backgroundDiagnosticsPhase" in no_trace_summary
+        assert "backgroundDiagnosticsElapsedMicros" in no_trace_summary
         assert "backgroundDiagnosticsSkippedReason" in no_trace_summary
         assert no_trace_summary["traceEnabled"] is False
         assert no_trace_summary["tracePath"] == ""
@@ -104,7 +111,14 @@ def main() -> int:
         assert trace_summary["queryCacheHits"] >= 1
         assert trace_summary["queryCacheMisses"] >= 1
         assert trace_summary["queryCacheEntries"] >= 1
+        assert "queryCacheCompletionEntries" in trace_summary
+        assert "queryCacheSignatureHelpEntries" in trace_summary
+        assert "queryCacheInlayHintEntries" in trace_summary
+        assert "queryCacheCodeActionEntries" in trace_summary
         assert trace_summary["syntaxDiagnosticsPublished"] is True
+        assert "backgroundDiagnosticsState" in trace_summary
+        assert "backgroundDiagnosticsPhase" in trace_summary
+        assert "backgroundDiagnosticsElapsedMicros" in trace_summary
         assert "backgroundDiagnosticsSkippedReason" in trace_summary
         assert trace_summary["traceEnabled"] is True
         assert Path(trace_summary["tracePath"]) == trace_file.resolve()
