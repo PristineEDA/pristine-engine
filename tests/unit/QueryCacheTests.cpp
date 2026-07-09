@@ -2,6 +2,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <optional>
 #include <string_view>
 #include <utility>
 
@@ -76,6 +77,31 @@ TEST_CASE("QueryCache evicts oldest bounded visible query entries",
     const auto retained = cache.moduleHierarchy(1, kOther, 8);
     REQUIRE(retained.has_value());
     CHECK(retained->generation == 1);
+}
+
+TEST_CASE("QueryCache distinguishes inferred and explicit module hierarchy keys",
+          "[analysis][semantic][query-cache]") {
+    QueryCache cache;
+
+    SemanticModuleHierarchyResult inferred;
+    inferred.generation = 1;
+    inferred.roots.push_back(SemanticHierarchyNode{.module_name = "top_a"});
+    cache.storeModuleHierarchy(1, std::nullopt, 8, std::move(inferred));
+
+    SemanticModuleHierarchyResult explicit_module;
+    explicit_module.generation = 1;
+    explicit_module.roots.push_back(SemanticHierarchyNode{.module_name = "<inferred>"});
+    cache.storeModuleHierarchy(1, std::string_view("<inferred>"), 8, std::move(explicit_module));
+
+    const auto inferred_hit = cache.moduleHierarchy(1, std::nullopt, 8);
+    REQUIRE(inferred_hit.has_value());
+    REQUIRE(inferred_hit->roots.size() == 1);
+    CHECK(inferred_hit->roots.front().module_name == "top_a");
+
+    const auto explicit_hit = cache.moduleHierarchy(1, std::string_view("<inferred>"), 8);
+    REQUIRE(explicit_hit.has_value());
+    REQUIRE(explicit_hit->roots.size() == 1);
+    CHECK(explicit_hit->roots.front().module_name == "<inferred>");
 }
 
 TEST_CASE("QueryCache keeps diagnostics entries outside visible query eviction",

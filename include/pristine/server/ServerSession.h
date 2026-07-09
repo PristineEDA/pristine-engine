@@ -11,13 +11,12 @@
 #include <nlohmann/json.hpp>
 
 #include <atomic>
-#include <condition_variable>
 #include <cstdint>
 #include <filesystem>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
-#include <thread>
 #include <vector>
 
 namespace pristine::jsonrpc {
@@ -26,6 +25,8 @@ using Json = nlohmann::json;
 } // namespace pristine::jsonrpc
 
 namespace pristine::server {
+
+class BackgroundDiagnosticsWorker;
 
 class ServerSession {
 public:
@@ -86,7 +87,6 @@ private:
     void publishDiagnostics(std::string_view uri);
     void publishDiagnostics(std::string_view uri, std::vector<analysis::SemanticEngineDiagnostic> diagnostics);
     void scheduleSemanticDiagnosticsPublish(bool allow_cold_snapshot_build = true);
-    void backgroundDiagnosticsLoop();
     void stopBackgroundDiagnostics();
     void clearDiagnostics(std::string_view uri);
     const std::vector<analysis::DocumentSymbol>& cachedDocumentSymbols(const document::TextDocument& document);
@@ -108,28 +108,7 @@ private:
     std::atomic<std::uint64_t> semantic_generation_cache_ = 0;
     mutable std::mutex state_mutex_;
     mutable std::mutex semantic_mutex_;
-    std::mutex background_mutex_;
-    std::condition_variable background_cv_;
-    std::thread diagnostics_thread_;
-    struct BackgroundDiagnosticsDocument {
-        std::string uri;
-        std::string text;
-        int version = -1;
-        bool dirty = false;
-    };
-    struct BackgroundDiagnosticsJob {
-        std::uint64_t request_generation = 0;
-        std::uint64_t semantic_generation = 0;
-        bool allow_cold_snapshot_build = true;
-        bool workspace_had_fresh_snapshot = false;
-        std::string workspace_root_uri;
-        analysis::SemanticEngineConfig config;
-        std::vector<std::filesystem::path> indexed_source_paths;
-        std::vector<BackgroundDiagnosticsDocument> open_documents;
-    };
-    std::optional<BackgroundDiagnosticsJob> pending_diagnostics_job_;
-    std::uint64_t diagnostics_request_generation_ = 0;
-    bool diagnostics_stop_requested_ = false;
+    std::unique_ptr<BackgroundDiagnosticsWorker> background_diagnostics_worker_;
 };
 
 } // namespace pristine::server

@@ -3,6 +3,59 @@
 #include <algorithm>
 
 namespace pristine::analysis::semantic {
+namespace {
+
+class QueryCacheKeyBuilder {
+public:
+    explicit QueryCacheKeyBuilder(std::string_view query_kind) {
+        field("kind", query_kind);
+    }
+
+    QueryCacheKeyBuilder& field(std::string_view name, std::string_view value) {
+        appendName(name);
+        value_.append(std::to_string(value.size()));
+        value_.push_back(':');
+        value_.append(value);
+        value_.push_back(';');
+        return *this;
+    }
+
+    QueryCacheKeyBuilder& number(std::string_view name, std::uint64_t value) {
+        return field(name, std::to_string(value));
+    }
+
+    QueryCacheKeyBuilder& integer(std::string_view name, int value) {
+        return field(name, std::to_string(value));
+    }
+
+    QueryCacheKeyBuilder& boolean(std::string_view name, bool value) {
+        return field(name, value ? "true" : "false");
+    }
+
+    QueryCacheKeyBuilder& optionalField(std::string_view name,
+                                        std::optional<std::string_view> value) {
+        if (!value.has_value()) {
+            return field(name, "<none>");
+        }
+        return field(name, *value);
+    }
+
+    [[nodiscard]] std::string str() const {
+        return value_;
+    }
+
+private:
+    void appendName(std::string_view name) {
+        value_.append(std::to_string(name.size()));
+        value_.push_back('#');
+        value_.append(name);
+        value_.push_back('=');
+    }
+
+    std::string value_;
+};
+
+} // namespace
 
 template <typename Map>
 void QueryCache::evictOldestEntries(Map& map) {
@@ -397,65 +450,72 @@ std::uint64_t QueryCache::nextSequence() {
 }
 
 std::string QueryCache::workspaceSymbolsKey(std::string_view query, size_t limit) {
-    std::string key(query);
-    key.push_back('\x1f');
-    key += std::to_string(limit);
-    return key;
+    return QueryCacheKeyBuilder("workspaceSymbols")
+        .field("query", query)
+        .number("limit", static_cast<std::uint64_t>(limit))
+        .str();
 }
 
 std::string QueryCache::positionKey(std::string_view uri, int line, int character) {
-    std::string key(uri);
-    key.push_back('\x1f');
-    key += std::to_string(line);
-    key.push_back(':');
-    key += std::to_string(character);
-    return key;
+    return QueryCacheKeyBuilder("position")
+        .field("uri", uri)
+        .integer("line", line)
+        .integer("character", character)
+        .str();
 }
 
 std::string QueryCache::referencesKey(std::string_view uri,
                                       int line,
                                       int character,
                                       bool include_declaration) {
-    auto key = positionKey(uri, line, character);
-    key.push_back('\x1f');
-    key += include_declaration ? "1" : "0";
-    return key;
+    return QueryCacheKeyBuilder("references")
+        .field("uri", uri)
+        .integer("line", line)
+        .integer("character", character)
+        .boolean("includeDeclaration", include_declaration)
+        .str();
 }
 
 std::string QueryCache::renameKey(std::string_view uri,
                                   int line,
                                   int character,
                                   std::string_view new_name) {
-    auto key = positionKey(uri, line, character);
-    key.push_back('\x1f');
-    key += new_name;
-    return key;
+    return QueryCacheKeyBuilder("rename")
+        .field("uri", uri)
+        .integer("line", line)
+        .integer("character", character)
+        .field("newName", new_name)
+        .str();
 }
 
 std::string QueryCache::completionKey(std::string_view uri,
                                       int line,
                                       int character,
                                       std::string_view prefix) {
-    auto key = positionKey(uri, line, character);
-    key.push_back('\x1f');
-    key += prefix;
-    return key;
+    return QueryCacheKeyBuilder("completion")
+        .field("uri", uri)
+        .integer("line", line)
+        .integer("character", character)
+        .field("prefix", prefix)
+        .str();
 }
 
 std::string QueryCache::moduleQueryKey(std::optional<std::string_view> module_name, int max_depth) {
-    std::string key = module_name.has_value() ? std::string(*module_name) : std::string("<inferred>");
-    key.push_back('\x1f');
-    key += std::to_string(max_depth);
-    return key;
+    return QueryCacheKeyBuilder("moduleQuery")
+        .boolean("hasModuleName", module_name.has_value())
+        .optionalField("moduleName", module_name)
+        .integer("maxDepth", max_depth)
+        .str();
 }
 
 std::string QueryCache::rangeKey(std::string_view uri, ParseRange range) {
-    auto key = positionKey(uri, range.start_line, range.start_character);
-    key.push_back('\x1f');
-    key += std::to_string(range.end_line);
-    key.push_back(':');
-    key += std::to_string(range.end_character);
-    return key;
+    return QueryCacheKeyBuilder("range")
+        .field("uri", uri)
+        .integer("startLine", range.start_line)
+        .integer("startCharacter", range.start_character)
+        .integer("endLine", range.end_line)
+        .integer("endCharacter", range.end_character)
+        .str();
 }
 
 } // namespace pristine::analysis::semantic

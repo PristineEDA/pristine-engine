@@ -5,6 +5,7 @@
 #include <vector>
 
 using pristine::analysis::semantic::AffectedDependencyGraph;
+using pristine::analysis::semantic::AffectedDependencyEdgeKind;
 
 TEST_CASE("AffectedDependencyGraph traverses include and semantic reverse dependencies",
           "[analysis][semantic][affected]") {
@@ -14,14 +15,24 @@ TEST_CASE("AffectedDependencyGraph traverses include and semantic reverse depend
                           {"file:///workspace/include/defs.svh"});
     graph.setIncludedUris("file:///workspace/wrapper.sv",
                           {"file:///workspace/include/defs.svh"});
-    graph.addSemanticDependency("file:///workspace/pkg.sv", "file:///workspace/top.sv");
-    graph.addSemanticDependency("file:///workspace/top.sv", "file:///workspace/tb.sv");
+    graph.addSemanticDependency(AffectedDependencyEdgeKind::SemanticImport,
+                                "file:///workspace/pkg.sv",
+                                "file:///workspace/top.sv");
+    graph.addSemanticDependency(AffectedDependencyEdgeKind::ModuleInstance,
+                                "file:///workspace/top.sv",
+                                "file:///workspace/tb.sv");
 
     CHECK(graph.includedUris("file:///workspace/top.sv") ==
           std::vector<std::string>{"file:///workspace/include/defs.svh"});
     CHECK(graph.includingUris("file:///workspace/include/defs.svh") ==
           std::vector<std::string>{"file:///workspace/top.sv",
                                    "file:///workspace/wrapper.sv"});
+    CHECK(graph.dependentUris("file:///workspace/pkg.sv",
+                              AffectedDependencyEdgeKind::SemanticImport) ==
+          std::vector<std::string>{"file:///workspace/top.sv"});
+    CHECK(graph.dependentUris("file:///workspace/top.sv",
+                              AffectedDependencyEdgeKind::ModuleInstance) ==
+          std::vector<std::string>{"file:///workspace/tb.sv"});
     CHECK(graph.affectedDocumentUris("file:///workspace/pkg.sv") ==
           std::vector<std::string>{"file:///workspace/pkg.sv",
                                    "file:///workspace/tb.sv",
@@ -31,6 +42,14 @@ TEST_CASE("AffectedDependencyGraph traverses include and semantic reverse depend
                                    "file:///workspace/tb.sv",
                                    "file:///workspace/top.sv",
                                    "file:///workspace/wrapper.sv"});
+
+    const auto stats = graph.stats();
+    CHECK(stats.documents_with_includes == 2);
+    CHECK(stats.include_edges == 2);
+    CHECK(stats.semantic_import_edges == 1);
+    CHECK(stats.module_instance_edges == 1);
+    CHECK(stats.config_edges == 0);
+    CHECK(stats.total_edges == 4);
 }
 
 TEST_CASE("AffectedDependencyGraph replaces include edges and removes documents cleanly",
@@ -54,4 +73,27 @@ TEST_CASE("AffectedDependencyGraph replaces include edges and removes documents 
     CHECK(graph.includingUris("file:///workspace/b.svh").empty());
     CHECK(graph.affectedDocumentUris("file:///workspace/pkg.sv") ==
           std::vector<std::string>{"file:///workspace/pkg.sv"});
+}
+
+TEST_CASE("AffectedDependencyGraph tracks config edges without changing include views",
+          "[analysis][semantic][affected]") {
+    AffectedDependencyGraph graph;
+
+    graph.setIncludedUris("file:///workspace/top.sv", {"file:///workspace/defs.svh"});
+    graph.addSemanticDependency(AffectedDependencyEdgeKind::Config,
+                                "file:///workspace/.slang/server.json",
+                                "file:///workspace/top.sv");
+
+    CHECK(graph.includingUris("file:///workspace/.slang/server.json").empty());
+    CHECK(graph.dependentUris("file:///workspace/.slang/server.json",
+                              AffectedDependencyEdgeKind::Config) ==
+          std::vector<std::string>{"file:///workspace/top.sv"});
+    CHECK(graph.affectedDocumentUris("file:///workspace/.slang/server.json") ==
+          std::vector<std::string>{"file:///workspace/.slang/server.json",
+                                   "file:///workspace/top.sv"});
+
+    const auto stats = graph.stats();
+    CHECK(stats.include_edges == 1);
+    CHECK(stats.config_edges == 1);
+    CHECK(stats.total_edges == 2);
 }

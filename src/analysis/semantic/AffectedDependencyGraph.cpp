@@ -1,6 +1,7 @@
 #include "AffectedDependencyGraph.h"
 
 #include <algorithm>
+#include <array>
 #include <set>
 
 namespace pristine::analysis::semantic {
@@ -23,12 +24,22 @@ void eraseFromReverseEdges(std::unordered_map<std::string, std::vector<std::stri
     }
 }
 
+size_t edgeCount(const std::unordered_map<std::string, std::vector<std::string>>& edges) {
+    size_t result = 0;
+    for (const auto& [_, dependent_uris] : edges) {
+        result += dependent_uris.size();
+    }
+    return result;
+}
+
 } // namespace
 
 void AffectedDependencyGraph::clear() {
     includes_.clear();
     reverse_includes_.clear();
-    reverse_semantic_dependencies_.clear();
+    reverse_semantic_import_dependencies_.clear();
+    reverse_module_instance_dependencies_.clear();
+    reverse_config_dependencies_.clear();
 }
 
 void AffectedDependencyGraph::setIncludedUris(std::string uri, std::vector<std::string> included_uris) {
@@ -42,18 +53,45 @@ void AffectedDependencyGraph::setIncludedUris(std::string uri, std::vector<std::
 }
 
 void AffectedDependencyGraph::addSemanticDependency(std::string dependency_uri, std::string dependent_uri) {
+    addSemanticDependency(AffectedDependencyEdgeKind::SemanticImport,
+                          std::move(dependency_uri),
+                          std::move(dependent_uri));
+}
+
+void AffectedDependencyGraph::addSemanticDependency(AffectedDependencyEdgeKind kind,
+                                                   std::string dependency_uri,
+                                                   std::string dependent_uri) {
     if (dependency_uri == dependent_uri) {
         return;
     }
-    addUnique(reverse_semantic_dependencies_[std::move(dependency_uri)], std::move(dependent_uri));
+    switch (kind) {
+    case AffectedDependencyEdgeKind::SemanticImport:
+        addUnique(reverse_semantic_import_dependencies_[std::move(dependency_uri)],
+                  std::move(dependent_uri));
+        return;
+    case AffectedDependencyEdgeKind::ModuleInstance:
+        addUnique(reverse_module_instance_dependencies_[std::move(dependency_uri)],
+                  std::move(dependent_uri));
+        return;
+    case AffectedDependencyEdgeKind::Config:
+        addUnique(reverse_config_dependencies_[std::move(dependency_uri)], std::move(dependent_uri));
+        return;
+    case AffectedDependencyEdgeKind::Include:
+        addUnique(reverse_includes_[std::move(dependency_uri)], std::move(dependent_uri));
+        return;
+    }
 }
 
 void AffectedDependencyGraph::removeDocument(std::string_view uri) {
     includes_.erase(std::string(uri));
     eraseFromReverseEdges(reverse_includes_, uri);
     reverse_includes_.erase(std::string(uri));
-    eraseFromReverseEdges(reverse_semantic_dependencies_, uri);
-    reverse_semantic_dependencies_.erase(std::string(uri));
+    eraseFromReverseEdges(reverse_semantic_import_dependencies_, uri);
+    reverse_semantic_import_dependencies_.erase(std::string(uri));
+    eraseFromReverseEdges(reverse_module_instance_dependencies_, uri);
+    reverse_module_instance_dependencies_.erase(std::string(uri));
+    eraseFromReverseEdges(reverse_config_dependencies_, uri);
+    reverse_config_dependencies_.erase(std::string(uri));
 }
 
 std::vector<std::string> AffectedDependencyGraph::includedUris(std::string_view uri) const {
@@ -72,10 +110,41 @@ std::vector<std::string> AffectedDependencyGraph::includingUris(std::string_view
     return include_it->second;
 }
 
+std::vector<std::string> AffectedDependencyGraph::dependentUris(
+    std::string_view uri,
+    AffectedDependencyEdgeKind kind) const {
+    const auto* edges = &reverse_semantic_import_dependencies_;
+    switch (kind) {
+    case AffectedDependencyEdgeKind::Include:
+        edges = &reverse_includes_;
+        break;
+    case AffectedDependencyEdgeKind::SemanticImport:
+        edges = &reverse_semantic_import_dependencies_;
+        break;
+    case AffectedDependencyEdgeKind::ModuleInstance:
+        edges = &reverse_module_instance_dependencies_;
+        break;
+    case AffectedDependencyEdgeKind::Config:
+        edges = &reverse_config_dependencies_;
+        break;
+    }
+    const auto edge_it = edges->find(std::string(uri));
+    if (edge_it == edges->end()) {
+        return {};
+    }
+    return edge_it->second;
+}
+
 std::vector<std::string> AffectedDependencyGraph::affectedDocumentUris(std::string_view uri) const {
     std::vector<std::string> result;
     std::set<std::string> seen;
     std::vector<std::string> pending{std::string(uri)};
+    const std::array<const std::unordered_map<std::string, std::vector<std::string>>*, 4> reverse_edges{
+        &reverse_includes_,
+        &reverse_semantic_import_dependencies_,
+        &reverse_module_instance_dependencies_,
+        &reverse_config_dependencies_,
+    };
     while (!pending.empty()) {
         const auto current = pending.back();
         pending.pop_back();
@@ -83,17 +152,25 @@ std::vector<std::string> AffectedDependencyGraph::affectedDocumentUris(std::stri
             continue;
         }
         result.push_back(current);
-        if (const auto reverse_it = reverse_includes_.find(current); reverse_it != reverse_includes_.end()) {
-            pending.insert(pending.end(), reverse_it->second.begin(), reverse_it->second.end());
-        }
-        if (const auto semantic_reverse_it = reverse_semantic_dependencies_.find(current);
-            semantic_reverse_it != reverse_semantic_dependencies_.end()) {
-            pending.insert(pending.end(),
-                           semantic_reverse_it->second.begin(),
-                           semantic_reverse_it->second.end());
+        for (const auto* edges : reverse_edges) {
+            if (const auto reverse_it = edges->find(current); reverse_it != edges->end()) {
+                pending.insert(pending.end(), reverse_it->second.begin(), reverse_it->second.end());
+            }
         }
     }
     std::sort(result.begin(), result.end());
+    return result;
+}
+
+AffectedDependencyGraph::Stats AffectedDependencyGraph::stats() const {
+    Stats result;
+    result.documents_with_includes = includes_.size();
+    result.include_edges = edgeCount(reverse_includes_);
+    result.semantic_import_edges = edgeCount(reverse_semantic_import_dependencies_);
+    result.module_instance_edges = edgeCount(reverse_module_instance_dependencies_);
+    result.config_edges = edgeCount(reverse_config_dependencies_);
+    result.total_edges = result.include_edges + result.semantic_import_edges +
+                         result.module_instance_edges + result.config_edges;
     return result;
 }
 

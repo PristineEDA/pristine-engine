@@ -225,7 +225,10 @@ SnapshotBuildOutput SnapshotBuilder::build(SnapshotBuildInput input) const {
                             continue;
                         }
                         for (const auto& package_uri : package_it->second) {
-                            output.affected_dependencies.addSemanticDependency(package_uri, uri);
+                            output.affected_dependencies.addSemanticDependency(
+                                AffectedDependencyEdgeKind::SemanticImport,
+                                package_uri,
+                                uri);
                         }
                     }
                 }
@@ -237,7 +240,10 @@ SnapshotBuildOutput SnapshotBuilder::build(SnapshotBuildInput input) const {
                             module_it->second == uri) {
                             continue;
                         }
-                        output.affected_dependencies.addSemanticDependency(module_it->second, uri);
+                        output.affected_dependencies.addSemanticDependency(
+                            AffectedDependencyEdgeKind::ModuleInstance,
+                            module_it->second,
+                            uri);
                     }
                 }
             }

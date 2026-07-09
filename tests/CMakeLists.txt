@@ -2,6 +2,7 @@ add_executable(
 	pristine_unit_tests
 	unit/AffectedDependencyGraphTests.cpp
 	unit/AstIndexTests.cpp
+	unit/BackgroundDiagnosticsWorkerTests.cpp
 	unit/CodeActionProviderTests.cpp
 	unit/CompletionProviderTests.cpp
 	unit/CompilationServiceTests.cpp

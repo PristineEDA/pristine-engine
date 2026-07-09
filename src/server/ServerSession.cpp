@@ -5,6 +5,7 @@
 #include "pristine/jsonrpc/JsonRpcServer.h"
 #include "pristine/layout/LayoutSource.h"
 #include "pristine/lsp/Protocol.h"
+#include "pristine/server/BackgroundDiagnosticsWorker.h"
 #include "pristine/waveform/FstWaveformSource.h"
 #include "../analysis/semantic/DebugTrace.h"
 
@@ -960,7 +961,27 @@ analysis::SemanticEngineConfig semanticConfigForWorkspace(const workspace::State
 
 ServerSession::ServerSession(std::string server_name, std::string server_version) :
     server_name_(std::move(server_name)), server_version_(std::move(server_version)) {
-    diagnostics_thread_ = std::thread([this]() { backgroundDiagnosticsLoop(); });
+    background_diagnostics_worker_ = std::make_unique<BackgroundDiagnosticsWorker>(
+        [this](std::string uri, std::vector<analysis::SemanticEngineDiagnostic> diagnostics) {
+            publishDiagnostics(uri, std::move(diagnostics));
+        },
+        [this](const BackgroundDiagnosticsWorker::Document& document,
+               std::uint64_t semantic_generation) -> BackgroundDiagnosticsWorker::PublishDecision {
+            {
+                std::lock_guard semantic_lock(semantic_mutex_);
+                if (semantic_workspace_.engineGeneration() != semantic_generation) {
+                    return {.publish = false, .skip_reason = "semantic-generation-changed"};
+                }
+            }
+            {
+                std::lock_guard state_lock(state_mutex_);
+                const auto* current_document = document_store_.find(document.uri);
+                if (!current_document || current_document->version != document.version) {
+                    return {.publish = false, .skip_reason = "document-stale-or-closed"};
+                }
+            }
+            return {.publish = true, .skip_reason = {}};
+        });
 }
 
 ServerSession::~ServerSession() {
@@ -2406,7 +2427,11 @@ void ServerSession::publishDiagnostics(std::string_view uri,
 }
 
 void ServerSession::scheduleSemanticDiagnosticsPublish(bool allow_cold_snapshot_build) {
-    BackgroundDiagnosticsJob job;
+    if (!background_diagnostics_worker_) {
+        return;
+    }
+
+    BackgroundDiagnosticsWorker::Job job;
     job.allow_cold_snapshot_build = allow_cold_snapshot_build;
     job.config = semanticConfigForWorkspace(workspace_manager_.state());
     job.indexed_source_paths = indexed_source_paths_;
@@ -2416,10 +2441,10 @@ void ServerSession::scheduleSemanticDiagnosticsPublish(bool allow_cold_snapshot_
     {
         std::lock_guard state_lock(state_mutex_);
         for (const auto& [uri, document] : document_store_.documents()) {
-            job.open_documents.push_back(BackgroundDiagnosticsDocument{.uri = uri,
-                                                                       .text = document.text,
-                                                                       .version = document.version,
-                                                                       .dirty = document.dirty});
+            job.open_documents.push_back(BackgroundDiagnosticsWorker::Document{.uri = uri,
+                                                                               .text = document.text,
+                                                                               .version = document.version,
+                                                                               .dirty = document.dirty});
         }
     }
     std::sort(job.open_documents.begin(), job.open_documents.end(), [](const auto& lhs,
@@ -2447,152 +2472,12 @@ void ServerSession::scheduleSemanticDiagnosticsPublish(bool allow_cold_snapshot_
         job.workspace_had_fresh_snapshot = semantic_workspace_.engineHasFreshSnapshot();
     }
 
-    {
-        std::lock_guard background_lock(background_mutex_);
-        diagnostics_stop_requested_ = false;
-        job.request_generation = ++diagnostics_request_generation_;
-        pending_diagnostics_job_ = std::move(job);
-    }
-    background_cv_.notify_one();
-}
-
-void ServerSession::backgroundDiagnosticsLoop() {
-    while (true) {
-        BackgroundDiagnosticsJob job;
-        {
-            std::unique_lock background_lock(background_mutex_);
-            background_cv_.wait(background_lock, [this]() {
-                return diagnostics_stop_requested_ || pending_diagnostics_job_.has_value();
-            });
-            if (diagnostics_stop_requested_) {
-                return;
-            }
-            job = std::move(*pending_diagnostics_job_);
-            pending_diagnostics_job_.reset();
-        }
-
-        try {
-            PRISTINE_DEBUG_TRACE_SCOPE_SIMPLE("server.backgroundDiagnostics");
-            std::this_thread::sleep_for(std::chrono::milliseconds(500));
-            {
-                std::lock_guard background_lock(background_mutex_);
-                if (diagnostics_stop_requested_ ||
-                    job.request_generation != diagnostics_request_generation_) {
-                    analysis::semantic::debugTraceInstant("server.backgroundDiagnostics.skip",
-                                                          "stale-before-build");
-                    continue;
-                }
-            }
-            if (!job.allow_cold_snapshot_build && !job.workspace_had_fresh_snapshot) {
-                analysis::semantic::debugTraceInstant("server.backgroundDiagnostics.skip",
-                                                      "large-workspace-cold-snapshot");
-                continue;
-            }
-
-            analysis::SemanticWorkspace background_workspace;
-            background_workspace.configureSemanticEngine(job.config);
-            background_workspace.setWorkspaceRoot(job.workspace_root_uri);
-            for (const auto& path : job.indexed_source_paths) {
-                const auto text = readFileText(path);
-                if (!text.has_value()) {
-                    continue;
-                }
-                background_workspace.updateDocument(toFileUri(path), *text);
-                {
-                    std::lock_guard background_lock(background_mutex_);
-                    if (diagnostics_stop_requested_ ||
-                        job.request_generation != diagnostics_request_generation_) {
-                        analysis::semantic::debugTraceInstant("server.backgroundDiagnostics.skip",
-                                                              "stale-during-index");
-                        break;
-                    }
-                }
-            }
-            {
-                std::lock_guard background_lock(background_mutex_);
-                if (diagnostics_stop_requested_ ||
-                    job.request_generation != diagnostics_request_generation_) {
-                    continue;
-                }
-            }
-            for (const auto& document : job.open_documents) {
-                background_workspace.updateDocument(document.uri,
-                                                    document.text,
-                                                    analysis::SemanticDocumentState{
-                                                        .version = document.version,
-                                                        .is_open = true,
-                                                        .dirty = document.dirty,
-                                                        .invalidate_dependents = true});
-                {
-                    std::lock_guard background_lock(background_mutex_);
-                    if (diagnostics_stop_requested_ ||
-                        job.request_generation != diagnostics_request_generation_) {
-                        analysis::semantic::debugTraceInstant("server.backgroundDiagnostics.skip",
-                                                              "stale-during-open-documents");
-                        break;
-                    }
-                }
-            }
-
-            for (const auto& document : job.open_documents) {
-                {
-                    std::lock_guard background_lock(background_mutex_);
-                    if (diagnostics_stop_requested_ ||
-                        job.request_generation != diagnostics_request_generation_) {
-                        analysis::semantic::debugTraceInstant("server.backgroundDiagnostics.skip",
-                                                              "stale-before-publish");
-                        break;
-                    }
-                }
-
-                auto diagnostics = background_workspace.engineDiagnosticsFor(document.uri);
-
-                {
-                    std::lock_guard background_lock(background_mutex_);
-                    if (diagnostics_stop_requested_ ||
-                        job.request_generation != diagnostics_request_generation_) {
-                        break;
-                    }
-                }
-                {
-                    std::lock_guard semantic_lock(semantic_mutex_);
-                    if (semantic_workspace_.engineGeneration() != job.semantic_generation) {
-                        analysis::semantic::debugTraceInstant("server.backgroundDiagnostics.skip",
-                                                              "semantic-generation-changed");
-                        continue;
-                    }
-                }
-                {
-                    std::lock_guard state_lock(state_mutex_);
-                    const auto* current_document = document_store_.find(document.uri);
-                    if (!current_document || current_document->version != document.version) {
-                        analysis::semantic::debugTraceInstant("server.backgroundDiagnostics.skip",
-                                                              "document-stale-or-closed");
-                        continue;
-                    }
-                }
-                publishDiagnostics(document.uri, std::move(diagnostics));
-            }
-        }
-        catch (const std::exception& error) {
-            analysis::semantic::debugTraceInstant("server.backgroundDiagnostics.error", error.what());
-        }
-        catch (...) {
-            analysis::semantic::debugTraceInstant("server.backgroundDiagnostics.error", "unknown");
-        }
-    }
+    background_diagnostics_worker_->schedule(std::move(job));
 }
 
 void ServerSession::stopBackgroundDiagnostics() {
-    {
-        std::lock_guard background_lock(background_mutex_);
-        diagnostics_stop_requested_ = true;
-        pending_diagnostics_job_.reset();
-        ++diagnostics_request_generation_;
-    }
-    background_cv_.notify_one();
-    if (diagnostics_thread_.joinable()) {
-        diagnostics_thread_.join();
+    if (background_diagnostics_worker_) {
+        background_diagnostics_worker_->stop();
     }
 }
 

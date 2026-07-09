@@ -242,6 +242,7 @@ add_library(
   src/layout/LayoutSpatialIndex.cpp
   src/layout/LayoutSource.cpp
   src/lsp/Protocol.cpp
+  src/server/BackgroundDiagnosticsWorker.cpp
   src/server/ServerSession.cpp
   src/transport/StdioTransport.cpp
   src/waveform/WaveformBinaryProtocol.cpp
