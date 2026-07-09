@@ -55,6 +55,12 @@ TEST_CASE("BackgroundDiagnosticsWorker publishes full diagnostics for a current 
     std::unique_lock lock(mutex);
     REQUIRE(cv.wait_for(lock, std::chrono::seconds(5), [&]() { return published; }));
     CHECK_FALSE(published_diagnostics.empty());
+    lock.unlock();
+    REQUIRE(worker.waitUntilIdle(std::chrono::seconds(5)));
+    const auto state = worker.stateSnapshot();
+    CHECK(state.state == BackgroundDiagnosticsWorker::StateKind::Published);
+    CHECK(state.last_uri == "file:///workspace/top.sv");
+    CHECK(state.last_phase == "published");
     worker.stop();
 }
 
@@ -93,6 +99,30 @@ TEST_CASE("BackgroundDiagnosticsWorker suppresses stale publish decisions",
 
     std::lock_guard lock(mutex);
     CHECK_FALSE(published);
+}
+
+TEST_CASE("BackgroundDiagnosticsWorker exposes pending running and idle state snapshots",
+          "[server][diagnostics][background]") {
+    BackgroundDiagnosticsWorker worker(
+        [](std::string, std::vector<analysis::SemanticEngineDiagnostic>) {},
+        [](const BackgroundDiagnosticsWorker::Document&, std::uint64_t) {
+            return BackgroundDiagnosticsWorker::PublishDecision{.publish = false,
+                                                                .skip_reason = "document-closed"};
+        },
+        std::chrono::milliseconds(20));
+
+    worker.schedule(singleDocumentJob("module top; endmodule\n"));
+    const auto scheduled = worker.stateSnapshot();
+    CHECK((scheduled.state == BackgroundDiagnosticsWorker::StateKind::Pending ||
+           scheduled.state == BackgroundDiagnosticsWorker::StateKind::Running));
+    CHECK(scheduled.open_document_count == 1);
+
+    REQUIRE(worker.waitUntilIdle(std::chrono::seconds(5)));
+    const auto completed = worker.stateSnapshot();
+    CHECK(completed.state == BackgroundDiagnosticsWorker::StateKind::ClosedSkipped);
+    CHECK(completed.last_skip_reason == "document-closed");
+    CHECK(completed.elapsed_micros >= 0);
+    worker.stop();
 }
 
 } // namespace pristine::server

@@ -57,6 +57,54 @@ TEST_CASE("SnapshotBuilder exposes build input/output value contracts",
     REQUIRE(output.data != nullptr);
 }
 
+TEST_CASE("SnapshotBuilder normalizes build input deterministically",
+          "[analysis][semantic][snapshot-builder]") {
+    SnapshotBuildInput input{
+        .generation = 15,
+        .config = SemanticEngineConfig{
+            .top_modules = {"z_top", "a_top", "z_top"},
+            .index = {SemanticEngineConfig::IndexConfig{
+                          .dirs = {"file:///workspace/z", "file:///workspace/a", "file:///workspace/a"},
+                          .exclude_dirs = {"file:///workspace/tmp", "file:///workspace/tmp"}},
+                      SemanticEngineConfig::IndexConfig{}}},
+        .dirty_document_uris = {"file:///workspace/b.sv",
+                                "file:///workspace/a.sv",
+                                "file:///workspace/a.sv"},
+        .documents = {{"file:///workspace/top.sv",
+                       SemanticEngineDocument{.text = "module stale; endmodule\n",
+                                              .version = 1}},
+                      {"file:///workspace/top.sv/",
+                       SemanticEngineDocument{.uri = "file:///workspace/top.sv/",
+                                              .text = "module top; endmodule\n",
+                                              .version = 2,
+                                              .is_open = true,
+                                              .dirty = true}}}};
+
+    auto normalized = normalizeSnapshotBuildInput(std::move(input));
+    const auto summary = snapshotBuildInputSummary(normalized);
+
+    CHECK(normalized.config.top_modules == std::vector<std::string>{"a_top", "z_top"});
+    REQUIRE(normalized.config.index.size() == 1);
+    CHECK(normalized.config.index.front().dirs ==
+          std::vector<std::string>{"file:///workspace/a", "file:///workspace/z"});
+    CHECK(normalized.config.index.front().exclude_dirs ==
+          std::vector<std::string>{"file:///workspace/tmp"});
+    CHECK(normalized.dirty_document_uris == std::vector<std::string>{"file:///workspace/a.sv",
+                                                                     "file:///workspace/b.sv"});
+    REQUIRE(normalized.documents.size() == 1);
+    const auto document_it = normalized.documents.find("file:///workspace/top.sv");
+    REQUIRE(document_it != normalized.documents.end());
+    CHECK(document_it->second.uri == "file:///workspace/top.sv");
+    CHECK(document_it->second.version == 2);
+    CHECK(document_it->second.is_open);
+    CHECK(document_it->second.dirty);
+    CHECK(summary.document_count == 1);
+    CHECK(summary.open_document_count == 1);
+    CHECK(summary.dirty_document_count == 1);
+    CHECK(summary.top_module_count == 2);
+    CHECK(summary.index_config_count == 1);
+}
+
 TEST_CASE("SnapshotBuilder builds syntax, diagnostics, and include dependency edges",
           "[analysis][semantic][snapshot-builder]") {
     SnapshotBuildInput input{.generation = 12,

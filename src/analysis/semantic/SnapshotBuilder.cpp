@@ -73,6 +73,27 @@ void addUnique(std::vector<std::string>& values, std::string value) {
     values.erase(std::unique(values.begin(), values.end()), values.end());
 }
 
+void sortUnique(std::vector<std::string>& values) {
+    std::sort(values.begin(), values.end());
+    values.erase(std::unique(values.begin(), values.end()), values.end());
+}
+
+std::string normalizedDocumentUri(std::string_view key, const SemanticEngineDocument& document) {
+    const auto source_uri = document.uri.empty() ? std::string(key) : document.uri;
+    return withoutTrailingSlash(normalizeFileUri(source_uri));
+}
+
+bool shouldReplaceDocument(const SemanticEngineDocument& existing,
+                           const SemanticEngineDocument& candidate) {
+    if (candidate.is_open != existing.is_open) {
+        return candidate.is_open;
+    }
+    if (candidate.version != existing.version) {
+        return candidate.version > existing.version;
+    }
+    return candidate.dirty && !existing.dirty;
+}
+
 } // namespace
 
 SnapshotData::SnapshotData() = default;
@@ -80,10 +101,71 @@ SnapshotData::~SnapshotData() = default;
 SnapshotData::SnapshotData(SnapshotData&&) noexcept = default;
 SnapshotData& SnapshotData::operator=(SnapshotData&&) noexcept = default;
 
+SnapshotBuildInput normalizeSnapshotBuildInput(SnapshotBuildInput input) {
+    sortUnique(input.config.top_modules);
+    for (auto& index_config : input.config.index) {
+        sortUnique(index_config.dirs);
+        sortUnique(index_config.exclude_dirs);
+    }
+    input.config.index.erase(std::remove_if(input.config.index.begin(),
+                                            input.config.index.end(),
+                                            [](const SemanticEngineConfig::IndexConfig& index_config) {
+                                                return index_config.dirs.empty();
+                                            }),
+                             input.config.index.end());
+
+    for (auto& uri : input.dirty_document_uris) {
+        uri = withoutTrailingSlash(normalizeFileUri(uri));
+    }
+    sortUnique(input.dirty_document_uris);
+
+    std::unordered_map<std::string, SemanticEngineDocument> normalized_documents;
+    normalized_documents.reserve(input.documents.size());
+    for (auto& document_entry : input.documents) {
+        auto document = std::move(document_entry.second);
+        const auto document_uri = normalizedDocumentUri(document_entry.first, document);
+        document.uri = document_uri;
+
+        const auto existing_it = normalized_documents.find(document_uri);
+        if (existing_it == normalized_documents.end()) {
+            normalized_documents.emplace(document_uri, std::move(document));
+        }
+        else if (shouldReplaceDocument(existing_it->second, document)) {
+            existing_it->second = std::move(document);
+        }
+    }
+    input.documents = std::move(normalized_documents);
+    return input;
+}
+
+SnapshotBuildInputSummary snapshotBuildInputSummary(const SnapshotBuildInput& input) {
+    SnapshotBuildInputSummary summary;
+    summary.document_count = input.documents.size();
+    summary.top_module_count = input.config.top_modules.size();
+    summary.index_config_count = input.config.index.size();
+    for (const auto& document_entry : input.documents) {
+        if (document_entry.second.is_open) {
+            ++summary.open_document_count;
+        }
+        if (document_entry.second.dirty) {
+            ++summary.dirty_document_count;
+        }
+    }
+    return summary;
+}
+
 SnapshotBuildOutput SnapshotBuilder::build(SnapshotBuildInput input) const {
+    input = normalizeSnapshotBuildInput(std::move(input));
+    const auto input_summary = snapshotBuildInputSummary(input);
     PRISTINE_DEBUG_TRACE_SCOPE("snapshotBuilder.build",
-                               std::to_string(input.documents.size()) + " documents generation=" +
-                                   std::to_string(input.generation));
+                               std::to_string(input_summary.document_count) +
+                                   " documents open=" +
+                                   std::to_string(input_summary.open_document_count) +
+                                   " dirty=" +
+                                   std::to_string(input_summary.dirty_document_count) +
+                                   " topModules=" +
+                                   std::to_string(input_summary.top_module_count) +
+                                   " generation=" + std::to_string(input.generation));
     auto data = std::make_unique<SnapshotData>();
     data->source_manager = std::make_unique<slang::SourceManager>();
     data->source_manager->setDisableProximatePaths(true);

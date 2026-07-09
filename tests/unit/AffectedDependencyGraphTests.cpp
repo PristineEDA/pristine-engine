@@ -50,6 +50,21 @@ TEST_CASE("AffectedDependencyGraph traverses include and semantic reverse depend
     CHECK(stats.module_instance_edges == 1);
     CHECK(stats.config_edges == 0);
     CHECK(stats.total_edges == 4);
+
+    const auto edges = graph.edges();
+    REQUIRE(edges.size() == 4);
+    CHECK(edges[0].kind == AffectedDependencyEdgeKind::Include);
+    CHECK(edges[0].dependency_uri == "file:///workspace/include/defs.svh");
+    CHECK(edges[0].dependent_uri == "file:///workspace/top.sv");
+    CHECK(edges[1].kind == AffectedDependencyEdgeKind::Include);
+    CHECK(edges[1].dependency_uri == "file:///workspace/include/defs.svh");
+    CHECK(edges[1].dependent_uri == "file:///workspace/wrapper.sv");
+    CHECK(edges[2].kind == AffectedDependencyEdgeKind::SemanticImport);
+    CHECK(edges[2].dependency_uri == "file:///workspace/pkg.sv");
+    CHECK(edges[2].dependent_uri == "file:///workspace/top.sv");
+    CHECK(edges[3].kind == AffectedDependencyEdgeKind::ModuleInstance);
+    CHECK(edges[3].dependency_uri == "file:///workspace/top.sv");
+    CHECK(edges[3].dependent_uri == "file:///workspace/tb.sv");
 }
 
 TEST_CASE("AffectedDependencyGraph replaces include edges and removes documents cleanly",

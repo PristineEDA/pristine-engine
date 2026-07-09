@@ -34,6 +34,7 @@ public:
 
     void clear();
     void resetStats();
+    [[nodiscard]] Stats snapshotAndResetStats();
     void setMaxEntriesPerQuery(size_t max_entries);
     [[nodiscard]] Stats stats() const;
 

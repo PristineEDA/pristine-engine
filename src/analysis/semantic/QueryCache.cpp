@@ -94,6 +94,12 @@ void QueryCache::resetStats() {
     evictions_ = 0;
 }
 
+QueryCache::Stats QueryCache::snapshotAndResetStats() {
+    auto result = stats();
+    resetStats();
+    return result;
+}
+
 void QueryCache::setMaxEntriesPerQuery(size_t max_entries) {
     max_entries_per_query_ = max_entries;
     evictOldestEntries(workspace_symbols_by_key_);

@@ -162,6 +162,39 @@ std::vector<std::string> AffectedDependencyGraph::affectedDocumentUris(std::stri
     return result;
 }
 
+std::vector<AffectedDependencyGraph::Edge> AffectedDependencyGraph::edges() const {
+    std::vector<Edge> result;
+    const auto append_edges = [&](AffectedDependencyEdgeKind kind,
+                                  const std::unordered_map<std::string, std::vector<std::string>>& edges) {
+        for (const auto& [dependency_uri, dependent_uris] : edges) {
+            for (const auto& dependent_uri : dependent_uris) {
+                result.push_back(Edge{.kind = kind,
+                                      .dependency_uri = dependency_uri,
+                                      .dependent_uri = dependent_uri});
+            }
+        }
+    };
+
+    append_edges(AffectedDependencyEdgeKind::Include, reverse_includes_);
+    append_edges(AffectedDependencyEdgeKind::SemanticImport, reverse_semantic_import_dependencies_);
+    append_edges(AffectedDependencyEdgeKind::ModuleInstance, reverse_module_instance_dependencies_);
+    append_edges(AffectedDependencyEdgeKind::Config, reverse_config_dependencies_);
+    std::sort(result.begin(),
+              result.end(),
+              [](const Edge& left, const Edge& right) {
+                  const auto left_kind = static_cast<int>(left.kind);
+                  const auto right_kind = static_cast<int>(right.kind);
+                  if (left_kind != right_kind) {
+                      return left_kind < right_kind;
+                  }
+                  if (left.dependency_uri != right.dependency_uri) {
+                      return left.dependency_uri < right.dependency_uri;
+                  }
+                  return left.dependent_uri < right.dependent_uri;
+              });
+    return result;
+}
+
 AffectedDependencyGraph::Stats AffectedDependencyGraph::stats() const {
     Stats result;
     result.documents_with_includes = includes_.size();

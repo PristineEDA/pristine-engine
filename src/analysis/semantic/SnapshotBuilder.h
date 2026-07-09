@@ -132,6 +132,14 @@ struct SnapshotBuildInput {
     std::unordered_map<std::string, SemanticEngineDocument> documents;
 };
 
+struct SnapshotBuildInputSummary {
+    size_t document_count = 0;
+    size_t open_document_count = 0;
+    size_t dirty_document_count = 0;
+    size_t top_module_count = 0;
+    size_t index_config_count = 0;
+};
+
 struct SnapshotBuildOutput {
     SemanticEngineSnapshot snapshot;
     std::unique_ptr<SnapshotData> data;
@@ -141,6 +149,9 @@ struct SnapshotBuildOutput {
 [[nodiscard]] constexpr std::string_view snapshotBuilderProviderName() {
     return "SnapshotBuilder";
 }
+
+[[nodiscard]] SnapshotBuildInput normalizeSnapshotBuildInput(SnapshotBuildInput input);
+[[nodiscard]] SnapshotBuildInputSummary snapshotBuildInputSummary(const SnapshotBuildInput& input);
 
 class SnapshotBuilder {
 public:

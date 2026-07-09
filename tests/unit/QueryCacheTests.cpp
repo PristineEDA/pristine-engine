@@ -104,6 +104,33 @@ TEST_CASE("QueryCache distinguishes inferred and explicit module hierarchy keys"
     CHECK(explicit_hit->roots.front().module_name == "<inferred>");
 }
 
+TEST_CASE("QueryCache typed completion keys avoid delimiter collisions",
+          "[analysis][semantic][query-cache]") {
+    QueryCache cache;
+
+    SemanticCompletionResult first;
+    first.generation = 1;
+    first.items.push_back(SemanticCompletionItem{.label = "from-uri-with-delimiter"});
+    cache.storeCompletions(1, "file:///workspace/a|1", 2, 3, "x", std::move(first));
+
+    SemanticCompletionResult second;
+    second.generation = 1;
+    second.items.push_back(SemanticCompletionItem{.label = "from-prefix-with-delimiter"});
+    cache.storeCompletions(1, "file:///workspace/a", 1, 2, "3|x", std::move(second));
+
+    const auto first_hit = cache.completions(1, "file:///workspace/a|1", 2, 3, "x");
+    REQUIRE(first_hit.has_value());
+    REQUIRE(first_hit->items.size() == 1);
+    CHECK(first_hit->items.front().label == "from-uri-with-delimiter");
+
+    const auto second_hit = cache.completions(1, "file:///workspace/a", 1, 2, "3|x");
+    REQUIRE(second_hit.has_value());
+    REQUIRE(second_hit->items.size() == 1);
+    CHECK(second_hit->items.front().label == "from-prefix-with-delimiter");
+
+    CHECK(cache.stats().completions_entries == 2);
+}
+
 TEST_CASE("QueryCache keeps diagnostics entries outside visible query eviction",
           "[analysis][semantic][query-cache]") {
     QueryCache cache;
@@ -118,6 +145,62 @@ TEST_CASE("QueryCache keeps diagnostics entries outside visible query eviction",
 
     CHECK(cache.diagnostics(1, "file:///a.sv").has_value());
     CHECK(cache.diagnostics(1, "file:///b.sv").has_value());
+}
+
+TEST_CASE("QueryCache snapshots and resets counters without clearing entries",
+          "[analysis][semantic][query-cache]") {
+    QueryCache cache;
+
+    cache.storeDiagnostics(7, "file:///workspace/top.sv", {});
+
+    SemanticSignatureHelpResult signature_help;
+    signature_help.generation = 7;
+    cache.storeSignatureHelp(7, "file:///workspace/top.sv", 1, 2, std::move(signature_help));
+
+    SemanticInlayHintResult inlay_hints;
+    inlay_hints.generation = 7;
+    cache.storeInlayHints(7,
+                          "file:///workspace/top.sv",
+                          ParseRange{.start_line = 0,
+                                     .start_character = 0,
+                                     .end_line = 1,
+                                     .end_character = 0},
+                          std::move(inlay_hints));
+
+    SemanticCodeActionResult code_actions;
+    code_actions.generation = 7;
+    cache.storeCodeActions(7,
+                           "file:///workspace/top.sv",
+                           ParseRange{.start_line = 1,
+                                      .start_character = 0,
+                                      .end_line = 1,
+                                      .end_character = 4},
+                           std::move(code_actions));
+
+    CHECK(cache.signatureHelp(7, "file:///workspace/top.sv", 1, 2).has_value());
+    CHECK(cache.inlayHints(7,
+                           "file:///workspace/top.sv",
+                           ParseRange{.start_line = 0,
+                                      .start_character = 0,
+                                      .end_line = 1,
+                                      .end_character = 0})
+              .has_value());
+
+    const auto snapshot = cache.snapshotAndResetStats();
+    CHECK(snapshot.stores == 4);
+    CHECK(snapshot.hits == 2);
+    CHECK(snapshot.diagnostics_entries == 1);
+    CHECK(snapshot.signature_help_entries == 1);
+    CHECK(snapshot.inlay_hints_entries == 1);
+    CHECK(snapshot.code_actions_entries == 1);
+    CHECK(snapshot.total_entries == 4);
+
+    const auto reset = cache.stats();
+    CHECK(reset.hits == 0);
+    CHECK(reset.misses == 0);
+    CHECK(reset.stores == 0);
+    CHECK(reset.evictions == 0);
+    CHECK(reset.total_entries == 4);
 }
 
 } // namespace pristine::analysis::semantic

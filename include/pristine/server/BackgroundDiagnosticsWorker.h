@@ -4,6 +4,7 @@
 
 #include <chrono>
 #include <condition_variable>
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <functional>
@@ -17,6 +18,16 @@ namespace pristine::server {
 
 class BackgroundDiagnosticsWorker {
 public:
+    enum class StateKind {
+        Idle,
+        Pending,
+        Running,
+        StaleSkipped,
+        ClosedSkipped,
+        Published,
+        Failed,
+    };
+
     struct Document {
         std::string uri;
         std::string text;
@@ -40,6 +51,16 @@ public:
         std::string skip_reason;
     };
 
+    struct StateSnapshot {
+        StateKind state = StateKind::Idle;
+        std::uint64_t request_generation = 0;
+        std::string last_uri;
+        std::string last_phase;
+        std::string last_skip_reason;
+        std::int64_t elapsed_micros = 0;
+        size_t open_document_count = 0;
+    };
+
     using PublishCallback =
         std::function<void(std::string, std::vector<analysis::SemanticEngineDiagnostic>)>;
     using ShouldPublishCallback =
@@ -55,10 +76,21 @@ public:
 
     void schedule(Job job);
     void stop();
+    [[nodiscard]] StateSnapshot stateSnapshot() const;
+    [[nodiscard]] bool waitUntilIdle(std::chrono::milliseconds timeout);
 
 private:
     [[nodiscard]] bool isCurrentJob(std::uint64_t request_generation,
-                                    std::string_view stale_reason) const;
+                                    std::string_view stale_reason);
+    void setStateLocked(StateKind state,
+                        std::string_view phase,
+                        std::string_view uri = {},
+                        std::string_view skip_reason = {});
+    void setState(StateKind state,
+                  std::string_view phase,
+                  std::string_view uri = {},
+                  std::string_view skip_reason = {});
+    [[nodiscard]] bool isIdleLocked() const;
     void loop();
 
     PublishCallback publish_;
@@ -70,6 +102,8 @@ private:
     std::thread thread_;
     std::optional<Job> pending_job_;
     std::uint64_t request_generation_ = 0;
+    StateSnapshot state_;
+    std::chrono::steady_clock::time_point job_started_at_{};
     bool stop_requested_ = false;
 };
 
