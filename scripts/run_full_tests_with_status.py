@@ -4,22 +4,26 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import queue
 import re
-import shutil
 import subprocess
 import sys
 import threading
 import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from pathlib import Path
 
 
-SUMMARY_SCHEMA_VERSION = 2
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
+import gate_contract
+
+
+SUMMARY_SCHEMA_VERSION = gate_contract.SUMMARY_SCHEMA_VERSION
 DEFAULT_HEARTBEAT_SECONDS = 30.0
 DEFAULT_MANIFEST_PATH = Path(__file__).resolve().parents[1] / "tests" / "gate_manifest.json"
 ENVIRONMENT_SUMMARY_KEYS = (
@@ -57,7 +61,7 @@ class TestResult:
 
 
 def repository_root() -> Path:
-    return Path(__file__).resolve().parents[1]
+    return gate_contract.repository_root()
 
 
 def _string_list(data: object, field_name: str) -> list[str]:
@@ -185,29 +189,25 @@ def git_output(args: list[str]) -> str:
 
 
 def git_head() -> str:
-    return git_output(["rev-parse", "--short", "HEAD"]) or "unknown"
+    try:
+        return gate_contract.git_head(repository_root())
+    except RuntimeError:
+        return "unknown"
 
 
 def git_dirty() -> bool | None:
-    output = git_output(["status", "--short"])
-    if output:
-        return True
-    probe = git_output(["rev-parse", "--is-inside-work-tree"])
-    if probe:
-        return False
-    return None
+    try:
+        return gate_contract.git_dirty(repository_root())
+    except RuntimeError:
+        return None
 
 
 def utc_timestamp() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+    return gate_contract.utc_timestamp()
 
 
 def file_sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+    return gate_contract.file_sha256(path)
 
 
 def infer_build_preset(build_dir: Path) -> str:
@@ -258,28 +258,7 @@ def emit_status(
 
 
 def find_ctest(explicit: str | None) -> str:
-    if explicit:
-        return explicit
-    env_ctest = os.environ.get("CTEST")
-    if env_ctest:
-        return env_ctest
-    path_ctest = shutil.which("ctest")
-    if path_ctest:
-        return path_ctest
-    if os.name == "nt":
-        candidates: list[Path] = []
-        roots = [
-            Path("C:/Program Files/Microsoft Visual Studio"),
-            Path("C:/Program Files (x86)/Microsoft Visual Studio"),
-        ]
-        suffix = Path("Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/bin/ctest.exe")
-        for root in roots:
-            if root.is_dir():
-                candidates.extend(sorted(root.glob(f"*/*/{suffix.as_posix()}"), reverse=True))
-        for candidate in candidates:
-            if candidate.is_file():
-                return str(candidate)
-    return "ctest"
+    return gate_contract.find_ctest(explicit)
 
 
 def parse_ctest_names(output: str) -> list[str]:
@@ -534,7 +513,15 @@ def build_summary_payload(
     ended_at: str | None = None,
     duration_seconds: float | None = None,
     artifact_root: Path | None = None,
+    run_context: dict | None = None,
+    gate_errors: list[str] | None = None,
 ) -> dict:
+    if run_context is None:
+        run_context = gate_contract.create_run_context(
+            repository_root(),
+            manifest.path,
+        )
+    gate_errors = list(gate_errors or [])
     optional_names = set(manifest.optional_skip_tests)
     required_names = set(manifest.required_tests) - optional_names
     required_skipped = [
@@ -544,22 +531,43 @@ def build_summary_payload(
         result for result in results if result.status == "skipped" and result.name in optional_names
     ]
     missing_environment = missing_required_environment(manifest, environment)
+    strict_manifest_errors = manifest_check_errors(all_tests, manifest, environment)
+    provenance = gate_contract.summary_provenance(run_context, repository_root())
+    failed_count = sum(1 for result in results if result.status == "failed")
+    status = "passed"
+    if (
+        failed_count
+        or required_skipped
+        or gate_errors
+        or not provenance["sourceStable"]
+        or (full_gate_enforced and strict_manifest_errors)
+    ):
+        status = "failed"
     return {
         "schemaVersion": SUMMARY_SCHEMA_VERSION,
+        "gateType": "full-debug",
+        "status": status,
         "startedAt": started_at or utc_timestamp(),
         "endedAt": ended_at or utc_timestamp(),
         "durationSeconds": round(
             duration_seconds if duration_seconds is not None else sum(result.duration_seconds for result in results),
             3,
         ),
-        "manifestHash": file_sha256(manifest.path),
+        "manifestHash": run_context.get("manifestHash", file_sha256(manifest.path)),
         "buildPreset": infer_build_preset(build_dir),
         "buildType": infer_build_type(build_dir),
+        "build": gate_contract.build_metadata(
+            build_dir,
+            preset=infer_build_preset(build_dir),
+            build_type=infer_build_type(build_dir),
+        ),
+        "provenance": provenance,
+        "gateErrors": gate_errors,
         "requiredEnvironmentSatisfied": len(missing_environment) == 0,
         "artifactRoot": str((artifact_root or build_dir / "test-status-logs").resolve()),
         "total": len(results),
         "passed": sum(1 for result in results if result.status == "passed"),
-        "failed": sum(1 for result in results if result.status == "failed"),
+        "failed": failed_count,
         "skipped": sum(1 for result in results if result.status == "skipped"),
         "requiredPassed": sum(
             1 for result in results if result.status == "passed" and result.name in required_names
@@ -567,7 +575,7 @@ def build_summary_payload(
         "requiredSkipped": len(required_skipped),
         "optionalSkipped": len(optional_skipped),
         "requiredMissing": missing_required_tests(all_tests, manifest),
-        "manifestErrors": manifest_check_errors(all_tests, manifest, environment),
+        "manifestErrors": strict_manifest_errors,
         "unclassifiedTests": unclassified_tests(all_tests, manifest),
         "missingRequiredEnvironment": missing_environment,
         "knownManifestTests": known_manifest_tests(manifest),
@@ -579,8 +587,8 @@ def build_summary_payload(
         "runnerSelfTest": manifest.runner_self_test,
         "runnerSelfTestPresent": manifest.runner_self_test in set(all_tests),
         "fullGateEnforced": full_gate_enforced,
-        "gitHead": git_head(),
-        "gitDirty": git_dirty(),
+        "gitHead": provenance["gitHead"],
+        "gitDirty": provenance["gitDirty"],
         "requiredTests": list(manifest.required_tests),
         "optionalSkipTests": sorted(manifest.optional_skip_tests),
         "requiredEnvironment": list(manifest.required_environment),
@@ -624,7 +632,9 @@ def write_summary(
     full_gate_enforced: bool,
     started_at: str | None = None,
     suite_started_at: float | None = None,
-) -> None:
+    run_context: dict | None = None,
+    gate_errors: list[str] | None = None,
+) -> dict:
     ended_at = utc_timestamp()
     duration_seconds = None
     if suite_started_at is not None:
@@ -641,9 +651,12 @@ def write_summary(
         ended_at=ended_at,
         duration_seconds=duration_seconds,
         artifact_root=path.parent,
+        run_context=run_context,
+        gate_errors=gate_errors,
     )
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    return payload
 
 
 def main() -> int:
@@ -651,6 +664,7 @@ def main() -> int:
     parser.add_argument("--build-dir", default="build/dev", type=Path)
     parser.add_argument("--ctest", default=None)
     parser.add_argument("--manifest", default=DEFAULT_MANIFEST_PATH, type=Path)
+    parser.add_argument("--run-context", default=None, type=Path)
     parser.add_argument("--only", action="append", default=[])
     parser.add_argument("--exclude", action="append", default=[])
     parser.add_argument("--logs-dir", default=None, type=Path)
@@ -663,6 +677,22 @@ def main() -> int:
     try:
         manifest = load_gate_manifest(args.manifest)
     except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+
+    workspace = repository_root()
+    try:
+        run_context = (
+            gate_contract.load_run_context(args.run_context.resolve())
+            if args.run_context
+            else gate_contract.create_run_context(workspace, manifest.path)
+        )
+        context_errors = gate_contract.validate_run_context(
+            run_context,
+            workspace,
+            manifest_path=manifest.path,
+        )
+    except RuntimeError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
 
@@ -688,6 +718,24 @@ def main() -> int:
     emit_status("suite", "discover", suite_started_at, f"buildDir={build_dir}", jsonl_path)
     all_tests = list_tests(ctest, build_dir)
     manifest_errors = manifest_check_errors(all_tests, manifest)
+    if context_errors:
+        write_summary(
+            [],
+            summary_path,
+            all_tests=all_tests,
+            selected=[],
+            build_dir=build_dir,
+            ctest=ctest,
+            manifest=manifest,
+            full_gate_enforced=full_gate_enforced,
+            started_at=suite_started_wall,
+            suite_started_at=suite_started_at,
+            run_context=run_context,
+            gate_errors=context_errors,
+        )
+        for error in context_errors:
+            print(f"PROVENANCE-ERROR {error}", file=sys.stderr)
+        return 1
     if args.check_manifest_only:
         write_summary(
             [],
@@ -700,6 +748,7 @@ def main() -> int:
             full_gate_enforced=True,
             started_at=suite_started_wall,
             suite_started_at=suite_started_at,
+            run_context=run_context,
         )
         if manifest_errors:
             for error in manifest_errors:
@@ -722,7 +771,7 @@ def main() -> int:
         emit_status("suite", "test", suite_started_at, f"{index}/{len(tests)} {name}", jsonl_path)
         results.append(run_one_test(ctest, build_dir, name, logs_dir, heartbeat_seconds, jsonl_path))
 
-    write_summary(
+    summary = write_summary(
         results,
         summary_path,
         all_tests=all_tests,
@@ -733,6 +782,7 @@ def main() -> int:
         full_gate_enforced=full_gate_enforced,
         started_at=suite_started_wall,
         suite_started_at=suite_started_at,
+        run_context=run_context,
     )
     failed = [result for result in results if result.status == "failed"]
     required_skips = required_skip_results(results, manifest)
@@ -745,7 +795,7 @@ def main() -> int:
     )
     emit_status("suite", "summary", suite_started_at, detail, jsonl_path)
 
-    if failed or required_skips or (full_gate_enforced and manifest_errors):
+    if summary["status"] != "passed":
         for result in failed:
             print(f"FAILED {result.name}: log={result.log_path}", file=sys.stderr)
         for result in required_skips:
@@ -758,6 +808,11 @@ def main() -> int:
                 print(f"REQUIRED-MISSING {name}", file=sys.stderr)
             for error in manifest_errors:
                 print(f"MANIFEST-ERROR {error}", file=sys.stderr)
+        if not summary["provenance"]["sourceStable"]:
+            print(
+                "PROVENANCE-ERROR source changed while the full Debug gate was running",
+                file=sys.stderr,
+            )
         return 1
     return 0
 

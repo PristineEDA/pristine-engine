@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -20,6 +22,69 @@ def load_script(name: str):
     sys.modules[path.stem] = module
     spec.loader.exec_module(module)
     return module
+
+
+def initialize_git_repo(root: Path) -> None:
+    subprocess.run(["git", "init"], cwd=root, check=True, stdout=subprocess.DEVNULL)
+    (root / ".gitignore").write_text("build/\n", encoding="utf-8")
+    (root / "tracked.txt").write_text("baseline\n", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=root, check=True, stdout=subprocess.DEVNULL)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=Pristine Tests",
+            "-c",
+            "user.email=tests@pristine.invalid",
+            "commit",
+            "-m",
+            "baseline",
+        ],
+        cwd=root,
+        check=True,
+        stdout=subprocess.DEVNULL,
+    )
+
+
+class GateContractTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.contract = load_script("gate_contract.py")
+
+    def test_source_fingerprint_tracks_source_but_ignores_build_outputs(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            initialize_git_repo(root)
+            baseline = self.contract.source_fingerprint(root)
+
+            build_dir = root / "build"
+            build_dir.mkdir()
+            (build_dir / "generated.bin").write_bytes(b"ignored")
+            self.assertEqual(self.contract.source_fingerprint(root), baseline)
+
+            (root / "tracked.txt").write_text("changed\n", encoding="utf-8")
+            tracked_changed = self.contract.source_fingerprint(root)
+            self.assertNotEqual(tracked_changed, baseline)
+
+            (root / "new_source.txt").write_text("untracked\n", encoding="utf-8")
+            self.assertNotEqual(self.contract.source_fingerprint(root), tracked_changed)
+
+    def test_run_context_detects_source_change(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            initialize_git_repo(root)
+            manifest = root / "gate_manifest.json"
+            manifest.write_text('{"version":1}\n', encoding="utf-8")
+            context = self.contract.create_run_context(root, manifest, run_id="test-run")
+
+            self.assertEqual(
+                self.contract.validate_run_context(context, root, manifest_path=manifest),
+                [],
+            )
+            (root / "tracked.txt").write_text("changed\n", encoding="utf-8")
+            errors = self.contract.validate_run_context(context, root, manifest_path=manifest)
+
+        self.assertTrue(any("source fingerprint mismatch" in error for error in errors))
 
 
 class FullTestStatusRunnerTests(unittest.TestCase):
@@ -346,14 +411,17 @@ class CleanReleaseGateRunnerTests(unittest.TestCase):
             marker = release / "marker.txt"
             marker.write_text("old build", encoding="utf-8")
 
-            self.assertTrue(
-                self.runner.guarded_remove_release_dir(workspace, release, dry_run=True)
-            )
+            dry_run = self.runner.guarded_remove_release_dir(workspace, release, dry_run=True)
+            self.assertEqual(dry_run.status, "deleted")
+            self.assertTrue(dry_run.existed_before)
             self.assertTrue(marker.exists())
-            self.assertTrue(
-                self.runner.guarded_remove_release_dir(workspace, release, dry_run=False)
-            )
+            removed = self.runner.guarded_remove_release_dir(workspace, release, dry_run=False)
+            self.assertEqual(removed.status, "deleted")
             self.assertFalse(release.exists())
+
+            absent = self.runner.guarded_remove_release_dir(workspace, release, dry_run=False)
+            self.assertEqual(absent.status, "alreadyAbsent")
+            self.assertFalse(absent.existed_before)
 
             with self.assertRaises(ValueError):
                 self.runner.guarded_remove_release_dir(workspace, workspace, dry_run=True)
@@ -400,29 +468,108 @@ class CleanReleaseGateRunnerTests(unittest.TestCase):
                 captured_output="pristine-engine 0.1.1 build=release",
             )
 
-            self.runner.write_summary(
-                summary_path,
-                status="passed",
-                workspace=workspace,
-                build_dir=build_dir,
-                cmake="cmake",
-                preset="release",
-                removed_build_dir=True,
-                deleted_path=str(build_dir),
-                dry_run=False,
-                steps=[step],
-                release_version_output=step.captured_output,
-                planned=[("version", ["engine", "--version"])],
-            )
+            provenance = {
+                "runId": "run-1",
+                "workspace": str(workspace),
+                "gitHead": "abc123",
+                "gitDirty": True,
+                "sourceFingerprint": "fingerprint",
+                "observedSourceFingerprint": "fingerprint",
+                "sourceStable": True,
+                "manifestHash": "manifest",
+            }
+            with mock.patch.object(
+                self.runner.gate_contract,
+                "summary_provenance",
+                return_value=provenance,
+            ):
+                self.runner.write_summary(
+                    summary_path,
+                    status="passed",
+                    workspace=workspace,
+                    build_dir=build_dir,
+                    cmake="cmake",
+                    preset="release",
+                    clean_preparation=self.runner.CleanPreparation(
+                        "alreadyAbsent", build_dir, False
+                    ),
+                    dry_run=False,
+                    steps=[step],
+                    run_context={"runId": "run-1"},
+                    started_at="2026-01-01T00:00:00Z",
+                    duration_seconds=1.0,
+                    release_version_output=step.captured_output,
+                    planned=[("version", ["engine", "--version"])],
+                )
 
             payload = json.loads(summary_path.read_text(encoding="utf-8"))
 
         self.assertEqual(payload["deletedPath"], str(build_dir))
+        self.assertEqual(payload["cleanPreparation"]["status"], "alreadyAbsent")
         self.assertEqual(payload["releaseVersionOutput"], "pristine-engine 0.1.1 build=release")
         self.assertIn("gitHead", payload)
         self.assertIn("gitDirty", payload)
         self.assertEqual(payload["failedStep"], "")
         self.assertEqual(payload["failedLogPath"], "")
+
+
+class WindowsClangGateRunnerTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.runner = load_script("run_windows_clang_gate.py")
+
+    def test_vs_amd64_preflight_rejects_wrong_shell_architecture(self) -> None:
+        self.assertEqual(
+            self.runner.vs_amd64_environment_errors(
+                {"VSCMD_ARG_TGT_ARCH": "x64"},
+                platform_name="nt",
+            ),
+            [],
+        )
+        errors = self.runner.vs_amd64_environment_errors(
+            {"VSCMD_ARG_TGT_ARCH": "x86"},
+            platform_name="nt",
+        )
+        self.assertTrue(any("VS amd64 shell is required" in error for error in errors))
+
+    def test_planned_steps_enable_perf_and_run_complete_ctest(self) -> None:
+        steps = self.runner.planned_steps(
+            "cmake",
+            "ctest",
+            "clang-cl",
+            Path("build/clang-cl"),
+        )
+        self.assertEqual([name for name, _ in steps], ["configure", "build", "ctest"])
+        self.assertIn("-DPRISTINE_BUILD_PERF_TESTS=ON", steps[0][1])
+        self.assertIn("--output-on-failure", steps[2][1])
+
+
+class RequiredGateSuiteRunnerTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.runner = load_script("run_required_gate_suite.py")
+
+    def test_suite_plan_binds_every_gate_to_one_run_context(self) -> None:
+        workspace = Path("C:/repo").resolve()
+        context = workspace / "build/gate-artifacts/run-context.json"
+        commands = self.runner.planned_commands(workspace, "cmake", context)
+
+        self.assertEqual(
+            list(commands),
+            [
+                "dev-configure",
+                "dev-build",
+                "full-debug",
+                "windows-clang",
+                "clean-release",
+                "artifact-index",
+            ],
+        )
+        for name in ("full-debug", "windows-clang", "clean-release", "artifact-index"):
+            self.assertIn("--run-context", commands[name])
+            self.assertIn(str(context), commands[name])
+        self.assertIn("--profile", commands["artifact-index"])
+        self.assertIn("windows-local", commands["artifact-index"])
 
 
 class GateArtifactIndexTests(unittest.TestCase):
@@ -435,13 +582,46 @@ class GateArtifactIndexTests(unittest.TestCase):
         path.write_text(json.dumps(payload), encoding="utf-8")
         return path
 
-    def valid_full_summary(self) -> dict:
+    def context(self, root: Path) -> dict:
+        manifest = root / "gate_manifest.json"
+        manifest.write_text("{}\n", encoding="utf-8")
         return {
+            "schemaVersion": 1,
+            "runId": "run-1",
+            "createdAt": "2026-01-01T00:00:00Z",
+            "workspace": str(root),
+            "gitHead": "a" * 40,
+            "gitDirty": True,
+            "sourceFingerprint": "fingerprint",
+            "manifestPath": str(manifest),
+            "manifestHash": "manifest",
+        }
+
+    def provenance(self, root: Path, *, run_id: str = "run-1") -> dict:
+        return {
+            "runId": run_id,
+            "workspace": str(root),
+            "gitHead": "a" * 40,
+            "gitDirty": True,
+            "sourceFingerprint": "fingerprint",
+            "observedSourceFingerprint": "fingerprint",
+            "sourceStable": True,
+            "manifestHash": "manifest",
+        }
+
+    def valid_full_summary(self, root: Path) -> dict:
+        return {
+            "schemaVersion": 3,
+            "gateType": "full-debug",
+            "status": "passed",
+            "provenance": self.provenance(root),
             "failed": 0,
             "requiredSkipped": 0,
+            "fullGateEnforced": True,
             "manifestErrors": [],
             "unclassifiedTests": [],
             "missingRequiredEnvironment": [],
+            "gateErrors": [],
             "ctestPath": "ctest",
             "artifactRoot": "build/dev/test-status-logs",
             "total": 16,
@@ -450,30 +630,74 @@ class GateArtifactIndexTests(unittest.TestCase):
             "optionalSkipped": 1,
             "durationSeconds": 12.5,
             "manifestHash": "abc123",
+            "build": {
+                "compiler": {"id": "MSVC", "version": "19.0", "path": "cl.exe"},
+                "binarySha256": "debug-sha",
+            },
         }
 
-    def valid_release_summary(self, build_dir: Path) -> dict:
+    def valid_release_summary(self, root: Path, build_dir: Path) -> dict:
         return {
+            "schemaVersion": 3,
+            "gateType": "clean-release",
             "status": "passed",
+            "provenance": self.provenance(root),
+            "gateErrors": [],
+            "buildDir": str(build_dir),
             "cmakePath": "cmake",
             "deletedPath": str(build_dir),
+            "cleanPreparation": {
+                "status": "alreadyAbsent",
+                "path": str(build_dir),
+                "existedBefore": False,
+            },
             "releaseVersionOutput": "pristine-engine 0.1.4 build=release",
             "failedStep": "",
             "failedLogPath": "",
+            "build": {"binarySha256": "release-sha", "compiler": {}},
         }
+
+    def valid_clang_summary(self, root: Path) -> dict:
+        return {
+            "schemaVersion": 3,
+            "gateType": "windows-clang",
+            "status": "passed",
+            "provenance": self.provenance(root),
+            "gateErrors": [],
+            "build": {
+                "compiler": {
+                    "id": "Clang",
+                    "version": "21.0.0",
+                    "path": "C:/Program Files/LLVM/bin/clang-cl.exe",
+                },
+                "binarySha256": "clang-sha",
+            },
+        }
+
+    def write_valid_inputs(self, root: Path):
+        context = self.write_json(root / "context.json", self.context(root))
+        full = self.write_json(root / "full.json", self.valid_full_summary(root))
+        release = self.write_json(
+            root / "release.json",
+            self.valid_release_summary(root, root / "build" / "release"),
+        )
+        clang = self.write_json(root / "clang.json", self.valid_clang_summary(root))
+        return context, full, release, clang
 
     def test_artifact_index_requires_full_summary(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
+            context = self.write_json(root / "context.json", self.context(root))
             release = self.write_json(
                 root / "release.json",
-                self.valid_release_summary(root / "build" / "release"),
+                self.valid_release_summary(root, root / "build" / "release"),
             )
 
             with self.assertRaisesRegex(RuntimeError, "full Debug summary is missing"):
                 self.indexer.write_index(
                     root / "index.json",
                     workspace=root,
+                    run_context_path=context,
                     full_summary_path=root / "missing.json",
                     release_summary_path=release,
                 )
@@ -481,74 +705,103 @@ class GateArtifactIndexTests(unittest.TestCase):
     def test_artifact_index_requires_clean_release_summary(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
-            full = self.write_json(root / "full.json", self.valid_full_summary())
+            context = self.write_json(root / "context.json", self.context(root))
+            full = self.write_json(root / "full.json", self.valid_full_summary(root))
 
             with self.assertRaisesRegex(RuntimeError, "clean Release summary is missing"):
                 self.indexer.write_index(
                     root / "index.json",
                     workspace=root,
+                    run_context_path=context,
                     full_summary_path=full,
                     release_summary_path=root / "missing-release.json",
                 )
 
-    def test_artifact_index_rejects_release_without_deleted_path(self) -> None:
+    def test_artifact_index_rejects_cross_run_summary(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
-            full = self.write_json(root / "full.json", self.valid_full_summary())
-            release_payload = self.valid_release_summary(root / "build" / "release")
-            release_payload["deletedPath"] = ""
-            release = self.write_json(root / "release.json", release_payload)
+            context = self.context(root)
+            full = self.valid_full_summary(root)
+            full["provenance"] = self.provenance(root, run_id="stale-run")
+            release = self.valid_release_summary(root, root / "build" / "release")
+            clang = self.valid_clang_summary(root)
 
-            with self.assertRaisesRegex(RuntimeError, "does not prove build/release was deleted"):
-                self.indexer.write_index(
-                    root / "index.json",
-                    workspace=root,
-                    full_summary_path=full,
-                    release_summary_path=release,
-                )
+            errors = self.indexer.validate_required_summaries(
+                context,
+                full,
+                release,
+                clang,
+                profile="windows-local",
+                system_name="Windows",
+            )
 
-    def test_artifact_index_preserves_failure_fields(self) -> None:
+        self.assertTrue(any("runId mismatch" in error for error in errors))
+
+    def test_windows_profile_requires_structured_clang_summary(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
-            full = self.valid_full_summary()
-            full["failed"] = 1
-            release = self.valid_release_summary(root / "build" / "release")
-            release["status"] = "failed"
-            release["failedStep"] = "layout-smoke"
-            release["failedLogPath"] = "layout.log"
+            context = self.context(root)
+            full = self.valid_full_summary(root)
+            release = self.valid_release_summary(root, root / "build" / "release")
 
-            errors = self.indexer.validate_required_summaries(full, release)
+            errors = self.indexer.validate_required_summaries(
+                context,
+                full,
+                release,
+                None,
+                profile="windows-local",
+                system_name="Windows",
+            )
 
-        self.assertIn("full Debug summary is not passed", errors)
-        self.assertIn("clean Release summary status is 'failed'", errors)
+        self.assertIn("Windows local profile requires a structured clang-cl summary", errors)
+
+    def test_ci_linux_profile_requires_modern_clang(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            context = self.context(root)
+            full = self.valid_full_summary(root)
+            release = self.valid_release_summary(root, root / "build" / "release")
+
+            errors = self.indexer.validate_required_summaries(
+                context,
+                full,
+                release,
+                None,
+                profile="ci-matrix",
+                system_name="Linux",
+            )
+
+        self.assertTrue(any("expected 'Clang'" in error for error in errors))
 
     def test_artifact_index_writes_valid_index(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
-            full = self.write_json(root / "full.json", self.valid_full_summary())
-            release = self.write_json(
-                root / "release.json",
-                self.valid_release_summary(root / "build" / "release"),
-            )
-            clang_log = root / "clang.log"
-            clang_log.write_text("100% tests passed, 0 tests failed out of 16\n", encoding="utf-8")
+            context, full, release, clang = self.write_valid_inputs(root)
             output = root / "index.json"
 
-            payload = self.indexer.write_index(
-                output,
-                workspace=root,
-                full_summary_path=full,
-                release_summary_path=release,
-                clang_log_path=clang_log,
-            )
+            with mock.patch.object(
+                self.indexer.gate_contract,
+                "validate_run_context",
+                return_value=[],
+            ):
+                payload = self.indexer.write_index(
+                    output,
+                    workspace=root,
+                    run_context_path=context,
+                    full_summary_path=full,
+                    release_summary_path=release,
+                    clang_summary_path=clang,
+                    profile="windows-local",
+                    system_name="Windows",
+                )
 
             written = json.loads(output.read_text(encoding="utf-8"))
 
         self.assertEqual(payload["schemaVersion"], self.indexer.INDEX_SCHEMA_VERSION)
+        self.assertEqual(written["provenance"]["runId"], "run-1")
         self.assertEqual(written["fullDebug"]["status"], "passed")
         self.assertEqual(written["cleanRelease"]["releaseVersionOutput"], "pristine-engine 0.1.4 build=release")
         self.assertEqual(written["clangCl"]["status"], "passed")
-        self.assertEqual(written["ctestPath"], "ctest")
 
 
 if __name__ == "__main__":

@@ -202,47 +202,32 @@ jobs:
       - name: Build
         run: cmake --build --preset dev
 
+      - name: Create gate run context
+        run: python scripts/create_gate_run_context.py --output build/gate-artifacts/run-context.json
+
       - name: Check full gate manifest
         env:
           PRISTINE_REQUIRE_IHP_OPEN_PDK: '1'
           PRISTINE_REQUIRE_TT_TINYQV_GDS: '1'
-        run: python scripts/run_full_tests_with_status.py --build-dir build/dev --check-manifest-only
+        run: python scripts/run_full_tests_with_status.py --build-dir build/dev --check-manifest-only --run-context build/gate-artifacts/run-context.json
 
       - name: Run full tests with status
         env:
           PRISTINE_REQUIRE_IHP_OPEN_PDK: '1'
           PRISTINE_REQUIRE_TT_TINYQV_GDS: '1'
-        run: python scripts/run_full_tests_with_status.py --build-dir build/dev --include-perf
+        run: python scripts/run_full_tests_with_status.py --build-dir build/dev --include-perf --run-context build/gate-artifacts/run-context.json
 
       - name: Run clean Release gate
-        run: python scripts/run_clean_release_gate.py --build-dir build/release
+        run: python scripts/run_clean_release_gate.py --build-dir build/release --run-context build/gate-artifacts/run-context.json
 
       - name: Write gate artifact index
         run: |
           python scripts/write_gate_artifact_index.py `
+            --profile ci-matrix `
+            --run-context build/gate-artifacts/run-context.json `
             --full-summary build/dev/test-status-logs/summary.json `
             --release-summary build/clean-release-gate-logs/summary.json `
             --output build/gate-artifacts/index.json
-
-      - name: Run required IHP LEF corpus gate
-        env:
-          PRISTINE_REQUIRE_IHP_OPEN_PDK: '1'
-        run: |
-          $ihpRoot = Join-Path $PWD '.deps/src/ihp-open-pdk'
-          if (-not (Test-Path -LiteralPath $ihpRoot -PathType Container)) {
-            throw "Required IHP Open PDK corpus was not bootstrapped at $ihpRoot"
-          }
-          $lefCount = @(Get-ChildItem -LiteralPath $ihpRoot -Recurse -File -Filter '*.lef').Count
-          if ($lefCount -eq 0) {
-            throw "Required IHP Open PDK corpus contains no .lef files under $ihpRoot"
-          }
-          ctest --test-dir build/dev -R pristine_ihp_lef_corpus --output-on-failure
-          if ($LASTEXITCODE -ne 0) {
-            throw "Required IHP LEF corpus gate failed with exit code $LASTEXITCODE"
-          }
-
-      - name: Run required RTL E2E gates
-        run: ctest --test-dir build/dev -R "pristine_rtl_e2e_large_workspace|pristine_rtl_e2e_real_retrosoc" --output-on-failure
 
       - name: Upload test status logs
         if: always()
