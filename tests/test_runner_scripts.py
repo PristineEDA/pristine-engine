@@ -98,6 +98,7 @@ class FullTestStatusRunnerTests(unittest.TestCase):
                     "UNRELATED": "ignored",
                 },
             )
+            expected_manifest_hash = self.runner.file_sha256(manifest.path)
 
         self.assertIn("pristine_missing_required_gate", summary["requiredMissing"])
         self.assertEqual(summary["requiredPassed"], 1)
@@ -110,6 +111,15 @@ class FullTestStatusRunnerTests(unittest.TestCase):
         self.assertEqual(summary["optionalGateCount"], 1)
         self.assertTrue(summary["runnerSelfTestPresent"])
         self.assertTrue(summary["fullGateEnforced"])
+        self.assertEqual(summary["schemaVersion"], self.runner.SUMMARY_SCHEMA_VERSION)
+        self.assertEqual(summary["buildPreset"], "dev")
+        self.assertEqual(summary["buildType"], "debug")
+        self.assertIn("startedAt", summary)
+        self.assertIn("endedAt", summary)
+        self.assertIn("durationSeconds", summary)
+        self.assertEqual(summary["manifestHash"], expected_manifest_hash)
+        self.assertEqual(summary["artifactRoot"], str((Path("build/dev") / "test-status-logs").resolve()))
+        self.assertFalse(summary["requiredEnvironmentSatisfied"])
 
     def test_required_skip_results_reject_non_optional_skips(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -269,6 +279,38 @@ class FullTestStatusRunnerTests(unittest.TestCase):
         )
         self.assertEqual(valid, [])
 
+    def test_summary_marks_required_environment_satisfied(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            manifest_path = Path(temp) / "gate_manifest.json"
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "version": 1,
+                        "runnerSelfTest": "pristine_script_runner_tests",
+                        "requiredTests": ["pristine_unit_tests"],
+                        "optionalSkipTests": [],
+                        "requiredEnvironment": [
+                            {"name": "PRISTINE_REQUIRE_IHP_OPEN_PDK", "recommendedValue": "1"},
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            manifest = self.runner.load_gate_manifest(manifest_path)
+            summary = self.runner.build_summary_payload(
+                [],
+                all_tests=["pristine_unit_tests", "pristine_script_runner_tests"],
+                selected=["pristine_unit_tests"],
+                build_dir=Path("build/dev"),
+                ctest="ctest",
+                manifest=manifest,
+                full_gate_enforced=False,
+                environment={"PRISTINE_REQUIRE_IHP_OPEN_PDK": "1"},
+            )
+
+        self.assertTrue(summary["requiredEnvironmentSatisfied"])
+        self.assertEqual(summary["missingRequiredEnvironment"], [])
+
     def test_focused_summary_marks_full_gate_not_enforced(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             manifest = self.write_manifest(Path(temp), required=["pristine_unit_tests"])
@@ -381,6 +423,132 @@ class CleanReleaseGateRunnerTests(unittest.TestCase):
         self.assertIn("gitDirty", payload)
         self.assertEqual(payload["failedStep"], "")
         self.assertEqual(payload["failedLogPath"], "")
+
+
+class GateArtifactIndexTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.indexer = load_script("write_gate_artifact_index.py")
+
+    def write_json(self, path: Path, payload: dict) -> Path:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        return path
+
+    def valid_full_summary(self) -> dict:
+        return {
+            "failed": 0,
+            "requiredSkipped": 0,
+            "manifestErrors": [],
+            "unclassifiedTests": [],
+            "missingRequiredEnvironment": [],
+            "ctestPath": "ctest",
+            "artifactRoot": "build/dev/test-status-logs",
+            "total": 16,
+            "passed": 15,
+            "skipped": 1,
+            "optionalSkipped": 1,
+            "durationSeconds": 12.5,
+            "manifestHash": "abc123",
+        }
+
+    def valid_release_summary(self, build_dir: Path) -> dict:
+        return {
+            "status": "passed",
+            "cmakePath": "cmake",
+            "deletedPath": str(build_dir),
+            "releaseVersionOutput": "pristine-engine 0.1.4 build=release",
+            "failedStep": "",
+            "failedLogPath": "",
+        }
+
+    def test_artifact_index_requires_full_summary(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            release = self.write_json(
+                root / "release.json",
+                self.valid_release_summary(root / "build" / "release"),
+            )
+
+            with self.assertRaisesRegex(RuntimeError, "full Debug summary is missing"):
+                self.indexer.write_index(
+                    root / "index.json",
+                    workspace=root,
+                    full_summary_path=root / "missing.json",
+                    release_summary_path=release,
+                )
+
+    def test_artifact_index_requires_clean_release_summary(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            full = self.write_json(root / "full.json", self.valid_full_summary())
+
+            with self.assertRaisesRegex(RuntimeError, "clean Release summary is missing"):
+                self.indexer.write_index(
+                    root / "index.json",
+                    workspace=root,
+                    full_summary_path=full,
+                    release_summary_path=root / "missing-release.json",
+                )
+
+    def test_artifact_index_rejects_release_without_deleted_path(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            full = self.write_json(root / "full.json", self.valid_full_summary())
+            release_payload = self.valid_release_summary(root / "build" / "release")
+            release_payload["deletedPath"] = ""
+            release = self.write_json(root / "release.json", release_payload)
+
+            with self.assertRaisesRegex(RuntimeError, "does not prove build/release was deleted"):
+                self.indexer.write_index(
+                    root / "index.json",
+                    workspace=root,
+                    full_summary_path=full,
+                    release_summary_path=release,
+                )
+
+    def test_artifact_index_preserves_failure_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            full = self.valid_full_summary()
+            full["failed"] = 1
+            release = self.valid_release_summary(root / "build" / "release")
+            release["status"] = "failed"
+            release["failedStep"] = "layout-smoke"
+            release["failedLogPath"] = "layout.log"
+
+            errors = self.indexer.validate_required_summaries(full, release)
+
+        self.assertIn("full Debug summary is not passed", errors)
+        self.assertIn("clean Release summary status is 'failed'", errors)
+
+    def test_artifact_index_writes_valid_index(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            full = self.write_json(root / "full.json", self.valid_full_summary())
+            release = self.write_json(
+                root / "release.json",
+                self.valid_release_summary(root / "build" / "release"),
+            )
+            clang_log = root / "clang.log"
+            clang_log.write_text("100% tests passed, 0 tests failed out of 16\n", encoding="utf-8")
+            output = root / "index.json"
+
+            payload = self.indexer.write_index(
+                output,
+                workspace=root,
+                full_summary_path=full,
+                release_summary_path=release,
+                clang_log_path=clang_log,
+            )
+
+            written = json.loads(output.read_text(encoding="utf-8"))
+
+        self.assertEqual(payload["schemaVersion"], self.indexer.INDEX_SCHEMA_VERSION)
+        self.assertEqual(written["fullDebug"]["status"], "passed")
+        self.assertEqual(written["cleanRelease"]["releaseVersionOutput"], "pristine-engine 0.1.4 build=release")
+        self.assertEqual(written["clangCl"]["status"], "passed")
+        self.assertEqual(written["ctestPath"], "ctest")
 
 
 if __name__ == "__main__":

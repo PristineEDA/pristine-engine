@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import queue
@@ -14,9 +15,11 @@ import sys
 import threading
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
 
+SUMMARY_SCHEMA_VERSION = 2
 DEFAULT_HEARTBEAT_SECONDS = 30.0
 DEFAULT_MANIFEST_PATH = Path(__file__).resolve().parents[1] / "tests" / "gate_manifest.json"
 ENVIRONMENT_SUMMARY_KEYS = (
@@ -193,6 +196,32 @@ def git_dirty() -> bool | None:
     if probe:
         return False
     return None
+
+
+def utc_timestamp() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def infer_build_preset(build_dir: Path) -> str:
+    name = build_dir.name.strip()
+    return name or "unknown"
+
+
+def infer_build_type(build_dir: Path) -> str:
+    preset = infer_build_preset(build_dir).lower()
+    if preset == "release":
+        return "release"
+    if preset in {"dev", "clang-cl", "debug"} or "debug" in preset:
+        return "debug"
+    return "unknown"
 
 
 def now_seconds() -> float:
@@ -501,6 +530,10 @@ def build_summary_payload(
     manifest: GateManifest,
     full_gate_enforced: bool,
     environment: dict[str, str] | os._Environ[str] = os.environ,
+    started_at: str | None = None,
+    ended_at: str | None = None,
+    duration_seconds: float | None = None,
+    artifact_root: Path | None = None,
 ) -> dict:
     optional_names = set(manifest.optional_skip_tests)
     required_names = set(manifest.required_tests) - optional_names
@@ -510,7 +543,20 @@ def build_summary_payload(
     optional_skipped = [
         result for result in results if result.status == "skipped" and result.name in optional_names
     ]
+    missing_environment = missing_required_environment(manifest, environment)
     return {
+        "schemaVersion": SUMMARY_SCHEMA_VERSION,
+        "startedAt": started_at or utc_timestamp(),
+        "endedAt": ended_at or utc_timestamp(),
+        "durationSeconds": round(
+            duration_seconds if duration_seconds is not None else sum(result.duration_seconds for result in results),
+            3,
+        ),
+        "manifestHash": file_sha256(manifest.path),
+        "buildPreset": infer_build_preset(build_dir),
+        "buildType": infer_build_type(build_dir),
+        "requiredEnvironmentSatisfied": len(missing_environment) == 0,
+        "artifactRoot": str((artifact_root or build_dir / "test-status-logs").resolve()),
         "total": len(results),
         "passed": sum(1 for result in results if result.status == "passed"),
         "failed": sum(1 for result in results if result.status == "failed"),
@@ -523,7 +569,7 @@ def build_summary_payload(
         "requiredMissing": missing_required_tests(all_tests, manifest),
         "manifestErrors": manifest_check_errors(all_tests, manifest, environment),
         "unclassifiedTests": unclassified_tests(all_tests, manifest),
-        "missingRequiredEnvironment": missing_required_environment(manifest, environment),
+        "missingRequiredEnvironment": missing_environment,
         "knownManifestTests": known_manifest_tests(manifest),
         "gateManifestStrict": True,
         "manifestPath": str(manifest.path),
@@ -576,7 +622,13 @@ def write_summary(
     ctest: str,
     manifest: GateManifest,
     full_gate_enforced: bool,
+    started_at: str | None = None,
+    suite_started_at: float | None = None,
 ) -> None:
+    ended_at = utc_timestamp()
+    duration_seconds = None
+    if suite_started_at is not None:
+        duration_seconds = max(0.0, now_seconds() - suite_started_at)
     payload = build_summary_payload(
         results,
         all_tests=all_tests,
@@ -585,6 +637,10 @@ def write_summary(
         ctest=ctest,
         manifest=manifest,
         full_gate_enforced=full_gate_enforced,
+        started_at=started_at,
+        ended_at=ended_at,
+        duration_seconds=duration_seconds,
+        artifact_root=path.parent,
     )
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
@@ -628,6 +684,7 @@ def main() -> int:
     summary_path = (args.summary or logs_dir / "summary.json").resolve()
 
     suite_started_at = now_seconds()
+    suite_started_wall = utc_timestamp()
     emit_status("suite", "discover", suite_started_at, f"buildDir={build_dir}", jsonl_path)
     all_tests = list_tests(ctest, build_dir)
     manifest_errors = manifest_check_errors(all_tests, manifest)
@@ -641,6 +698,8 @@ def main() -> int:
             ctest=ctest,
             manifest=manifest,
             full_gate_enforced=True,
+            started_at=suite_started_wall,
+            suite_started_at=suite_started_at,
         )
         if manifest_errors:
             for error in manifest_errors:
@@ -672,6 +731,8 @@ def main() -> int:
         ctest=ctest,
         manifest=manifest,
         full_gate_enforced=full_gate_enforced,
+        started_at=suite_started_wall,
+        suite_started_at=suite_started_at,
     )
     failed = [result for result in results if result.status == "failed"]
     required_skips = required_skip_results(results, manifest)

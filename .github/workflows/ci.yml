@@ -217,6 +217,13 @@ jobs:
       - name: Run clean Release gate
         run: python scripts/run_clean_release_gate.py --build-dir build/release
 
+      - name: Write gate artifact index
+        run: |
+          python scripts/write_gate_artifact_index.py `
+            --full-summary build/dev/test-status-logs/summary.json `
+            --release-summary build/clean-release-gate-logs/summary.json `
+            --output build/gate-artifacts/index.json
+
       - name: Run required IHP LEF corpus gate
         env:
           PRISTINE_REQUIRE_IHP_OPEN_PDK: '1'
@@ -242,7 +249,10 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: pristine-test-status-${{ matrix.id }}
-          path: build/dev/test-status-logs
+          path: |
+            build/gate-artifacts
+            build/dev/test-status-logs
+            build/clean-release-gate-logs
           if-no-files-found: ignore
 
       - name: Smoke test server version
