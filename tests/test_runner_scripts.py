@@ -166,10 +166,108 @@ class FullTestStatusRunnerTests(unittest.TestCase):
                 required=["pristine_unit_tests", "pristine_lsp_core_e2e"],
             )
 
-            errors = self.runner.manifest_check_errors(["pristine_unit_tests"], manifest)
+            errors = self.runner.manifest_check_errors(
+                ["pristine_unit_tests"],
+                manifest,
+                {"PRISTINE_REQUIRE_IHP_OPEN_PDK": "1"},
+            )
 
         self.assertIn("required gate missing from CTest: pristine_lsp_core_e2e", errors)
         self.assertIn("runner self-test missing from CTest: pristine_script_runner_tests", errors)
+
+    def test_manifest_check_reports_unclassified_ctest(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            manifest = self.write_manifest(Path(temp), required=["pristine_unit_tests"])
+
+            errors = self.runner.manifest_check_errors(
+                [
+                    "pristine_unit_tests",
+                    "pristine_script_runner_tests",
+                    "pristine_new_unclassified_gate",
+                ],
+                manifest,
+                {"PRISTINE_REQUIRE_IHP_OPEN_PDK": "1"},
+            )
+
+        self.assertEqual(
+            errors,
+            ["CTest is not classified in gate manifest: pristine_new_unclassified_gate"],
+        )
+
+    def test_runner_self_test_is_classified_but_not_product_gate(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            manifest = self.write_manifest(
+                Path(temp),
+                required=["pristine_unit_tests", "pristine_differential_slang_server"],
+                optional=["pristine_differential_slang_server"],
+            )
+
+            known = self.runner.known_manifest_tests(manifest)
+            unclassified = self.runner.unclassified_tests(
+                [
+                    "pristine_unit_tests",
+                    "pristine_differential_slang_server",
+                    "pristine_script_runner_tests",
+                ],
+                manifest,
+            )
+
+        self.assertIn("pristine_differential_slang_server", known)
+        self.assertIn("pristine_script_runner_tests", known)
+        self.assertEqual(
+            manifest.required_tests,
+            ("pristine_unit_tests", "pristine_differential_slang_server"),
+        )
+        self.assertEqual(unclassified, [])
+
+    def test_required_environment_preflight_reports_missing_and_wrong_values(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            manifest_path = Path(temp) / "gate_manifest.json"
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "version": 1,
+                        "runnerSelfTest": "pristine_script_runner_tests",
+                        "requiredTests": ["pristine_unit_tests"],
+                        "optionalSkipTests": [],
+                        "requiredEnvironment": [
+                            {"name": "PRISTINE_REQUIRE_IHP_OPEN_PDK", "recommendedValue": "1"},
+                            {"name": "PRISTINE_REQUIRE_TT_TINYQV_GDS", "recommendedValue": "1"},
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            manifest = self.runner.load_gate_manifest(manifest_path)
+
+            missing = self.runner.missing_required_environment(
+                manifest,
+                {"PRISTINE_REQUIRE_IHP_OPEN_PDK": "0"},
+            )
+            valid = self.runner.missing_required_environment(
+                manifest,
+                {
+                    "PRISTINE_REQUIRE_IHP_OPEN_PDK": "1",
+                    "PRISTINE_REQUIRE_TT_TINYQV_GDS": "1",
+                },
+            )
+
+        self.assertEqual(
+            missing,
+            [
+                {
+                    "name": "PRISTINE_REQUIRE_IHP_OPEN_PDK",
+                    "expectedValue": "1",
+                    "actualValue": "0",
+                },
+                {
+                    "name": "PRISTINE_REQUIRE_TT_TINYQV_GDS",
+                    "expectedValue": "1",
+                    "actualValue": "",
+                },
+            ],
+        )
+        self.assertEqual(valid, [])
 
     def test_focused_summary_marks_full_gate_not_enforced(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -188,6 +286,8 @@ class FullTestStatusRunnerTests(unittest.TestCase):
 
         self.assertFalse(summary["fullGateEnforced"])
         self.assertEqual(summary["requiredMissing"], [])
+        self.assertEqual(summary["unclassifiedTests"], [])
+        self.assertEqual(summary["missingRequiredEnvironment"][0]["name"], "PRISTINE_REQUIRE_IHP_OPEN_PDK")
 
 
 class CleanReleaseGateRunnerTests(unittest.TestCase):

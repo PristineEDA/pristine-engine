@@ -203,6 +203,9 @@ jobs:
         run: cmake --build --preset dev
 
       - name: Check full gate manifest
+        env:
+          PRISTINE_REQUIRE_IHP_OPEN_PDK: '1'
+          PRISTINE_REQUIRE_TT_TINYQV_GDS: '1'
         run: python scripts/run_full_tests_with_status.py --build-dir build/dev --check-manifest-only
 
       - name: Run full tests with status
@@ -210,6 +213,9 @@ jobs:
           PRISTINE_REQUIRE_IHP_OPEN_PDK: '1'
           PRISTINE_REQUIRE_TT_TINYQV_GDS: '1'
         run: python scripts/run_full_tests_with_status.py --build-dir build/dev --include-perf
+
+      - name: Run clean Release gate
+        run: python scripts/run_clean_release_gate.py --build-dir build/release
 
       - name: Run required IHP LEF corpus gate
         env:

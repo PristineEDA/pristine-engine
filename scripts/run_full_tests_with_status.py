@@ -119,6 +119,11 @@ def load_gate_manifest(path: Path) -> GateManifest:
     for index, entry in enumerate(required_environment):
         if not isinstance(entry, dict) or not isinstance(entry.get("name"), str):
             raise ValueError(f"gate manifest field 'requiredEnvironment'[{index}] must have a name")
+        recommended = entry.get("recommendedValue")
+        if recommended is not None and not isinstance(recommended, str):
+            raise ValueError(
+                f"gate manifest field 'requiredEnvironment'[{index}].recommendedValue must be a string"
+            )
 
     groups: dict[str, tuple[str, ...]] = {}
     raw_groups = raw.get("groups", {})
@@ -419,6 +424,42 @@ def missing_required_tests(all_tests: list[str], manifest: GateManifest) -> list
     return [name for name in manifest.required_tests if name not in available]
 
 
+def known_manifest_tests(manifest: GateManifest) -> list[str]:
+    known = list(manifest.required_tests)
+    for name in sorted(manifest.optional_skip_tests):
+        if name not in known:
+            known.append(name)
+    if manifest.runner_self_test not in known:
+        known.append(manifest.runner_self_test)
+    return known
+
+
+def unclassified_tests(all_tests: list[str], manifest: GateManifest) -> list[str]:
+    known = set(known_manifest_tests(manifest))
+    return [name for name in all_tests if name not in known]
+
+
+def missing_required_environment(
+    manifest: GateManifest,
+    environment: dict[str, str] | os._Environ[str] = os.environ,
+) -> list[dict[str, str]]:
+    missing: list[dict[str, str]] = []
+    for entry in manifest.required_environment:
+        name = str(entry.get("name", "")).strip()
+        if not name:
+            continue
+        expected = entry.get("recommendedValue")
+        actual = str(environment.get(name, "")).strip()
+        if expected is None:
+            if not actual:
+                missing.append({"name": name, "expectedValue": "non-empty", "actualValue": actual})
+            continue
+        expected_text = str(expected)
+        if actual != expected_text:
+            missing.append({"name": name, "expectedValue": expected_text, "actualValue": actual})
+    return missing
+
+
 def required_skip_results(results: list[TestResult], manifest: GateManifest) -> list[TestResult]:
     return [
         result
@@ -427,12 +468,26 @@ def required_skip_results(results: list[TestResult], manifest: GateManifest) -> 
     ]
 
 
-def manifest_check_errors(all_tests: list[str], manifest: GateManifest) -> list[str]:
+def manifest_check_errors(
+    all_tests: list[str],
+    manifest: GateManifest,
+    environment: dict[str, str] | os._Environ[str] = os.environ,
+    *,
+    check_environment: bool = True,
+) -> list[str]:
     errors: list[str] = []
     for name in missing_required_tests(all_tests, manifest):
         errors.append(f"required gate missing from CTest: {name}")
     if manifest.runner_self_test not in set(all_tests):
         errors.append(f"runner self-test missing from CTest: {manifest.runner_self_test}")
+    for name in unclassified_tests(all_tests, manifest):
+        errors.append(f"CTest is not classified in gate manifest: {name}")
+    if check_environment:
+        for entry in missing_required_environment(manifest, environment):
+            errors.append(
+                "required environment is missing or wrong: "
+                f"{entry['name']} expected={entry['expectedValue']} actual={entry['actualValue']!r}"
+            )
     return errors
 
 
@@ -466,7 +521,11 @@ def build_summary_payload(
         "requiredSkipped": len(required_skipped),
         "optionalSkipped": len(optional_skipped),
         "requiredMissing": missing_required_tests(all_tests, manifest),
-        "manifestErrors": manifest_check_errors(all_tests, manifest),
+        "manifestErrors": manifest_check_errors(all_tests, manifest, environment),
+        "unclassifiedTests": unclassified_tests(all_tests, manifest),
+        "missingRequiredEnvironment": missing_required_environment(manifest, environment),
+        "knownManifestTests": known_manifest_tests(manifest),
+        "gateManifestStrict": True,
         "manifestPath": str(manifest.path),
         "manifestVersion": manifest.version,
         "requiredGateCount": len(manifest.required_tests),
