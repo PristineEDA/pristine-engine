@@ -434,6 +434,7 @@ class CleanReleaseGateRunnerTests(unittest.TestCase):
             Path("build/release"),
             "release",
             Path("build/release/pristine-engine.exe"),
+            cxx_compiler="clang++-21",
         )
         names = [name for name, _ in steps]
 
@@ -449,6 +450,7 @@ class CleanReleaseGateRunnerTests(unittest.TestCase):
             ],
         )
         self.assertIn("--version", steps[2][1])
+        self.assertIn("-DCMAKE_CXX_COMPILER=clang++-21", steps[0][1])
         self.assertIn("tests/e2e/lsp_core_smoke.py", steps[3][1])
         self.assertIn("tests/e2e/waveform_pipe_smoke.py", steps[4][1])
         self.assertIn("tests/e2e/layout_pipe_smoke.py", steps[5][1])
@@ -654,7 +656,10 @@ class GateArtifactIndexTests(unittest.TestCase):
             "releaseVersionOutput": "pristine-engine 0.1.4 build=release",
             "failedStep": "",
             "failedLogPath": "",
-            "build": {"binarySha256": "release-sha", "compiler": {}},
+            "build": {
+                "binarySha256": "release-sha",
+                "compiler": {"id": "MSVC", "version": "19.0", "path": "cl.exe"},
+            },
         }
 
     def valid_clang_summary(self, root: Path) -> dict:
@@ -772,6 +777,34 @@ class GateArtifactIndexTests(unittest.TestCase):
             )
 
         self.assertTrue(any("expected 'Clang'" in error for error in errors))
+
+    def test_ci_linux_profile_rejects_release_compiler_drift(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            context = self.context(root)
+            full = self.valid_full_summary(root)
+            full["build"]["compiler"] = {
+                "id": "Clang",
+                "version": "21.0.0",
+                "path": "/usr/bin/clang++-21",
+            }
+            release = self.valid_release_summary(root, root / "build" / "release")
+            release["build"]["compiler"] = {
+                "id": "GNU",
+                "version": "11.4.0",
+                "path": "/usr/bin/c++",
+            }
+
+            errors = self.indexer.validate_required_summaries(
+                context,
+                full,
+                release,
+                None,
+                profile="ci-matrix",
+                system_name="Linux",
+            )
+
+        self.assertTrue(any("clean Release: compiler id" in error for error in errors))
 
     def test_artifact_index_writes_valid_index(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

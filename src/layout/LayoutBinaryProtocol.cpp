@@ -96,6 +96,20 @@ std::uint32_t appendTableString(std::vector<std::uint8_t>& table, std::string_vi
     return offset;
 }
 
+void appendBytes(std::vector<std::uint8_t>& output,
+                 const std::uint8_t* bytes,
+                 std::size_t size) {
+    if (size == 0U) {
+        return;
+    }
+    if (size > output.max_size() - output.size()) {
+        throw std::runtime_error("Layout binary payload exceeds vector capacity");
+    }
+    const auto offset = output.size();
+    output.resize(offset + size);
+    std::memcpy(output.data() + offset, bytes, size);
+}
+
 double toMicrons(std::int64_t value, std::uint32_t units_per_micron) {
     if (units_per_micron == 0) {
         return static_cast<double>(value);
@@ -641,7 +655,7 @@ std::vector<std::uint8_t> encodeCatalogV3ResponsePayload(const LayoutDataSet& da
 
     alignTo(result, 4);
     const auto string_offset = checkedCount(result.size(), "GDS string offset");
-    result.insert(result.end(), strings.begin(), strings.end());
+    appendBytes(result, strings.data(), strings.size());
 
     std::size_t offset = 0;
     result[offset++] = kCatalogMagic[0];
@@ -701,7 +715,7 @@ std::vector<std::uint8_t> encodeCatalogSummaryV3ResponsePayload(const LayoutData
 
     alignTo(result, 4);
     const auto string_offset = checkedCount(result.size(), "catalog summary string offset");
-    result.insert(result.end(), strings.begin(), strings.end());
+    appendBytes(result, strings.data(), strings.size());
 
     std::size_t offset = 0;
     result[offset++] = kCatalogSummaryMagic[0];
@@ -939,7 +953,7 @@ std::vector<std::uint8_t> encodeCatalogPageV3ResponsePayload(
         : kNoLayoutIndex;
     alignTo(result, 4);
     const auto string_offset = checkedCount(result.size(), "catalog page string offset");
-    result.insert(result.end(), strings.begin(), strings.end());
+    appendBytes(result, strings.data(), strings.size());
     if (result.size() > kMaxPayloadSize) {
         throw std::runtime_error("Layout payload is too large");
     }
@@ -997,7 +1011,9 @@ void appendString(std::vector<std::uint8_t>& output, std::string_view value) {
         throw std::runtime_error("Layout string exceeds uint32 range");
     }
     appendU32(output, static_cast<std::uint32_t>(value.size()));
-    output.insert(output.end(), value.begin(), value.end());
+    appendBytes(output,
+                reinterpret_cast<const std::uint8_t*>(value.data()),
+                value.size());
 }
 
 void alignTo(std::vector<std::uint8_t>& output, std::size_t alignment) {
@@ -1047,14 +1063,14 @@ std::vector<std::uint8_t> encodeFrame(const LayoutFrame& frame) {
     }
     std::vector<std::uint8_t> result;
     result.reserve(kFrameHeaderSize + frame.payload.size());
-    result.insert(result.end(), std::begin(kFrameMagic), std::end(kFrameMagic));
+    appendBytes(result, kFrameMagic, std::size(kFrameMagic));
     appendU16(result, frame.version);
     appendU16(result, static_cast<std::uint16_t>(frame.message_type));
     appendU32(result, frame.request_id);
     appendU32(result, frame.flags);
     appendU32(result, static_cast<std::uint32_t>(frame.payload.size()));
     appendU32(result, 0);
-    result.insert(result.end(), frame.payload.begin(), frame.payload.end());
+    appendBytes(result, frame.payload.data(), frame.payload.size());
     return result;
 }
 
@@ -1263,7 +1279,7 @@ std::vector<std::uint8_t> encodeTileGeometryResponsePayload(
 
     std::vector<std::uint8_t> result(kTileGeometryHeaderSize, 0);
     const auto geometry_offset = static_cast<std::uint32_t>(result.size());
-    result.insert(result.end(), geometry_payload.begin(), geometry_payload.end());
+    appendBytes(result, geometry_payload.data(), geometry_payload.size());
     const auto flags = tile_result.truncated ? kLayoutFrameFlagTruncated : 0U;
 
     std::size_t offset = 0;
@@ -1355,7 +1371,7 @@ std::vector<std::uint8_t> encodeInspectResponsePayload(const LayoutDataSet& data
     const auto instance_path_offset = appendTableString(strings, inspect.instance_path);
     alignTo(result, 4);
     const auto string_offset = checkedCount(result.size(), "inspect string offset");
-    result.insert(result.end(), strings.begin(), strings.end());
+    appendBytes(result, strings.data(), strings.size());
 
     std::size_t offset = 0;
     result[offset++] = kInspectMagic[0];
@@ -1430,7 +1446,7 @@ std::vector<std::uint8_t> encodeSearchResponsePayload(
 
     alignTo(result, 4);
     const auto string_offset = checkedCount(result.size(), "search string offset");
-    result.insert(result.end(), strings.begin(), strings.end());
+    appendBytes(result, strings.data(), strings.size());
 
     std::size_t offset = 0;
     result[offset++] = kSearchMagic[0];
@@ -1460,7 +1476,7 @@ std::vector<std::uint8_t> encodeStatusResponsePayload(const LayoutStatus& status
 
     std::vector<std::uint8_t> result(kStatusHeaderSize, 0);
     const auto string_offset = static_cast<std::uint32_t>(result.size());
-    result.insert(result.end(), strings.begin(), strings.end());
+    appendBytes(result, strings.data(), strings.size());
 
     std::size_t offset = 0;
     result[offset++] = kStatusMagic[0];

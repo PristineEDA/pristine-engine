@@ -125,10 +125,20 @@ def emit_status(phase: str, started_at: float, detail: str = "") -> None:
     print(line, file=sys.stderr, flush=True)
 
 
-def planned_steps(cmake: str, build_dir: Path, preset: str, engine: Path) -> list[tuple[str, list[str]]]:
+def planned_steps(
+    cmake: str,
+    build_dir: Path,
+    preset: str,
+    engine: Path,
+    *,
+    cxx_compiler: str | None = None,
+) -> list[tuple[str, list[str]]]:
     python = sys.executable
+    configure = [cmake, "--preset", preset]
+    if cxx_compiler:
+        configure.append(f"-DCMAKE_CXX_COMPILER={cxx_compiler}")
     return [
-        ("configure", [cmake, "--preset", preset]),
+        ("configure", configure),
         ("build", [cmake, "--build", "--preset", preset]),
         ("version", [str(engine), "--version"]),
         ("lsp-smoke", [python, "tests/e2e/lsp_core_smoke.py", str(engine)]),
@@ -255,6 +265,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--build-dir", default="build/release", type=Path)
     parser.add_argument("--cmake", default=None)
+    parser.add_argument("--cxx-compiler", default=None)
     parser.add_argument("--preset", default="release")
     parser.add_argument("--manifest", default=DEFAULT_MANIFEST_PATH, type=Path)
     parser.add_argument("--run-context", default=None, type=Path)
@@ -337,7 +348,13 @@ def main() -> int:
         print(f"FAILED guard-delete: {exc} summary={summary_path}", file=sys.stderr)
         return 1
 
-    steps_to_run = planned_steps(cmake, build_dir, args.preset, engine)
+    steps_to_run = planned_steps(
+        cmake,
+        build_dir,
+        args.preset,
+        engine,
+        cxx_compiler=args.cxx_compiler,
+    )
     if args.dry_run:
         write_summary(
             summary_path,

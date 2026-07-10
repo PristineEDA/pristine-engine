@@ -218,7 +218,16 @@ jobs:
         run: python scripts/run_full_tests_with_status.py --build-dir build/dev --include-perf --run-context build/gate-artifacts/run-context.json
 
       - name: Run clean Release gate
-        run: python scripts/run_clean_release_gate.py --build-dir build/release --run-context build/gate-artifacts/run-context.json
+        run: |
+          $args = @(
+            'scripts/run_clean_release_gate.py',
+            '--build-dir', 'build/release',
+            '--run-context', 'build/gate-artifacts/run-context.json'
+          )
+          if ('${{ steps.compiler.outputs.cxx }}') {
+            $args += @('--cxx-compiler', '${{ steps.compiler.outputs.cxx }}')
+          }
+          python @args
 
       - name: Write gate artifact index
         run: |

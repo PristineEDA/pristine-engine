@@ -108,11 +108,11 @@ def _compiler_errors(summary: dict, expected_id: str, *, require_clang_cl: bool 
     return errors
 
 
-def _ci_compiler_errors(full_summary: dict, system_name: str) -> list[str]:
+def _ci_compiler_errors(summary: dict, system_name: str, label: str) -> list[str]:
     normalized = system_name.lower()
     if normalized == "linux":
-        errors = _compiler_errors(full_summary, "Clang")
-        compiler = full_summary.get("build", {}).get("compiler", {})
+        errors = _compiler_errors(summary, "Clang")
+        compiler = summary.get("build", {}).get("compiler", {})
         version = str(compiler.get("version", ""))
         try:
             major = int(version.split(".", 1)[0])
@@ -120,11 +120,13 @@ def _ci_compiler_errors(full_summary: dict, system_name: str) -> list[str]:
             major = 0
         if major < 16:
             errors.append(f"Linux Clang version is {version!r}, expected 16 or newer")
-        return errors
+        return [f"{label}: {error}" for error in errors]
     if normalized == "windows":
-        return _compiler_errors(full_summary, "MSVC")
+        errors = _compiler_errors(summary, "MSVC")
+        return [f"{label}: {error}" for error in errors]
     if normalized in {"darwin", "macos"}:
-        return _compiler_errors(full_summary, "AppleClang")
+        errors = _compiler_errors(summary, "AppleClang")
+        return [f"{label}: {error}" for error in errors]
     return [f"unsupported CI platform for compiler validation: {system_name}"]
 
 
@@ -155,7 +157,8 @@ def validate_required_summaries(
             if clang_summary.get("gateErrors"):
                 errors.append("clang-cl summary contains gate errors")
     elif profile == "ci-matrix":
-        errors.extend(_ci_compiler_errors(full_summary, system_name))
+        errors.extend(_ci_compiler_errors(full_summary, system_name, "full Debug"))
+        errors.extend(_ci_compiler_errors(release_summary, system_name, "clean Release"))
     else:
         errors.append(f"unknown gate artifact profile: {profile}")
     return errors
