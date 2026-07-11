@@ -69,6 +69,17 @@ class GateContractTests(unittest.TestCase):
             (root / "new_source.txt").write_text("untracked\n", encoding="utf-8")
             self.assertNotEqual(self.contract.source_fingerprint(root), tracked_changed)
 
+    def test_cmake_tool_version_uses_executable_version_not_install_name(self) -> None:
+        with mock.patch.object(self.contract.subprocess, "run") as run:
+            run.return_value = mock.Mock(
+                returncode=0,
+                stdout="cmake version 4.2.1\n",
+            )
+            self.assertEqual(
+                self.contract._cmake_tool_version(Path("C:/Visual Studio/18/cmake.exe")),
+                (4, 2, 1),
+            )
+
     def test_run_context_detects_source_change(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -534,6 +545,16 @@ class WindowsClangGateRunnerTests(unittest.TestCase):
         )
         self.assertTrue(any("VS amd64 shell is required" in error for error in errors))
 
+    def test_clang_presets_pin_both_c_and_cxx_compilers(self) -> None:
+        presets = json.loads(
+            (ROOT / "CMakePresets.json").read_text(encoding="utf-8")
+        )["configurePresets"]
+        by_name = {preset["name"]: preset for preset in presets}
+        for name in ("clang-cl", "clang-cl-release"):
+            variables = by_name[name]["cacheVariables"]
+            self.assertTrue(variables["CMAKE_C_COMPILER"].endswith("clang-cl.exe"))
+            self.assertEqual(variables["CMAKE_C_COMPILER"], variables["CMAKE_CXX_COMPILER"])
+
     def test_planned_steps_enable_perf_and_run_complete_ctest(self) -> None:
         steps = self.runner.planned_steps(
             "cmake",
@@ -544,6 +565,36 @@ class WindowsClangGateRunnerTests(unittest.TestCase):
         self.assertEqual([name for name, _ in steps], ["configure", "build", "ctest"])
         self.assertIn("-DPRISTINE_BUILD_PERF_TESTS=ON", steps[0][1])
         self.assertIn("--output-on-failure", steps[2][1])
+
+    def test_release_steps_build_and_smoke_the_clang_release_binary(self) -> None:
+        steps = self.runner.planned_release_steps(
+            "cmake",
+            "clang-cl-release",
+            Path("build/clang-cl-release"),
+        )
+        self.assertEqual(
+            [name for name, _ in steps],
+            [
+                "release-configure",
+                "release-build",
+                "release-version",
+                "release-lsp-smoke",
+                "release-waveform-smoke",
+                "release-layout-smoke",
+            ],
+        )
+        self.assertIn("clang-cl-release", steps[0][1])
+        self.assertTrue(any(arg.endswith("lsp_core_smoke.py") for arg in steps[3][1]))
+        self.assertTrue(any(arg.endswith("waveform_pipe_smoke.py") for arg in steps[4][1]))
+        self.assertTrue(any(arg.endswith("layout_pipe_smoke.py") for arg in steps[5][1]))
+
+    def test_release_clean_guard_rejects_paths_outside_workspace(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            workspace = Path(temp) / "workspace"
+            workspace.mkdir()
+            outside = Path(temp) / "outside"
+            with self.assertRaisesRegex(ValueError, "outside workspace"):
+                self.runner.guarded_remove_build_dir(workspace, outside, dry_run=True)
 
 
 class RequiredGateSuiteRunnerTests(unittest.TestCase):
@@ -613,7 +664,7 @@ class GateArtifactIndexTests(unittest.TestCase):
 
     def valid_full_summary(self, root: Path) -> dict:
         return {
-            "schemaVersion": 3,
+            "schemaVersion": self.indexer.gate_contract.SUMMARY_SCHEMA_VERSION,
             "gateType": "full-debug",
             "status": "passed",
             "provenance": self.provenance(root),
@@ -640,7 +691,7 @@ class GateArtifactIndexTests(unittest.TestCase):
 
     def valid_release_summary(self, root: Path, build_dir: Path) -> dict:
         return {
-            "schemaVersion": 3,
+            "schemaVersion": self.indexer.gate_contract.SUMMARY_SCHEMA_VERSION,
             "gateType": "clean-release",
             "status": "passed",
             "provenance": self.provenance(root),
@@ -663,20 +714,41 @@ class GateArtifactIndexTests(unittest.TestCase):
         }
 
     def valid_clang_summary(self, root: Path) -> dict:
+        debug_build = {
+            "type": "debug",
+            "compiler": {
+                "id": "Clang",
+                "version": "21.0.0",
+                "path": "C:/Program Files/LLVM/bin/clang-cl.exe",
+            },
+            "binarySha256": "clang-debug-sha",
+        }
+        release_build_dir = root / "build" / "clang-cl-release"
+        release_build = {
+            "type": "release",
+            "compiler": {
+                "id": "Clang",
+                "version": "21.0.0",
+                "path": "C:/Program Files/LLVM/bin/clang-cl.exe",
+            },
+            "binarySha256": "clang-release-sha",
+        }
         return {
-            "schemaVersion": 3,
+            "schemaVersion": self.indexer.gate_contract.SUMMARY_SCHEMA_VERSION,
             "gateType": "windows-clang",
             "status": "passed",
             "provenance": self.provenance(root),
             "gateErrors": [],
-            "build": {
-                "compiler": {
-                    "id": "Clang",
-                    "version": "21.0.0",
-                    "path": "C:/Program Files/LLVM/bin/clang-cl.exe",
-                },
-                "binarySha256": "clang-sha",
+            "releaseBuildDir": str(release_build_dir),
+            "build": debug_build,
+            "debugBuild": debug_build,
+            "releaseBuild": release_build,
+            "releaseCleanPreparation": {
+                "status": "alreadyAbsent",
+                "path": str(release_build_dir),
+                "existedBefore": False,
             },
+            "releaseVersionOutput": "pristine-engine 0.1.4 build=release",
         }
 
     def write_valid_inputs(self, root: Path):
@@ -760,6 +832,28 @@ class GateArtifactIndexTests(unittest.TestCase):
 
         self.assertIn("Windows local profile requires a structured clang-cl summary", errors)
 
+    def test_windows_profile_requires_clang_release_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            context = self.context(root)
+            full = self.valid_full_summary(root)
+            release = self.valid_release_summary(root, root / "build" / "release")
+            clang = self.valid_clang_summary(root)
+            clang["releaseBuild"]["binarySha256"] = ""
+            clang["releaseVersionOutput"] = ""
+
+            errors = self.indexer.validate_required_summaries(
+                context,
+                full,
+                release,
+                clang,
+                profile="windows-local",
+                system_name="Windows",
+            )
+
+        self.assertTrue(any("Release binary SHA256 is missing" in error for error in errors))
+        self.assertIn("clang-cl Release version output is missing", errors)
+
     def test_ci_linux_profile_requires_modern_clang(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -835,6 +929,8 @@ class GateArtifactIndexTests(unittest.TestCase):
         self.assertEqual(written["fullDebug"]["status"], "passed")
         self.assertEqual(written["cleanRelease"]["releaseVersionOutput"], "pristine-engine 0.1.4 build=release")
         self.assertEqual(written["clangCl"]["status"], "passed")
+        self.assertEqual(written["clangCl"]["debugBuild"]["type"], "debug")
+        self.assertEqual(written["clangCl"]["releaseBuild"]["type"], "release")
 
 
 if __name__ == "__main__":

@@ -16,7 +16,7 @@ if str(SCRIPT_DIR) not in sys.path:
 import gate_contract
 
 
-INDEX_SCHEMA_VERSION = 2
+INDEX_SCHEMA_VERSION = 3
 
 
 def _summary_contract_errors(summary: dict, gate_type: str, label: str) -> list[str]:
@@ -108,6 +108,49 @@ def _compiler_errors(summary: dict, expected_id: str, *, require_clang_cl: bool 
     return errors
 
 
+def _clang_build_errors(build: object, expected_type: str, label: str) -> list[str]:
+    if not isinstance(build, dict):
+        return [f"clang-cl {label} build metadata is missing"]
+    errors: list[str] = []
+    if build.get("type") != expected_type:
+        errors.append(
+            f"clang-cl {label} build type is {build.get('type')!r}, expected {expected_type!r}"
+        )
+    compiler = build.get("compiler")
+    if not isinstance(compiler, dict):
+        errors.append(f"clang-cl {label} compiler metadata is missing")
+        return errors
+    if compiler.get("id") != "Clang":
+        errors.append(
+            f"clang-cl {label} compiler id is {compiler.get('id')!r}, expected 'Clang'"
+        )
+    if "clang-cl" not in Path(str(compiler.get("path", ""))).name.lower():
+        errors.append(
+            f"clang-cl {label} compiler path is not clang-cl: {compiler.get('path')!r}"
+        )
+    if not str(build.get("binarySha256", "")).strip():
+        errors.append(f"clang-cl {label} binary SHA256 is missing")
+    return errors
+
+
+def _windows_clang_errors(summary: dict) -> list[str]:
+    errors = _clang_build_errors(summary.get("debugBuild"), "debug", "Debug")
+    errors.extend(_clang_build_errors(summary.get("releaseBuild"), "release", "Release"))
+    preparation = summary.get("releaseCleanPreparation")
+    if not isinstance(preparation, dict):
+        errors.append("clang-cl Release clean preparation is missing")
+    else:
+        if preparation.get("status") not in {"deleted", "alreadyAbsent"}:
+            errors.append(
+                "clang-cl Release clean preparation status must be deleted or alreadyAbsent"
+            )
+        if str(preparation.get("path", "")) != str(summary.get("releaseBuildDir", "")):
+            errors.append("clang-cl Release clean preparation path does not match buildDir")
+    if not str(summary.get("releaseVersionOutput", "")).strip():
+        errors.append("clang-cl Release version output is missing")
+    return errors
+
+
 def _ci_compiler_errors(summary: dict, system_name: str, label: str) -> list[str]:
     normalized = system_name.lower()
     if normalized == "linux":
@@ -153,7 +196,7 @@ def validate_required_summaries(
         else:
             errors.extend(_summary_contract_errors(clang_summary, "windows-clang", "clang-cl"))
             errors.extend(_provenance_errors(context, clang_summary, "clang-cl"))
-            errors.extend(_compiler_errors(clang_summary, "Clang", require_clang_cl=True))
+            errors.extend(_windows_clang_errors(clang_summary))
             if clang_summary.get("gateErrors"):
                 errors.append("clang-cl summary contains gate errors")
     elif profile == "ci-matrix":
@@ -239,7 +282,14 @@ def write_index(
             "required": profile == "windows-local",
             "status": clang_summary.get("status", "not-required") if clang_summary else "not-required",
             "summaryPath": str(clang_summary_path) if clang_summary_path else "",
-            "build": clang_summary.get("build", {}) if clang_summary else {},
+            "debugBuild": clang_summary.get("debugBuild", {}) if clang_summary else {},
+            "releaseBuild": clang_summary.get("releaseBuild", {}) if clang_summary else {},
+            "releaseCleanPreparation": (
+                clang_summary.get("releaseCleanPreparation", {}) if clang_summary else {}
+            ),
+            "releaseVersionOutput": (
+                clang_summary.get("releaseVersionOutput", "") if clang_summary else ""
+            ),
         },
     }
     gate_contract.write_json(output, payload)

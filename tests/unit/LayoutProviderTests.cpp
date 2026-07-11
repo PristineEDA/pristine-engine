@@ -846,6 +846,63 @@ TEST_CASE("Layout status request decodes strict v3 payload", "[layout][protocol]
                       Catch::Matchers::ContainsSubstring("truncated"));
 }
 
+TEST_CASE("Layout frame encoding preserves exact empty and non-empty payload bytes",
+          "[layout][protocol]") {
+    const auto empty = encodeFrame(LayoutFrame{.message_type = LayoutMessageType::Hello,
+                                                .request_id = 0x01020304U,
+                                                .flags = 0xaabbccddU});
+    const std::vector<std::uint8_t> expected_empty = {
+        'P', 'L', 'D', '1',
+        0x03, 0x00,
+        0x01, 0x00,
+        0x04, 0x03, 0x02, 0x01,
+        0xdd, 0xcc, 0xbb, 0xaa,
+        0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00,
+    };
+    CHECK(empty == expected_empty);
+
+    auto non_empty_frame = LayoutFrame{.message_type = LayoutMessageType::StatusResponse,
+                                       .request_id = 9U,
+                                       .flags = 2U};
+    non_empty_frame.payload = {0x10U, 0x20U, 0x30U};
+    const auto non_empty = encodeFrame(non_empty_frame);
+    REQUIRE(non_empty.size() == 27U);
+    CHECK(readU16(non_empty.data(), non_empty.size(), 6) ==
+          static_cast<std::uint16_t>(LayoutMessageType::StatusResponse));
+    CHECK(readU32(non_empty.data(), non_empty.size(), 16) == 3U);
+    CHECK(std::vector<std::uint8_t>(non_empty.begin() + 24, non_empty.end()) ==
+          non_empty_frame.payload);
+}
+
+TEST_CASE("Layout status encoding preserves empty and populated string tables",
+          "[layout][protocol]") {
+    const auto empty = encodeStatusResponsePayload(LayoutStatus{});
+    REQUIRE(empty.size() == 120U);
+    CHECK(std::string(reinterpret_cast<const char*>(empty.data()), 4) == "PLST");
+    CHECK(readU16(empty.data(), empty.size(), 4) == kLayoutProtocolVersion);
+    CHECK(readU16(empty.data(), empty.size(), 6) == 116U);
+    CHECK(readU32(empty.data(), empty.size(), 92) == 116U);
+    CHECK(readU32(empty.data(), empty.size(), 96) == 4U);
+    CHECK(readU32(empty.data(), empty.size(), 100) == 0U);
+    CHECK(readU32(empty.data(), empty.size(), 116) == 0U);
+
+    LayoutStatus failed;
+    failed.state = LayoutSourceState::Failed;
+    failed.phase = LayoutSourcePhase::Failed;
+    failed.error = "boom";
+    const auto populated = encodeStatusResponsePayload(failed);
+    REQUIRE(populated.size() == 124U);
+    CHECK(readU32(populated.data(), populated.size(), 8) ==
+          static_cast<std::uint32_t>(LayoutSourceState::Failed));
+    CHECK(readU32(populated.data(), populated.size(), 12) ==
+          static_cast<std::uint32_t>(LayoutSourcePhase::Failed));
+    CHECK(readU32(populated.data(), populated.size(), 92) == 116U);
+    CHECK(readU32(populated.data(), populated.size(), 96) == 8U);
+    CHECK(readU32(populated.data(), populated.size(), 116) == 4U);
+    CHECK(std::string(reinterpret_cast<const char*>(populated.data() + 120), 4) == "boom");
+}
+
 TEST_CASE("GDS staged open exposes status until ready", "[layout][gds][protocol]") {
     const auto gds_path = std::filesystem::temp_directory_path() / "pristine-layout-staged.gds";
     {

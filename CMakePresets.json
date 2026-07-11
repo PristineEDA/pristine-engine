@@ -33,8 +33,21 @@
       "binaryDir": "${sourceDir}/build/clang-cl",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_C_COMPILER": "C:/Program Files/LLVM/bin/clang-cl.exe",
         "CMAKE_CXX_COMPILER": "C:/Program Files/LLVM/bin/clang-cl.exe",
         "PRISTINE_BUILD_TESTS": "ON"
+      }
+    },
+    {
+      "name": "clang-cl-release",
+      "displayName": "Release (clang-cl)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/clang-cl-release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_C_COMPILER": "C:/Program Files/LLVM/bin/clang-cl.exe",
+        "CMAKE_CXX_COMPILER": "C:/Program Files/LLVM/bin/clang-cl.exe",
+        "PRISTINE_BUILD_TESTS": "OFF"
       }
     }
   ],
@@ -50,6 +63,10 @@
     {
       "name": "clang-cl",
       "configurePreset": "clang-cl"
+    },
+    {
+      "name": "clang-cl-release",
+      "configurePreset": "clang-cl-release"
     }
   ]
 }

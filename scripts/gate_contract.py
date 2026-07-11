@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 
-SUMMARY_SCHEMA_VERSION = 3
+SUMMARY_SCHEMA_VERSION = 4
 RUN_CONTEXT_SCHEMA_VERSION = 1
 
 
@@ -235,11 +235,30 @@ def _find_vs_cmake_tool(name: str) -> str | None:
     candidates: list[Path] = []
     for root in roots:
         if root.is_dir():
-            candidates.extend(sorted(root.glob(f"*/*/{suffix.as_posix()}"), reverse=True))
-    for candidate in candidates:
-        if candidate.is_file():
-            return str(candidate)
-    return None
+            candidates.extend(root.glob(f"*/*/{suffix.as_posix()}"))
+    existing = [candidate for candidate in candidates if candidate.is_file()]
+    if not existing:
+        return None
+    return str(max(existing, key=lambda candidate: (_cmake_tool_version(candidate), str(candidate))))
+
+
+def _cmake_tool_version(path: Path) -> tuple[int, int, int]:
+    try:
+        completed = subprocess.run(
+            [str(path), "--version"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return (-1, -1, -1)
+    if completed.returncode != 0:
+        return (-1, -1, -1)
+    match = re.search(r"\b(?:cmake|ctest) version (\d+)\.(\d+)\.(\d+)", completed.stdout)
+    if not match:
+        return (-1, -1, -1)
+    return tuple(int(part) for part in match.groups())
 
 
 def find_cmake(explicit: str | None = None) -> str:

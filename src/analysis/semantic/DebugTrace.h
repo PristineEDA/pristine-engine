@@ -37,7 +37,12 @@ void debugTraceInstant(std::string_view phase, std::string_view detail = {});
 #define PRISTINE_DEBUG_TRACE_SCOPE_SIMPLE(phase)                                       \
     ::pristine::analysis::semantic::DebugTraceScope PRISTINE_DEBUG_TRACE_CONCAT(       \
         pristine_debug_trace_scope_, __LINE__)(phase)
+#define PRISTINE_DEBUG_TRACE_SCOPE_LAZY(phase, detail_factory)                         \
+    ::pristine::analysis::semantic::DebugTraceScope PRISTINE_DEBUG_TRACE_CONCAT(       \
+        pristine_debug_trace_scope_, __LINE__)(phase, (detail_factory)())
 #else
 #define PRISTINE_DEBUG_TRACE_SCOPE(phase, detail) ((void)0)
 #define PRISTINE_DEBUG_TRACE_SCOPE_SIMPLE(phase) ((void)0)
+#define PRISTINE_DEBUG_TRACE_SCOPE_LAZY(phase, detail_factory)                         \
+    ((void)sizeof(phase), (void)sizeof(detail_factory))
 #endif

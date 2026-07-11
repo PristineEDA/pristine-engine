@@ -156,18 +156,14 @@ SnapshotBuildInputSummary snapshotBuildInputSummary(const SnapshotBuildInput& in
 
 SnapshotBuildOutput SnapshotBuilder::build(SnapshotBuildInput input) const {
     input = normalizeSnapshotBuildInput(std::move(input));
-#ifndef NDEBUG
-    const auto input_summary = snapshotBuildInputSummary(input);
-    PRISTINE_DEBUG_TRACE_SCOPE("snapshotBuilder.build",
-                               std::to_string(input_summary.document_count) +
-                                   " documents open=" +
-                                   std::to_string(input_summary.open_document_count) +
-                                   " dirty=" +
-                                   std::to_string(input_summary.dirty_document_count) +
-                                   " topModules=" +
-                                   std::to_string(input_summary.top_module_count) +
-                                   " generation=" + std::to_string(input.generation));
-#endif
+    PRISTINE_DEBUG_TRACE_SCOPE_LAZY("snapshotBuilder.build", [&] {
+        const auto input_summary = snapshotBuildInputSummary(input);
+        return std::to_string(input_summary.document_count) +
+               " documents open=" + std::to_string(input_summary.open_document_count) +
+               " dirty=" + std::to_string(input_summary.dirty_document_count) +
+               " topModules=" + std::to_string(input_summary.top_module_count) +
+               " generation=" + std::to_string(input.generation);
+    });
     auto data = std::make_unique<SnapshotData>();
     data->source_manager = std::make_unique<slang::SourceManager>();
     data->source_manager->setDisableProximatePaths(true);

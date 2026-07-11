@@ -8,6 +8,7 @@ add_executable(
 	unit/CompilationServiceTests.cpp
 	unit/DiagnosticProviderTests.cpp
 	unit/DesignGraphProviderTests.cpp
+	unit/DebugTraceCompileTests.cpp
 	unit/GoldenSemanticTests.cpp
 	unit/LayoutProviderTests.cpp
 	unit/MessageStreamTests.cpp
