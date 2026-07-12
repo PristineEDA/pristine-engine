@@ -44,8 +44,10 @@ struct AstIndexView {
         member_completions_by_qualifier_by_uri;
     std::unordered_map<std::string, SnapshotMemberCompletion> member_completions_by_stable_id;
     std::unordered_map<std::string, std::vector<SnapshotScopeVisibility>> scope_visibility_by_uri;
+    std::unordered_map<std::string, std::vector<SnapshotVisibilityCandidate>> document_visibility_by_uri;
     std::unordered_map<std::string, SnapshotPackageVisibility> package_visibility_by_name;
     std::vector<SnapshotVisibilityCandidate> workspace_visibility;
+    std::unordered_map<std::string, std::string> module_definition_ids_by_name;
     std::unordered_map<std::string, std::vector<SnapshotVisibleMacro>> visible_macros_by_uri;
     size_t scope_visibility_count = 0;
     size_t package_visibility_count = 0;
@@ -58,6 +60,7 @@ struct AstIndexView {
     std::unordered_map<std::string, std::vector<SnapshotModuleInstance>> module_instances_by_uri;
     std::unordered_map<std::string, std::vector<SignatureInlayModuleInstance>> signature_module_instances_by_uri;
     std::unordered_map<std::string, std::vector<SignatureInlayCall>> signature_calls_by_uri;
+    std::unordered_map<std::string, std::vector<SignatureInlaySymbol>> inlay_symbols_by_uri;
     std::vector<NavigationReference> navigation_references;
     std::unordered_map<std::string, SemanticSymbolIdentity> navigation_symbols_by_id;
     std::unordered_map<std::string, DiagnosticSymbol> diagnostic_symbols_by_id;

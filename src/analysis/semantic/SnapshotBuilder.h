@@ -62,8 +62,10 @@ struct SnapshotVisibilityCandidate {
 
 struct SnapshotScopeVisibility {
     std::string stable_id;
+    std::string parent_stable_id;
     std::string uri;
     ParseRange range;
+    std::string context_kind;
     int lexical_depth = 0;
     std::vector<SnapshotVisibilityCandidate> candidates;
 };
@@ -151,8 +153,10 @@ struct SnapshotData {
         member_completions_by_qualifier_by_uri;
     std::unordered_map<std::string, SnapshotMemberCompletion> member_completions_by_stable_id;
     std::unordered_map<std::string, std::vector<SnapshotScopeVisibility>> scope_visibility_by_uri;
+    std::unordered_map<std::string, std::vector<SnapshotVisibilityCandidate>> document_visibility_by_uri;
     std::unordered_map<std::string, SnapshotPackageVisibility> package_visibility_by_name;
     std::vector<SnapshotVisibilityCandidate> workspace_visibility;
+    std::unordered_map<std::string, std::string> module_definition_ids_by_name;
     std::unordered_map<std::string, std::vector<SnapshotVisibleMacro>> visible_macros_by_uri;
     size_t scope_visibility_count = 0;
     size_t package_visibility_count = 0;
@@ -169,6 +173,7 @@ struct SnapshotData {
     std::unordered_map<std::string, std::vector<IncludeDirective>> include_directives_by_uri;
     std::unordered_map<std::string, std::vector<SnapshotModuleInstance>> module_instances_by_uri;
     std::unordered_map<std::string, std::vector<SignatureInlayCall>> signature_calls_by_uri;
+    std::unordered_map<std::string, std::vector<SignatureInlaySymbol>> inlay_symbols_by_uri;
     std::unordered_map<std::string, std::vector<ParseRange>> selection_ranges_by_uri;
     std::unordered_map<std::string, std::vector<MacroDefinition>> macros_by_uri;
     std::unordered_map<std::string, std::vector<PackageImport>> package_imports_by_uri;

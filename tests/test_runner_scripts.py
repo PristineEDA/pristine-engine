@@ -227,6 +227,32 @@ class FullTestStatusRunnerTests(unittest.TestCase):
 
         self.assertEqual([result.name for result in required_skips], ["pristine_lsp_core_e2e"])
 
+    def test_required_slang_differential_promotes_optional_skip_to_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            manifest = self.write_manifest(
+                Path(temp),
+                required=["pristine_differential_slang_server"],
+                optional=["pristine_differential_slang_server"],
+            )
+            result = self.runner.TestResult(
+                name="pristine_differential_slang_server",
+                status="skipped",
+                returncode=0,
+                duration_seconds=0.1,
+                log_path=Path("differential.log"),
+                skip_reason="SKIP: missing binary",
+            )
+
+            optional = self.runner.required_skip_results([result], manifest)
+            required = self.runner.required_skip_results(
+                [result],
+                manifest,
+                {"PRISTINE_REQUIRE_SLANG_DIFFERENTIAL": "1"},
+            )
+
+        self.assertEqual(optional, [])
+        self.assertEqual(required, [result])
+
     def test_manifest_validation_rejects_optional_skip_outside_required(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             manifest_path = Path(temp) / "gate_manifest.json"

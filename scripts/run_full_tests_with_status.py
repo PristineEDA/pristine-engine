@@ -28,6 +28,7 @@ DEFAULT_HEARTBEAT_SECONDS = 30.0
 DEFAULT_MANIFEST_PATH = Path(__file__).resolve().parents[1] / "tests" / "gate_manifest.json"
 ENVIRONMENT_SUMMARY_KEYS = (
     "SLANG_SERVER_ROOT",
+    "PRISTINE_REQUIRE_SLANG_DIFFERENTIAL",
     "PRISTINE_REQUIRE_IHP_OPEN_PDK",
     "PRISTINE_REQUIRE_TT_TINYQV_GDS",
     "PRISTINE_TEST_STATUS_INTERVAL_SECONDS",
@@ -468,11 +469,26 @@ def missing_required_environment(
     return missing
 
 
-def required_skip_results(results: list[TestResult], manifest: GateManifest) -> list[TestResult]:
+def effective_optional_skip_tests(
+    manifest: GateManifest,
+    environment: dict[str, str] | os._Environ[str] = os.environ,
+) -> set[str]:
+    optional = set(manifest.optional_skip_tests)
+    if str(environment.get("PRISTINE_REQUIRE_SLANG_DIFFERENTIAL", "")).strip() == "1":
+        optional.discard("pristine_differential_slang_server")
+    return optional
+
+
+def required_skip_results(
+    results: list[TestResult],
+    manifest: GateManifest,
+    environment: dict[str, str] | os._Environ[str] = os.environ,
+) -> list[TestResult]:
+    optional = effective_optional_skip_tests(manifest, environment)
     return [
         result
         for result in results
-        if result.status == "skipped" and result.name not in manifest.optional_skip_tests
+        if result.status == "skipped" and result.name not in optional
     ]
 
 
@@ -522,7 +538,7 @@ def build_summary_payload(
             manifest.path,
         )
     gate_errors = list(gate_errors or [])
-    optional_names = set(manifest.optional_skip_tests)
+    optional_names = effective_optional_skip_tests(manifest, environment)
     required_names = set(manifest.required_tests) - optional_names
     required_skipped = [
         result for result in results if result.status == "skipped" and result.name in required_names

@@ -2445,6 +2445,42 @@ bool visibilityCandidateLess(const SnapshotVisibilityCandidate& left,
     return left.identity.stable_id < right.identity.stable_id;
 }
 
+bool workspaceVisibilityCandidateLess(const SnapshotVisibilityCandidate& left,
+                                      const SnapshotVisibilityCandidate& right) {
+    const auto less_name = std::lexicographical_compare(
+        left.identity.name.begin(),
+        left.identity.name.end(),
+        right.identity.name.begin(),
+        right.identity.name.end(),
+        [](unsigned char lhs, unsigned char rhs) {
+            return std::tolower(lhs) < std::tolower(rhs);
+        });
+    const auto same_name = left.identity.name.size() == right.identity.name.size() &&
+                           !less_name &&
+                           !std::lexicographical_compare(
+                               right.identity.name.begin(),
+                               right.identity.name.end(),
+                               left.identity.name.begin(),
+                               left.identity.name.end(),
+                               [](unsigned char lhs, unsigned char rhs) {
+                                   return std::tolower(lhs) < std::tolower(rhs);
+                               });
+    if (!same_name) {
+        return less_name;
+    }
+    if (left.identity.kind != right.identity.kind) {
+        return left.identity.kind < right.identity.kind;
+    }
+    return left.identity.stable_id < right.identity.stable_id;
+}
+
+std::string scopeStableId(std::string_view uri,
+                          const ParseRange& range,
+                          std::string_view context_kind) {
+    return "scope|" + std::string(uri) + "|" + rangeKey(range) + "|" +
+           std::string(context_kind);
+}
+
 const slang::ast::Symbol* visibleSymbol(const slang::ast::Symbol& symbol,
                                         SnapshotVisibilityOrigin& origin) {
     if (symbol.kind == slang::ast::SymbolKind::TransparentMember) {
@@ -2627,8 +2663,20 @@ void appendScopeVisibility(SnapshotData& data,
     result.uri = scope_location->uri;
     result.range = *scope_range;
     result.lexical_depth = scopeDepth(scope);
-    result.stable_id = "scope|" + result.uri + "|" + rangeKey(result.range) + "|" +
-                       std::string(slang::ast::toString(scope_symbol.kind));
+    result.context_kind = std::string(slang::ast::toString(scope_symbol.kind));
+    result.stable_id = scopeStableId(result.uri, result.range, result.context_kind);
+    if (const auto* parent = scope_symbol.getParentScope()) {
+        if (const auto parent_location = declarationLocationForSymbol(source_manager, parent->asSymbol());
+            parent_location.has_value()) {
+            if (const auto parent_range = parseRangeForSymbolSyntax(source_manager, parent->asSymbol());
+                parent_range.has_value()) {
+                result.parent_stable_id = scopeStableId(
+                    parent_location->uri,
+                    *parent_range,
+                    slang::ast::toString(parent->asSymbol().kind));
+            }
+        }
+    }
 
     for (const auto& member : scope.members()) {
         if (const auto candidate = visibilityCandidateForSymbol(data,
@@ -2658,6 +2706,55 @@ void appendScopeVisibility(SnapshotData& data,
     data.scope_visibility_by_uri[result.uri].push_back(std::move(result));
 }
 
+void buildDocumentVisibilityIndexes(SnapshotData& data, const slang::SourceManager& source_manager) {
+    data.document_visibility_by_uri.clear();
+
+    std::vector<const slang::ast::Symbol*> imports;
+    for (const auto& [_, indexed] : data.symbols_by_id) {
+        if (indexed.symbol == nullptr ||
+            (indexed.symbol->kind != slang::ast::SymbolKind::ExplicitImport &&
+             indexed.symbol->kind != slang::ast::SymbolKind::WildcardImport)) {
+            continue;
+        }
+        imports.push_back(indexed.symbol);
+    }
+
+    for (const auto* symbol : imports) {
+        const auto location = declarationLocationForSymbol(source_manager, *symbol);
+        if (!location.has_value() || location->uri.empty()) {
+            continue;
+        }
+        auto& candidates = data.document_visibility_by_uri[location->uri];
+        if (symbol->kind == slang::ast::SymbolKind::ExplicitImport) {
+            if (const auto candidate = visibilityCandidateForSymbol(
+                    data,
+                    source_manager,
+                    *symbol,
+                    SnapshotVisibilityOrigin::ExplicitImport)) {
+                appendVisibilityCandidate(candidates, *candidate);
+            }
+            continue;
+        }
+
+        const auto& wildcard = symbol->as<slang::ast::WildcardImportSymbol>();
+        const auto* package = wildcard.getPackage();
+        if (package == nullptr) {
+            continue;
+        }
+        const auto package_it = data.package_visibility_by_name.find(std::string(package->name));
+        if (package_it == data.package_visibility_by_name.end()) {
+            continue;
+        }
+        for (auto candidate : package_it->second.candidates) {
+            candidate.origin = SnapshotVisibilityOrigin::WildcardImport;
+            appendVisibilityCandidate(candidates, std::move(candidate));
+        }
+    }
+
+    for (auto& [_, candidates] : data.document_visibility_by_uri) {
+        std::sort(candidates.begin(), candidates.end(), visibilityCandidateLess);
+    }
+}
 bool isWorkspaceVisibilityKind(std::string_view kind) {
     return kind == "Definition" || kind == "Package" || kind == "ClassType" ||
            kind == "EnumType" || kind == "TypeAlias" || kind == "ForwardingTypedef" ||
@@ -2668,6 +2765,7 @@ void buildScopeVisibilityIndexes(SnapshotData& data, const slang::SourceManager&
     data.scope_visibility_by_uri.clear();
     data.package_visibility_by_name.clear();
     data.workspace_visibility.clear();
+    data.module_definition_ids_by_name.clear();
 
     for (const auto* package : data.compilation->getPackages()) {
         if (package == nullptr || package->name.empty()) {
@@ -2705,6 +2803,7 @@ void buildScopeVisibilityIndexes(SnapshotData& data, const slang::SourceManager&
     for (const auto* scope : scopes) {
         appendScopeVisibility(data, source_manager, *scope);
     }
+    buildDocumentVisibilityIndexes(data, source_manager);
 
     for (const auto& [_, indexed] : data.symbols_by_id) {
         if (!isWorkspaceVisibilityKind(indexed.identity.kind)) {
@@ -2716,7 +2815,15 @@ void buildScopeVisibilityIndexes(SnapshotData& data, const slang::SourceManager&
                                                               .value_display = indexed.value_display,
                                                               .origin = SnapshotVisibilityOrigin::Workspace});
     }
-    std::sort(data.workspace_visibility.begin(), data.workspace_visibility.end(), visibilityCandidateLess);
+    std::sort(data.workspace_visibility.begin(),
+              data.workspace_visibility.end(),
+              workspaceVisibilityCandidateLess);
+    for (const auto& candidate : data.workspace_visibility) {
+        if (candidate.identity.kind == "Definition") {
+            data.module_definition_ids_by_name.try_emplace(candidate.identity.name,
+                                                            candidate.identity.stable_id);
+        }
+    }
     for (auto& [_, scope_views] : data.scope_visibility_by_uri) {
         std::sort(scope_views.begin(), scope_views.end(), [](const auto& left, const auto& right) {
             if (left.lexical_depth != right.lexical_depth) {
@@ -3741,6 +3848,34 @@ void sortSnapshotIndexes(SnapshotData& data) {
             return lhs.name < rhs.name;
         });
     }
+    data.inlay_symbols_by_uri.clear();
+    for (const auto& [_, indexed_symbol] : data.symbols_by_id) {
+        const auto& identity = indexed_symbol.identity;
+        if (identity.location.uri.empty()) {
+            continue;
+        }
+        data.inlay_symbols_by_uri[identity.location.uri].push_back(
+            SignatureInlaySymbol{.identity = identity,
+                                 .type_display = indexed_symbol.type_display,
+                                 .value_display = indexed_symbol.value_display});
+    }
+    for (auto& [_, symbols] : data.inlay_symbols_by_uri) {
+        std::sort(symbols.begin(), symbols.end(), [](const auto& left, const auto& right) {
+            if (!sameRange(left.identity.location.range, right.identity.location.range)) {
+                return locationLess(left.identity.location, right.identity.location);
+            }
+            if (left.identity.kind != right.identity.kind) {
+                return left.identity.kind < right.identity.kind;
+            }
+            return left.identity.stable_id < right.identity.stable_id;
+        });
+        symbols.erase(std::unique(symbols.begin(),
+                                  symbols.end(),
+                                  [](const auto& left, const auto& right) {
+                                      return left.identity.stable_id == right.identity.stable_id;
+                                  }),
+                      symbols.end());
+    }
 }
 
 bool fuzzyMatch(std::string_view query, std::string_view candidate) {
@@ -4076,8 +4211,10 @@ AstIndexView buildAstIndexView(const SnapshotData* data, std::uint64_t generatio
     view.member_completions_by_qualifier_by_uri = data->member_completions_by_qualifier_by_uri;
     view.member_completions_by_stable_id = data->member_completions_by_stable_id;
     view.scope_visibility_by_uri = data->scope_visibility_by_uri;
+    view.document_visibility_by_uri = data->document_visibility_by_uri;
     view.package_visibility_by_name = data->package_visibility_by_name;
     view.workspace_visibility = data->workspace_visibility;
+    view.module_definition_ids_by_name = data->module_definition_ids_by_name;
     view.visible_macros_by_uri = data->visible_macros_by_uri;
     view.scope_visibility_count = data->scope_visibility_count;
     view.package_visibility_count = data->package_visibility_count;
@@ -4089,6 +4226,7 @@ AstIndexView buildAstIndexView(const SnapshotData* data, std::uint64_t generatio
     view.package_imports_by_uri = data->package_imports_by_uri;
     view.module_instances_by_uri = data->module_instances_by_uri;
     view.signature_calls_by_uri = data->signature_calls_by_uri;
+    view.inlay_symbols_by_uri = data->inlay_symbols_by_uri;
     view.design_graph_module_entries.reserve(view.module_signatures_by_name.size() +
                                              data->module_entries.size());
     std::set<std::string> emitted_graph_entries;

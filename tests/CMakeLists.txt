@@ -105,6 +105,10 @@ set_tests_properties(pristine_differential_slang_server PROPERTIES
 if(PRISTINE_BUILD_PERF_TESTS)
 	add_executable(pristine_perf_tests perf/SemanticPerfSmoke.cpp)
 	target_link_libraries(pristine_perf_tests PRIVATE pristine_core)
+	add_test(NAME pristine_perf_tests COMMAND pristine_perf_tests)
+	set_tests_properties(pristine_perf_tests PROPERTIES
+		LABELS "perf;semantic;completion"
+		TIMEOUT 1200)
 
 	add_executable(pristine_wellen_fst_perf perf/WellenFstPerf.cpp)
 	target_link_libraries(pristine_wellen_fst_perf PRIVATE pristine_core)

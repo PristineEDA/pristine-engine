@@ -20,7 +20,7 @@ jobs:
   build-test:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.runs_on }}
-    timeout-minutes: 45
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -201,6 +201,26 @@ jobs:
 
       - name: Build
         run: cmake --build --preset dev
+
+      - name: Build pinned slang-server for shared LSP differential
+        if: matrix.id == 'ubuntu-24.04-x64'
+        shell: bash
+        run: |
+          git clone --filter=blob:none https://github.com/hudson-trading/slang-server .cache/slang-server
+          git -C .cache/slang-server checkout 0ec16ae
+          cmake -S .cache/slang-server -B .cache/slang-server/build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_COMPILER="${{ steps.compiler.outputs.cxx }}" \
+            -DSLANG_SERVER_INCLUDE_TESTS=OFF \
+            -DSLANG_SERVER_INCLUDE_INSTALL=OFF
+          cmake --build .cache/slang-server/build --target slang_server
+
+      - name: Require shared LSP differential
+        if: matrix.id == 'ubuntu-24.04-x64'
+        shell: bash
+        run: |
+          echo "SLANG_SERVER_ROOT=${GITHUB_WORKSPACE}/.cache/slang-server" >> "$GITHUB_ENV"
+          echo "PRISTINE_REQUIRE_SLANG_DIFFERENTIAL=1" >> "$GITHUB_ENV"
 
       - name: Create gate run context
         run: python scripts/create_gate_run_context.py --output build/gate-artifacts/run-context.json

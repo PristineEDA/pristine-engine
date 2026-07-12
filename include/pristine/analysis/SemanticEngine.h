@@ -124,6 +124,8 @@ struct SemanticCompletionResult {
     std::vector<SemanticCompletionItem> items;
     std::vector<std::string> messages;
     size_t scanned_candidate_count = 0;
+    size_t scanned_scope_candidate_count = 0;
+    size_t scanned_workspace_candidate_count = 0;
     size_t scanned_global_symbol_count = 0;
     size_t scope_visibility_count = 0;
     size_t package_visibility_count = 0;

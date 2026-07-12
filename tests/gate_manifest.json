@@ -1,5 +1,5 @@
 {
-  "version": 1,
+  "version": 2,
   "description": "Required product and integration CTest gates for pristine-engine full validation.",
   "runnerSelfTest": "pristine_script_runner_tests",
   "requiredTests": [
@@ -12,6 +12,7 @@
     "pristine_tt_tinyqv_gds_interaction",
     "pristine_lefdef_corpus",
     "pristine_differential_slang_server",
+    "pristine_perf_tests",
     "pristine_wellen_fst_perf",
     "pristine_rtl_e2e_stress",
     "pristine_rtl_e2e_smoke",
@@ -56,6 +57,9 @@
       "pristine_rtl_e2e_large_workspace",
       "pristine_rtl_e2e_real_retrosoc",
       "pristine_rtl_e2e_lsp_stress"
+    ],
+    "semanticPerf": [
+      "pristine_perf_tests"
     ],
     "optionalComparison": [
       "pristine_differential_slang_server"

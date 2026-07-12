@@ -48,6 +48,7 @@ int main() {
 
     std::vector<int> workspace_sizes{100, 1000, 5000};
     bool unresolved = false;
+    bool completion_contract_failed = false;
     std::cout << "{\"baselines\":[";
     bool first_baseline = true;
 
@@ -55,30 +56,41 @@ int main() {
         emitStatus("baseline", "documents=" + std::to_string(workspace_size));
         engine.clear();
 
+        const auto document_text = [](int index, bool include_workspace_probe) {
+            const auto name = std::string("sig_") + std::to_string(index);
+            auto text = std::string("module unit_") + std::to_string(index) + ";\n" +
+                        "  logic " + name + ";\n" +
+                        "  assign " + name + " = " + name + ";\n";
+            if (include_workspace_probe) {
+                text += "  unit_0 u0();\n";
+            }
+            text += "endmodule\n";
+            return text;
+        };
+
         const auto start_index = Clock::now();
         for (int index = 0; index < workspace_size; ++index) {
-            const auto name = std::string("sig_") + std::to_string(index);
             engine.updateDocument("file:///perf/unit_" + std::to_string(index) + ".sv",
-                                  "module unit_" + std::to_string(index) + ";\n"
-                                  "  logic " + name + ";\n"
-                                  "  assign " + name + " = " + name + ";\n"
-                                  "endmodule\n",
+                                  document_text(index, false),
                                   pristine::analysis::SemanticEngineDocumentState{.version = 1});
         }
         const auto end_index = Clock::now();
 
         const auto target_index = workspace_size == 100 ? 42 : 420;
         const auto target_uri = "file:///perf/unit_" + std::to_string(target_index) + ".sv";
+        engine.updateDocument(target_uri,
+                              document_text(target_index, true),
+                              pristine::analysis::SemanticEngineDocumentState{.version = 2});
 
         const auto start_hover = Clock::now();
         const auto hover = engine.hoverAt(target_uri, 1, 10);
         const auto end_hover = Clock::now();
 
         const auto start_completion = Clock::now();
-        const auto completion = engine.completionsAt(target_uri, 1, 4, "sig_");
+        const auto completion = engine.completionsAt(target_uri, 1, 12, "sig_");
         const auto end_completion = Clock::now();
         const auto start_completion_warm = Clock::now();
-        const auto completion_warm = engine.completionsAt(target_uri, 1, 4, "sig_");
+        const auto completion_warm = engine.completionsAt(target_uri, 1, 12, "sig_");
         const auto end_completion_warm = Clock::now();
         long long completion_resolve_micros = 0;
         if (!completion.items.empty()) {
@@ -87,6 +99,10 @@ int main() {
                                            completion.items.front().label);
             completion_resolve_micros = elapsedMicros(start_completion_resolve, Clock::now());
         }
+
+        const auto start_workspace_completion = Clock::now();
+        const auto workspace_completion = engine.completionsAt(target_uri, 3, 6, "unit");
+        const auto workspace_completion_micros = elapsedMicros(start_workspace_completion, Clock::now());
 
         const auto start_query = Clock::now();
         const auto references = engine.referencesAt(target_uri, 1, 10, true);
@@ -136,6 +152,14 @@ int main() {
         const auto end_code_action = Clock::now();
         const auto cache_stats = engine.queryCacheStats();
 
+        completion_contract_failed = completion_contract_failed || completion.unresolved ||
+                                     completion_warm.unresolved || completion.items.empty() ||
+                                     completion_warm.items.empty() ||
+                                     completion.scanned_global_symbol_count != 0 ||
+                                     workspace_completion.unresolved ||
+                                     workspace_completion.items.empty() ||
+                                     workspace_completion.scanned_global_symbol_count != 0;
+
         if (!first_baseline) {
             std::cout << ",";
         }
@@ -150,6 +174,7 @@ int main() {
                   << "\"completionWarmMicros\":"
                   << elapsedMicros(start_completion_warm, end_completion_warm) << ","
                   << "\"completionResolveMicros\":" << completion_resolve_micros << ","
+                  << "\"workspaceCompletionMicros\":" << workspace_completion_micros << ","
                   << "\"referenceMicros\":" << elapsedMicros(start_query, end_query) << ","
                   << "\"renameMicros\":" << elapsedMicros(start_rename, end_rename) << ","
                   << "\"signatureHelpMicros\":" << elapsedMicros(start_signature, end_signature) << ","
@@ -168,8 +193,25 @@ int main() {
                   << "\"completionWarmCount\":" << completion_warm.items.size() << ","
                   << "\"completionScannedCandidateCount\":"
                   << completion.scanned_candidate_count << ","
+                  << "\"completionScannedScopeCandidates\":"
+                  << completion.scanned_scope_candidate_count << ","
+                  << "\"completionScannedWorkspaceCandidates\":"
+                  << completion.scanned_workspace_candidate_count << ","
                   << "\"completionScannedGlobalSymbols\":"
                   << completion.scanned_global_symbol_count << ","
+                  << "\"completionContractPassed\":"
+                  << (completion.unresolved || completion_warm.unresolved || completion.items.empty() ||
+                              completion_warm.items.empty() || completion.scanned_global_symbol_count != 0
+                              || workspace_completion.unresolved || workspace_completion.items.empty() ||
+                              workspace_completion.scanned_global_symbol_count != 0
+                          ? "false"
+                          : "true")
+                  << ","
+                  << "\"workspaceCompletionCount\":" << workspace_completion.items.size() << ","
+                  << "\"workspaceCompletionScannedCandidates\":"
+                  << workspace_completion.scanned_candidate_count << ","
+                  << "\"workspaceCompletionScannedWorkspaceCandidates\":"
+                  << workspace_completion.scanned_workspace_candidate_count << ","
                   << "\"inlayHintCount\":" << inlay.hints.size() << ","
                   << "\"semanticTokenCount\":" << semantic_tokens.tokens.size() << ","
                   << "\"moduleHierarchyRootCount\":" << hierarchy.roots.size() << ","
@@ -190,6 +232,7 @@ int main() {
     }
 
     std::cout << "]}\n";
-    emitStatus("summary", unresolved ? "status=failed" : "status=passed");
-    return unresolved ? 1 : 0;
+    const bool failed = unresolved || completion_contract_failed;
+    emitStatus("summary", failed ? "status=failed" : "status=passed");
+    return failed ? 1 : 0;
 }

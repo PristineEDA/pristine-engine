@@ -971,6 +971,93 @@ TEST_CASE("AstIndex derives function and task signature calls from slang AST",
     CHECK(emit_call->parameters[0] == "input logic ready");
 }
 
+TEST_CASE("AstIndex scope visibility exposes parent context and URI-local inlay facts",
+          "[analysis][semantic][ast-index][scope-visibility][inlay]") {
+    SnapshotBuildInput input{.generation = 40,
+                             .documents = {{"file:///workspace/scopes.sv",
+                                            SemanticEngineDocument{
+                                                .uri = "file:///workspace/scopes.sv",
+                                                .text = "module top;\n"
+                                                        "  logic ready;\n"
+                                                        "  initial begin : outer_scope\n"
+                                                        "    logic local_ready;\n"
+                                                        "    begin : inner_scope\n"
+                                                        "      local_ready = ready;\n"
+                                                        "    end\n"
+                                                        "  end\n"
+                                                        "endmodule\n",
+                                                .version = 1,
+                                                .is_open = true}}}};
+
+    auto output = SnapshotBuilder{}.build(std::move(input));
+    REQUIRE(output.data != nullptr);
+
+    const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
+    const auto scopes_it = view.scope_visibility_by_uri.find("file:///workspace/scopes.sv");
+    REQUIRE(scopes_it != view.scope_visibility_by_uri.end());
+    CHECK(std::all_of(scopes_it->second.begin(), scopes_it->second.end(), [](const auto& scope) {
+        return !scope.context_kind.empty();
+    }));
+    CHECK(std::any_of(scopes_it->second.begin(), scopes_it->second.end(), [](const auto& scope) {
+        return !scope.parent_stable_id.empty();
+    }));
+
+    const auto inlay_it = view.inlay_symbols_by_uri.find("file:///workspace/scopes.sv");
+    REQUIRE(inlay_it != view.inlay_symbols_by_uri.end());
+    CHECK(std::all_of(inlay_it->second.begin(), inlay_it->second.end(), [](const auto& symbol) {
+        return symbol.identity.location.uri == "file:///workspace/scopes.sv";
+    }));
+}
+
+TEST_CASE("AstIndex workspace visibility indexes class declarations for prefix completion",
+          "[analysis][semantic][ast-index][completion][prefix-index]") {
+    SnapshotBuildInput input{.generation = 41,
+                             .documents = {{"file:///workspace/class-prefix.sv",
+                                            SemanticEngineDocument{
+                                                .uri = "file:///workspace/class-prefix.sv",
+                                                .text = "class packet;\nendclass\nmodule top;\n  pac\nendmodule\n",
+                                                .version = 1,
+                                                .is_open = true}}}};
+
+    auto output = SnapshotBuilder{}.build(std::move(input));
+    REQUIRE(output.data != nullptr);
+
+    const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
+    CHECK(std::any_of(view.workspace_visibility.begin(),
+                      view.workspace_visibility.end(),
+                      [](const auto& candidate) {
+                          return candidate.identity.name == "packet" &&
+                                 candidate.identity.kind == "ClassType";
+                      }));
+}
+TEST_CASE("AstIndex document visibility retains AST explicit imports during recovery",
+          "[analysis][semantic][ast-index][completion][import][recovery]") {
+    SnapshotBuildInput input{.generation = 42,
+                             .documents = {
+                                 {"file:///workspace/defs.sv",
+                                  SemanticEngineDocument{.uri = "file:///workspace/defs.sv",
+                                                         .text = "package defs; typedef logic token_t; endpackage\n",
+                                                         .version = 1}},
+                                 {"file:///workspace/user.sv",
+                                  SemanticEngineDocument{.uri = "file:///workspace/user.sv",
+                                                         .text = "module top;\n"
+                                                                 "  import defs::token_t;\n"
+                                                                 "  tok\n"
+                                                                 "endmodule\n",
+                                                         .version = 1,
+                                                         .is_open = true}}}};
+
+    auto output = SnapshotBuilder{}.build(std::move(input));
+    REQUIRE(output.data != nullptr);
+
+    const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
+    const auto candidates = view.document_visibility_by_uri.find("file:///workspace/user.sv");
+    REQUIRE(candidates != view.document_visibility_by_uri.end());
+    CHECK(std::any_of(candidates->second.begin(), candidates->second.end(), [](const auto& candidate) {
+        return candidate.identity.name == "token_t" &&
+               candidate.origin == SnapshotVisibilityOrigin::ExplicitImport;
+    }));
+}
 TEST_CASE("AstIndex derives array-of-struct member completion facts from declared types",
           "[analysis][semantic][ast-index][completion][member][array]") {
     SnapshotBuildInput input{

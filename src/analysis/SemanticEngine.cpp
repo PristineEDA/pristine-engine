@@ -1164,7 +1164,8 @@ SemanticCompletionResult SemanticEngine::completionsAt(std::string_view uri,
     context.document_uri = document_uri;
     context.document_text = document == nullptr ? nullptr : &document->text;
     context.packages = &ast_index.package_visibility_by_name;
-    context.workspace_candidates = &ast_index.workspace_visibility;
+    context.workspace_candidates_by_name = &ast_index.workspace_visibility;
+    context.module_definition_ids_by_name = &ast_index.module_definition_ids_by_name;
     context.modules_by_name = &ast_index.modules_by_name;
     context.module_uris_by_name = &ast_index.module_uris_by_name;
     context.scope_visibility_count = ast_index.scope_visibility_count;
@@ -1175,6 +1176,10 @@ SemanticCompletionResult SemanticEngine::completionsAt(std::string_view uri,
     if (const auto scopes_it = ast_index.scope_visibility_by_uri.find(document_uri);
         scopes_it != ast_index.scope_visibility_by_uri.end()) {
         context.scopes = &scopes_it->second;
+    }
+    if (const auto candidates_it = ast_index.document_visibility_by_uri.find(document_uri);
+        candidates_it != ast_index.document_visibility_by_uri.end()) {
+        context.document_candidates = &candidates_it->second;
     }
     if (const auto members_it = ast_index.member_completions_by_qualifier_by_uri.find(document_uri);
         members_it != ast_index.member_completions_by_qualifier_by_uri.end()) {
@@ -1291,14 +1296,9 @@ SemanticInlayHintResult SemanticEngine::inlayHints(std::string_view uri, ParseRa
     context.document_text = document_it == documents_.end() ? nullptr : &document_it->second.text;
     context.modules_by_name = data == nullptr ? nullptr : &ast_index.modules_by_name;
     context.snapshot_available = data != nullptr;
-    if (data != nullptr) {
-        context.symbols.reserve(data->symbols_by_id.size());
-        for (const auto& [_, indexed_symbol] : data->symbols_by_id) {
-            context.symbols.push_back(semantic::SignatureInlaySymbol{
-                .identity = indexed_symbol.identity,
-                .type_display = indexed_symbol.type_display,
-                .value_display = indexed_symbol.value_display});
-        }
+    if (const auto symbols_it = ast_index.inlay_symbols_by_uri.find(document_uri);
+        symbols_it != ast_index.inlay_symbols_by_uri.end()) {
+        context.symbols = symbols_it->second;
     }
     if (data != nullptr) {
         const auto instances_it = ast_index.signature_module_instances_by_uri.find(document_uri);

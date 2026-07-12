@@ -51,8 +51,10 @@ struct CompletionQueryContext {
     std::string document_uri;
     const std::string* document_text = nullptr;
     const std::vector<SnapshotScopeVisibility>* scopes = nullptr;
+    const std::vector<SnapshotVisibilityCandidate>* document_candidates = nullptr;
     const std::unordered_map<std::string, SnapshotPackageVisibility>* packages = nullptr;
-    const std::vector<SnapshotVisibilityCandidate>* workspace_candidates = nullptr;
+    const std::vector<SnapshotVisibilityCandidate>* workspace_candidates_by_name = nullptr;
+    const std::unordered_map<std::string, std::string>* module_definition_ids_by_name = nullptr;
     const std::unordered_map<std::string, std::vector<SnapshotMemberCompletion>>*
         member_candidates_by_qualifier = nullptr;
     const std::vector<SnapshotVisibleMacro>* macros = nullptr;

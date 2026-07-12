@@ -2282,9 +2282,76 @@ TEST_CASE("SemanticEngine completion exposes scope visibility telemetry",
     CHECK(result.package_visibility_count == 1);
     CHECK(result.scope_visibility_build_micros >= 0);
     CHECK(result.scanned_candidate_count > 0);
+    CHECK(result.scanned_scope_candidate_count > 0);
+    CHECK(result.scanned_workspace_candidate_count == 0);
     CHECK(result.scanned_global_symbol_count == 0);
 }
 
+TEST_CASE("SemanticEngine workspace completion uses a deterministic AST prefix index",
+          "[analysis][semantic-engine][completion][visibility][prefix-index]") {
+    const auto populate = [](SemanticEngine& engine, bool reverse) {
+        for (int offset = 0; offset < 48; ++offset) {
+            const auto index = reverse ? 47 - offset : offset;
+            engine.updateDocument("file:///workspace/unit_" + std::to_string(index) + ".sv",
+                                  "module unit_" + std::to_string(index) + "; endmodule\n",
+                                  SemanticEngineDocumentState{.version = 1});
+        }
+        engine.updateDocument("file:///workspace/top.sv",
+                              "module top;\n"
+                              "  unit_0 probe();\n"
+                              "endmodule\n",
+                              SemanticEngineDocumentState{.version = 1, .is_open = true});
+    };
+
+    SemanticEngine forward;
+    SemanticEngine reverse;
+    populate(forward, false);
+    populate(reverse, true);
+
+    const auto forward_result = forward.completionsAt("file:///workspace/top.sv", 1, 6, "unit");
+    const auto reverse_result = reverse.completionsAt("file:///workspace/top.sv", 1, 6, "unit");
+
+    REQUIRE_FALSE(forward_result.unresolved);
+    REQUIRE_FALSE(reverse_result.unresolved);
+    REQUIRE(forward_result.items.size() == 48);
+    REQUIRE(reverse_result.items.size() == forward_result.items.size());
+    CHECK(forward_result.scanned_scope_candidate_count == 1);
+    CHECK(forward_result.scanned_workspace_candidate_count == forward_result.items.size());
+    CHECK(forward_result.scanned_global_symbol_count == 0);
+
+    std::vector<std::string> forward_labels;
+    std::vector<std::string> reverse_labels;
+    for (const auto& item : forward_result.items) {
+        forward_labels.push_back(item.label);
+    }
+    for (const auto& item : reverse_result.items) {
+        reverse_labels.push_back(item.label);
+    }
+    CHECK(forward_labels == reverse_labels);
+    CHECK(forward_labels.front() == "unit_0");
+}
+
+TEST_CASE("SemanticEngine completion keeps AST import visibility during recoverable trailing edits",
+          "[analysis][semantic-engine][completion][visibility][recovery]") {
+    SemanticEngine engine;
+    engine.updateDocument("file:///workspace/imported.sv",
+                          "package defs; typedef logic token_t; endpackage\n",
+                          SemanticEngineDocumentState{.version = 1});
+    engine.updateDocument("file:///workspace/editor.sv",
+                          "module top;\n"
+                          "  import defs::token_t;\n"
+                          "  tok\n"
+                          "endmodule\n",
+                          SemanticEngineDocumentState{.version = 1, .is_open = true});
+
+    const auto result = engine.completionsAt("file:///workspace/editor.sv", 2, 5, "tok");
+    CHECK_FALSE(result.unresolved);
+    CHECK(std::any_of(result.items.begin(), result.items.end(), [](const auto& item) {
+        return item.label == "token_t";
+    }));
+    CHECK(result.scanned_scope_candidate_count > 0);
+    CHECK(result.scanned_global_symbol_count == 0);
+}
 TEST_CASE("SemanticEngine macro completion respects definition and include order",
           "[analysis][semantic-engine][completion][visibility][macro][order]") {
     SemanticEngine engine;

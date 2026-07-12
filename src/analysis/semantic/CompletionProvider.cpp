@@ -28,6 +28,59 @@ bool prefixMatches(std::string_view value, std::string_view prefix) {
     return startsWithInsensitive(prefix, value);
 }
 
+bool caseInsensitiveLess(std::string_view left, std::string_view right) {
+    const auto common_size = std::min(left.size(), right.size());
+    for (size_t index = 0; index < common_size; ++index) {
+        const auto lhs = std::tolower(static_cast<unsigned char>(left[index]));
+        const auto rhs = std::tolower(static_cast<unsigned char>(right[index]));
+        if (lhs != rhs) {
+            return lhs < rhs;
+        }
+    }
+    return left.size() < right.size();
+}
+
+std::vector<SnapshotVisibilityCandidate>::const_iterator workspaceCandidateStart(
+    const std::vector<SnapshotVisibilityCandidate>& candidates,
+    std::string_view prefix) {
+    if (prefix.empty()) {
+        return candidates.begin();
+    }
+    return std::lower_bound(candidates.begin(),
+                            candidates.end(),
+                            prefix,
+                            [](const SnapshotVisibilityCandidate& candidate,
+                               std::string_view value) {
+                                return caseInsensitiveLess(candidate.identity.name, value);
+                            });
+}
+bool scopeStartsBeforePosition(const SnapshotScopeVisibility& scope, int line, int character) {
+    if (scope.range.start_line != line) {
+        return scope.range.start_line < line;
+    }
+    return scope.range.start_character <= character;
+}
+
+const SnapshotScopeVisibility* nearestSourceBackedScopeBeforePosition(
+    const std::vector<SnapshotScopeVisibility>& scopes,
+    int line,
+    int character) {
+    const SnapshotScopeVisibility* result = nullptr;
+    for (const auto& scope : scopes) {
+        if (!scopeStartsBeforePosition(scope, line, character)) {
+            continue;
+        }
+        if (result == nullptr || scope.lexical_depth < result->lexical_depth ||
+            (scope.lexical_depth == result->lexical_depth &&
+             (scope.range.start_line > result->range.start_line ||
+              (scope.range.start_line == result->range.start_line &&
+               scope.range.start_character > result->range.start_character)))) {
+            result = &scope;
+        }
+    }
+    return result;
+}
+
 bool isIdentifierStart(char value) {
     const auto ch = static_cast<unsigned char>(value);
     return std::isalpha(ch) != 0 || value == '_' || value == '$';
@@ -769,8 +822,15 @@ SemanticCompletionResult completeAt(const CompletionQueryContext& context,
                                                             line,
                                                             character,
                                                             prefix);
-    const auto append_candidate = [&](const SnapshotVisibilityCandidate& candidate) {
+    const auto append_candidate = [&](const SnapshotVisibilityCandidate& candidate,
+                                      bool workspace_candidate) {
         ++result.scanned_candidate_count;
+        if (workspace_candidate) {
+            ++result.scanned_workspace_candidate_count;
+        }
+        else {
+            ++result.scanned_scope_candidate_count;
+        }
         appendSymbolCompletion(result.items,
                                emitted,
                                candidate.identity,
@@ -827,7 +887,7 @@ SemanticCompletionResult completeAt(const CompletionQueryContext& context,
             return result;
         }
         for (const auto& candidate : package_it->second.candidates) {
-            append_candidate(candidate);
+            append_candidate(candidate, false);
             if (result.truncated) {
                 break;
             }
@@ -852,16 +912,10 @@ SemanticCompletionResult completeAt(const CompletionQueryContext& context,
                                                                    instance.selection_range,
                                                                    instance.range);
             std::string module_stable_id = instance.target_stable_id;
-            if (module_stable_id.empty() && context.workspace_candidates != nullptr) {
-                const auto definition = std::find_if(
-                    context.workspace_candidates->begin(),
-                    context.workspace_candidates->end(),
-                    [&](const SnapshotVisibilityCandidate& candidate) {
-                        return candidate.identity.name == instance.module_name &&
-                               candidate.identity.kind == "Definition";
-                    });
-                if (definition != context.workspace_candidates->end()) {
-                    module_stable_id = definition->identity.stable_id;
+            if (module_stable_id.empty() && context.module_definition_ids_by_name != nullptr) {
+                if (const auto definition = context.module_definition_ids_by_name->find(instance.module_name);
+                    definition != context.module_definition_ids_by_name->end()) {
+                    module_stable_id = definition->second;
                 }
             }
             if (module_stable_id.empty()) {
@@ -900,6 +954,7 @@ SemanticCompletionResult completeAt(const CompletionQueryContext& context,
             }
             if (candidates != context.member_candidates_by_qualifier->end()) {
                 result.scanned_candidate_count += candidates->second.size();
+                result.scanned_scope_candidate_count += candidates->second.size();
                 for (const auto& candidate : candidates->second) {
                     member_context.candidates.push_back(
                         CompletionMemberCandidate{.identity = candidate.identity});
@@ -920,29 +975,26 @@ SemanticCompletionResult completeAt(const CompletionQueryContext& context,
         return result;
     }
 
-    if (completion_context.module_instantiation_position && context.modules_by_name != nullptr) {
-        std::vector<std::string> module_names;
-        module_names.reserve(context.modules_by_name->size());
-        for (const auto& [module_name, _] : *context.modules_by_name) {
-            module_names.push_back(module_name);
-        }
-        std::sort(module_names.begin(), module_names.end());
-        for (const auto& module_name : module_names) {
-            ++result.scanned_candidate_count;
-            const auto& module = context.modules_by_name->at(module_name);
-            std::string stable_id = "module|" + module_name;
-            if (context.workspace_candidates != nullptr) {
-                const auto definition = std::find_if(
-                    context.workspace_candidates->begin(),
-                    context.workspace_candidates->end(),
-                    [&](const SnapshotVisibilityCandidate& candidate) {
-                        return candidate.identity.name == module_name &&
-                               candidate.identity.kind == "Definition";
-                    });
-                if (definition != context.workspace_candidates->end()) {
-                    stable_id = definition->identity.stable_id;
-                }
+    bool module_candidates_emitted = false;
+    if (completion_context.module_instantiation_position && context.modules_by_name != nullptr &&
+        context.workspace_candidates_by_name != nullptr) {
+        const auto item_count_before_modules = result.items.size();
+        for (auto candidate = workspaceCandidateStart(*context.workspace_candidates_by_name, prefix);
+             candidate != context.workspace_candidates_by_name->end() &&
+             prefixMatches(candidate->identity.name, prefix);
+             ++candidate) {
+            if (candidate->identity.kind != "Definition") {
+                continue;
             }
+            ++result.scanned_candidate_count;
+            ++result.scanned_workspace_candidate_count;
+            const auto module_it = context.modules_by_name->find(candidate->identity.name);
+            if (module_it == context.modules_by_name->end()) {
+                continue;
+            }
+            const auto& module_name = candidate->identity.name;
+            const auto& module = module_it->second;
+            const auto& stable_id = candidate->identity.stable_id;
             const auto module_uri_it = context.module_uris_by_name == nullptr
                                            ? std::unordered_map<std::string, std::string>::const_iterator{}
                                            : context.module_uris_by_name->find(module_name);
@@ -967,24 +1019,50 @@ SemanticCompletionResult completeAt(const CompletionQueryContext& context,
                 return result;
             }
         }
+        module_candidates_emitted = result.items.size() != item_count_before_modules;
     }
 
+    bool matched_scope = false;
     if (context.scopes != nullptr) {
         for (const auto& scope : *context.scopes) {
             if (!parseRangeContainsPosition(scope.range, line, character)) {
                 continue;
             }
+            matched_scope = true;
             for (const auto& candidate : scope.candidates) {
-                append_candidate(candidate);
+                append_candidate(candidate, false);
                 if (result.truncated) {
                     return result;
                 }
             }
         }
+        if (!matched_scope) {
+            // A recoverable trailing edit can leave slang's source range before the cursor.
+            // Keep completion semantic by using the nearest outer AST scope, never text/global fallback.
+            if (const auto* scope = nearestSourceBackedScopeBeforePosition(*context.scopes, line, character)) {
+                for (const auto& candidate : scope->candidates) {
+                    append_candidate(candidate, false);
+                    if (result.truncated) {
+                        return result;
+                    }
+                }
+            }
+        }
     }
-    if (context.workspace_candidates != nullptr) {
-        for (const auto& candidate : *context.workspace_candidates) {
-            append_candidate(candidate);
+    if (!matched_scope && context.document_candidates != nullptr) {
+        for (const auto& candidate : *context.document_candidates) {
+            append_candidate(candidate, false);
+            if (result.truncated) {
+                return result;
+            }
+        }
+    }
+    if (!module_candidates_emitted && context.workspace_candidates_by_name != nullptr) {
+        for (auto candidate = workspaceCandidateStart(*context.workspace_candidates_by_name, prefix);
+             candidate != context.workspace_candidates_by_name->end() &&
+             prefixMatches(candidate->identity.name, prefix);
+             ++candidate) {
+            append_candidate(*candidate, true);
             if (result.truncated) {
                 break;
             }
