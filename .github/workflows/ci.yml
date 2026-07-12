@@ -208,6 +208,7 @@ jobs:
         run: |
           git clone --filter=blob:none https://github.com/hudson-trading/slang-server .cache/slang-server
           git -C .cache/slang-server checkout 0ec16ae
+          git -C .cache/slang-server submodule update --init --recursive
           cmake -S .cache/slang-server -B .cache/slang-server/build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_CXX_COMPILER="${{ steps.compiler.outputs.cxx }}" \
