@@ -3,13 +3,13 @@
   "sources": [
     {
       "uri": "file:///golden/semantic/completion-array-member.sv",
-      "text": "module top;\n  logic packets;\n  logic field;\n  logic other;\n  initial begin\n    packets[0].fie\n  end\nendmodule\n"
+      "text": "typedef struct packed { logic field; logic other; } packet_t;\nmodule top;\n  packet_t packets[2];\n  initial begin\n    packets[0].fie\n  end\nendmodule\n"
     }
   ],
   "request": {
     "kind": "completion",
     "uri": "file:///golden/semantic/completion-array-member.sv",
-    "line": 5,
+    "line": 4,
     "character": 19,
     "prefix": "fie"
   },

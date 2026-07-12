@@ -39,6 +39,19 @@ struct AstIndexView {
     std::unordered_map<std::string, std::vector<SnapshotAssignmentEdge>> assignment_edges_by_uri;
     std::unordered_map<std::string, std::vector<SnapshotTypeReference>> type_references_by_uri;
     std::unordered_map<std::string, std::vector<SnapshotMemberCompletion>> member_completions_by_uri;
+    std::unordered_map<std::string,
+                       std::unordered_map<std::string, std::vector<SnapshotMemberCompletion>>>
+        member_completions_by_qualifier_by_uri;
+    std::unordered_map<std::string, SnapshotMemberCompletion> member_completions_by_stable_id;
+    std::unordered_map<std::string, std::vector<SnapshotScopeVisibility>> scope_visibility_by_uri;
+    std::unordered_map<std::string, SnapshotPackageVisibility> package_visibility_by_name;
+    std::vector<SnapshotVisibilityCandidate> workspace_visibility;
+    std::unordered_map<std::string, std::vector<SnapshotVisibleMacro>> visible_macros_by_uri;
+    size_t scope_visibility_count = 0;
+    size_t package_visibility_count = 0;
+    size_t member_visibility_count = 0;
+    size_t callable_visibility_count = 0;
+    std::int64_t scope_visibility_build_micros = 0;
     std::unordered_map<std::string, std::vector<IncludeDirective>> include_directives_by_uri;
     std::unordered_map<std::string, std::vector<MacroDefinition>> macros_by_uri;
     std::unordered_map<std::string, std::vector<PackageImport>> package_imports_by_uri;

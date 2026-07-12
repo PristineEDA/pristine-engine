@@ -13,6 +13,7 @@
 #include "slang/util/Bag.h"
 
 #include <algorithm>
+#include <set>
 #include <unordered_map>
 
 namespace pristine::analysis::semantic {
@@ -92,6 +93,76 @@ bool shouldReplaceDocument(const SemanticEngineDocument& existing,
         return candidate.version > existing.version;
     }
     return candidate.dirty && !existing.dirty;
+}
+
+void buildVisibleMacroIndex(SnapshotData& data,
+                            const AffectedDependencyGraph& affected_dependencies) {
+    data.visible_macros_by_uri.clear();
+    for (const auto& [uri, _] : data.macros_by_uri) {
+        struct PendingMacroSource {
+            std::string uri;
+            ParseRange available_after;
+        };
+
+        std::vector<SnapshotVisibleMacro> visible;
+        std::set<std::string> visited_uris;
+        std::vector<PendingMacroSource> pending{{.uri = uri, .available_after = {}}};
+        while (!pending.empty()) {
+            auto current = std::move(pending.back());
+            pending.pop_back();
+            if (!visited_uris.insert(current.uri).second) {
+                continue;
+            }
+            if (const auto macros_it = data.macros_by_uri.find(current.uri);
+                macros_it != data.macros_by_uri.end()) {
+                for (const auto& macro : macros_it->second) {
+                    visible.push_back(SnapshotVisibleMacro{
+                        .definition = macro,
+                        .source_uri = current.uri,
+                        .available_after = current.uri == uri ? macro.range : current.available_after});
+                }
+            }
+            auto included = affected_dependencies.includedUris(current.uri);
+            for (auto included_it = included.rbegin(); included_it != included.rend(); ++included_it) {
+                auto available_after = current.available_after;
+                if (current.uri == uri) {
+                    const auto directives_it = data.include_directives_by_uri.find(uri);
+                    if (directives_it != data.include_directives_by_uri.end()) {
+                        const auto directive = std::find_if(
+                            directives_it->second.begin(),
+                            directives_it->second.end(),
+                            [&](const IncludeDirective& include) {
+                                return joinFileUri(uriDirectory(uri), include.target) == *included_it;
+                            });
+                        if (directive != directives_it->second.end()) {
+                            available_after = directive->range;
+                        }
+                    }
+                }
+                pending.push_back(PendingMacroSource{.uri = *included_it,
+                                                     .available_after = available_after});
+            }
+        }
+        std::sort(visible.begin(), visible.end(), [&](const auto& left, const auto& right) {
+            if (left.available_after.start_line != right.available_after.start_line) {
+                return left.available_after.start_line < right.available_after.start_line;
+            }
+            if (left.available_after.start_character != right.available_after.start_character) {
+                return left.available_after.start_character < right.available_after.start_character;
+            }
+            if (left.source_uri != right.source_uri) {
+                return left.source_uri < right.source_uri;
+            }
+            if (left.definition.range.start_line != right.definition.range.start_line) {
+                return left.definition.range.start_line < right.definition.range.start_line;
+            }
+            if (left.definition.range.start_character != right.definition.range.start_character) {
+                return left.definition.range.start_character < right.definition.range.start_character;
+            }
+            return left.definition.name < right.definition.name;
+        });
+        data.visible_macros_by_uri.emplace(uri, std::move(visible));
+    }
 }
 
 } // namespace
@@ -252,6 +323,8 @@ SnapshotBuildOutput SnapshotBuilder::build(SnapshotBuildInput input) const {
         }
     }
 
+    buildVisibleMacroIndex(*data, output.affected_dependencies);
+
     if (!data->syntax_trees.empty()) {
         try {
             PRISTINE_DEBUG_TRACE_SCOPE("snapshotBuilder.compilation",
@@ -309,6 +382,27 @@ SnapshotBuildOutput SnapshotBuilder::build(SnapshotBuildInput input) const {
                                 AffectedDependencyEdgeKind::SemanticImport,
                                 package_uri,
                                 uri);
+                        }
+                    }
+                }
+
+                for (const auto& [package_name, visibility] : data->package_visibility_by_name) {
+                    const auto dependent_it = package_uris_by_name.find(package_name);
+                    if (dependent_it == package_uris_by_name.end()) {
+                        continue;
+                    }
+                    for (const auto& exported_package : visibility.exported_packages) {
+                        const auto dependency_it = package_uris_by_name.find(exported_package);
+                        if (dependency_it == package_uris_by_name.end()) {
+                            continue;
+                        }
+                        for (const auto& dependency_uri : dependency_it->second) {
+                            for (const auto& dependent_uri : dependent_it->second) {
+                                output.affected_dependencies.addSemanticDependency(
+                                    AffectedDependencyEdgeKind::SemanticExport,
+                                    dependency_uri,
+                                    dependent_uri);
+                            }
                         }
                     }
                 }

@@ -3,13 +3,13 @@
   "sources": [
     {
       "uri": "file:///golden/semantic/member-status.sv",
-      "text": "module top;\n  logic packet;\n  logic status_valid;\n  logic status_error;\n  logic payload;\n  initial begin\n    packet.status_\n  end\nendmodule\n"
+      "text": "typedef struct packed { logic status_valid; logic status_error; logic payload; } packet_t;\nmodule top;\n  packet_t packet;\n  initial begin\n    packet.status_\n  end\nendmodule\n"
     }
   ],
   "request": {
     "kind": "completion",
     "uri": "file:///golden/semantic/member-status.sv",
-    "line": 6,
+    "line": 4,
     "character": 18,
     "prefix": "status_"
   },

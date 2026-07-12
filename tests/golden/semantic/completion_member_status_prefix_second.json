@@ -3,13 +3,13 @@
   "sources": [
     {
       "uri": "file:///golden/semantic/completion-member-status-second.sv",
-      "text": "module top;\n  logic pkt;\n  logic status_empty;\n  logic status_full;\n  logic payload;\n  initial begin\n    pkt.status_\n  end\nendmodule\n"
+      "text": "typedef struct packed { logic status_empty; logic status_full; logic payload; } packet_t;\nmodule top;\n  packet_t pkt;\n  initial begin\n    pkt.status_\n  end\nendmodule\n"
     }
   ],
   "request": {
     "kind": "completion",
     "uri": "file:///golden/semantic/completion-member-status-second.sv",
-    "line": 6,
+    "line": 4,
     "character": 15,
     "prefix": "status_"
   },

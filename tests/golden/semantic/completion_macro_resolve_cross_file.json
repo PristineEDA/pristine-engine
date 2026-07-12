@@ -7,13 +7,13 @@
     },
     {
       "uri": "file:///golden/semantic/cross-macro-use.sv",
-      "text": "module top;\n  int value = `SU\nendmodule\n"
+      "text": "`include \"cross-macro-defs.svh\"\nmodule top;\n  int value = `SU\nendmodule\n"
     }
   ],
   "request": {
     "kind": "completionResolve",
     "uri": "file:///golden/semantic/cross-macro-use.sv",
-    "line": 1,
+    "line": 2,
     "character": 17,
     "prefix": "SU",
     "label": "SUM"

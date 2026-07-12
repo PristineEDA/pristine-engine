@@ -571,6 +571,9 @@ void runCompletionFixture(SemanticEngine& engine, const nlohmann::json& fixture)
                                              request.at("line").get<int>(),
                                              request.at("character").get<int>(),
                                              request.value("prefix", ""));
+    CAPTURE(result.messages,
+            result.scanned_candidate_count,
+            result.scanned_global_symbol_count);
     CHECK(result.unresolved == expected.value("unresolved", false));
     if (expected.contains("labels")) {
         for (const auto& expected_label : expected.at("labels")) {

@@ -3,13 +3,13 @@
   "sources": [
     {
       "uri": "file:///golden/semantic/member-nested-interface.sv",
-      "text": "module top;\n  logic iface;\n  logic status_valid;\n  logic status_ready;\n  logic data_valid;\n  initial begin\n    iface.master.status_\n  end\nendmodule\n"
+      "text": "typedef struct packed { logic status_valid; logic status_ready; logic data_valid; } master_t;\ntypedef struct packed { master_t master; } iface_t;\nmodule top;\n  iface_t iface;\n  initial begin\n    iface.master.status_\n  end\nendmodule\n"
     }
   ],
   "request": {
     "kind": "completion",
     "uri": "file:///golden/semantic/member-nested-interface.sv",
-    "line": 6,
+    "line": 5,
     "character": 25,
     "prefix": "status_"
   },

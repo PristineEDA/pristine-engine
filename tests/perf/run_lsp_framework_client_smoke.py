@@ -129,11 +129,23 @@ def main() -> int:
         assert any('"method":"initialize"' in line for line in trace_lines)
         assert any('"method":"systemverilog/outline"' in line for line in trace_lines)
         assert any('"method":"textDocument/hover"' in line for line in trace_lines)
+        assert sum('"method":"textDocument/completion"' in line for line in trace_lines) == 2
+        assert any('"method":"completionItem/resolve"' in line for line in trace_lines)
+        assert any('"method":"textDocument/signatureHelp"' in line for line in trace_lines)
+        assert any('"method":"textDocument/inlayHint"' in line for line in trace_lines)
         assert any('"method":"systemverilog/moduleHierarchy"' in line for line in trace_lines)
         assert any('"method":"systemverilog/schematic"' in line for line in trace_lines)
         assert not any('"method":"workspace/symbol"' in line for line in trace_lines)
         assert not any('"method":"systemverilog/backwardCone"' in line for line in trace_lines)
-        assert not any('"method":"textDocument/completion"' in line for line in trace_lines)
+        completion_index = next(
+            index for index, line in enumerate(trace_lines)
+            if '"method":"textDocument/completion"' in line
+        )
+        document_symbol_indexes = [
+            index for index, line in enumerate(trace_lines)
+            if '"method":"textDocument/documentSymbol"' in line
+        ]
+        assert document_symbol_indexes and completion_index > max(document_symbol_indexes)
 
         print(json.dumps(trace_summary, separators=(",", ":")))
     return 0

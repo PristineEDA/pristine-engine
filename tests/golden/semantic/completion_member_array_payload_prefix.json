@@ -3,13 +3,13 @@
   "sources": [
     {
       "uri": "file:///golden/semantic/member-array-payload.sv",
-      "text": "module top;\n  logic lanes;\n  logic payload_data;\n  logic payload_last;\n  logic status_ready;\n  initial begin\n    lanes[1].payload_\n  end\nendmodule\n"
+      "text": "typedef struct packed { logic payload_data; logic payload_last; logic status_ready; } lane_t;\nmodule top;\n  lane_t lanes[2];\n  initial begin\n    lanes[1].payload_\n  end\nendmodule\n"
     }
   ],
   "request": {
     "kind": "completion",
     "uri": "file:///golden/semantic/member-array-payload.sv",
-    "line": 6,
+    "line": 4,
     "character": 21,
     "prefix": "payload_"
   },

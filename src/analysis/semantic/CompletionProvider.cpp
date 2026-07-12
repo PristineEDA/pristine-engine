@@ -545,11 +545,34 @@ std::optional<size_t> completionPrefixStartOffset(std::string_view text,
                                                   int line,
                                                   int character,
                                                   std::string_view prefix) {
-    const auto offset = utf8OffsetAtUtf16Position(text, line, character);
-    if (!offset.has_value() || *offset < prefix.size()) {
+    auto offset = utf8OffsetAtUtf16Position(text, line, character);
+    if (!offset.has_value() && line >= 0 && character >= 0) {
+        size_t line_start = 0;
+        for (int current_line = 0; current_line < line; ++current_line) {
+            const auto newline = text.find('\n', line_start);
+            if (newline == std::string_view::npos) {
+                return std::nullopt;
+            }
+            line_start = newline + 1;
+        }
+        auto line_end = text.find_first_of("\r\n", line_start);
+        if (line_end == std::string_view::npos) {
+            line_end = text.size();
+        }
+        offset = line_end;
+    }
+    if (!offset.has_value()) {
         return std::nullopt;
     }
-    return *offset - prefix.size();
+    auto prefix_end = *offset;
+    while (prefix_end > 0 &&
+           (text[prefix_end - 1] == '\n' || text[prefix_end - 1] == '\r')) {
+        --prefix_end;
+    }
+    if (prefix_end < prefix.size()) {
+        return std::nullopt;
+    }
+    return prefix_end - prefix.size();
 }
 
 CompletionContext detectCompletionContext(std::string_view text,
@@ -622,6 +645,25 @@ std::string baseMemberQualifier(std::string_view qualifier) {
 bool isMemberCompletionKind(std::string_view kind) {
     return kind == "Field" || kind == "Member" || kind == "Net" || kind == "Variable" ||
            kind == "Parameter" || kind == "Subroutine";
+}
+
+std::string normalizedMemberQualifier(std::string_view qualifier) {
+    std::string result;
+    int bracket_depth = 0;
+    for (const auto value : qualifier) {
+        if (value == '[') {
+            ++bracket_depth;
+            continue;
+        }
+        if (value == ']') {
+            bracket_depth = std::max(0, bracket_depth - 1);
+            continue;
+        }
+        if (bracket_depth == 0) {
+            result.push_back(value);
+        }
+    }
+    return result;
 }
 
 void appendMemberCompletions(std::vector<SemanticCompletionItem>& items,
@@ -698,6 +740,257 @@ void appendModulePortCompletions(std::vector<SemanticCompletionItem>& items,
             prefix,
             truncated);
     }
+}
+
+SemanticCompletionResult completeAt(const CompletionQueryContext& context,
+                                    int line,
+                                    int character,
+                                    std::string_view prefix) {
+    SemanticCompletionResult result;
+    result.generation = context.generation;
+    result.scope_visibility_count = context.scope_visibility_count;
+    result.package_visibility_count = context.package_visibility_count;
+    result.member_visibility_count = context.member_visibility_count;
+    result.callable_visibility_count = context.callable_visibility_count;
+    result.scope_visibility_build_micros = context.scope_visibility_build_micros;
+    if (!context.snapshot_available) {
+        result.unresolved = true;
+        result.messages.push_back("AST-backed SemanticEngine snapshot is unavailable");
+        return result;
+    }
+    if (context.document_text == nullptr) {
+        result.unresolved = true;
+        result.messages.push_back("document is not indexed in the AST snapshot");
+        return result;
+    }
+
+    std::set<std::string> emitted;
+    const auto completion_context = detectCompletionContext(*context.document_text,
+                                                            line,
+                                                            character,
+                                                            prefix);
+    const auto append_candidate = [&](const SnapshotVisibilityCandidate& candidate) {
+        ++result.scanned_candidate_count;
+        appendSymbolCompletion(result.items,
+                               emitted,
+                               candidate.identity,
+                               prefix,
+                               result.truncated);
+    };
+
+    if (completion_context.macro_invocation) {
+        if (context.macros != nullptr) {
+            std::unordered_map<std::string, size_t> latest_visible_by_name;
+            for (size_t index = 0; index < context.macros->size(); ++index) {
+                const auto& visible_macro = context.macros->at(index);
+                if (visible_macro.available_after.start_line > line ||
+                    (visible_macro.available_after.start_line == line &&
+                     visible_macro.available_after.start_character >= character)) {
+                    continue;
+                }
+                latest_visible_by_name[visible_macro.definition.name] = index;
+            }
+            for (size_t index = 0; index < context.macros->size(); ++index) {
+                const auto& visible_macro = context.macros->at(index);
+                const auto latest = latest_visible_by_name.find(visible_macro.definition.name);
+                if (latest == latest_visible_by_name.end() || latest->second != index) {
+                    continue;
+                }
+                const auto& macro = visible_macro.definition;
+                ++result.scanned_candidate_count;
+                appendCompletionItem(
+                    result.items,
+                    emitted,
+                    SemanticCompletionItem{.stable_id = context.document_uri + "|macro|" + macro.name,
+                                            .label = macro.name,
+                                            .detail = macro.function_like ? "Macro function" : "Macro",
+                                            .documentation = macroDocumentation(macro),
+                                            .insert_text = macroInsertText(macro),
+                                            .kind = macro.function_like ? 3 : 21,
+                                            .unresolved = false},
+                    prefix,
+                    result.truncated);
+                if (result.truncated) {
+                    break;
+                }
+            }
+        }
+        return result;
+    }
+
+    if (completion_context.package_qualifier.has_value()) {
+        const auto package_it = context.packages == nullptr
+                                    ? std::unordered_map<std::string, SnapshotPackageVisibility>::const_iterator{}
+                                    : context.packages->find(*completion_context.package_qualifier);
+        if (context.packages == nullptr || package_it == context.packages->end()) {
+            result.messages.push_back("package completion target is not indexed in scope visibility");
+            return result;
+        }
+        for (const auto& candidate : package_it->second.candidates) {
+            append_candidate(candidate);
+            if (result.truncated) {
+                break;
+            }
+        }
+        return result;
+    }
+
+    if (completion_context.member_access && !completion_context.member_qualifier.has_value() &&
+        context.module_instances != nullptr &&
+        context.modules_by_name != nullptr) {
+        for (const auto& instance : *context.module_instances) {
+            if (!parseRangeContainsPosition(instance.range, line, character)) {
+                continue;
+            }
+            const auto module_it = context.modules_by_name->find(instance.module_name);
+            if (module_it == context.modules_by_name->end()) {
+                continue;
+            }
+            auto connected_ports = connectedNamedPortsForInstance(*context.document_text,
+                                                                   line,
+                                                                   character,
+                                                                   instance.selection_range,
+                                                                   instance.range);
+            std::string module_stable_id = instance.target_stable_id;
+            if (module_stable_id.empty() && context.workspace_candidates != nullptr) {
+                const auto definition = std::find_if(
+                    context.workspace_candidates->begin(),
+                    context.workspace_candidates->end(),
+                    [&](const SnapshotVisibilityCandidate& candidate) {
+                        return candidate.identity.name == instance.module_name &&
+                               candidate.identity.kind == "Definition";
+                    });
+                if (definition != context.workspace_candidates->end()) {
+                    module_stable_id = definition->identity.stable_id;
+                }
+            }
+            if (module_stable_id.empty()) {
+                module_stable_id = "module|" + instance.module_name;
+            }
+            const auto module_uri_it = context.module_uris_by_name == nullptr
+                                           ? std::unordered_map<std::string, std::string>::const_iterator{}
+                                           : context.module_uris_by_name->find(instance.module_name);
+            appendModulePortCompletions(
+                result.items,
+                emitted,
+                module_stable_id,
+                module_it->second,
+                context.module_uris_by_name == nullptr || module_uri_it == context.module_uris_by_name->end()
+                    ? std::string_view{}
+                    : std::string_view(module_uri_it->second),
+                prefix,
+                connected_ports,
+                result.truncated);
+            result.scanned_candidate_count += module_it->second.port_details.empty()
+                                                  ? module_it->second.ports.size()
+                                                  : module_it->second.port_details.size();
+            return result;
+        }
+    }
+
+    if (completion_context.member_qualifier.has_value()) {
+        const auto qualifier = normalizedMemberQualifier(*completion_context.member_qualifier);
+        CompletionMemberContext member_context;
+        member_context.qualifier = qualifier;
+        if (context.member_candidates_by_qualifier != nullptr) {
+            auto candidates = context.member_candidates_by_qualifier->find(qualifier);
+            if (candidates == context.member_candidates_by_qualifier->end()) {
+                member_context.qualifier = baseMemberQualifier(qualifier);
+                candidates = context.member_candidates_by_qualifier->find(member_context.qualifier);
+            }
+            if (candidates != context.member_candidates_by_qualifier->end()) {
+                result.scanned_candidate_count += candidates->second.size();
+                for (const auto& candidate : candidates->second) {
+                    member_context.candidates.push_back(
+                        CompletionMemberCandidate{.identity = candidate.identity});
+                }
+            }
+        }
+        appendMemberCompletions(result.items,
+                                emitted,
+                                member_context,
+                                prefix,
+                                result.truncated);
+        if (!result.items.empty()) {
+            result.messages.push_back("member completion used typed AstIndex member view");
+        }
+        else {
+            result.messages.push_back("member completion receiver is not indexed in scope visibility");
+        }
+        return result;
+    }
+
+    if (completion_context.module_instantiation_position && context.modules_by_name != nullptr) {
+        std::vector<std::string> module_names;
+        module_names.reserve(context.modules_by_name->size());
+        for (const auto& [module_name, _] : *context.modules_by_name) {
+            module_names.push_back(module_name);
+        }
+        std::sort(module_names.begin(), module_names.end());
+        for (const auto& module_name : module_names) {
+            ++result.scanned_candidate_count;
+            const auto& module = context.modules_by_name->at(module_name);
+            std::string stable_id = "module|" + module_name;
+            if (context.workspace_candidates != nullptr) {
+                const auto definition = std::find_if(
+                    context.workspace_candidates->begin(),
+                    context.workspace_candidates->end(),
+                    [&](const SnapshotVisibilityCandidate& candidate) {
+                        return candidate.identity.name == module_name &&
+                               candidate.identity.kind == "Definition";
+                    });
+                if (definition != context.workspace_candidates->end()) {
+                    stable_id = definition->identity.stable_id;
+                }
+            }
+            const auto module_uri_it = context.module_uris_by_name == nullptr
+                                           ? std::unordered_map<std::string, std::string>::const_iterator{}
+                                           : context.module_uris_by_name->find(module_name);
+            appendCompletionItem(
+                result.items,
+                emitted,
+                SemanticCompletionItem{.stable_id = std::move(stable_id),
+                                        .label = module.name,
+                                        .detail = moduleSignatureLabel(module),
+                                        .documentation = moduleDocumentation(
+                                            module,
+                                            context.module_uris_by_name == nullptr ||
+                                                    module_uri_it == context.module_uris_by_name->end()
+                                                ? std::string_view{}
+                                                : std::string_view(module_uri_it->second)),
+                                        .insert_text = module.name,
+                                        .kind = 9,
+                                        .unresolved = false},
+                prefix,
+                result.truncated);
+            if (result.truncated) {
+                return result;
+            }
+        }
+    }
+
+    if (context.scopes != nullptr) {
+        for (const auto& scope : *context.scopes) {
+            if (!parseRangeContainsPosition(scope.range, line, character)) {
+                continue;
+            }
+            for (const auto& candidate : scope.candidates) {
+                append_candidate(candidate);
+                if (result.truncated) {
+                    return result;
+                }
+            }
+        }
+    }
+    if (context.workspace_candidates != nullptr) {
+        for (const auto& candidate : *context.workspace_candidates) {
+            append_candidate(candidate);
+            if (result.truncated) {
+                break;
+            }
+        }
+    }
+    return result;
 }
 
 } // namespace pristine::analysis::semantic

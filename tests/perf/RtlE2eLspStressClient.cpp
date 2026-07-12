@@ -72,6 +72,11 @@ struct Metrics {
     long long outline_micros = 0;
     long long hover_micros = 0;
     long long semantic_diagnostics_micros = 0;
+    long long completion_cold_micros = 0;
+    long long completion_warm_micros = 0;
+    long long completion_resolve_micros = 0;
+    long long signature_help_micros = 0;
+    long long inlay_hint_micros = 0;
     long long hierarchy_cold_micros = 0;
     long long hierarchy_warm_micros = 0;
     long long schematic_micros = 0;
@@ -128,6 +133,9 @@ struct Metrics {
     size_t outline_root_count = 0;
     size_t outline_item_count = 0;
     size_t hover_result_count = 0;
+    size_t completion_item_count = 0;
+    size_t inlay_hint_count = 0;
+    bool signature_help_resolved = false;
     size_t hierarchy_root_count = 0;
     size_t schematic_module_count = 0;
     size_t schematic_cell_count = 0;
@@ -377,6 +385,50 @@ std::pair<int, int> firstIdentifierPosition(std::string_view text) {
     return {0, 0};
 }
 
+std::pair<int, int> firstOpenParenArgumentPosition(std::string_view text) {
+    int line = 0;
+    int character = 0;
+    for (const unsigned char ch : text) {
+        if (ch == '(') {
+            return {line, character + 1};
+        }
+        if (ch == '\n') {
+            ++line;
+            character = 0;
+        }
+        else {
+            ++character;
+        }
+    }
+    return firstIdentifierPosition(text);
+}
+
+std::pair<int, int> firstModuleBodyPosition(std::string_view text) {
+    static const std::regex module_regex(R"(\b(?:module|interface)\s+[A-Za-z_][A-Za-z0-9_$]*)");
+    const auto begin = std::cregex_iterator(text.data(), text.data() + text.size(), module_regex);
+    const auto end = std::cregex_iterator();
+    if (begin == end) {
+        return firstIdentifierPosition(text);
+    }
+    const auto declaration_offset = static_cast<size_t>((*begin).position());
+    const auto semicolon = text.find(';', declaration_offset);
+    if (semicolon == std::string_view::npos) {
+        return firstIdentifierPosition(text);
+    }
+    int line = 0;
+    int character = 0;
+    for (size_t offset = 0; offset <= semicolon; ++offset) {
+        if (text[offset] == '\n') {
+            ++line;
+            character = 0;
+        }
+        else {
+            ++character;
+        }
+    }
+    return {line, character};
+}
+
 bool containsTopDeclaration(std::string_view text, std::string_view top) {
     if (text.empty() || top.empty()) {
         return false;
@@ -518,6 +570,21 @@ lsp::json::Value hoverParams(const std::string& uri, int line, int character) {
     position["line"] = lsp::json::Value(lsp::json::Integer(line));
     position["character"] = lsp::json::Value(lsp::json::Integer(character));
     params["position"] = lsp::json::Value(std::move(position));
+    return lsp::json::Value(std::move(params));
+}
+
+lsp::json::Value fullDocumentRangeParams(const std::string& uri) {
+    auto params = textDocumentParams(uri).object();
+    lsp::json::Object start;
+    start["line"] = lsp::json::Value(lsp::json::Integer(0));
+    start["character"] = lsp::json::Value(lsp::json::Integer(0));
+    lsp::json::Object end;
+    end["line"] = lsp::json::Value(lsp::json::Integer(1000000));
+    end["character"] = lsp::json::Value(lsp::json::Integer(0));
+    lsp::json::Object range;
+    range["start"] = lsp::json::Value(std::move(start));
+    range["end"] = lsp::json::Value(std::move(end));
+    params["range"] = lsp::json::Value(std::move(range));
     return lsp::json::Value(std::move(params));
 }
 
@@ -1008,6 +1075,11 @@ std::string summaryJson(const Metrics& metrics) {
         << "\"hoverMicros\":" << metrics.hover_micros << ","
         << "\"semanticDiagnosticsPublished\":" << boolJson(metrics.semantic_diagnostics_published) << ","
         << "\"semanticDiagnosticsMicros\":" << metrics.semantic_diagnostics_micros << ","
+        << "\"completionColdMicros\":" << metrics.completion_cold_micros << ","
+        << "\"completionWarmMicros\":" << metrics.completion_warm_micros << ","
+        << "\"completionResolveMicros\":" << metrics.completion_resolve_micros << ","
+        << "\"signatureHelpMicros\":" << metrics.signature_help_micros << ","
+        << "\"inlayHintMicros\":" << metrics.inlay_hint_micros << ","
         << "\"backgroundDiagnosticsState\":" << jsonString(metrics.background_diagnostics_state) << ","
         << "\"backgroundDiagnosticsPhase\":" << jsonString(metrics.background_diagnostics_phase) << ","
         << "\"backgroundDiagnosticsElapsedMicros\":"
@@ -1091,6 +1163,9 @@ std::string summaryJson(const Metrics& metrics) {
         << "\"outlineRootCount\":" << metrics.outline_root_count << ","
         << "\"outlineItemCount\":" << metrics.outline_item_count << ","
         << "\"hoverResultCount\":" << metrics.hover_result_count << ","
+        << "\"completionItemCount\":" << metrics.completion_item_count << ","
+        << "\"signatureHelpResolved\":" << boolJson(metrics.signature_help_resolved) << ","
+        << "\"inlayHintCount\":" << metrics.inlay_hint_count << ","
         << "\"hierarchyRootCount\":" << metrics.hierarchy_root_count << ","
         << "\"schematicModuleCount\":" << metrics.schematic_module_count << ","
         << "\"schematicCellCount\":" << metrics.schematic_cell_count << ","
@@ -1330,6 +1405,84 @@ int main(int argc, char** argv) {
         writeStage(operation_log,
                    "semanticDiagnostics:end",
                    metrics.semantic_diagnostics_published ? "published" : "timeout");
+
+        const auto [completion_line, completion_character] =
+            firstModuleBodyPosition(opened_source.text);
+        writeStage(operation_log, "completion:cold:begin");
+        start = Clock::now();
+        auto completion_cold = client.request(
+            "textDocument/completion",
+            hoverParams(opened_source.uri, completion_line, completion_character));
+        metrics.completion_cold_micros = elapsedMicros(start, Clock::now());
+        metrics.completion_item_count = completion_cold.isArray() ? completion_cold.array().size() : 0;
+        writeOperation(operation_log,
+                       "textDocument/completion:cold",
+                       metrics.completion_cold_micros,
+                       &completion_cold);
+        writeStage(operation_log,
+                   "completion:cold:end",
+                   std::to_string(metrics.completion_cold_micros) + "us");
+
+        if (completion_cold.isArray() && !completion_cold.array().empty()) {
+            writeStage(operation_log, "completion:resolve:begin");
+            start = Clock::now();
+            auto completion_resolve = client.request("completionItem/resolve",
+                                                     completion_cold.array().front());
+            metrics.completion_resolve_micros = elapsedMicros(start, Clock::now());
+            writeOperation(operation_log,
+                           "completionItem/resolve",
+                           metrics.completion_resolve_micros,
+                           &completion_resolve);
+            writeStage(operation_log,
+                       "completion:resolve:end",
+                       std::to_string(metrics.completion_resolve_micros) + "us");
+        }
+
+        writeStage(operation_log, "completion:warm:begin");
+        start = Clock::now();
+        auto completion_warm = client.request(
+            "textDocument/completion",
+            hoverParams(opened_source.uri, completion_line, completion_character));
+        metrics.completion_warm_micros = elapsedMicros(start, Clock::now());
+        writeOperation(operation_log,
+                       "textDocument/completion:warm",
+                       metrics.completion_warm_micros,
+                       &completion_warm);
+        writeStage(operation_log,
+                   "completion:warm:end",
+                   std::to_string(metrics.completion_warm_micros) + "us");
+
+        const auto [signature_line, signature_character] =
+            firstOpenParenArgumentPosition(opened_source.text);
+        writeStage(operation_log, "signatureHelp:begin");
+        start = Clock::now();
+        auto signature_help = client.request(
+            "textDocument/signatureHelp",
+            hoverParams(opened_source.uri, signature_line, signature_character));
+        metrics.signature_help_micros = elapsedMicros(start, Clock::now());
+        metrics.signature_help_resolved = signature_help.isObject() &&
+                                          arraySize(signature_help.object(), "signatures") > 0;
+        writeOperation(operation_log,
+                       "textDocument/signatureHelp",
+                       metrics.signature_help_micros,
+                       &signature_help);
+        writeStage(operation_log,
+                   "signatureHelp:end",
+                   std::to_string(metrics.signature_help_micros) + "us");
+
+        writeStage(operation_log, "inlayHint:begin");
+        start = Clock::now();
+        auto inlay_hints = client.request("textDocument/inlayHint",
+                                         fullDocumentRangeParams(opened_source.uri));
+        metrics.inlay_hint_micros = elapsedMicros(start, Clock::now());
+        metrics.inlay_hint_count = inlay_hints.isArray() ? inlay_hints.array().size() : 0;
+        writeOperation(operation_log,
+                       "textDocument/inlayHint",
+                       metrics.inlay_hint_micros,
+                       &inlay_hints);
+        writeStage(operation_log,
+                   "inlayHint:end",
+                   std::to_string(metrics.inlay_hint_micros) + "us");
 
         const auto hierarchy_request_top = args.top_module.empty() ? std::string{} : metrics.top_module;
 

@@ -9,7 +9,7 @@
   "request": {
     "kind": "completion",
     "uri": "file:///golden/semantic/completion-class-depth.sv",
-    "line": 7,
+    "line": 8,
     "character": 16,
     "prefix": "depth_"
   },

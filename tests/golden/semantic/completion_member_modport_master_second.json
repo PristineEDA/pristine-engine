@@ -3,13 +3,13 @@
   "sources": [
     {
       "uri": "file:///golden/semantic/completion-modport-master-second.sv",
-      "text": "interface bus_if;\nendinterface\nmodule top;\n  logic bus;\n  logic master_valid;\n  logic master_ready;\n  logic slave_valid;\n  initial begin\n    bus.master_\n  end\nendmodule\n"
+      "text": "typedef struct packed { logic master_valid; logic master_ready; logic slave_valid; } bus_t;\nmodule top;\n  bus_t bus;\n  initial begin\n    bus.master_\n  end\nendmodule\n"
     }
   ],
   "request": {
     "kind": "completion",
     "uri": "file:///golden/semantic/completion-modport-master-second.sv",
-    "line": 8,
+    "line": 4,
     "character": 16,
     "prefix": "master_"
   },

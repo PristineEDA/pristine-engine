@@ -38,6 +38,7 @@ void AffectedDependencyGraph::clear() {
     includes_.clear();
     reverse_includes_.clear();
     reverse_semantic_import_dependencies_.clear();
+    reverse_semantic_export_dependencies_.clear();
     reverse_module_instance_dependencies_.clear();
     reverse_config_dependencies_.clear();
 }
@@ -69,6 +70,10 @@ void AffectedDependencyGraph::addSemanticDependency(AffectedDependencyEdgeKind k
         addUnique(reverse_semantic_import_dependencies_[std::move(dependency_uri)],
                   std::move(dependent_uri));
         return;
+    case AffectedDependencyEdgeKind::SemanticExport:
+        addUnique(reverse_semantic_export_dependencies_[std::move(dependency_uri)],
+                  std::move(dependent_uri));
+        return;
     case AffectedDependencyEdgeKind::ModuleInstance:
         addUnique(reverse_module_instance_dependencies_[std::move(dependency_uri)],
                   std::move(dependent_uri));
@@ -88,6 +93,8 @@ void AffectedDependencyGraph::removeDocument(std::string_view uri) {
     reverse_includes_.erase(std::string(uri));
     eraseFromReverseEdges(reverse_semantic_import_dependencies_, uri);
     reverse_semantic_import_dependencies_.erase(std::string(uri));
+    eraseFromReverseEdges(reverse_semantic_export_dependencies_, uri);
+    reverse_semantic_export_dependencies_.erase(std::string(uri));
     eraseFromReverseEdges(reverse_module_instance_dependencies_, uri);
     reverse_module_instance_dependencies_.erase(std::string(uri));
     eraseFromReverseEdges(reverse_config_dependencies_, uri);
@@ -121,6 +128,9 @@ std::vector<std::string> AffectedDependencyGraph::dependentUris(
     case AffectedDependencyEdgeKind::SemanticImport:
         edges = &reverse_semantic_import_dependencies_;
         break;
+    case AffectedDependencyEdgeKind::SemanticExport:
+        edges = &reverse_semantic_export_dependencies_;
+        break;
     case AffectedDependencyEdgeKind::ModuleInstance:
         edges = &reverse_module_instance_dependencies_;
         break;
@@ -139,9 +149,10 @@ std::vector<std::string> AffectedDependencyGraph::affectedDocumentUris(std::stri
     std::vector<std::string> result;
     std::set<std::string> seen;
     std::vector<std::string> pending{std::string(uri)};
-    const std::array<const std::unordered_map<std::string, std::vector<std::string>>*, 4> reverse_edges{
+    const std::array<const std::unordered_map<std::string, std::vector<std::string>>*, 5> reverse_edges{
         &reverse_includes_,
         &reverse_semantic_import_dependencies_,
+        &reverse_semantic_export_dependencies_,
         &reverse_module_instance_dependencies_,
         &reverse_config_dependencies_,
     };
@@ -177,6 +188,7 @@ std::vector<AffectedDependencyGraph::Edge> AffectedDependencyGraph::edges() cons
 
     append_edges(AffectedDependencyEdgeKind::Include, reverse_includes_);
     append_edges(AffectedDependencyEdgeKind::SemanticImport, reverse_semantic_import_dependencies_);
+    append_edges(AffectedDependencyEdgeKind::SemanticExport, reverse_semantic_export_dependencies_);
     append_edges(AffectedDependencyEdgeKind::ModuleInstance, reverse_module_instance_dependencies_);
     append_edges(AffectedDependencyEdgeKind::Config, reverse_config_dependencies_);
     std::sort(result.begin(),
@@ -200,9 +212,11 @@ AffectedDependencyGraph::Stats AffectedDependencyGraph::stats() const {
     result.documents_with_includes = includes_.size();
     result.include_edges = edgeCount(reverse_includes_);
     result.semantic_import_edges = edgeCount(reverse_semantic_import_dependencies_);
+    result.semantic_export_edges = edgeCount(reverse_semantic_export_dependencies_);
     result.module_instance_edges = edgeCount(reverse_module_instance_dependencies_);
     result.config_edges = edgeCount(reverse_config_dependencies_);
     result.total_edges = result.include_edges + result.semantic_import_edges +
+                         result.semantic_export_edges +
                          result.module_instance_edges + result.config_edges;
     return result;
 }

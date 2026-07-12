@@ -10,8 +10,8 @@
     "kind": "completionResolve",
     "uri": "file:///golden/semantic/resolve-port.sv",
     "line": 3,
-    "character": 28,
-    "prefix": "",
+    "character": 29,
+    "prefix": "r",
     "label": "rst_n"
   },
   "expected": {

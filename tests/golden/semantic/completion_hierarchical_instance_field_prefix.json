@@ -3,13 +3,13 @@
   "sources": [
     {
       "uri": "file:///golden/semantic/completion-hier-field.sv",
-      "text": "module child;\n  logic child_ready;\nendmodule\nmodule top;\n  logic u_child;\n  logic child_ready;\n  logic child_valid;\n  child inst();\n  initial begin\n    u_child.child_\n  end\nendmodule\n"
+      "text": "module child;\n  logic child_ready;\n  logic child_valid;\nendmodule\nmodule top;\n  child u_child();\n  initial begin\n    u_child.child_\n  end\nendmodule\n"
     }
   ],
   "request": {
     "kind": "completion",
     "uri": "file:///golden/semantic/completion-hier-field.sv",
-    "line": 9,
+    "line": 7,
     "character": 18,
     "prefix": "child_"
   },

@@ -11,6 +11,7 @@ namespace pristine::analysis::semantic {
 enum class AffectedDependencyEdgeKind {
     Include,
     SemanticImport,
+    SemanticExport,
     ModuleInstance,
     Config,
 };
@@ -21,6 +22,7 @@ public:
         size_t documents_with_includes = 0;
         size_t include_edges = 0;
         size_t semantic_import_edges = 0;
+        size_t semantic_export_edges = 0;
         size_t module_instance_edges = 0;
         size_t config_edges = 0;
         size_t total_edges = 0;
@@ -52,6 +54,7 @@ private:
     std::unordered_map<std::string, std::vector<std::string>> includes_;
     std::unordered_map<std::string, std::vector<std::string>> reverse_includes_;
     std::unordered_map<std::string, std::vector<std::string>> reverse_semantic_import_dependencies_;
+    std::unordered_map<std::string, std::vector<std::string>> reverse_semantic_export_dependencies_;
     std::unordered_map<std::string, std::vector<std::string>> reverse_module_instance_dependencies_;
     std::unordered_map<std::string, std::vector<std::string>> reverse_config_dependencies_;
 };

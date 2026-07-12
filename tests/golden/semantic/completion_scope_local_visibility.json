@@ -1,0 +1,1 @@
+{"name":"scope completion includes local declaration","sources":[{"uri":"file:///golden/semantic/scope-local.sv","text":"module top;\n  logic alpha;\n  al\nendmodule\n"}],"request":{"kind":"completion","uri":"file:///golden/semantic/scope-local.sv","line":2,"character":4,"prefix":"al"},"expected":{"labels":["alpha"]}}

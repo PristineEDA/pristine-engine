@@ -77,6 +77,16 @@ int main() {
         const auto start_completion = Clock::now();
         const auto completion = engine.completionsAt(target_uri, 1, 4, "sig_");
         const auto end_completion = Clock::now();
+        const auto start_completion_warm = Clock::now();
+        const auto completion_warm = engine.completionsAt(target_uri, 1, 4, "sig_");
+        const auto end_completion_warm = Clock::now();
+        long long completion_resolve_micros = 0;
+        if (!completion.items.empty()) {
+            const auto start_completion_resolve = Clock::now();
+            (void)engine.resolveCompletion(completion.items.front().stable_id,
+                                           completion.items.front().label);
+            completion_resolve_micros = elapsedMicros(start_completion_resolve, Clock::now());
+        }
 
         const auto start_query = Clock::now();
         const auto references = engine.referencesAt(target_uri, 1, 10, true);
@@ -137,6 +147,9 @@ int main() {
                   << "\"didChangeMicros\":0,"
                   << "\"hoverMicros\":" << elapsedMicros(start_hover, end_hover) << ","
                   << "\"completionMicros\":" << elapsedMicros(start_completion, end_completion) << ","
+                  << "\"completionWarmMicros\":"
+                  << elapsedMicros(start_completion_warm, end_completion_warm) << ","
+                  << "\"completionResolveMicros\":" << completion_resolve_micros << ","
                   << "\"referenceMicros\":" << elapsedMicros(start_query, end_query) << ","
                   << "\"renameMicros\":" << elapsedMicros(start_rename, end_rename) << ","
                   << "\"signatureHelpMicros\":" << elapsedMicros(start_signature, end_signature) << ","
@@ -152,6 +165,11 @@ int main() {
         std::cout
                   << "\"referenceCount\":" << references.locations.size() << ","
                   << "\"completionCount\":" << completion.items.size() << ","
+                  << "\"completionWarmCount\":" << completion_warm.items.size() << ","
+                  << "\"completionScannedCandidateCount\":"
+                  << completion.scanned_candidate_count << ","
+                  << "\"completionScannedGlobalSymbols\":"
+                  << completion.scanned_global_symbol_count << ","
                   << "\"inlayHintCount\":" << inlay.hints.size() << ","
                   << "\"semanticTokenCount\":" << semantic_tokens.tokens.size() << ","
                   << "\"moduleHierarchyRootCount\":" << hierarchy.roots.size() << ","

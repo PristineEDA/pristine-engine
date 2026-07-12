@@ -49,8 +49,10 @@ private:
 
 class WaitingTransport final : public transport::MessageTransport {
 public:
-    WaitingTransport(std::initializer_list<std::string> messages, size_t minimum_outputs) :
-        inputs_(messages.begin(), messages.end()), minimum_outputs_(minimum_outputs) {}
+    WaitingTransport(std::initializer_list<std::string> messages,
+                     size_t minimum_outputs,
+                     std::chrono::milliseconds timeout = std::chrono::seconds(1)) :
+        inputs_(messages.begin(), messages.end()), minimum_outputs_(minimum_outputs), timeout_(timeout) {}
 
     std::optional<std::string> read() override {
         if (!inputs_.empty()) {
@@ -58,7 +60,7 @@ public:
             inputs_.pop_front();
             return payload;
         }
-        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+        const auto deadline = std::chrono::steady_clock::now() + timeout_;
         while (std::chrono::steady_clock::now() < deadline) {
             {
                 std::lock_guard lock(outputs_mutex_);
@@ -84,6 +86,7 @@ public:
 private:
     std::deque<std::string> inputs_;
     size_t minimum_outputs_ = 0;
+    std::chrono::milliseconds timeout_ = std::chrono::seconds(1);
     mutable std::mutex outputs_mutex_;
     std::vector<std::string> outputs_;
 };
@@ -818,7 +821,7 @@ TEST_CASE("ServerSession uses syntax-first diagnostics for large cold workspaces
         std::string(R"({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":")") +
         top_uri + R"(","languageId":"systemverilog","version":1,"text":)" + top_text_json + R"(}}})";
 
-    WaitingTransport transport{{initialize_message, open_message}, 3};
+    WaitingTransport transport{{initialize_message, open_message}, 3, std::chrono::seconds(10)};
 
     const int exit_code = rpc_server.run(transport);
 

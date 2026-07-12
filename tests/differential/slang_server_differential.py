@@ -17,6 +17,7 @@ class DifferentialCheck:
     uri: str | None = None
     position: dict[str, int] | None = None
     query: str = ""
+    label: str = ""
     required: tuple[str, ...] = ()
     min_count: int | None = None
     include_declaration: bool = True
@@ -189,6 +190,38 @@ FIXTURES: tuple[DifferentialFixture, ...] = (
                 uri="interface_member.sv",
                 position={"line": 7, "character": 22},
                 required=("status_ready",),
+                optional=True,
+            ),
+        ),
+    ),
+    DifferentialFixture(
+        name="completion resolve and package function signature",
+        sources={
+            "callable.sv": (
+                "package math_pkg;\n"
+                "  function int add(input int lhs, input int rhs); return lhs + rhs; endfunction\n"
+                "endpackage\n"
+                "module child(input logic clk); endmodule\n"
+                "module top;\n"
+                "  chi\n"
+                "  int value = math_pkg::add(1, 2);\n"
+                "endmodule\n"
+            )
+        },
+        checks=(
+            DifferentialCheck(
+                kind="completionResolve",
+                uri="callable.sv",
+                position={"line": 5, "character": 5},
+                label="child",
+                required=("child",),
+                optional=True,
+            ),
+            DifferentialCheck(
+                kind="signatureHelp",
+                uri="callable.sv",
+                position={"line": 6, "character": 31},
+                required=("add",),
                 optional=True,
             ),
         ),
@@ -806,6 +839,54 @@ def check_completion(session: LspSession, request_id: int, uri: str, position: d
     return {item.get("label", "") for item in response_items(response.get("result"))}
 
 
+def check_completion_resolve(
+    session: LspSession,
+    request_id: int,
+    uri: str,
+    position: dict[str, int],
+    label: str,
+) -> set[str]:
+    completion = session.request(
+        request_id,
+        "textDocument/completion",
+        {"textDocument": {"uri": uri}, "position": position, "context": {"triggerKind": 1}},
+        allow_error=True,
+    )
+    if "error" in completion:
+        raise UnsupportedCheck("textDocument/completion is not supported")
+    item = next((candidate for candidate in response_items(completion.get("result"))
+                 if candidate.get("label") == label), None)
+    if item is None:
+        return set()
+    resolved = session.request(request_id + 1000, "completionItem/resolve", item, allow_error=True)
+    if "error" in resolved:
+        raise UnsupportedCheck("completionItem/resolve is not supported")
+    result = resolved.get("result")
+    return {str(result.get("label", ""))} if isinstance(result, dict) else set()
+
+
+def check_signature_help(
+    session: LspSession, request_id: int, uri: str, position: dict[str, int]
+) -> set[str]:
+    response = session.request(
+        request_id,
+        "textDocument/signatureHelp",
+        {"textDocument": {"uri": uri}, "position": position},
+        allow_error=True,
+    )
+    if "error" in response:
+        raise UnsupportedCheck("textDocument/signatureHelp is not supported")
+    result = response.get("result")
+    signatures = result.get("signatures", []) if isinstance(result, dict) else []
+    labels: set[str] = set()
+    for signature in signatures:
+        label = signature.get("label", "") if isinstance(signature, dict) else ""
+        for token in ("add",):
+            if token in label:
+                labels.add(token)
+    return labels
+
+
 def check_references(
     session: LspSession,
     request_id: int,
@@ -929,6 +1010,16 @@ def run_fixture(server: pathlib.Path, root: pathlib.Path, fixture: DifferentialF
                 if check.kind == "completion":
                     assert check.uri is not None and check.position is not None
                     observed[key] = check_completion(session, request_id, source_uris[check.uri], check.position)
+                elif check.kind == "completionResolve":
+                    assert check.uri is not None and check.position is not None and check.label
+                    observed[key] = check_completion_resolve(
+                        session, request_id, source_uris[check.uri], check.position, check.label
+                    )
+                elif check.kind == "signatureHelp":
+                    assert check.uri is not None and check.position is not None
+                    observed[key] = check_signature_help(
+                        session, request_id, source_uris[check.uri], check.position
+                    )
                 elif check.kind == "references":
                     assert check.uri is not None and check.position is not None
                     observed[key] = check_references(

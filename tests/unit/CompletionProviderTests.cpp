@@ -84,6 +84,18 @@ TEST_CASE("CompletionProvider maps prefix start with UTF-16 positions",
     CHECK(text.substr(*start, 6) == "smile_");
 }
 
+TEST_CASE("CompletionProvider normalizes a member cursor one column past line end",
+          "[analysis][semantic][completion-provider][member][position]") {
+    const auto context = detectCompletionContext("module top;\n  initial begin\n    pkt.size_\n  end\nendmodule\n",
+                                                 2,
+                                                 14,
+                                                 "size_");
+
+    REQUIRE(context.prefix_start.has_value());
+    CHECK(context.member_access);
+    CHECK(context.member_qualifier == "pkt");
+}
+
 TEST_CASE("CompletionProvider builds module, port, macro, and symbol completion items",
           "[analysis][semantic][completion-provider]") {
     const ModuleDefinition module{.name = "child",

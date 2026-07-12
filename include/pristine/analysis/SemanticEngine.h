@@ -123,6 +123,13 @@ struct SemanticCompletionResult {
     std::uint64_t generation = 0;
     std::vector<SemanticCompletionItem> items;
     std::vector<std::string> messages;
+    size_t scanned_candidate_count = 0;
+    size_t scanned_global_symbol_count = 0;
+    size_t scope_visibility_count = 0;
+    size_t package_visibility_count = 0;
+    size_t member_visibility_count = 0;
+    size_t callable_visibility_count = 0;
+    std::int64_t scope_visibility_build_micros = 0;
     bool unresolved = false;
     bool truncated = false;
 };

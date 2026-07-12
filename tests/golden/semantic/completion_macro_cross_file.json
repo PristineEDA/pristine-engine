@@ -7,13 +7,13 @@
     },
     {
       "uri": "file:///golden/semantic/use-macro.sv",
-      "text": "module top;\n  logic ready = `GLO\nendmodule\n"
+      "text": "`include \"common-macros.svh\"\nmodule top;\n  logic ready = `GLO\nendmodule\n"
     }
   ],
   "request": {
     "kind": "completion",
     "uri": "file:///golden/semantic/use-macro.sv",
-    "line": 1,
+    "line": 2,
     "character": 20,
     "prefix": "GLO"
   },

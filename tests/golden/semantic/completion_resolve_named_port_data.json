@@ -10,7 +10,7 @@
     "kind": "completionResolve",
     "uri": "file:///golden/semantic/resolve-port-data.sv",
     "line": 3,
-    "character": 19,
+    "character": 17,
     "prefix": "",
     "label": "data"
   },

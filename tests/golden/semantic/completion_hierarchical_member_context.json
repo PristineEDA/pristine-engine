@@ -1,15 +1,15 @@
 {
-  "name": "member completion falls back to AstIndex member context outside port lists",
+  "name": "member completion uses typed AstIndex member context outside port lists",
   "sources": [
     {
       "uri": "file:///golden/semantic/member-context.sv",
-      "text": "module top;\n  logic pkt;\n  logic ready;\n  logic [3:0] data;\n  initial begin\n    pkt.rea\n  end\nendmodule\n"
+      "text": "typedef struct packed { logic ready; logic [3:0] data; } packet_t;\nmodule top;\n  packet_t pkt;\n  initial begin\n    pkt.rea\n  end\nendmodule\n"
     }
   ],
   "request": {
     "kind": "completion",
     "uri": "file:///golden/semantic/member-context.sv",
-    "line": 5,
+    "line": 4,
     "character": 11,
     "prefix": "rea"
   },

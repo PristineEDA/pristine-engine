@@ -177,11 +177,23 @@ def main() -> int:
         trace_lines = trace_file.read_text(encoding="utf-8").splitlines()
         assert any('"method":"systemverilog/outline"' in line for line in trace_lines)
         assert any('"method":"textDocument/hover"' in line for line in trace_lines)
+        assert sum('"method":"textDocument/completion"' in line for line in trace_lines) == 2
+        assert any('"method":"completionItem/resolve"' in line for line in trace_lines)
+        assert any('"method":"textDocument/signatureHelp"' in line for line in trace_lines)
+        assert any('"method":"textDocument/inlayHint"' in line for line in trace_lines)
         assert sum(1 for line in trace_lines if '"method":"systemverilog/moduleHierarchy"' in line) == 2
         assert sum(1 for line in trace_lines if '"method":"systemverilog/schematic"' in line) == 1
         assert not any('"method":"workspace/symbol"' in line for line in trace_lines)
         assert not any('"method":"systemverilog/backwardCone"' in line for line in trace_lines)
-        assert not any('"method":"textDocument/completion"' in line for line in trace_lines)
+        completion_index = next(
+            index for index, line in enumerate(trace_lines)
+            if '"method":"textDocument/completion"' in line
+        )
+        document_symbol_indexes = [
+            index for index, line in enumerate(trace_lines)
+            if '"method":"textDocument/documentSymbol"' in line
+        ]
+        assert document_symbol_indexes and completion_index > max(document_symbol_indexes)
 
         test_status.emit(
             "pristine_rtl_e2e_large_workspace",

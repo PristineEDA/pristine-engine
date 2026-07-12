@@ -9,7 +9,7 @@
   "request": {
     "kind": "completion",
     "uri": "file:///golden/semantic/member-modport-status.sv",
-    "line": 8,
+    "line": 9,
     "character": 15,
     "prefix": "status_"
   },

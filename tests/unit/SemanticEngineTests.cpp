@@ -1033,6 +1033,9 @@ TEST_CASE("SemanticEngine completes class members through typed AstIndex view",
 
     const auto completions = engine.completionsAt("file:///workspace/class-member.sv", 11, 14, "size_");
 
+    CAPTURE(completions.messages,
+            completions.scanned_candidate_count,
+            completions.scanned_global_symbol_count);
     REQUIRE_FALSE(completions.unresolved);
     CHECK(std::any_of(completions.items.begin(), completions.items.end(), [](const auto& item) {
         return item.label == "size_bytes";
@@ -2137,6 +2140,196 @@ TEST_CASE("SemanticEngine owns include creation code actions",
     CHECK(actions.actions.front().diagnostics.front().code == "unknownInclude");
     REQUIRE(actions.actions.front().create_files.size() == 1);
     CHECK(actions.actions.front().create_files.front().uri == "file:///workspace/rtl/missing.svh");
+}
+
+TEST_CASE("SemanticEngine does not use global symbols for an unresolved member receiver",
+          "[analysis][semantic-engine][completion][visibility][no-global-fallback]") {
+    SemanticEngine engine;
+    engine.updateDocument("file:///workspace/no-fallback.sv",
+                          "module top;\n  logic pkt;\n  logic ready_global;\n"
+                          "  initial pkt.ready_\nendmodule\n",
+                          SemanticEngineDocumentState{.version = 1, .is_open = true});
+
+    const auto result = engine.completionsAt("file:///workspace/no-fallback.sv", 3, 20, "ready_");
+    CHECK_FALSE(result.unresolved);
+    CHECK(result.items.empty());
+    CHECK(result.scanned_global_symbol_count == 0);
+    CHECK(std::any_of(result.messages.begin(), result.messages.end(), [](const auto& message) {
+        return message.find("receiver is not indexed") != std::string::npos;
+    }));
+}
+
+TEST_CASE("SemanticEngine completes transitive package exports and invalidates them on change",
+          "[analysis][semantic-engine][completion][visibility][package-export][affected]") {
+    SemanticEngine engine;
+    engine.updateDocument("file:///workspace/defs.sv",
+                          "package defs; parameter int WIDTH = 8; endpackage\n",
+                          SemanticEngineDocumentState{.version = 1});
+    engine.updateDocument("file:///workspace/api.sv",
+                          "package api; import defs::*; export defs::*; endpackage\n",
+                          SemanticEngineDocumentState{.version = 1});
+    engine.updateDocument("file:///workspace/top.sv",
+                          "module top;\n  import api::*;\n  localparam int VALUE = WID\nendmodule\n",
+                          SemanticEngineDocumentState{.version = 1, .is_open = true});
+
+    const auto first = engine.completionsAt("file:///workspace/top.sv", 2, 28, "WID");
+    CHECK(std::any_of(first.items.begin(), first.items.end(), [](const auto& item) {
+        return item.label == "WIDTH";
+    }));
+    CHECK(first.scanned_global_symbol_count == 0);
+
+    engine.updateDocument("file:///workspace/defs.sv",
+                          "package defs; parameter int DEPTH = 16; endpackage\n",
+                          SemanticEngineDocumentState{.version = 2});
+    const auto second = engine.completionsAt("file:///workspace/top.sv", 2, 28, "DEP");
+    CHECK(std::any_of(second.items.begin(), second.items.end(), [](const auto& item) {
+        return item.label == "DEPTH";
+    }));
+    CHECK(engine.affectedDocumentUris("file:///workspace/defs.sv") ==
+          std::vector<std::string>{"file:///workspace/api.sv",
+                                   "file:///workspace/defs.sv",
+                                   "file:///workspace/top.sv"});
+}
+
+TEST_CASE("SemanticEngine limits macro completion to the include closure",
+          "[analysis][semantic-engine][completion][visibility][macro]") {
+    SemanticEngine engine;
+    engine.updateDocument("file:///workspace/defs.svh",
+                          "`define INCLUDED_VALUE 1\n",
+                          SemanticEngineDocumentState{.version = 1});
+    engine.updateDocument("file:///workspace/unrelated.svh",
+                          "`define UNRELATED_VALUE 1\n",
+                          SemanticEngineDocumentState{.version = 1});
+    engine.updateDocument("file:///workspace/top.sv",
+                          "`include \"defs.svh\"\nmodule top;\n  int value = `INCLUDED_\nendmodule\n",
+                          SemanticEngineDocumentState{.version = 1, .is_open = true});
+
+    const auto result = engine.completionsAt("file:///workspace/top.sv", 2, 24, "INCLUDED_");
+    CHECK(std::any_of(result.items.begin(), result.items.end(), [](const auto& item) {
+        return item.label == "INCLUDED_VALUE";
+    }));
+    CHECK(std::none_of(result.items.begin(), result.items.end(), [](const auto& item) {
+        return item.label == "UNRELATED_VALUE";
+    }));
+}
+
+TEST_CASE("SemanticEngine completes ordinary module instance members from instance scope",
+          "[analysis][semantic-engine][completion][visibility][instance]") {
+    SemanticEngine engine;
+    engine.updateDocument("file:///workspace/instance-members.sv",
+                          "module child(input logic data_i, output logic data_o);\n"
+                          "  logic data_state;\nendmodule\n"
+                          "module top;\n  child u_child();\n  initial u_child.data_\nendmodule\n",
+                          SemanticEngineDocumentState{.version = 1, .is_open = true});
+
+    const auto result = engine.completionsAt("file:///workspace/instance-members.sv", 5, 23, "data_");
+    for (const auto name : {"data_i", "data_o", "data_state"}) {
+        CAPTURE(name);
+        CHECK(std::any_of(result.items.begin(), result.items.end(), [&](const auto& item) {
+            return item.label == name;
+        }));
+    }
+    CHECK(result.scanned_global_symbol_count == 0);
+}
+
+TEST_CASE("SemanticEngine resolves package function calls for signature help",
+          "[analysis][semantic-engine][signature][visibility][package]") {
+    SemanticEngine engine;
+    engine.updateDocument("file:///workspace/package-call.sv",
+                          "package math_pkg;\n"
+                          "  function int add(input int lhs, input int rhs); return lhs + rhs; endfunction\n"
+                          "endpackage\nmodule top;\n"
+                          "  int value = math_pkg::add(1, 2);\nendmodule\n",
+                          SemanticEngineDocumentState{.version = 1, .is_open = true});
+
+    const auto result = engine.signatureHelpAt("file:///workspace/package-call.sv", 4, 32);
+    CHECK_FALSE(result.unresolved);
+    CHECK(result.label.find("add") != std::string::npos);
+    CHECK(result.parameters.size() == 2);
+    CHECK(result.active_parameter == 1);
+}
+
+TEST_CASE("SemanticEngine resolves class method calls for signature help",
+          "[analysis][semantic-engine][signature][visibility][class]") {
+    SemanticEngine engine;
+    engine.updateDocument("file:///workspace/class-call.sv",
+                          "class packet;\n"
+                          "  function int sum(input int lhs, input int rhs); return lhs + rhs; endfunction\n"
+                          "endclass\nmodule top;\n  packet pkt;\n"
+                          "  initial begin\n"
+                          "    int value;\n"
+                          "    pkt = new;\n"
+                          "    value = pkt.sum(1, 2);\n"
+                          "  end\nendmodule\n",
+                          SemanticEngineDocumentState{.version = 1, .is_open = true});
+
+    const auto result = engine.signatureHelpAt("file:///workspace/class-call.sv", 8, 23);
+    CHECK_FALSE(result.unresolved);
+    CHECK(result.label.find("sum") != std::string::npos);
+    CHECK(result.parameters.size() == 2);
+}
+
+TEST_CASE("SemanticEngine completion exposes scope visibility telemetry",
+          "[analysis][semantic-engine][completion][visibility][telemetry]") {
+    SemanticEngine engine;
+    engine.updateDocument("file:///workspace/visibility-metrics.sv",
+                          "package defs; parameter int WIDTH = 8; endpackage\n"
+                          "module top; import defs::*; localparam int W = WID; endmodule\n",
+                          SemanticEngineDocumentState{.version = 1, .is_open = true});
+
+    const auto result = engine.completionsAt("file:///workspace/visibility-metrics.sv", 1, 50, "WID");
+    CHECK(result.scope_visibility_count > 0);
+    CHECK(result.package_visibility_count == 1);
+    CHECK(result.scope_visibility_build_micros >= 0);
+    CHECK(result.scanned_candidate_count > 0);
+    CHECK(result.scanned_global_symbol_count == 0);
+}
+
+TEST_CASE("SemanticEngine macro completion respects definition and include order",
+          "[analysis][semantic-engine][completion][visibility][macro][order]") {
+    SemanticEngine engine;
+    engine.updateDocument("file:///workspace/defs.svh",
+                          "`define INCLUDED_LATE 1\n",
+                          SemanticEngineDocumentState{.version = 1});
+    engine.updateDocument("file:///workspace/macro-order.sv",
+                          "module top;\n"
+                          "  `FUT\n"
+                          "  `INC\n"
+                          "  `define FUTURE_LOCAL 1\n"
+                          "  `include \"defs.svh\"\n"
+                          "endmodule\n",
+                          SemanticEngineDocumentState{.version = 1, .is_open = true});
+
+    const auto future = engine.completionsAt("file:///workspace/macro-order.sv", 1, 6, "FUT");
+    CHECK(std::none_of(future.items.begin(), future.items.end(), [](const auto& item) {
+        return item.label == "FUTURE_LOCAL";
+    }));
+    const auto included = engine.completionsAt("file:///workspace/macro-order.sv", 2, 6, "INC");
+    CHECK(std::none_of(included.items.begin(), included.items.end(), [](const auto& item) {
+        return item.label == "INCLUDED_LATE";
+    }));
+
+    SemanticEngine replacement_engine;
+    replacement_engine.updateDocument("file:///workspace/replaced.svh",
+                                      "`define REPLACED_FLAG 1\n",
+                                      SemanticEngineDocumentState{.version = 1});
+    replacement_engine.updateDocument("file:///workspace/replacement-order.sv",
+                                      "`include \"replaced.svh\"\n"
+                                      "module top;\n"
+                                      "  `REP\n"
+                                      "  `define REPLACED_FLAG 2\n"
+                                      "endmodule\n",
+                                      SemanticEngineDocumentState{.version = 1, .is_open = true});
+    const auto replacement = replacement_engine.completionsAt(
+        "file:///workspace/replacement-order.sv", 2, 6, "REP");
+    const auto replaced = std::find_if(replacement.items.begin(),
+                                       replacement.items.end(),
+                                       [](const auto& item) {
+                                           return item.label == "REPLACED_FLAG";
+                                       });
+    REQUIRE(replaced != replacement.items.end());
+    CHECK(replaced->documentation.find("1") != std::string::npos);
+    CHECK(replaced->documentation.find("2") == std::string::npos);
 }
 
 } // namespace pristine::analysis

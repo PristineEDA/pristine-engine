@@ -2,6 +2,7 @@
 
 #include "pristine/analysis/CompilationService.h"
 #include "pristine/analysis/SemanticEngine.h"
+#include "SnapshotBuilder.h"
 
 #include <optional>
 #include <set>
@@ -44,6 +45,27 @@ struct CompletionResolveContext {
     std::optional<CompletionResolveSymbol> member;
 };
 
+struct CompletionQueryContext {
+    std::uint64_t generation = 0;
+    bool snapshot_available = false;
+    std::string document_uri;
+    const std::string* document_text = nullptr;
+    const std::vector<SnapshotScopeVisibility>* scopes = nullptr;
+    const std::unordered_map<std::string, SnapshotPackageVisibility>* packages = nullptr;
+    const std::vector<SnapshotVisibilityCandidate>* workspace_candidates = nullptr;
+    const std::unordered_map<std::string, std::vector<SnapshotMemberCompletion>>*
+        member_candidates_by_qualifier = nullptr;
+    const std::vector<SnapshotVisibleMacro>* macros = nullptr;
+    const std::vector<SnapshotModuleInstance>* module_instances = nullptr;
+    const std::unordered_map<std::string, ModuleDefinition>* modules_by_name = nullptr;
+    const std::unordered_map<std::string, std::string>* module_uris_by_name = nullptr;
+    size_t scope_visibility_count = 0;
+    size_t package_visibility_count = 0;
+    size_t member_visibility_count = 0;
+    size_t callable_visibility_count = 0;
+    std::int64_t scope_visibility_build_micros = 0;
+};
+
 [[nodiscard]] constexpr std::string_view completionProviderName() {
     return "CompletionProvider";
 }
@@ -57,6 +79,11 @@ struct CompletionResolveContext {
                                                         int line,
                                                         int character,
                                                         std::string_view prefix);
+
+[[nodiscard]] SemanticCompletionResult completeAt(const CompletionQueryContext& context,
+                                                  int line,
+                                                  int character,
+                                                  std::string_view prefix);
 
 [[nodiscard]] int completionKindForSemanticKind(std::string_view kind);
 [[nodiscard]] std::string completionDetailForSemanticKind(std::string_view kind);

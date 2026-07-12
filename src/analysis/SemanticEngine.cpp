@@ -339,27 +339,6 @@ semantic::CodeActionContext codeActionContextFor(const semantic::SnapshotData* d
 
 namespace {
 
-template<typename SnapshotData>
-void appendModulePortCompletions(std::vector<SemanticCompletionItem>& items,
-                                 std::set<std::string>& emitted,
-                                 const SnapshotData& data,
-                                 const ModuleDefinition& module,
-                                 std::string_view module_uri,
-                                 std::string_view prefix,
-                                 const std::set<std::string>& excluded_ports,
-                                 bool& truncated) {
-    const auto module_id = semantic::findSymbolIdByNameAndKind(data, module.name, "Definition")
-                               .value_or(std::string("module|") + module.name);
-    semantic::appendModulePortCompletions(items,
-                                          emitted,
-                                          module_id,
-                                          module,
-                                          module_uri,
-                                          prefix,
-                                          excluded_ports,
-                                          truncated);
-}
-
 std::optional<std::string_view> inferredDiscoveryTop(
     std::optional<std::string_view> requested_module_name,
     const SemanticEngineConfig& config,
@@ -1166,8 +1145,6 @@ SemanticCompletionResult SemanticEngine::completionsAt(std::string_view uri,
         return *cached;
     }
 
-    SemanticCompletionResult result;
-    result.generation = current_snapshot.generation;
     const auto finish = [&](SemanticCompletionResult value) {
         query_cache_->storeCompletions(current_snapshot.generation,
                                        document_uri,
@@ -1178,211 +1155,40 @@ SemanticCompletionResult SemanticEngine::completionsAt(std::string_view uri,
         return value;
     };
     const auto* data = snapshotData();
-    if (data == nullptr) {
-        result.unresolved = true;
-        result.messages.push_back("AST-backed SemanticEngine snapshot is unavailable");
-        return finish(std::move(result));
-    }
-
-    std::set<std::string> emitted;
+    const auto ast_index = semantic::buildAstIndexView(data, current_snapshot.generation);
     const auto document_it = documents_.find(document_uri);
     const auto* document = document_it == documents_.end() ? nullptr : &document_it->second;
-    const auto completion_context = document == nullptr
-                                        ? semantic::CompletionContext{}
-                                        : semantic::detectCompletionContext(document->text,
-                                                                            line,
-                                                                            character,
-                                                                            prefix);
-
-    const auto append_items = [&](const std::vector<SemanticCompletionItem>& items) {
-        for (const auto& item : items) {
-            semantic::appendCompletionItem(result.items, emitted, item, prefix, result.truncated);
-            if (result.truncated) {
-                return;
-            }
-        }
-    };
-
-    if (document != nullptr && completion_context.macro_invocation) {
-        const auto append_macros = [&](const std::vector<MacroDefinition>& macros) {
-            for (const auto& macro : macros) {
-                semantic::appendCompletionItem(
-                    result.items,
-                    emitted,
-                    SemanticCompletionItem{.stable_id = document_uri + "|macro|" + macro.name,
-                                            .label = macro.name,
-                                            .detail = macro.function_like ? "Macro function" : "Macro",
-                                            .documentation = semantic::macroDocumentation(macro),
-                                            .insert_text = semantic::macroInsertText(macro),
-                                            .kind = macro.function_like ? 3 : 21,
-                                            .unresolved = false},
-                    prefix,
-                    result.truncated);
-                if (result.truncated) {
-                    return;
-                }
-            }
-        };
-        if (const auto macros_it = data->macros_by_uri.find(document_uri); macros_it != data->macros_by_uri.end()) {
-            append_macros(macros_it->second);
-        }
-        for (const auto& [macro_uri, macros] : data->macros_by_uri) {
-            if (macro_uri != document_uri) {
-                append_macros(macros);
-            }
-            if (result.truncated) {
-                break;
-            }
-        }
-        return finish(std::move(result));
+    semantic::CompletionQueryContext context;
+    context.generation = current_snapshot.generation;
+    context.snapshot_available = data != nullptr;
+    context.document_uri = document_uri;
+    context.document_text = document == nullptr ? nullptr : &document->text;
+    context.packages = &ast_index.package_visibility_by_name;
+    context.workspace_candidates = &ast_index.workspace_visibility;
+    context.modules_by_name = &ast_index.modules_by_name;
+    context.module_uris_by_name = &ast_index.module_uris_by_name;
+    context.scope_visibility_count = ast_index.scope_visibility_count;
+    context.package_visibility_count = ast_index.package_visibility_count;
+    context.member_visibility_count = ast_index.member_visibility_count;
+    context.callable_visibility_count = ast_index.callable_visibility_count;
+    context.scope_visibility_build_micros = ast_index.scope_visibility_build_micros;
+    if (const auto scopes_it = ast_index.scope_visibility_by_uri.find(document_uri);
+        scopes_it != ast_index.scope_visibility_by_uri.end()) {
+        context.scopes = &scopes_it->second;
     }
-
-    if (document != nullptr) {
-        if (const auto package_name = completion_context.package_qualifier) {
-            for (const auto& [_, indexed_symbol] : data->symbols_by_id) {
-                const auto& symbol = indexed_symbol.identity;
-                if (symbol.name == *package_name || symbol.location.uri.empty()) {
-                    continue;
-                }
-                if (symbol.stable_id.find("|" + *package_name + "::") == std::string::npos &&
-                    symbol.stable_id.find("." + *package_name + ".") == std::string::npos &&
-                    symbol.stable_id.find(*package_name) == std::string::npos) {
-                    continue;
-                }
-                semantic::appendSymbolCompletion(result.items,
-                                                 emitted,
-                                                 indexed_symbol.identity,
-                                                 prefix,
-                                                 result.truncated);
-                if (result.truncated) {
-                    return finish(std::move(result));
-                }
-            }
-            if (result.items.empty()) {
-                result.messages.push_back("package completion had no indexed AST members");
-            }
-            return finish(std::move(result));
-        }
-
-        if (completion_context.member_access) {
-            const auto instances_it = data->module_instances_by_uri.find(document_uri);
-            if (instances_it != data->module_instances_by_uri.end()) {
-                for (const auto& instance : instances_it->second) {
-                    if (!parseRangeContainsPosition(instance.range, line, character)) {
-                        continue;
-                    }
-                    const auto module_it = data->modules_by_name.find(instance.module_name);
-                    if (module_it != data->modules_by_name.end()) {
-                        std::set<std::string> connected_ports;
-                        connected_ports = semantic::connectedNamedPortsForInstance(
-                            document->text,
-                            line,
-                            character,
-                            instance.selection_range,
-                            instance.range);
-                        const auto module_uri_it = data->module_uris_by_name.find(instance.module_name);
-                        appendModulePortCompletions(result.items,
-                                                    emitted,
-                                                    *data,
-                                                    module_it->second,
-                                                    module_uri_it == data->module_uris_by_name.end()
-                                                        ? std::string_view{}
-                                                        : std::string_view(module_uri_it->second),
-                                                    prefix,
-                                                    connected_ports,
-                                                    result.truncated);
-                        return finish(std::move(result));
-                    }
-                }
-            }
-        }
-
-        if (const auto member_name = completion_context.member_qualifier) {
-            semantic::CompletionMemberContext member_context;
-            member_context.qualifier = *member_name;
-            const auto qualifier_base = semantic::baseMemberQualifier(*member_name);
-            bool used_typed_member_view = false;
-            const auto ast_index = semantic::buildAstIndexView(data, current_snapshot.generation);
-            if (const auto completions_it = ast_index.member_completions_by_uri.find(document_uri);
-                completions_it != ast_index.member_completions_by_uri.end()) {
-                for (const auto& member_completion : completions_it->second) {
-                    if (member_completion.qualifier != qualifier_base) {
-                        continue;
-                    }
-                    member_context.candidates.push_back(
-                        semantic::CompletionMemberCandidate{.identity = member_completion.identity});
-                }
-            }
-            if (!member_context.candidates.empty()) {
-                used_typed_member_view = true;
-            }
-            else {
-                member_context.candidates.reserve(data->symbols_by_id.size());
-                for (const auto& [_, indexed_symbol] : data->symbols_by_id) {
-                    member_context.candidates.push_back(
-                        semantic::CompletionMemberCandidate{.identity = indexed_symbol.identity});
-                }
-            }
-            semantic::appendMemberCompletions(result.items,
-                                              emitted,
-                                              member_context,
-                                              prefix,
-                                              result.truncated);
-            result.messages.push_back(used_typed_member_view
-                                          ? "member completion used typed AstIndex member view"
-                                          : "member completion used AST-backed member context provider");
-            return finish(std::move(result));
-        }
-
-        if (completion_context.module_instantiation_position) {
-            std::vector<std::string> module_names;
-            module_names.reserve(data->modules_by_name.size());
-            for (const auto& [module_name, _] : data->modules_by_name) {
-                module_names.push_back(module_name);
-            }
-            std::sort(module_names.begin(), module_names.end());
-            for (const auto& module_name : module_names) {
-                const auto& module = data->modules_by_name.at(module_name);
-                const auto module_id = semantic::findSymbolIdByNameAndKind(*data, module.name, "Definition")
-                                           .value_or(std::string("module|") + module.name);
-                const auto module_uri_it = data->module_uris_by_name.find(module.name);
-                semantic::appendCompletionItem(
-                    result.items,
-                    emitted,
-                    SemanticCompletionItem{.stable_id = module_id,
-                                            .label = module.name,
-                                            .detail = semantic::moduleSignatureLabel(module),
-                                            .documentation = semantic::moduleDocumentation(
-                                                module,
-                                                module_uri_it == data->module_uris_by_name.end()
-                                                    ? std::string_view{}
-                                                    : std::string_view(module_uri_it->second)),
-                                            .insert_text = module.name,
-                                            .kind = 9,
-                                            .unresolved = false},
-                    prefix,
-                    result.truncated);
-                if (result.truncated) {
-                    return finish(std::move(result));
-                }
-            }
-        }
+    if (const auto members_it = ast_index.member_completions_by_qualifier_by_uri.find(document_uri);
+        members_it != ast_index.member_completions_by_qualifier_by_uri.end()) {
+        context.member_candidates_by_qualifier = &members_it->second;
     }
-
-    const auto completion_it = data->completions_by_uri.find(document_uri);
-    if (completion_it != data->completions_by_uri.end()) {
-        append_items(completion_it->second);
+    if (const auto macros_it = ast_index.visible_macros_by_uri.find(document_uri);
+        macros_it != ast_index.visible_macros_by_uri.end()) {
+        context.macros = &macros_it->second;
     }
-    for (const auto& [completion_uri, items] : data->completions_by_uri) {
-        if (completion_uri == document_uri) {
-            continue;
-        }
-        append_items(items);
-        if (result.truncated) {
-            break;
-        }
+    if (const auto instances_it = ast_index.module_instances_by_uri.find(document_uri);
+        instances_it != ast_index.module_instances_by_uri.end()) {
+        context.module_instances = &instances_it->second;
     }
-    return finish(std::move(result));
+    return finish(semantic::completeAt(context, line, character, prefix));
 }
 
 SemanticCompletionItem SemanticEngine::resolveCompletion(std::string_view stable_id,
@@ -1405,22 +1211,11 @@ SemanticCompletionItem SemanticEngine::resolveCompletion(std::string_view stable
                                                            .type_display = symbol_it->second.type_display,
                                                            .value_display = symbol_it->second.value_display};
     }
-    else {
-        const auto stable_id_text = std::string(stable_id);
-        for (const auto& [_, member_completions] : ast_index.member_completions_by_uri) {
-            const auto member_it = std::find_if(member_completions.begin(),
-                                                member_completions.end(),
-                                                [&](const semantic::SnapshotMemberCompletion& completion) {
-                                                    return completion.identity.stable_id == stable_id_text;
-                                                });
-            if (member_it == member_completions.end()) {
-                continue;
-            }
-            context.member = semantic::CompletionResolveSymbol{.identity = member_it->identity,
-                                                               .type_display = member_it->type_display,
-                                                               .value_display = {}};
-            break;
-        }
+    else if (const auto member_it = ast_index.member_completions_by_stable_id.find(std::string(stable_id));
+             member_it != ast_index.member_completions_by_stable_id.end()) {
+        context.member = semantic::CompletionResolveSymbol{.identity = member_it->second.identity,
+                                                           .type_display = member_it->second.type_display,
+                                                           .value_display = {}};
     }
     return semantic::resolveCompletionItem(stable_id, label, context);
 }

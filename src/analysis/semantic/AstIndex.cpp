@@ -5,6 +5,7 @@
 #include "pristine/analysis/SourceUtil.h"
 
 #include "slang/ast/ASTVisitor.h"
+#include "slang/ast/Compilation.h"
 #include "slang/ast/Expression.h"
 #include "slang/ast/Scope.h"
 #include "slang/ast/SemanticFacts.h"
@@ -15,6 +16,7 @@
 #include "slang/ast/symbols/InstanceSymbols.h"
 #include "slang/ast/symbols/MemberSymbols.h"
 #include "slang/ast/symbols/ClassSymbols.h"
+#include "slang/ast/symbols/CompilationUnitSymbols.h"
 #include "slang/ast/symbols/ParameterSymbols.h"
 #include "slang/ast/symbols/PortSymbols.h"
 #include "slang/ast/symbols/SubroutineSymbols.h"
@@ -29,6 +31,7 @@
 #include "slang/text/SourceManager.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cctype>
 #include <limits>
 #include <set>
@@ -1268,6 +1271,67 @@ void appendMemberCompletion(SnapshotData& data,
                                                    .type_display = std::move(type_display)});
 }
 
+void indexNestedTypedMemberCompletions(SnapshotData& data,
+                                       const slang::SourceManager& source_manager,
+                                       const slang::ast::Type& type,
+                                       const SemanticLocation& owner_location,
+                                       std::string_view owner_stable_id,
+                                       std::string_view qualifier,
+                                       int depth) {
+    constexpr int kMaxNestedMemberDepth = 8;
+    if (depth >= kMaxNestedMemberDepth) {
+        return;
+    }
+    const auto& canonical = unwrapArrayElementType(type);
+    const auto append_children = [&](const slang::ast::Symbol& member) {
+        const auto* declared_type = member.getDeclaredType();
+        if (declared_type == nullptr || member.name.empty()) {
+            return;
+        }
+        const auto nested_qualifier = std::string(qualifier) + "." + std::string(member.name);
+        const auto nested_owner_id = std::string(owner_stable_id) + "|member|" +
+                                     std::string(member.name);
+        auto nested_members = typedMembersForType(source_manager,
+                                                  declared_type->getType(),
+                                                  owner_location,
+                                                  nested_owner_id);
+        for (auto& nested : nested_members) {
+            appendMemberCompletion(data,
+                                   owner_location.uri,
+                                   nested_qualifier,
+                                   nested_owner_id,
+                                   std::move(nested));
+        }
+        indexNestedTypedMemberCompletions(data,
+                                          source_manager,
+                                          declared_type->getType(),
+                                          owner_location,
+                                          nested_owner_id,
+                                          nested_qualifier,
+                                          depth + 1);
+    };
+
+    if (canonical.kind == slang::ast::SymbolKind::PackedStructType) {
+        for (const auto& member : canonical.as<slang::ast::PackedStructType>().members()) {
+            if (member.kind == slang::ast::SymbolKind::Field) {
+                append_children(member);
+            }
+        }
+    }
+    else if (canonical.kind == slang::ast::SymbolKind::UnpackedStructType) {
+        for (const auto* field : canonical.as<slang::ast::UnpackedStructType>().fields) {
+            if (field != nullptr) {
+                append_children(*field);
+            }
+        }
+    }
+    else if (canonical.kind == slang::ast::SymbolKind::ClassType) {
+        for (const auto& property : canonical.as<slang::ast::ClassType>().properties()) {
+            append_children(property);
+        }
+    }
+}
+
 void indexTypedMemberCompletions(SnapshotData& data,
                                  const slang::SourceManager& source_manager,
                                  const slang::ast::Symbol& symbol,
@@ -1289,6 +1353,13 @@ void indexTypedMemberCompletions(SnapshotData& data,
     for (auto& member : members) {
         appendMemberCompletion(data, owner_location.uri, symbol.name, owner_stable_id, std::move(member));
     }
+    indexNestedTypedMemberCompletions(data,
+                                      source_manager,
+                                      declared_type->getType(),
+                                      owner_location,
+                                      owner_stable_id,
+                                      symbol.name,
+                                      0);
 }
 
 std::optional<ParseRange> indexedSymbolRange(const slang::SourceManager& source_manager,
@@ -1387,7 +1458,7 @@ void appendScopeMembers(SnapshotData& data,
     }
 }
 
-void indexInterfaceMemberCompletions(SnapshotData& data, const slang::SourceManager& source_manager) {
+void indexInstanceMemberCompletions(SnapshotData& data, const slang::SourceManager& source_manager) {
     for (const auto& [stable_id, indexed] : data.symbols_by_id) {
         if (indexed.symbol == nullptr || indexed.identity.name.empty() ||
             indexed.identity.location.uri.empty()) {
@@ -1396,9 +1467,6 @@ void indexInterfaceMemberCompletions(SnapshotData& data, const slang::SourceMana
 
         if (indexed.symbol->kind == slang::ast::SymbolKind::Instance) {
             const auto& instance = indexed.symbol->as<slang::ast::InstanceSymbol>();
-            if (!instance.isInterface()) {
-                continue;
-            }
             const auto& definition = instance.getDefinition();
             const auto definition_location = declarationLocationForSymbol(source_manager, definition);
             if (!definition_location.has_value()) {
@@ -1479,11 +1547,26 @@ std::optional<SignatureInlayCall> signatureCallForSubroutine(
     const slang::SourceManager& source_manager,
     const slang::ast::CallExpression& call,
     const slang::ast::SubroutineSymbol& subroutine) {
-    const auto call_location = locationForSourceRange(source_manager, call.sourceRange);
+    auto call_range = call.sourceRange;
+    if (call.thisClass() != nullptr) {
+        for (const auto* argument : call.arguments()) {
+            if (argument != nullptr &&
+                argument->sourceRange.end().buffer() == call_range.end().buffer() &&
+                argument->sourceRange.end() > call_range.end()) {
+                call_range = slang::SourceRange(call_range.start(), argument->sourceRange.end());
+            }
+        }
+        call_range = slang::SourceRange(call_range.start(), call_range.end() + 1);
+    }
+
+    const auto call_location = locationForSourceRange(source_manager, call_range);
+    const auto selection_start = call.thisClass() == nullptr
+                                     ? call.sourceRange.start()
+                                     : call.sourceRange.end() - subroutine.name.size();
+    const auto selection_end = selection_start + subroutine.name.size();
     const auto selection_location = locationForSourceRange(
         source_manager,
-        slang::SourceRange(call.sourceRange.start(),
-                           call.sourceRange.start() + subroutine.name.size()));
+        slang::SourceRange(selection_start, selection_end));
     if (!call_location.has_value() || !selection_location.has_value() ||
         selection_location->uri != call_location->uri) {
         return std::nullopt;
@@ -2324,6 +2407,326 @@ void insertSymbol(SnapshotData& data,
                                                      .insert_text = std::string(symbol.name),
                                                      .kind = completionKindForSemanticKind(kind_name),
                                                      .unresolved = false});
+    }
+}
+
+int visibilityOriginPriority(SnapshotVisibilityOrigin origin) {
+    switch (origin) {
+    case SnapshotVisibilityOrigin::Local:
+        return 0;
+    case SnapshotVisibilityOrigin::ExplicitImport:
+        return 1;
+    case SnapshotVisibilityOrigin::WildcardImport:
+        return 2;
+    case SnapshotVisibilityOrigin::PackageExport:
+        return 3;
+    case SnapshotVisibilityOrigin::Workspace:
+        return 4;
+    }
+    return 5;
+}
+
+bool visibilityCandidateLess(const SnapshotVisibilityCandidate& left,
+                             const SnapshotVisibilityCandidate& right) {
+    const auto left_priority = visibilityOriginPriority(left.origin);
+    const auto right_priority = visibilityOriginPriority(right.origin);
+    if (left_priority != right_priority) {
+        return left_priority < right_priority;
+    }
+    if (left.identity.location.uri != right.identity.location.uri) {
+        return left.identity.location.uri < right.identity.location.uri;
+    }
+    if (!sameRange(left.identity.location.range, right.identity.location.range)) {
+        return locationLess(left.identity.location, right.identity.location);
+    }
+    if (left.identity.kind != right.identity.kind) {
+        return left.identity.kind < right.identity.kind;
+    }
+    return left.identity.stable_id < right.identity.stable_id;
+}
+
+const slang::ast::Symbol* visibleSymbol(const slang::ast::Symbol& symbol,
+                                        SnapshotVisibilityOrigin& origin) {
+    if (symbol.kind == slang::ast::SymbolKind::TransparentMember) {
+        return &symbol.as<slang::ast::TransparentMemberSymbol>().wrapped;
+    }
+    if (symbol.kind == slang::ast::SymbolKind::ExplicitImport) {
+        origin = SnapshotVisibilityOrigin::ExplicitImport;
+        return symbol.as<slang::ast::ExplicitImportSymbol>().importedSymbol();
+    }
+    if (symbol.kind == slang::ast::SymbolKind::WildcardImport || symbol.name.empty()) {
+        return nullptr;
+    }
+    return &symbol;
+}
+
+std::optional<SnapshotVisibilityCandidate> visibilityCandidateForSymbol(
+    SnapshotData& data,
+    const slang::SourceManager& source_manager,
+    const slang::ast::Symbol& source_symbol,
+    SnapshotVisibilityOrigin origin) {
+    const auto* symbol = visibleSymbol(source_symbol, origin);
+    if (symbol == nullptr || symbol->name.empty()) {
+        return std::nullopt;
+    }
+    insertSymbol(data, source_manager, *symbol);
+    const auto id_it = data.ids_by_symbol.find(symbol);
+    if (id_it == data.ids_by_symbol.end()) {
+        return std::nullopt;
+    }
+    const auto indexed_it = data.symbols_by_id.find(id_it->second);
+    if (indexed_it == data.symbols_by_id.end()) {
+        return std::nullopt;
+    }
+    return SnapshotVisibilityCandidate{.identity = indexed_it->second.identity,
+                                       .type_display = indexed_it->second.type_display,
+                                       .value_display = indexed_it->second.value_display,
+                                       .origin = origin};
+}
+
+void appendVisibilityCandidate(std::vector<SnapshotVisibilityCandidate>& candidates,
+                               SnapshotVisibilityCandidate candidate) {
+    const auto duplicate = std::any_of(candidates.begin(),
+                                       candidates.end(),
+                                       [&](const SnapshotVisibilityCandidate& existing) {
+                                           return existing.identity.stable_id ==
+                                                  candidate.identity.stable_id;
+                                       });
+    if (!duplicate) {
+        candidates.push_back(std::move(candidate));
+    }
+}
+
+void collectPackageVisibility(SnapshotData& data,
+                              const slang::SourceManager& source_manager,
+                              const slang::ast::PackageSymbol& package,
+                              std::set<std::string>& visiting,
+                              SnapshotPackageVisibility& result);
+
+void appendExportedPackageVisibility(SnapshotData& data,
+                                     const slang::SourceManager& source_manager,
+                                     const slang::ast::PackageSymbol& exported_package,
+                                     std::string_view exported_item,
+                                     std::set<std::string>& visiting,
+                                     SnapshotPackageVisibility& result) {
+    result.exported_packages.push_back(std::string(exported_package.name));
+
+    SnapshotPackageVisibility exported;
+    exported.package_name = std::string(exported_package.name);
+    if (const auto location = declarationLocationForSymbol(source_manager, exported_package)) {
+        exported.uri = location->uri;
+    }
+    collectPackageVisibility(data, source_manager, exported_package, visiting, exported);
+    for (auto candidate : exported.candidates) {
+        if (exported_item != "*" && candidate.identity.name != exported_item) {
+            continue;
+        }
+        candidate.origin = SnapshotVisibilityOrigin::PackageExport;
+        appendVisibilityCandidate(result.candidates, std::move(candidate));
+    }
+}
+
+void collectPackageVisibility(SnapshotData& data,
+                              const slang::SourceManager& source_manager,
+                              const slang::ast::PackageSymbol& package,
+                              std::set<std::string>& visiting,
+                              SnapshotPackageVisibility& result) {
+    if (!visiting.insert(std::string(package.name)).second) {
+        return;
+    }
+    package.checkExplicitExports();
+
+    for (const auto* export_decl : package.exportDecls) {
+        if (export_decl == nullptr) {
+            continue;
+        }
+        const auto package_name = export_decl->package.valueText();
+        const auto item_name = export_decl->item.valueText();
+        if (package_name.empty() || package_name == "*" || item_name.empty()) {
+            continue;
+        }
+        const auto* exported_package = data.compilation->getPackage(package_name);
+        if (exported_package == nullptr || exported_package->name.empty()) {
+            continue;
+        }
+        appendExportedPackageVisibility(data,
+                                        source_manager,
+                                        *exported_package,
+                                        item_name,
+                                        visiting,
+                                        result);
+    }
+
+    for (const auto& member : package.members()) {
+        if (member.kind == slang::ast::SymbolKind::ExplicitImport) {
+            const auto& import = member.as<slang::ast::ExplicitImportSymbol>();
+            if (!import.isFromExport && !package.hasExportAll) {
+                continue;
+            }
+            if (const auto candidate = visibilityCandidateForSymbol(
+                    data,
+                    source_manager,
+                    member,
+                    SnapshotVisibilityOrigin::PackageExport)) {
+                appendVisibilityCandidate(result.candidates, *candidate);
+            }
+            continue;
+        }
+        if (member.kind == slang::ast::SymbolKind::WildcardImport) {
+            continue;
+        }
+        if (const auto candidate = visibilityCandidateForSymbol(data,
+                                                                 source_manager,
+                                                                 member,
+                                                                 SnapshotVisibilityOrigin::Local)) {
+            appendVisibilityCandidate(result.candidates, *candidate);
+        }
+    }
+
+    if (const auto* imports = package.getWildcardImportData()) {
+        for (const auto* wildcard : imports->wildcardImports) {
+            if (wildcard == nullptr || (!wildcard->isFromExport && !package.hasExportAll)) {
+                continue;
+            }
+            const auto* exported_package = wildcard->getPackage();
+            if (exported_package == nullptr || exported_package->name.empty()) {
+                continue;
+            }
+            appendExportedPackageVisibility(data,
+                                            source_manager,
+                                            *exported_package,
+                                            "*",
+                                            visiting,
+                                            result);
+        }
+    }
+    visiting.erase(std::string(package.name));
+}
+
+int scopeDepth(const slang::ast::Scope& scope) {
+    int depth = 0;
+    const auto* parent = scope.asSymbol().getParentScope();
+    while (parent != nullptr) {
+        ++depth;
+        parent = parent->asSymbol().getParentScope();
+    }
+    return depth;
+}
+
+void appendScopeVisibility(SnapshotData& data,
+                           const slang::SourceManager& source_manager,
+                           const slang::ast::Scope& scope) {
+    const auto& scope_symbol = scope.asSymbol();
+    const auto scope_location = declarationLocationForSymbol(source_manager, scope_symbol);
+    const auto scope_range = parseRangeForSymbolSyntax(source_manager, scope_symbol);
+    if (!scope_location.has_value() || !scope_range.has_value() || scope_location->uri.empty()) {
+        return;
+    }
+
+    SnapshotScopeVisibility result;
+    result.uri = scope_location->uri;
+    result.range = *scope_range;
+    result.lexical_depth = scopeDepth(scope);
+    result.stable_id = "scope|" + result.uri + "|" + rangeKey(result.range) + "|" +
+                       std::string(slang::ast::toString(scope_symbol.kind));
+
+    for (const auto& member : scope.members()) {
+        if (const auto candidate = visibilityCandidateForSymbol(data,
+                                                                 source_manager,
+                                                                 member,
+                                                                 SnapshotVisibilityOrigin::Local)) {
+            appendVisibilityCandidate(result.candidates, *candidate);
+        }
+    }
+    if (const auto* imports = scope.getWildcardImportData()) {
+        for (const auto* wildcard : imports->wildcardImports) {
+            const auto* package = wildcard == nullptr ? nullptr : wildcard->getPackage();
+            if (package == nullptr) {
+                continue;
+            }
+            const auto package_it = data.package_visibility_by_name.find(std::string(package->name));
+            if (package_it == data.package_visibility_by_name.end()) {
+                continue;
+            }
+            for (auto candidate : package_it->second.candidates) {
+                candidate.origin = SnapshotVisibilityOrigin::WildcardImport;
+                appendVisibilityCandidate(result.candidates, std::move(candidate));
+            }
+        }
+    }
+    std::sort(result.candidates.begin(), result.candidates.end(), visibilityCandidateLess);
+    data.scope_visibility_by_uri[result.uri].push_back(std::move(result));
+}
+
+bool isWorkspaceVisibilityKind(std::string_view kind) {
+    return kind == "Definition" || kind == "Package" || kind == "ClassType" ||
+           kind == "EnumType" || kind == "TypeAlias" || kind == "ForwardingTypedef" ||
+           kind == "NetType" || kind == "Interface";
+}
+
+void buildScopeVisibilityIndexes(SnapshotData& data, const slang::SourceManager& source_manager) {
+    data.scope_visibility_by_uri.clear();
+    data.package_visibility_by_name.clear();
+    data.workspace_visibility.clear();
+
+    for (const auto* package : data.compilation->getPackages()) {
+        if (package == nullptr || package->name.empty()) {
+            continue;
+        }
+        SnapshotPackageVisibility result;
+        result.package_name = std::string(package->name);
+        const auto location = declarationLocationForSymbol(source_manager, *package);
+        if (!location.has_value() || location->uri.empty()) {
+            continue;
+        }
+        result.uri = location->uri;
+        std::set<std::string> visiting;
+        collectPackageVisibility(data, source_manager, *package, visiting, result);
+        std::sort(result.candidates.begin(), result.candidates.end(), visibilityCandidateLess);
+        std::sort(result.exported_packages.begin(), result.exported_packages.end());
+        result.exported_packages.erase(std::unique(result.exported_packages.begin(),
+                                                   result.exported_packages.end()),
+                                       result.exported_packages.end());
+        data.package_visibility_by_name[result.package_name] = std::move(result);
+    }
+
+    std::set<const slang::ast::Scope*> scopes;
+    for (const auto& [_, indexed] : data.symbols_by_id) {
+        if (indexed.symbol == nullptr) {
+            continue;
+        }
+        if (const auto* scope = indexed.symbol->as_if<slang::ast::Scope>()) {
+            scopes.insert(scope);
+        }
+        if (const auto* parent = indexed.symbol->getParentScope()) {
+            scopes.insert(parent);
+        }
+    }
+    for (const auto* scope : scopes) {
+        appendScopeVisibility(data, source_manager, *scope);
+    }
+
+    for (const auto& [_, indexed] : data.symbols_by_id) {
+        if (!isWorkspaceVisibilityKind(indexed.identity.kind)) {
+            continue;
+        }
+        appendVisibilityCandidate(data.workspace_visibility,
+                                  SnapshotVisibilityCandidate{.identity = indexed.identity,
+                                                              .type_display = indexed.type_display,
+                                                              .value_display = indexed.value_display,
+                                                              .origin = SnapshotVisibilityOrigin::Workspace});
+    }
+    std::sort(data.workspace_visibility.begin(), data.workspace_visibility.end(), visibilityCandidateLess);
+    for (auto& [_, scope_views] : data.scope_visibility_by_uri) {
+        std::sort(scope_views.begin(), scope_views.end(), [](const auto& left, const auto& right) {
+            if (left.lexical_depth != right.lexical_depth) {
+                return left.lexical_depth > right.lexical_depth;
+            }
+            if (!sameRange(left.range, right.range)) {
+                return rangeLessWideFirst(right.range, left.range);
+            }
+            return left.stable_id < right.stable_id;
+        });
     }
 }
 
@@ -3299,6 +3702,16 @@ void sortSnapshotIndexes(SnapshotData& data) {
             return lhs.identity.stable_id < rhs.identity.stable_id;
         });
     }
+    data.member_completions_by_qualifier_by_uri.clear();
+    data.member_completions_by_stable_id.clear();
+    for (const auto& [uri, completions] : data.member_completions_by_uri) {
+        auto& by_qualifier = data.member_completions_by_qualifier_by_uri[uri];
+        for (const auto& completion : completions) {
+            by_qualifier[completion.qualifier].push_back(completion);
+            data.member_completions_by_stable_id.try_emplace(completion.identity.stable_id,
+                                                             completion);
+        }
+    }
     for (auto& [_, ranges] : data.selection_ranges_by_uri) {
         std::sort(ranges.begin(), ranges.end(), rangeLessWideFirst);
         ranges.erase(std::unique(ranges.begin(),
@@ -3434,8 +3847,33 @@ void buildAstIndexes(SnapshotData& data,
         addMissingSignaturePortSymbols(data);
     }
     {
-        PRISTINE_DEBUG_TRACE_SCOPE_SIMPLE("astIndex.indexInterfaceMemberCompletions");
-        indexInterfaceMemberCompletions(data, *data.source_manager);
+        PRISTINE_DEBUG_TRACE_SCOPE_SIMPLE("astIndex.buildScopeVisibilityIndexes");
+        const auto visibility_start = std::chrono::steady_clock::now();
+        buildScopeVisibilityIndexes(data, *data.source_manager);
+        data.scope_visibility_build_micros = std::chrono::duration_cast<std::chrono::microseconds>(
+                                                  std::chrono::steady_clock::now() - visibility_start)
+                                                  .count();
+        data.package_visibility_count = data.package_visibility_by_name.size();
+        data.scope_visibility_count = 0;
+        for (const auto& [_, scopes] : data.scope_visibility_by_uri) {
+            data.scope_visibility_count += scopes.size();
+        }
+        data.member_visibility_count = 0;
+        for (const auto& [_, members] : data.member_completions_by_uri) {
+            data.member_visibility_count += members.size();
+        }
+        data.callable_visibility_count = 0;
+        for (const auto& [_, calls] : data.signature_calls_by_uri) {
+            data.callable_visibility_count += calls.size();
+        }
+    }
+    {
+        PRISTINE_DEBUG_TRACE_SCOPE_SIMPLE("astIndex.indexInstanceMemberCompletions");
+        indexInstanceMemberCompletions(data, *data.source_manager);
+        data.member_visibility_count = 0;
+        for (const auto& [_, members] : data.member_completions_by_uri) {
+            data.member_visibility_count += members.size();
+        }
     }
     {
         PRISTINE_DEBUG_TRACE_SCOPE_SIMPLE("astIndex.updateModuleInstanceTargets");
@@ -3635,6 +4073,17 @@ AstIndexView buildAstIndexView(const SnapshotData* data, std::uint64_t generatio
     view.assignment_edges_by_uri = data->assignment_edges_by_uri;
     view.type_references_by_uri = data->type_references_by_uri;
     view.member_completions_by_uri = data->member_completions_by_uri;
+    view.member_completions_by_qualifier_by_uri = data->member_completions_by_qualifier_by_uri;
+    view.member_completions_by_stable_id = data->member_completions_by_stable_id;
+    view.scope_visibility_by_uri = data->scope_visibility_by_uri;
+    view.package_visibility_by_name = data->package_visibility_by_name;
+    view.workspace_visibility = data->workspace_visibility;
+    view.visible_macros_by_uri = data->visible_macros_by_uri;
+    view.scope_visibility_count = data->scope_visibility_count;
+    view.package_visibility_count = data->package_visibility_count;
+    view.member_visibility_count = data->member_visibility_count;
+    view.callable_visibility_count = data->callable_visibility_count;
+    view.scope_visibility_build_micros = data->scope_visibility_build_micros;
     view.include_directives_by_uri = data->include_directives_by_uri;
     view.macros_by_uri = data->macros_by_uri;
     view.package_imports_by_uri = data->package_imports_by_uri;

@@ -10,7 +10,7 @@
     "kind": "completionResolve",
     "uri": "file:///golden/semantic/resolve-package.sv",
     "line": 4,
-    "character": 31,
+    "character": 32,
     "prefix": "WID",
     "label": "WIDTH"
   },

@@ -105,6 +105,11 @@ def main() -> int:
     assert "backgroundDiagnosticsSkippedReason" in summary
     assert summary["outlineMicros"] >= 0
     assert summary["hoverMicros"] >= 0
+    assert summary["completionColdMicros"] >= 0
+    assert summary["completionWarmMicros"] >= 0
+    assert summary["completionResolveMicros"] >= 0
+    assert summary["signatureHelpMicros"] >= 0
+    assert summary["inlayHintMicros"] >= 0
     assert summary["moduleHierarchyColdMicros"] >= 0
     assert summary["schematicMicros"] >= 0
     assert summary["hierarchyRootCount"] >= 1
@@ -120,6 +125,9 @@ def main() -> int:
     trace_lines = trace_file.read_text(encoding="utf-8").splitlines()
     assert any('"method":"systemverilog/outline"' in line for line in trace_lines)
     assert any('"method":"textDocument/hover"' in line for line in trace_lines)
+    assert any('"method":"textDocument/completion"' in line for line in trace_lines)
+    assert any('"method":"textDocument/signatureHelp"' in line for line in trace_lines)
+    assert any('"method":"textDocument/inlayHint"' in line for line in trace_lines)
     assert any('"method":"systemverilog/moduleHierarchy"' in line for line in trace_lines)
     assert any('"method":"systemverilog/schematic"' in line for line in trace_lines)
     assert not any('"method":"workspace/symbol"' in line for line in trace_lines)

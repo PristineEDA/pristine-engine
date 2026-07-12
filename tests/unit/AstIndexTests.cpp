@@ -1132,5 +1132,186 @@ TEST_CASE("AstIndex narrows package-qualified type references to the AST type to
     CHECK(locations.front().range.end_character == 28);
 }
 
+TEST_CASE("AstIndex builds package re-export and wildcard scope visibility facts",
+          "[analysis][semantic][ast-index][visibility][package-export]") {
+    SnapshotBuildInput input{
+        .generation = 61,
+        .documents = {
+            {"file:///workspace/defs.sv",
+             SemanticEngineDocument{.uri = "file:///workspace/defs.sv",
+                                    .text = "package defs; parameter int WIDTH = 8; typedef logic [7:0] word_t; endpackage\n"}},
+            {"file:///workspace/api.sv",
+             SemanticEngineDocument{.uri = "file:///workspace/api.sv",
+                                    .text = "package api; import defs::*; export defs::*; endpackage\n"}},
+            {"file:///workspace/top.sv",
+             SemanticEngineDocument{.uri = "file:///workspace/top.sv",
+                                    .text = "module top; import api::*; localparam int W = WIDTH; endmodule\n",
+                                    .is_open = true}}}};
+
+    auto output = SnapshotBuilder{}.build(std::move(input));
+    REQUIRE(output.data != nullptr);
+    const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
+    const auto api = view.package_visibility_by_name.find("api");
+    REQUIRE(api != view.package_visibility_by_name.end());
+    CHECK(std::find(api->second.exported_packages.begin(),
+                    api->second.exported_packages.end(),
+                    "defs") != api->second.exported_packages.end());
+    CHECK(std::any_of(api->second.candidates.begin(),
+                      api->second.candidates.end(),
+                      [](const auto& candidate) { return candidate.identity.name == "WIDTH"; }));
+    CHECK(std::any_of(api->second.candidates.begin(),
+                      api->second.candidates.end(),
+                      [](const auto& candidate) { return candidate.identity.name == "word_t"; }));
+    CHECK(output.affected_dependencies.dependentUris(
+              "file:///workspace/defs.sv",
+              AffectedDependencyEdgeKind::SemanticExport) ==
+          std::vector<std::string>{"file:///workspace/api.sv"});
+}
+
+TEST_CASE("AstIndex indexes nested typed member qualifiers without global candidates",
+          "[analysis][semantic][ast-index][visibility][member][nested]") {
+    SnapshotBuildInput input{
+        .generation = 62,
+        .documents = {{"file:///workspace/nested.sv",
+                       SemanticEngineDocument{
+                           .uri = "file:///workspace/nested.sv",
+                           .text = "typedef struct packed { logic ready; logic error; } master_t;\n"
+                                   "typedef struct packed { master_t master; } bus_t;\n"
+                                   "module top; bus_t bus; initial bus.master.ready = 1'b1; endmodule\n",
+                           .is_open = true}}}};
+
+    auto output = SnapshotBuilder{}.build(std::move(input));
+    REQUIRE(output.data != nullptr);
+    const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
+    const auto members = view.member_completions_by_uri.find("file:///workspace/nested.sv");
+    REQUIRE(members != view.member_completions_by_uri.end());
+    CHECK(std::any_of(members->second.begin(), members->second.end(), [](const auto& member) {
+        return member.qualifier == "bus.master" && member.identity.name == "ready";
+    }));
+    CHECK(std::any_of(members->second.begin(), members->second.end(), [](const auto& member) {
+        return member.qualifier == "bus.master" && member.identity.name == "error";
+    }));
+}
+
+TEST_CASE("AstIndex indexes ordinary module instance members for hierarchical completion",
+          "[analysis][semantic][ast-index][visibility][member][instance]") {
+    SnapshotBuildInput input{
+        .generation = 63,
+        .documents = {{"file:///workspace/instance.sv",
+                       SemanticEngineDocument{
+                           .uri = "file:///workspace/instance.sv",
+                           .text = "module child(input logic data_i, output logic data_o); logic state; endmodule\n"
+                                   "module top; child u_child(); endmodule\n",
+                           .is_open = true}}}};
+
+    auto output = SnapshotBuilder{}.build(std::move(input));
+    REQUIRE(output.data != nullptr);
+    const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
+    const auto members = view.member_completions_by_uri.find("file:///workspace/instance.sv");
+    REQUIRE(members != view.member_completions_by_uri.end());
+    for (const auto name : {"data_i", "data_o", "state"}) {
+        CAPTURE(name);
+        CHECK(std::any_of(members->second.begin(), members->second.end(), [&](const auto& member) {
+            return member.qualifier == "u_child" && member.identity.name == name;
+        }));
+    }
+}
+
+TEST_CASE("SnapshotBuilder limits macro visibility to document include closure",
+          "[analysis][semantic][ast-index][visibility][macro]") {
+    SnapshotBuildInput input{
+        .generation = 64,
+        .documents = {
+            {"file:///workspace/included.svh",
+             SemanticEngineDocument{.uri = "file:///workspace/included.svh",
+                                    .text = "`define INCLUDED_FLAG 1\n"}},
+            {"file:///workspace/unrelated.svh",
+             SemanticEngineDocument{.uri = "file:///workspace/unrelated.svh",
+                                    .text = "`define UNRELATED_FLAG 1\n"}},
+            {"file:///workspace/top.sv",
+             SemanticEngineDocument{.uri = "file:///workspace/top.sv",
+                                    .text = "`include \"included.svh\"\nmodule top; endmodule\n",
+                                    .is_open = true}}}};
+
+    auto output = SnapshotBuilder{}.build(std::move(input));
+    REQUIRE(output.data != nullptr);
+    const auto macros = output.data->visible_macros_by_uri.find("file:///workspace/top.sv");
+    REQUIRE(macros != output.data->visible_macros_by_uri.end());
+    CHECK(std::any_of(macros->second.begin(), macros->second.end(), [](const auto& macro) {
+        return macro.definition.name == "INCLUDED_FLAG";
+    }));
+    CHECK(std::none_of(macros->second.begin(), macros->second.end(), [](const auto& macro) {
+        return macro.definition.name == "UNRELATED_FLAG";
+    }));
+}
+
+TEST_CASE("AstIndex scope visibility metrics and ordering are deterministic",
+          "[analysis][semantic][ast-index][visibility][deterministic]") {
+    const auto build = [](std::uint64_t generation) {
+        SnapshotBuildInput input{
+            .generation = generation,
+            .documents = {{"file:///workspace/order.sv",
+                           SemanticEngineDocument{.uri = "file:///workspace/order.sv",
+                                                  .text = "package defs; parameter int B = 2; parameter int A = 1; endpackage\n"
+                                                          "module top; import defs::*; logic z; logic a; endmodule\n",
+                                                  .is_open = true}}}};
+        return SnapshotBuilder{}.build(std::move(input));
+    };
+    auto first = build(65);
+    auto second = build(66);
+    REQUIRE(first.data != nullptr);
+    REQUIRE(second.data != nullptr);
+    const auto first_view = buildAstIndexView(first.data.get(), first.snapshot.generation);
+    const auto second_view = buildAstIndexView(second.data.get(), second.snapshot.generation);
+    REQUIRE(first_view.package_visibility_by_name.contains("defs"));
+    REQUIRE(second_view.package_visibility_by_name.contains("defs"));
+    const auto names = [](const auto& candidates) {
+        std::vector<std::string> result;
+        for (const auto& candidate : candidates) {
+            result.push_back(candidate.identity.name);
+        }
+        return result;
+    };
+    CHECK(names(first_view.package_visibility_by_name.at("defs").candidates) ==
+          names(second_view.package_visibility_by_name.at("defs").candidates));
+    CHECK(first_view.scope_visibility_count > 0);
+    CHECK(first_view.package_visibility_count == 1);
+    CHECK(first_view.scope_visibility_build_micros >= 0);
+}
+
+TEST_CASE("AstIndex indexes class method calls as callable visibility facts",
+          "[analysis][semantic][ast-index][visibility][callable][class]") {
+    SnapshotBuildInput input{
+        .generation = 66,
+        .documents = {{"file:///workspace/class-call.sv",
+                       SemanticEngineDocument{
+                           .uri = "file:///workspace/class-call.sv",
+                           .text = "class packet;\n"
+                                   "  function int sum(input int lhs, input int rhs); return lhs + rhs; endfunction\n"
+                                   "endclass\nmodule top;\n  packet pkt;\n"
+                                   "  initial begin\n"
+                                   "    int value;\n"
+                                   "    pkt = new;\n"
+                                   "    value = pkt.sum(1, 2);\n"
+                                   "  end\nendmodule\n",
+                           .is_open = true}}}};
+
+    auto output = SnapshotBuilder{}.build(std::move(input));
+    REQUIRE(output.data != nullptr);
+    const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
+    const auto calls = view.signature_calls_by_uri.find("file:///workspace/class-call.sv");
+    REQUIRE(calls != view.signature_calls_by_uri.end());
+    REQUIRE(calls->second.size() == 1);
+    const auto& call = calls->second.front();
+    CHECK(call.name == "sum");
+    CHECK(call.parameters.size() == 2);
+    CHECK(call.range.start_line == 8);
+    CHECK(call.range.start_character == 12);
+    CHECK(call.range.end_line == 8);
+    CHECK(call.range.end_character == 25);
+    CHECK(call.selection_range.start_character == 16);
+    CHECK(call.selection_range.end_character == 19);
+}
+
 } // namespace
 } // namespace pristine::analysis::semantic

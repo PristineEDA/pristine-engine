@@ -3,13 +3,13 @@
   "sources": [
     {
       "uri": "file:///golden/semantic/completion-array-valid.sv",
-      "text": "module top;\n  logic lanes;\n  logic valid_data;\n  logic valid_mask;\n  logic ready_data;\n  initial begin\n    lanes[1].valid_\n  end\nendmodule\n"
+      "text": "typedef struct packed { logic valid_data; logic valid_mask; logic ready_data; } lane_t;\nmodule top;\n  lane_t lanes[2];\n  initial begin\n    lanes[1].valid_\n  end\nendmodule\n"
     }
   ],
   "request": {
     "kind": "completion",
     "uri": "file:///golden/semantic/completion-array-valid.sv",
-    "line": 6,
+    "line": 4,
     "character": 19,
     "prefix": "valid_"
   },

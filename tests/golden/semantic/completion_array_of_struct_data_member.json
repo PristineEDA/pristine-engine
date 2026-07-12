@@ -3,13 +3,13 @@
   "sources": [
     {
       "uri": "file:///golden/semantic/completion-array-data-member.sv",
-      "text": "module top;\n  logic packets;\n  logic addr;\n  logic data;\n  logic ready;\n  initial begin\n    packets[3].da\n  end\nendmodule\n"
+      "text": "typedef struct packed { logic addr; logic data; logic ready; } packet_t;\nmodule top;\n  packet_t packets[4];\n  initial begin\n    packets[3].da\n  end\nendmodule\n"
     }
   ],
   "request": {
     "kind": "completion",
     "uri": "file:///golden/semantic/completion-array-data-member.sv",
-    "line": 6,
+    "line": 4,
     "character": 18,
     "prefix": "da"
   },

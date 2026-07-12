@@ -168,6 +168,31 @@ endmodule
                                               "file:///workspace/top.sv"});
 }
 
+TEST_CASE("WorkspaceDiscoveryIndex parallel shallow scan is deterministic",
+          "[analysis][semantic][workspace-discovery][parallel][deterministic]") {
+    std::vector<semantic::DiscoveryDocumentInput> documents;
+    for (int index = 0; index < 64; ++index) {
+        documents.push_back(semantic::DiscoveryDocumentInput{
+            .uri = "file:///workspace/unit_" + std::to_string(index) + ".sv",
+            .text = "module unit_" + std::to_string(index) + "; endmodule\n"});
+    }
+    auto reversed = documents;
+    std::reverse(reversed.begin(), reversed.end());
+
+    const auto first = semantic::buildWorkspaceDiscoveryIndex(1, std::move(documents));
+    const auto second = semantic::buildWorkspaceDiscoveryIndex(2, std::move(reversed));
+    REQUIRE(first.files.size() == 64);
+    REQUIRE(second.files.size() == first.files.size());
+    REQUIRE(second.declarations.size() == first.declarations.size());
+    for (size_t index = 0; index < first.files.size(); ++index) {
+        CHECK(second.files[index].uri == first.files[index].uri);
+    }
+    for (size_t index = 0; index < first.declarations.size(); ++index) {
+        CHECK(second.declarations[index].name == first.declarations[index].name);
+        CHECK(second.declarations[index].location.uri == first.declarations[index].location.uri);
+    }
+}
+
 TEST_CASE("SemanticEngine maintains a lightweight workspace discovery snapshot",
           "[analysis][semantic-engine][discovery]") {
     SemanticEngine engine;

@@ -9,7 +9,7 @@
   "request": {
     "kind": "completion",
     "uri": "file:///golden/semantic/completion-interface-instance.sv",
-    "line": 8,
+    "line": 9,
     "character": 8,
     "prefix": ""
   },

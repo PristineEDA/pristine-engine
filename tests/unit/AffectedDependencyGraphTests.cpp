@@ -112,3 +112,41 @@ TEST_CASE("AffectedDependencyGraph tracks config edges without changing include 
     CHECK(stats.config_edges == 1);
     CHECK(stats.total_edges == 2);
 }
+
+TEST_CASE("AffectedDependencyGraph traverses semantic package export chains",
+          "[analysis][semantic][affected][package-export]") {
+    AffectedDependencyGraph graph;
+    graph.addSemanticDependency(AffectedDependencyEdgeKind::SemanticExport,
+                                "file:///workspace/defs.sv",
+                                "file:///workspace/api.sv");
+    graph.addSemanticDependency(AffectedDependencyEdgeKind::SemanticImport,
+                                "file:///workspace/api.sv",
+                                "file:///workspace/top.sv");
+
+    CHECK(graph.dependentUris("file:///workspace/defs.sv",
+                              AffectedDependencyEdgeKind::SemanticExport) ==
+          std::vector<std::string>{"file:///workspace/api.sv"});
+    CHECK(graph.affectedDocumentUris("file:///workspace/defs.sv") ==
+          std::vector<std::string>{"file:///workspace/api.sv",
+                                   "file:///workspace/defs.sv",
+                                   "file:///workspace/top.sv"});
+    const auto stats = graph.stats();
+    CHECK(stats.semantic_export_edges == 1);
+    CHECK(stats.semantic_import_edges == 1);
+    CHECK(stats.total_edges == 2);
+}
+
+TEST_CASE("AffectedDependencyGraph terminates deterministic package export cycles",
+          "[analysis][semantic][affected][package-export][cycle]") {
+    AffectedDependencyGraph graph;
+    graph.addSemanticDependency(AffectedDependencyEdgeKind::SemanticExport,
+                                "file:///workspace/a.sv",
+                                "file:///workspace/b.sv");
+    graph.addSemanticDependency(AffectedDependencyEdgeKind::SemanticExport,
+                                "file:///workspace/b.sv",
+                                "file:///workspace/a.sv");
+
+    CHECK(graph.affectedDocumentUris("file:///workspace/a.sv") ==
+          std::vector<std::string>{"file:///workspace/a.sv", "file:///workspace/b.sv"});
+    CHECK(graph.stats().semantic_export_edges == 2);
+}

@@ -3,13 +3,13 @@
   "sources": [
     {
       "uri": "file:///golden/semantic/completion-struct-member.sv",
-      "text": "module top;\n  logic packet;\n  logic valid;\n  logic ready;\n  initial begin\n    packet.val\n  end\nendmodule\n"
+      "text": "typedef struct packed { logic valid; logic ready; } packet_t;\nmodule top;\n  packet_t packet;\n  initial begin\n    packet.val\n  end\nendmodule\n"
     }
   ],
   "request": {
     "kind": "completion",
     "uri": "file:///golden/semantic/completion-struct-member.sv",
-    "line": 5,
+    "line": 4,
     "character": 14,
     "prefix": "val"
   },
