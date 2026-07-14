@@ -1,0 +1,1 @@
+{"name":"indexed object macro hover","sources":[{"uri":"file:///golden/semantic/macro-object-hover.sv","text":"`define FLAG 1\nmodule top; int value = `FLAG; endmodule\n"}],"request":{"kind":"hover","uri":"file:///golden/semantic/macro-object-hover.sv","line":1,"character":27},"expected":{"contentsContains":["FLAG","Expansion: `1`"]}}

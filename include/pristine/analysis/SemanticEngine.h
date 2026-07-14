@@ -147,6 +147,9 @@ struct SemanticInlayHintResult {
     std::uint64_t generation = 0;
     std::vector<SemanticInlayHint> hints;
     std::vector<std::string> messages;
+    size_t scanned_invocation_count = 0;
+    size_t scanned_macro_definition_count = 0;
+    size_t scanned_global_symbol_count = 0;
     bool unresolved = false;
     bool truncated = false;
 };
@@ -157,6 +160,9 @@ struct SemanticSignatureHelpResult {
     std::vector<std::string> parameters;
     int active_parameter = 0;
     std::vector<std::string> messages;
+    size_t scanned_invocation_count = 0;
+    size_t scanned_macro_definition_count = 0;
+    size_t scanned_global_symbol_count = 0;
     bool unresolved = false;
 };
 
@@ -440,6 +446,10 @@ struct SemanticQueryCacheStats {
     std::uint64_t misses = 0;
     std::uint64_t stores = 0;
     std::uint64_t evictions = 0;
+    std::uint64_t signature_scanned_invocations = 0;
+    std::uint64_t inlay_scanned_invocations = 0;
+    std::uint64_t macro_scanned_visible_definitions = 0;
+    std::uint64_t scanned_global_symbols = 0;
     size_t diagnostics_entries = 0;
     size_t workspace_symbols_entries = 0;
     size_t references_entries = 0;

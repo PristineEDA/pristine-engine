@@ -697,6 +697,10 @@ void appendQueryCacheTelemetry(jsonrpc::Json& result,
     result["queryCacheMisses"] = stats.misses;
     result["queryCacheStores"] = stats.stores;
     result["queryCacheEvictions"] = stats.evictions;
+    result["signatureScannedInvocations"] = stats.signature_scanned_invocations;
+    result["inlayScannedInvocations"] = stats.inlay_scanned_invocations;
+    result["macroScannedVisibleDefinitions"] = stats.macro_scanned_visible_definitions;
+    result["scannedGlobalSymbols"] = stats.scanned_global_symbols;
     result["queryCacheEntries"] = stats.total_entries;
     result["queryCacheDiagnosticsEntries"] = stats.diagnostics_entries;
     result["queryCacheWorkspaceSymbolEntries"] = stats.workspace_symbols_entries;

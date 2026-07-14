@@ -12,6 +12,8 @@ enum class AffectedDependencyEdgeKind {
     Include,
     SemanticImport,
     SemanticExport,
+    CallableType,
+    MacroInclude,
     ModuleInstance,
     Config,
 };
@@ -23,6 +25,8 @@ public:
         size_t include_edges = 0;
         size_t semantic_import_edges = 0;
         size_t semantic_export_edges = 0;
+        size_t callable_type_edges = 0;
+        size_t macro_include_edges = 0;
         size_t module_instance_edges = 0;
         size_t config_edges = 0;
         size_t total_edges = 0;
@@ -55,6 +59,8 @@ private:
     std::unordered_map<std::string, std::vector<std::string>> reverse_includes_;
     std::unordered_map<std::string, std::vector<std::string>> reverse_semantic_import_dependencies_;
     std::unordered_map<std::string, std::vector<std::string>> reverse_semantic_export_dependencies_;
+    std::unordered_map<std::string, std::vector<std::string>> reverse_callable_type_dependencies_;
+    std::unordered_map<std::string, std::vector<std::string>> reverse_macro_include_dependencies_;
     std::unordered_map<std::string, std::vector<std::string>> reverse_module_instance_dependencies_;
     std::unordered_map<std::string, std::vector<std::string>> reverse_config_dependencies_;
 };

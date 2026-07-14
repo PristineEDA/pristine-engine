@@ -150,3 +150,76 @@ TEST_CASE("AffectedDependencyGraph terminates deterministic package export cycle
           std::vector<std::string>{"file:///workspace/a.sv", "file:///workspace/b.sv"});
     CHECK(graph.stats().semantic_export_edges == 2);
 }
+
+TEST_CASE("AffectedDependencyGraph traverses callable type dependencies",
+          "[analysis][semantic][affected][callable]") {
+    AffectedDependencyGraph graph;
+    graph.addSemanticDependency(AffectedDependencyEdgeKind::CallableType,
+                                "file:///workspace/api.sv",
+                                "file:///workspace/top.sv");
+    graph.addSemanticDependency(AffectedDependencyEdgeKind::ModuleInstance,
+                                "file:///workspace/top.sv",
+                                "file:///workspace/tb.sv");
+
+    CHECK(graph.dependentUris("file:///workspace/api.sv",
+                              AffectedDependencyEdgeKind::CallableType) ==
+          std::vector<std::string>{"file:///workspace/top.sv"});
+    CHECK(graph.affectedDocumentUris("file:///workspace/api.sv") ==
+          std::vector<std::string>{"file:///workspace/api.sv",
+                                   "file:///workspace/tb.sv",
+                                   "file:///workspace/top.sv"});
+    CHECK(graph.stats().callable_type_edges == 1);
+}
+
+TEST_CASE("AffectedDependencyGraph tracks macro include dependencies separately",
+          "[analysis][semantic][affected][macro]") {
+    AffectedDependencyGraph graph;
+    graph.setIncludedUris("file:///workspace/top.sv", {"file:///workspace/defs.svh"});
+    graph.addSemanticDependency(AffectedDependencyEdgeKind::MacroInclude,
+                                "file:///workspace/defs.svh",
+                                "file:///workspace/top.sv");
+
+    CHECK(graph.includingUris("file:///workspace/defs.svh") ==
+          std::vector<std::string>{"file:///workspace/top.sv"});
+    CHECK(graph.dependentUris("file:///workspace/defs.svh",
+                              AffectedDependencyEdgeKind::MacroInclude) ==
+          std::vector<std::string>{"file:///workspace/top.sv"});
+    const auto stats = graph.stats();
+    CHECK(stats.include_edges == 1);
+    CHECK(stats.macro_include_edges == 1);
+    CHECK(stats.total_edges == 2);
+}
+
+TEST_CASE("AffectedDependencyGraph removes callable and macro edges with a document",
+          "[analysis][semantic][affected][remove]") {
+    AffectedDependencyGraph graph;
+    graph.addSemanticDependency(AffectedDependencyEdgeKind::CallableType,
+                                "file:///workspace/api.sv",
+                                "file:///workspace/top.sv");
+    graph.addSemanticDependency(AffectedDependencyEdgeKind::MacroInclude,
+                                "file:///workspace/defs.svh",
+                                "file:///workspace/top.sv");
+    graph.removeDocument("file:///workspace/top.sv");
+
+    CHECK(graph.dependentUris("file:///workspace/api.sv",
+                              AffectedDependencyEdgeKind::CallableType).empty());
+    CHECK(graph.dependentUris("file:///workspace/defs.svh",
+                              AffectedDependencyEdgeKind::MacroInclude).empty());
+    CHECK(graph.stats().total_edges == 0);
+}
+
+TEST_CASE("AffectedDependencyGraph edge dump orders new categories deterministically",
+          "[analysis][semantic][affected][deterministic]") {
+    AffectedDependencyGraph graph;
+    graph.addSemanticDependency(AffectedDependencyEdgeKind::MacroInclude, "z", "b");
+    graph.addSemanticDependency(AffectedDependencyEdgeKind::CallableType, "z", "a");
+    graph.addSemanticDependency(AffectedDependencyEdgeKind::CallableType, "a", "z");
+
+    const auto edges = graph.edges();
+    REQUIRE(edges.size() == 3);
+    CHECK(edges[0].kind == AffectedDependencyEdgeKind::CallableType);
+    CHECK(edges[0].dependency_uri == "a");
+    CHECK(edges[1].kind == AffectedDependencyEdgeKind::CallableType);
+    CHECK(edges[1].dependency_uri == "z");
+    CHECK(edges[2].kind == AffectedDependencyEdgeKind::MacroInclude);
+}

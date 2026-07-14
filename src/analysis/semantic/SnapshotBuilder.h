@@ -5,6 +5,7 @@
 #include "pristine/analysis/SemanticEngine.h"
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -81,6 +82,13 @@ struct SnapshotVisibleMacro {
     MacroDefinition definition;
     std::string source_uri;
     ParseRange available_after;
+    std::optional<ParseRange> unavailable_after;
+};
+
+struct SnapshotMacroUndef {
+    std::string name;
+    std::string source_uri;
+    ParseRange range;
 };
 
 struct SnapshotModuleInstance {
@@ -172,10 +180,12 @@ struct SnapshotData {
     std::unordered_map<std::string, std::vector<SnapshotTypeReference>> type_references_by_uri;
     std::unordered_map<std::string, std::vector<IncludeDirective>> include_directives_by_uri;
     std::unordered_map<std::string, std::vector<SnapshotModuleInstance>> module_instances_by_uri;
-    std::unordered_map<std::string, std::vector<SignatureInlayCall>> signature_calls_by_uri;
+    std::unordered_map<std::string, std::vector<CallableInvocationFact>> callable_invocations_by_uri;
+    std::unordered_map<std::string, std::vector<MacroInvocationFact>> macro_invocations_by_uri;
     std::unordered_map<std::string, std::vector<SignatureInlaySymbol>> inlay_symbols_by_uri;
     std::unordered_map<std::string, std::vector<ParseRange>> selection_ranges_by_uri;
     std::unordered_map<std::string, std::vector<MacroDefinition>> macros_by_uri;
+    std::unordered_map<std::string, std::vector<SnapshotMacroUndef>> macro_undefs_by_uri;
     std::unordered_map<std::string, std::vector<PackageImport>> package_imports_by_uri;
 };
 

@@ -1,14 +1,8 @@
 #include "SignatureInlayProvider.h"
 
-#include "CompletionProvider.h"
 #include "pristine/analysis/SourceUtil.h"
-#include "pristine/text/Utf.h"
-
+#include "CompletionProvider.h"
 #include <algorithm>
-#include <cctype>
-#include <optional>
-#include <stdexcept>
-
 namespace pristine::analysis::semantic {
 namespace {
 
@@ -79,42 +73,41 @@ const SchematicPort* portForConnection(const ModuleDefinition& module,
     return nullptr;
 }
 
-int activeParameterAt(std::string_view text, size_t open_paren_offset, size_t position_offset) {
-    int active_parameter = 0;
-    int depth = 0;
-    for (size_t offset = open_paren_offset + 1; offset < position_offset && offset < text.size(); ++offset) {
-        const char value = text[offset];
-        if (value == '(') {
-            ++depth;
-            continue;
-        }
-        if (value == ')') {
-            if (depth == 0) {
-                break;
-            }
-            --depth;
-            continue;
-        }
-        if (value == ',' && depth == 0) {
-            ++active_parameter;
-        }
+int comparePosition(int lhs_line, int lhs_character, int rhs_line, int rhs_character) {
+    if (lhs_line != rhs_line) {
+        return lhs_line < rhs_line ? -1 : 1;
     }
-    return active_parameter;
+    if (lhs_character == rhs_character) {
+        return 0;
+    }
+    return lhs_character < rhs_character ? -1 : 1;
 }
 
-std::optional<size_t> openParenBeforePosition(std::string_view text,
-                                              size_t search_start,
-                                              size_t search_end) {
-    if (search_start >= text.size() || search_start >= search_end) {
-        return std::nullopt;
+int activeParameterAt(const std::vector<ParseRange>& argument_ranges,
+                      size_t parameter_count,
+                      int line,
+                      int character) {
+    if (parameter_count == 0) {
+        return 0;
     }
-    const auto bounded_end = std::min(search_end, text.size());
-    for (size_t offset = search_start; offset < bounded_end; ++offset) {
-        if (text[offset] == '(') {
-            return offset;
+    size_t active = 0;
+    for (const auto& argument : argument_ranges) {
+        if (comparePosition(line,
+                            character,
+                            argument.end_line,
+                            argument.end_character) <= 0) {
+            break;
         }
+        ++active;
     }
-    return std::nullopt;
+    return static_cast<int>(std::min(active, parameter_count - 1));
+}
+
+ParseRange pointAtRangeStart(const ParseRange& range) {
+    return ParseRange{.start_line = range.start_line,
+                      .start_character = range.start_character,
+                      .end_line = range.start_line,
+                      .end_character = range.start_character};
 }
 
 bool rangeIsNarrowerAtPosition(const ParseRange& candidate, const ParseRange& current) {
@@ -130,161 +123,8 @@ bool rangeIsNarrowerAtPosition(const ParseRange& candidate, const ParseRange& cu
     return candidate.end_character < current.end_character;
 }
 
-std::optional<ParseRange> pointRangeAtUtf8Offset(std::string_view text, size_t offset) {
-    if (offset > text.size()) {
-        return std::nullopt;
-    }
 
-    int line = 0;
-    size_t line_start = 0;
-    size_t current = 0;
-    while (current < offset) {
-        const char value = text[current];
-        if (value == '\n') {
-            ++line;
-            ++current;
-            line_start = current;
-            continue;
-        }
-        if (value == '\r') {
-            ++line;
-            ++current;
-            if (current < offset && text[current] == '\n') {
-                ++current;
-            }
-            line_start = current;
-            continue;
-        }
-        try {
-            const auto decoded = text::decodeNextCodePoint(text, current);
-            if (current + decoded.byte_length > offset) {
-                return std::nullopt;
-            }
-            current += decoded.byte_length;
-        }
-        catch (const std::runtime_error&) {
-            return std::nullopt;
-        }
-    }
-
-    try {
-        const auto character = static_cast<int>(
-            text::utf16UnitsForUtf8Prefix(text.substr(line_start, offset - line_start),
-                                          offset - line_start));
-        return ParseRange{.start_line = line,
-                          .start_character = character,
-                          .end_line = line,
-                          .end_character = character};
-    }
-    catch (const std::runtime_error&) {
-        return std::nullopt;
-    }
-}
-
-std::vector<ParseRange> argumentStartRanges(std::string_view text,
-                                            const SignatureInlayCall& call) {
-    std::vector<ParseRange> ranges;
-    if (call.parameters.empty()) {
-        return ranges;
-    }
-
-    const auto search_start = utf8OffsetAtUtf16Position(text,
-                                                        call.selection_range.end_line,
-                                                        call.selection_range.end_character);
-    const auto search_end = utf8OffsetAtUtf16Position(text,
-                                                      call.range.end_line,
-                                                      call.range.end_character);
-    if (!search_start.has_value() || !search_end.has_value()) {
-        return ranges;
-    }
-    const auto open_paren = openParenBeforePosition(text, *search_start, *search_end);
-    if (!open_paren.has_value()) {
-        return ranges;
-    }
-
-    size_t argument_start = *open_paren + 1;
-    int depth = 0;
-    for (size_t offset = *open_paren + 1; offset < *search_end && offset < text.size(); ++offset) {
-        const char value = text[offset];
-        if (value == '(') {
-            ++depth;
-            continue;
-        }
-        if (value == ')') {
-            if (depth == 0) {
-                break;
-            }
-            --depth;
-            continue;
-        }
-        if (value != ',' || depth != 0) {
-            continue;
-        }
-        while (argument_start < offset &&
-               std::isspace(static_cast<unsigned char>(text[argument_start])) != 0) {
-            ++argument_start;
-        }
-        if (auto range = pointRangeAtUtf8Offset(text, argument_start)) {
-            ranges.push_back(*range);
-        }
-        argument_start = offset + 1;
-    }
-
-    while (argument_start < *search_end &&
-           std::isspace(static_cast<unsigned char>(text[argument_start])) != 0) {
-        ++argument_start;
-    }
-    if (argument_start < *search_end) {
-        if (auto range = pointRangeAtUtf8Offset(text, argument_start)) {
-            ranges.push_back(*range);
-        }
-    }
-
-    if (ranges.size() > call.parameters.size()) {
-        ranges.resize(call.parameters.size());
-    }
-    return ranges;
-}
-
-std::optional<size_t> macroInvocationOpenParen(std::string_view text,
-                                               const MacroDefinition& macro,
-                                               size_t position_offset) {
-    if (!macro.function_like || macro.name.empty()) {
-        return std::nullopt;
-    }
-    const auto bounded_position = std::min(position_offset, text.size());
-    if (bounded_position == 0) {
-        return std::nullopt;
-    }
-
-    const auto invocation = std::string("`") + macro.name;
-    auto search_end = bounded_position;
-    while (search_end > 0) {
-        const auto found = text.rfind(invocation, search_end - 1);
-        if (found == std::string_view::npos) {
-            break;
-        }
-        const auto name_end = found + invocation.size();
-        if (name_end < text.size() && (std::isalnum(static_cast<unsigned char>(text[name_end])) ||
-                                       text[name_end] == '_')) {
-            search_end = found;
-            continue;
-        }
-        auto open_paren = name_end;
-        while (open_paren < text.size() &&
-               std::isspace(static_cast<unsigned char>(text[open_paren]))) {
-            ++open_paren;
-        }
-        if (open_paren < text.size() && text[open_paren] == '(' &&
-            open_paren < bounded_position) {
-            return open_paren;
-        }
-        search_end = found;
-    }
-    return std::nullopt;
-}
-
-std::string callSignatureLabel(const SignatureInlayCall& call) {
+std::string callSignatureLabel(const CallableInvocationFact& call) {
     std::string label;
     if (!call.kind.empty()) {
         label += call.kind;
@@ -318,95 +158,57 @@ SemanticSignatureHelpResult signatureHelpAt(const SignatureInlayContext& context
         result.messages.push_back("AST-backed SemanticEngine snapshot is unavailable");
         return result;
     }
-    if (context.document_text == nullptr) {
-        result.unresolved = true;
-        result.messages.push_back("document is not indexed in the AST snapshot");
-        return result;
-    }
 
-    const auto position_offset = utf8OffsetAtUtf16Position(*context.document_text, line, character);
-    if (!position_offset.has_value()) {
-        result.unresolved = true;
-        result.messages.push_back("signature help position could not be mapped to a source offset");
-        return result;
-    }
-
-    for (const auto& macro : context.macros) {
-        const auto open_paren = macroInvocationOpenParen(*context.document_text,
-                                                         macro,
-                                                         *position_offset);
-        if (!open_paren.has_value()) {
+    const MacroInvocationFact* matched_macro = nullptr;
+    for (const auto& macro : context.macro_invocations) {
+        ++result.scanned_macro_definition_count;
+        if (!macro.function_like || !parseRangeContainsPosition(macro.range, line, character)) {
             continue;
         }
-        result.label = macroSignatureLabel(macro);
-        result.parameters = macro.parameters;
-        const auto parameter_count = result.parameters.size();
-        result.active_parameter = parameter_count == 0
-                                      ? 0
-                                      : std::min(activeParameterAt(*context.document_text,
-                                                                   *open_paren,
-                                                                   *position_offset),
-                                                 static_cast<int>(parameter_count) - 1);
+        if (matched_macro == nullptr ||
+            rangeIsNarrowerAtPosition(macro.range, matched_macro->range)) {
+            matched_macro = &macro;
+        }
+    }
+    if (matched_macro != nullptr) {
+        result.label = macroSignatureLabel(matched_macro->definition);
+        result.parameters = matched_macro->definition.parameters;
+        result.active_parameter = activeParameterAt(matched_macro->argument_ranges,
+                                                    result.parameters.size(),
+                                                    line,
+                                                    character);
         return result;
     }
 
-    const SignatureInlayCall* matched_call = nullptr;
-    std::optional<size_t> matched_open_paren;
-    for (const auto& call : context.calls) {
+    const CallableInvocationFact* matched_call = nullptr;
+    for (const auto& call : context.callable_invocations) {
+        ++result.scanned_invocation_count;
         if (!parseRangeContainsPosition(call.range, line, character)) {
-            continue;
-        }
-        const auto search_start = utf8OffsetAtUtf16Position(*context.document_text,
-                                                            call.selection_range.end_line,
-                                                            call.selection_range.end_character);
-        const auto search_end = utf8OffsetAtUtf16Position(*context.document_text,
-                                                          call.range.end_line,
-                                                          call.range.end_character);
-        if (!search_start.has_value() || !search_end.has_value()) {
-            continue;
-        }
-        const auto open_paren = openParenBeforePosition(*context.document_text,
-                                                        *search_start,
-                                                        std::min(*position_offset, *search_end));
-        if (!open_paren.has_value()) {
             continue;
         }
         if (matched_call == nullptr ||
             rangeIsNarrowerAtPosition(call.range, matched_call->range)) {
             matched_call = &call;
-            matched_open_paren = open_paren;
         }
     }
-    if (matched_call != nullptr && matched_open_paren.has_value()) {
+    if (matched_call != nullptr) {
+        if (!matched_call->resolved) {
+            result.unresolved = true;
+            result.messages.push_back("callable target is unresolved in the AST snapshot");
+            return result;
+        }
         result.label = callSignatureLabel(*matched_call);
         result.parameters = matched_call->parameters;
-        const auto parameter_count = result.parameters.size();
-        result.active_parameter = parameter_count == 0
-                                      ? 0
-                                      : std::min(activeParameterAt(*context.document_text,
-                                                                   *matched_open_paren,
-                                                                   *position_offset),
-                                                 static_cast<int>(parameter_count) - 1);
+        result.active_parameter = activeParameterAt(matched_call->argument_ranges,
+                                                    result.parameters.size(),
+                                                    line,
+                                                    character);
         return result;
     }
 
     for (const auto& instance : context.module_instances) {
+        ++result.scanned_invocation_count;
         if (!parseRangeContainsPosition(instance.range, line, character)) {
-            continue;
-        }
-        const auto search_start = utf8OffsetAtUtf16Position(*context.document_text,
-                                                            instance.selection_range.end_line,
-                                                            instance.selection_range.end_character);
-        const auto search_end = utf8OffsetAtUtf16Position(*context.document_text,
-                                                          instance.range.end_line,
-                                                          instance.range.end_character);
-        if (!search_start.has_value() || !search_end.has_value()) {
-            continue;
-        }
-        const auto open_paren = openParenBeforePosition(*context.document_text,
-                                                        *search_start,
-                                                        std::min(*position_offset, *search_end));
-        if (!open_paren.has_value()) {
             continue;
         }
         if (context.modules_by_name == nullptr) {
@@ -430,13 +232,13 @@ SemanticSignatureHelpResult signatureHelpAt(const SignatureInlayContext& context
                 result.parameters.push_back(portSignatureLabel(port));
             }
         }
-        const auto parameter_count = result.parameters.size();
-        result.active_parameter = parameter_count == 0
-                                      ? 0
-                                      : std::min(activeParameterAt(*context.document_text,
-                                                                   *open_paren,
-                                                                   *position_offset),
-                                                 static_cast<int>(parameter_count) - 1);
+        std::vector<ParseRange> connection_ranges;
+        connection_ranges.reserve(instance.connections.size());
+        for (const auto& connection : instance.connections) {
+            connection_ranges.push_back(connection.range);
+        }
+        result.active_parameter = activeParameterAt(connection_ranges,
+                                                    result.parameters.size(), line, character);
         return result;
     }
 
@@ -482,6 +284,7 @@ SemanticInlayHintResult inlayHints(const SignatureInlayContext& context,
     }
 
     for (const auto& instance : context.module_instances) {
+        ++result.scanned_invocation_count;
         if (!rangesOverlapOrTouch(instance.selection_range, range)) {
             continue;
         }
@@ -537,37 +340,56 @@ SemanticInlayHintResult inlayHints(const SignatureInlayContext& context,
         }
     }
 
-    if (context.document_text != nullptr) {
-        for (const auto& call : context.calls) {
-            if (!rangesOverlapOrTouch(call.range, range)) {
+    for (const auto& call : context.callable_invocations) {
+        ++result.scanned_invocation_count;
+        if (!call.resolved || !rangesOverlapOrTouch(call.range, range)) {
+            continue;
+        }
+        for (size_t index = 0;
+             index < call.argument_ranges.size() && index < call.parameters.size();
+             ++index) {
+            if (!rangesOverlapOrTouch(call.argument_ranges[index], range)) {
                 continue;
             }
-            const auto argument_ranges = argumentStartRanges(*context.document_text, call);
-            for (size_t index = 0; index < argument_ranges.size() && index < call.parameters.size(); ++index) {
-                if (!rangesOverlapOrTouch(argument_ranges[index], range)) {
-                    continue;
-                }
-                const auto label = call.parameters[index].empty()
-                                       ? std::string{"arg"}
-                                       : call.parameters[index] + ":";
-                const auto duplicate = std::any_of(result.hints.begin(),
-                                                   result.hints.end(),
-                                                   [&](const SemanticInlayHint& hint) {
-                                                       return hint.kind == "parameter" &&
-                                                              hint.label == label &&
-                                                              sameRange(hint.location.range,
-                                                                        argument_ranges[index]);
-                                                   });
-                if (duplicate) {
-                    continue;
-                }
+            const auto label = call.parameters[index].empty()
+                                   ? std::string{"arg"}
+                                   : call.parameters[index] + ":";
+            const auto label_range = pointAtRangeStart(call.argument_ranges[index]);
+            const auto duplicate = std::any_of(result.hints.begin(),
+                                               result.hints.end(),
+                                               [&](const SemanticInlayHint& hint) {
+                                                   return hint.kind == "parameter" &&
+                                                          hint.label == label &&
+                                                          sameRange(hint.location.range, label_range);
+                                               });
+            if (!duplicate) {
                 result.hints.push_back(SemanticInlayHint{
                     .location = SemanticLocation{.uri = context.document_uri,
-                                                 .range = argument_ranges[index]},
+                                                 .range = label_range},
                     .label = label,
                     .kind = "parameter",
                     .tooltip = callSignatureLabel(call)});
             }
+        }
+    }
+
+    for (const auto& macro : context.macro_invocations) {
+        ++result.scanned_macro_definition_count;
+        if (!macro.resolved || !rangesOverlapOrTouch(macro.range, range)) {
+            continue;
+        }
+        for (size_t index = 0;
+             index < macro.argument_ranges.size() && index < macro.definition.parameters.size();
+             ++index) {
+            if (!rangesOverlapOrTouch(macro.argument_ranges[index], range)) {
+                continue;
+            }
+            result.hints.push_back(SemanticInlayHint{
+                .location = SemanticLocation{.uri = context.document_uri,
+                                             .range = pointAtRangeStart(macro.argument_ranges[index])},
+                .label = macro.definition.parameters[index] + ":",
+                .kind = "parameter",
+                .tooltip = macroSignatureLabel(macro.definition)});
         }
     }
     std::sort(result.hints.begin(), result.hints.end(), [](const auto& lhs, const auto& rhs) {

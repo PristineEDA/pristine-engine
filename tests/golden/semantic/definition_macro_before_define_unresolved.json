@@ -1,0 +1,1 @@
+{"name":"macro definition after invocation is not visible","sources":[{"uri":"file:///golden/semantic/macro-later.sv","text":"module top; int value = `LATER; endmodule\n`define LATER 1\n"}],"request":{"kind":"definition","uri":"file:///golden/semantic/macro-later.sv","line":0,"character":27},"expected":{"unresolved":true,"count":0}}

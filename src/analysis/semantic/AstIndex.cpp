@@ -19,6 +19,7 @@
 #include "slang/ast/symbols/CompilationUnitSymbols.h"
 #include "slang/ast/symbols/ParameterSymbols.h"
 #include "slang/ast/symbols/PortSymbols.h"
+#include "slang/parsing/Token.h"
 #include "slang/ast/symbols/SubroutineSymbols.h"
 #include "slang/ast/symbols/VariableSymbols.h"
 #include "slang/ast/types/AllTypes.h"
@@ -1525,6 +1526,329 @@ void indexInstanceMemberCompletions(SnapshotData& data, const slang::SourceManag
     }
 }
 
+int compareSourcePosition(int lhs_line, int lhs_character, int rhs_line, int rhs_character) {
+    if (lhs_line != rhs_line) {
+        return lhs_line < rhs_line ? -1 : 1;
+    }
+    if (lhs_character == rhs_character) {
+        return 0;
+    }
+    return lhs_character < rhs_character ? -1 : 1;
+}
+
+bool macroIdentifierStart(char value) {
+    const auto ch = static_cast<unsigned char>(value);
+    return std::isalpha(ch) != 0 || value == '_' || value == '$';
+}
+
+bool macroIdentifierContinue(char value) {
+    const auto ch = static_cast<unsigned char>(value);
+    return std::isalnum(ch) != 0 || value == '_' || value == '$';
+}
+
+std::string trimMacroArgument(std::string value) {
+    const auto first = std::find_if_not(value.begin(), value.end(), [](char ch) {
+        return std::isspace(static_cast<unsigned char>(ch)) != 0;
+    });
+    const auto last = std::find_if_not(value.rbegin(), value.rend(), [](char ch) {
+        return std::isspace(static_cast<unsigned char>(ch)) != 0;
+    }).base();
+    if (first >= last) {
+        return {};
+    }
+    return std::string(first, last);
+}
+
+std::string expandMacroInvocation(const MacroDefinition& definition,
+                                  const std::vector<std::string>& arguments) {
+    if (!definition.function_like) {
+        return definition.body;
+    }
+    if (definition.parameters.size() != arguments.size()) {
+        return {};
+    }
+
+    std::unordered_map<std::string_view, std::string_view> arguments_by_parameter;
+    for (size_t index = 0; index < definition.parameters.size(); ++index) {
+        arguments_by_parameter.emplace(definition.parameters[index], arguments[index]);
+    }
+
+    std::string expanded;
+    expanded.reserve(definition.body.size());
+    for (size_t offset = 0; offset < definition.body.size();) {
+        if (!macroIdentifierStart(definition.body[offset])) {
+            expanded.push_back(definition.body[offset++]);
+            continue;
+        }
+        size_t end = offset + 1;
+        while (end < definition.body.size() && macroIdentifierContinue(definition.body[end])) {
+            ++end;
+        }
+        const std::string_view token(definition.body.data() + offset, end - offset);
+        if (const auto argument = arguments_by_parameter.find(token);
+            argument != arguments_by_parameter.end()) {
+            expanded.append(argument->second);
+        }
+        else {
+            expanded.append(token);
+        }
+        offset = end;
+    }
+    return expanded;
+}
+
+const SnapshotVisibleMacro* visibleMacroDefinitionAt(const SnapshotData& data,
+                                                     std::string_view uri,
+                                                     std::string_view name,
+                                                     const ParseRange& invocation_range) {
+    const auto visible_it = data.visible_macros_by_uri.find(std::string(uri));
+    if (visible_it == data.visible_macros_by_uri.end()) {
+        return nullptr;
+    }
+
+    const SnapshotVisibleMacro* result = nullptr;
+    for (const auto& macro : visible_it->second) {
+        if (macro.definition.name != name ||
+            compareSourcePosition(macro.available_after.start_line,
+                                  macro.available_after.start_character,
+                                  invocation_range.start_line,
+                                  invocation_range.start_character) > 0) {
+            continue;
+        }
+        if (macro.unavailable_after.has_value() &&
+            compareSourcePosition(macro.unavailable_after->start_line,
+                                  macro.unavailable_after->start_character,
+                                  invocation_range.start_line,
+                                  invocation_range.start_character) <= 0) {
+            continue;
+        }
+        result = &macro;
+    }
+    return result;
+}
+
+std::optional<size_t> matchingMacroCloseParen(std::string_view text, size_t open_paren) {
+    int depth = 0;
+    for (size_t offset = open_paren; offset < text.size(); ++offset) {
+        if (text[offset] == '(') {
+            ++depth;
+        }
+        else if (text[offset] == ')' && --depth == 0) {
+            return offset;
+        }
+    }
+    return std::nullopt;
+}
+
+std::vector<std::string> splitMacroArguments(std::string_view text) {
+    std::vector<std::string> result;
+    int depth = 0;
+    size_t start = 0;
+    for (size_t offset = 0; offset <= text.size(); ++offset) {
+        const bool at_end = offset == text.size();
+        if (!at_end && text[offset] == '(') {
+            ++depth;
+        }
+        else if (!at_end && text[offset] == ')') {
+            --depth;
+        }
+        if (at_end || (text[offset] == ',' && depth == 0)) {
+            result.push_back(trimMacroArgument(std::string(text.substr(start, offset - start))));
+            start = offset + 1;
+        }
+    }
+    if (result.size() == 1 && result.front().empty() && text.empty()) {
+        result.clear();
+    }
+    return result;
+}
+
+std::string expandNestedMacroText(const SnapshotData& data,
+                                  std::string_view uri,
+                                  const ParseRange& invocation_range,
+                                  std::string_view text,
+                                  std::vector<std::string>& expansion_stack,
+                                  int depth) {
+    if (depth >= 16) {
+        return std::string(text);
+    }
+
+    std::string result;
+    for (size_t offset = 0; offset < text.size();) {
+        if (text[offset] != '`' || offset + 1 >= text.size() ||
+            !macroIdentifierStart(text[offset + 1])) {
+            result.push_back(text[offset++]);
+            continue;
+        }
+
+        size_t name_end = offset + 2;
+        while (name_end < text.size() && macroIdentifierContinue(text[name_end])) {
+            ++name_end;
+        }
+        const auto name = std::string(text.substr(offset + 1, name_end - offset - 1));
+        const auto* definition = visibleMacroDefinitionAt(data, uri, name, invocation_range);
+        if (definition == nullptr ||
+            std::find(expansion_stack.begin(), expansion_stack.end(), name) != expansion_stack.end()) {
+            result.append(text.substr(offset, name_end - offset));
+            offset = name_end;
+            continue;
+        }
+
+        size_t invocation_end = name_end;
+        std::vector<std::string> arguments;
+        if (definition->definition.function_like) {
+            size_t open_paren = name_end;
+            while (open_paren < text.size() &&
+                   std::isspace(static_cast<unsigned char>(text[open_paren])) != 0) {
+                ++open_paren;
+            }
+            if (open_paren >= text.size() || text[open_paren] != '(') {
+                result.append(text.substr(offset, name_end - offset));
+                offset = name_end;
+                continue;
+            }
+            const auto close_paren = matchingMacroCloseParen(text, open_paren);
+            if (!close_paren.has_value()) {
+                result.append(text.substr(offset));
+                break;
+            }
+            arguments = splitMacroArguments(text.substr(open_paren + 1,
+                                                        *close_paren - open_paren - 1));
+            invocation_end = *close_paren + 1;
+        }
+
+        auto expansion = expandMacroInvocation(definition->definition, arguments);
+        if (definition->definition.function_like && expansion.empty() &&
+            definition->definition.parameters.size() != arguments.size()) {
+            result.append(text.substr(offset, invocation_end - offset));
+            offset = invocation_end;
+            continue;
+        }
+        expansion_stack.push_back(name);
+        result += expandNestedMacroText(data,
+                                        uri,
+                                        invocation_range,
+                                        expansion,
+                                        expansion_stack,
+                                        depth + 1);
+        expansion_stack.pop_back();
+        offset = invocation_end;
+    }
+    return result;
+}
+
+void indexMacroUsage(SnapshotData& data,
+                     const slang::SourceManager& source_manager,
+                     const slang::syntax::MacroUsageSyntax& usage) {
+    const auto selection_location = locationForSourceRange(source_manager, usage.directive.range());
+    const auto invocation_location = locationForSourceRange(source_manager, usage.sourceRange());
+    if (!selection_location.has_value() || !invocation_location.has_value() ||
+        selection_location->uri.empty() || selection_location->uri != invocation_location->uri) {
+        return;
+    }
+
+    auto name = std::string(usage.directive.valueText());
+    if (!name.empty() && name.front() == '`') {
+        name.erase(name.begin());
+    }
+    if (name.empty()) {
+        return;
+    }
+
+    MacroInvocationFact fact;
+    fact.name = std::move(name);
+    fact.range = invocation_location->range;
+    fact.selection_range = selection_location->range;
+    if (usage.args != nullptr) {
+        fact.function_like = true;
+        for (const auto* argument : usage.args->args) {
+            if (argument == nullptr) {
+                continue;
+            }
+            fact.arguments.push_back(trimMacroArgument(argument->toString()));
+            if (const auto location = locationForSourceRange(source_manager, argument->sourceRange());
+                location.has_value() && location->uri == selection_location->uri) {
+                fact.argument_ranges.push_back(location->range);
+            }
+        }
+    }
+
+    if (const auto* definition = visibleMacroDefinitionAt(data,
+                                                          selection_location->uri,
+                                                          fact.name,
+                                                          fact.range)) {
+        fact.definition = definition->definition;
+        fact.definition_uri = definition->source_uri;
+        fact.resolved = !fact.definition.function_like ||
+                        fact.definition.parameters.size() == fact.arguments.size();
+        if (fact.resolved) {
+            fact.expansion_text = expandMacroInvocation(fact.definition, fact.arguments);
+            std::vector<std::string> expansion_stack{fact.name};
+            fact.expansion_text = expandNestedMacroText(data,
+                                                        selection_location->uri,
+                                                        fact.range,
+                                                        fact.expansion_text,
+                                                        expansion_stack,
+                                                        0);
+        }
+    }
+    data.macro_invocations_by_uri[selection_location->uri].push_back(std::move(fact));
+}
+
+void collectMacroUsages(SnapshotData& data,
+                        const slang::SourceManager& source_manager,
+                        const slang::syntax::SyntaxNode& node) {
+    if (node.kind == slang::syntax::SyntaxKind::MacroUsage) {
+        indexMacroUsage(data, source_manager, node.as<slang::syntax::MacroUsageSyntax>());
+    }
+    for (size_t index = 0; index < node.getChildCount(); ++index) {
+        if (const auto* child = node.childNode(index)) {
+            collectMacroUsages(data, source_manager, *child);
+            continue;
+        }
+        auto* token = const_cast<slang::syntax::SyntaxNode&>(node).childTokenPtr(index);
+        if (token == nullptr) {
+            continue;
+        }
+        for (const auto& trivia : token->trivia()) {
+            if (trivia.kind == slang::parsing::TriviaKind::Directive && trivia.syntax() != nullptr) {
+                collectMacroUsages(data, source_manager, *trivia.syntax());
+            }
+            else if (trivia.kind == slang::parsing::TriviaKind::SkippedTokens) {
+                for (const auto& skipped : trivia.getSkippedTokens()) {
+                    for (const auto& skipped_trivia : skipped.trivia()) {
+                        if (skipped_trivia.syntax() != nullptr) {
+                            collectMacroUsages(data, source_manager, *skipped_trivia.syntax());
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+void buildMacroInvocationIndex(SnapshotData& data) {
+    data.macro_invocations_by_uri.clear();
+    for (const auto& tree : data.syntax_trees) {
+        if (tree != nullptr) {
+            collectMacroUsages(data, *data.source_manager, tree->root());
+        }
+    }
+    for (auto& [_, invocations] : data.macro_invocations_by_uri) {
+        std::sort(invocations.begin(), invocations.end(), [](const auto& lhs, const auto& rhs) {
+            if (!sameRange(lhs.range, rhs.range)) {
+                return locationLess(SemanticLocation{.uri = {}, .range = lhs.range},
+                                    SemanticLocation{.uri = {}, .range = rhs.range});
+            }
+            return lhs.name < rhs.name;
+        });
+        invocations.erase(std::unique(invocations.begin(), invocations.end(), [](const auto& lhs, const auto& rhs) {
+                              return lhs.name == rhs.name && sameRange(lhs.range, rhs.range);
+                          }),
+                          invocations.end());
+    }
+}
+
 std::string argumentSignatureLabel(const slang::ast::FormalArgumentSymbol& argument) {
     std::string label = directionName(argument.direction);
     const auto type_display = normalizedTypeDisplay(argument.getType().toString());
@@ -1543,7 +1867,8 @@ std::string argumentSignatureLabel(const slang::ast::FormalArgumentSymbol& argum
     return label;
 }
 
-std::optional<SignatureInlayCall> signatureCallForSubroutine(
+std::optional<CallableInvocationFact> callableInvocationForSubroutine(
+    const SnapshotData& data,
     const slang::SourceManager& source_manager,
     const slang::ast::CallExpression& call,
     const slang::ast::SubroutineSymbol& subroutine) {
@@ -1572,7 +1897,14 @@ std::optional<SignatureInlayCall> signatureCallForSubroutine(
         return std::nullopt;
     }
 
-    SignatureInlayCall result;
+    CallableInvocationFact result;
+    if (const auto id_it = data.ids_by_symbol.find(&subroutine);
+        id_it != data.ids_by_symbol.end()) {
+        result.target_stable_id = id_it->second;
+    }
+    if (call.thisClass() != nullptr) {
+        result.receiver_type = normalizedTypeDisplay(call.thisClass()->type->toString());
+    }
     result.name = std::string(subroutine.name);
     result.kind = std::string(slang::ast::SemanticFacts::getSubroutineKindStr(subroutine.subroutineKind));
     result.return_type = normalizedTypeDisplay(subroutine.getReturnType().toString());
@@ -1588,6 +1920,15 @@ std::optional<SignatureInlayCall> signatureCallForSubroutine(
         }
         result.parameters.push_back(std::move(label));
     }
+    for (const auto* argument : call.arguments()) {
+        if (argument == nullptr) {
+            continue;
+        }
+        if (const auto location = locationForSourceRange(source_manager, argument->sourceRange);
+            location.has_value() && location->uri == call_location->uri) {
+            result.argument_ranges.push_back(location->range);
+        }
+    }
     return result;
 }
 
@@ -1601,7 +1942,7 @@ void addSignatureCall(SnapshotData& data,
     if (subroutine == nullptr || *subroutine == nullptr || (*subroutine)->name.empty()) {
         return;
     }
-    auto signature_call = signatureCallForSubroutine(source_manager, call, **subroutine);
+    auto signature_call = callableInvocationForSubroutine(data, source_manager, call, **subroutine);
     if (!signature_call.has_value()) {
         return;
     }
@@ -1611,7 +1952,7 @@ void addSignatureCall(SnapshotData& data,
     }
     data.selection_ranges_by_uri[call_location->uri].push_back(signature_call->range);
     data.selection_ranges_by_uri[call_location->uri].push_back(signature_call->selection_range);
-    data.signature_calls_by_uri[call_location->uri].push_back(std::move(*signature_call));
+    data.callable_invocations_by_uri[call_location->uri].push_back(std::move(*signature_call));
 }
 
 std::optional<ModuleDefinition> moduleDefinitionForAstBody(const slang::SourceManager& source_manager,
@@ -3831,7 +4172,7 @@ void sortSnapshotIndexes(SnapshotData& data) {
                                  }),
                      ranges.end());
     }
-    for (auto& [_, calls] : data.signature_calls_by_uri) {
+    for (auto& [_, calls] : data.callable_invocations_by_uri) {
         std::sort(calls.begin(), calls.end(), [](const auto& lhs, const auto& rhs) {
             if (lhs.range.start_line != rhs.range.start_line) {
                 return lhs.range.start_line < rhs.range.start_line;
@@ -3966,6 +4307,10 @@ void buildAstIndexes(SnapshotData& data,
         root.visit(visitor);
     }
     {
+        PRISTINE_DEBUG_TRACE_SCOPE_SIMPLE("astIndex.buildMacroInvocationIndex");
+        buildMacroInvocationIndex(data);
+    }
+    {
         PRISTINE_DEBUG_TRACE_SCOPE_SIMPLE("astIndex.insertDefinitions");
         for (const auto* definition : data.compilation->getDefinitions()) {
             if (definition != nullptr) {
@@ -3998,7 +4343,7 @@ void buildAstIndexes(SnapshotData& data,
             data.member_visibility_count += members.size();
         }
         data.callable_visibility_count = 0;
-        for (const auto& [_, calls] : data.signature_calls_by_uri) {
+        for (const auto& [_, calls] : data.callable_invocations_by_uri) {
             data.callable_visibility_count += calls.size();
         }
     }
@@ -4188,6 +4533,33 @@ std::optional<SnapshotModuleInstance> moduleInstanceAt(const SnapshotData& data,
     return best;
 }
 
+std::optional<MacroInvocationFact> macroInvocationAt(const AstIndexView& view,
+                                                     std::string_view uri,
+                                                     int line,
+                                                     int character) {
+    const auto invocations_it = view.macro_invocations_by_uri.find(std::string(uri));
+    if (invocations_it == view.macro_invocations_by_uri.end()) {
+        return std::nullopt;
+    }
+    const MacroInvocationFact* best = nullptr;
+    for (const auto& invocation : invocations_it->second) {
+        if (!containsPosition(invocation.range, line, character) &&
+            !containsPosition(invocation.selection_range, line, character)) {
+            continue;
+        }
+        if (best == nullptr || invocation.range.start_line > best->range.start_line ||
+            (invocation.range.start_line == best->range.start_line &&
+             invocation.range.start_character > best->range.start_character) ||
+            (invocation.range.start_line == best->range.start_line &&
+             invocation.range.start_character == best->range.start_character &&
+             locationLess(SemanticLocation{.uri = {}, .range = invocation.range},
+                          SemanticLocation{.uri = {}, .range = best->range}))) {
+            best = &invocation;
+        }
+    }
+    return best == nullptr ? std::nullopt : std::optional<MacroInvocationFact>(*best);
+}
+
 AstIndexView buildAstIndexView(const SnapshotData* data, std::uint64_t generation) {
     AstIndexView view;
     view.generation = generation;
@@ -4225,7 +4597,8 @@ AstIndexView buildAstIndexView(const SnapshotData* data, std::uint64_t generatio
     view.macros_by_uri = data->macros_by_uri;
     view.package_imports_by_uri = data->package_imports_by_uri;
     view.module_instances_by_uri = data->module_instances_by_uri;
-    view.signature_calls_by_uri = data->signature_calls_by_uri;
+    view.callable_invocations_by_uri = data->callable_invocations_by_uri;
+    view.macro_invocations_by_uri = data->macro_invocations_by_uri;
     view.inlay_symbols_by_uri = data->inlay_symbols_by_uri;
     view.design_graph_module_entries.reserve(view.module_signatures_by_name.size() +
                                              data->module_entries.size());
@@ -4286,6 +4659,9 @@ AstIndexView buildAstIndexView(const SnapshotData* data, std::uint64_t generatio
                     view_instance.connections = cell_it->connections;
                     break;
                 }
+            }
+            if (view_instance.connections.empty()) {
+                view_instance.connections = instance.port_connections;
             }
             view_instance.connections.insert(view_instance.connections.end(),
                                              instance.parameter_connections.begin(),

@@ -848,6 +848,12 @@ SemanticCompletionResult completeAt(const CompletionQueryContext& context,
                      visible_macro.available_after.start_character >= character)) {
                     continue;
                 }
+                if (visible_macro.unavailable_after.has_value() &&
+                    (visible_macro.unavailable_after->start_line < line ||
+                     (visible_macro.unavailable_after->start_line == line &&
+                      visible_macro.unavailable_after->start_character <= character))) {
+                    continue;
+                }
                 latest_visible_by_name[visible_macro.definition.name] = index;
             }
             for (size_t index = 0; index < context.macros->size(); ++index) {

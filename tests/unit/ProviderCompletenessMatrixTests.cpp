@@ -599,10 +599,15 @@ TEST_CASE("SignatureInlayProvider handles object-like macros without signature h
     const SignatureInlayContext context{
         .generation = 33,
         .document_uri = "file:///workspace/top.sv",
-        .document_text = &text,
-        .macros = {MacroDefinition{.name = "WIDTH",
-                                   .body = "8",
-                                   .function_like = false}},
+        .macro_invocations = {MacroInvocationFact{
+            .name = "WIDTH",
+            .definition_uri = "file:///workspace/top.sv",
+            .definition = MacroDefinition{.name = "WIDTH", .body = "8"},
+            .range = rangeAt(2, 14, 20),
+            .selection_range = rangeAt(2, 15, 20),
+            .expansion_text = "8",
+            .function_like = false,
+            .resolved = true}},
         .snapshot_available = true};
 
     const auto result = signatureHelpAt(context, 2, 21);
@@ -663,13 +668,21 @@ TEST_CASE("SignatureInlayProvider computes first macro argument",
     const SignatureInlayContext context{
         .generation = 26,
         .document_uri = "file:///workspace/top.sv",
-        .document_text = &text,
-        .macros = {MacroDefinition{.name = "MUX",
-                                   .parameters = {"sel", "lhs", "rhs"},
-                                   .body = "((sel) ? (lhs) : (rhs))",
-                                   .range = rangeAt(0, 0, 52),
-                                   .selection_range = rangeAt(0, 8, 11),
-                                   .function_like = true}},
+        .macro_invocations = {MacroInvocationFact{
+            .name = "MUX",
+            .definition_uri = "file:///workspace/top.sv",
+            .definition = MacroDefinition{.name = "MUX",
+                                          .parameters = {"sel", "lhs", "rhs"},
+                                          .body = "((sel) ? (lhs) : (rhs))",
+                                          .range = rangeAt(0, 0, 52),
+                                          .selection_range = rangeAt(0, 8, 11),
+                                          .function_like = true},
+            .range = rangeAt(2, 17, 38),
+            .selection_range = rangeAt(2, 18, 21),
+            .arguments = {"sel_value", "a", "b"},
+            .argument_ranges = {rangeAt(2, 22, 31), rangeAt(2, 33, 34), rangeAt(2, 36, 37)},
+            .function_like = true,
+            .resolved = true}},
         .snapshot_available = true};
 
     const auto result = signatureHelpAt(context, 2, 24);
@@ -687,13 +700,14 @@ TEST_CASE("SignatureInlayProvider ignores nested commas for function active para
     const SignatureInlayContext context{
         .generation = 27,
         .document_uri = "file:///workspace/top.sv",
-        .document_text = &text,
-        .calls = {SignatureInlayCall{.name = "mix",
+        .callable_invocations = {CallableInvocationFact{.name = "mix",
                                      .kind = "function",
                                      .return_type = "int",
                                      .range = rangeAt(1, 14, 39),
                                      .selection_range = rangeAt(1, 14, 17),
-                                     .parameters = {"input int lhs", "input int rhs"}}},
+                                     .parameters = {"input int lhs", "input int rhs"},
+                                     .argument_ranges = {rangeAt(1, 18, 28),
+                                                         rangeAt(1, 30, 39)}}},
         .snapshot_available = true};
 
     const auto result = signatureHelpAt(context, 1, 36);
@@ -709,7 +723,6 @@ TEST_CASE("SignatureInlayProvider reports unresolved missing module signature ta
     const SignatureInlayContext context{
         .generation = 28,
         .document_uri = "file:///workspace/top.sv",
-        .document_text = &text,
         .modules_by_name = &modules,
         .module_instances = {SignatureInlayModuleInstance{.module_name = "child",
                                                           .range = rangeAt(1, 2, 21),
@@ -729,8 +742,7 @@ TEST_CASE("SignatureInlayProvider reports unresolved call outside indexed ranges
     const SignatureInlayContext context{
         .generation = 35,
         .document_uri = "file:///workspace/top.sv",
-        .document_text = &text,
-        .calls = {SignatureInlayCall{.name = "mix",
+        .callable_invocations = {CallableInvocationFact{.name = "mix",
                                      .kind = "function",
                                      .return_type = "int",
                                      .range = rangeAt(1, 14, 27),
@@ -751,8 +763,7 @@ TEST_CASE("SignatureInlayProvider filters call argument hints outside requested 
     const SignatureInlayContext context{
         .generation = 29,
         .document_uri = "file:///workspace/top.sv",
-        .document_text = &text,
-        .calls = {SignatureInlayCall{.name = "mix",
+        .callable_invocations = {CallableInvocationFact{.name = "mix",
                                      .kind = "function",
                                      .return_type = "int",
                                      .range = rangeAt(1, 10, 35),
@@ -795,8 +806,7 @@ TEST_CASE("SignatureInlayProvider computes first function argument",
     const SignatureInlayContext context{
         .generation = 21,
         .document_uri = "file:///workspace/top.sv",
-        .document_text = &text,
-        .calls = {SignatureInlayCall{.name = "mix",
+        .callable_invocations = {CallableInvocationFact{.name = "mix",
                                      .kind = "function",
                                      .return_type = "int",
                                      .range = rangeAt(1, 14, 49),
@@ -819,15 +829,17 @@ TEST_CASE("SignatureInlayProvider computes third function argument",
     const SignatureInlayContext context{
         .generation = 22,
         .document_uri = "file:///workspace/top.sv",
-        .document_text = &text,
-        .calls = {SignatureInlayCall{.name = "mix",
+        .callable_invocations = {CallableInvocationFact{.name = "mix",
                                      .kind = "function",
                                      .return_type = "int",
                                      .range = rangeAt(1, 14, 49),
                                      .selection_range = rangeAt(1, 14, 17),
                                      .parameters = {"input int lhs",
                                                     "input int rhs",
-                                                    "input int mask"}}},
+                                                    "input int mask"},
+                                     .argument_ranges = {rangeAt(1, 18, 27),
+                                                         rangeAt(1, 29, 38),
+                                                         rangeAt(1, 40, 50)}}},
         .snapshot_available = true};
 
     const auto result = signatureHelpAt(context, 1, 47);
@@ -845,14 +857,13 @@ TEST_CASE("SignatureInlayProvider filters argument hints by requested range",
     const SignatureInlayContext context{
         .generation = 23,
         .document_uri = "file:///workspace/top.sv",
-        .document_text = &text,
-        .calls = {SignatureInlayCall{.name = "mix",
+        .callable_invocations = {CallableInvocationFact{.name = "mix",
                                      .kind = "function",
                                      .return_type = "int",
                                      .range = rangeAt(1, 10, 35),
                                      .selection_range = rangeAt(1, 10, 13),
                                      .parameters = {"input int lhs", "input int rhs"}},
-                  SignatureInlayCall{.name = "mix",
+                  CallableInvocationFact{.name = "mix",
                                      .kind = "function",
                                      .return_type = "int",
                                      .range = rangeAt(2, 10, 35),

@@ -18,6 +18,10 @@ public:
         std::uint64_t misses = 0;
         std::uint64_t stores = 0;
         std::uint64_t evictions = 0;
+        std::uint64_t signature_scanned_invocations = 0;
+        std::uint64_t inlay_scanned_invocations = 0;
+        std::uint64_t macro_scanned_visible_definitions = 0;
+        std::uint64_t scanned_global_symbols = 0;
         size_t diagnostics_entries = 0;
         size_t workspace_symbols_entries = 0;
         size_t references_entries = 0;
@@ -262,6 +266,10 @@ private:
     mutable std::uint64_t misses_ = 0;
     std::uint64_t stores_ = 0;
     std::uint64_t evictions_ = 0;
+    std::uint64_t signature_scanned_invocations_ = 0;
+    std::uint64_t inlay_scanned_invocations_ = 0;
+    std::uint64_t macro_scanned_visible_definitions_ = 0;
+    std::uint64_t scanned_global_symbols_ = 0;
 };
 
 } // namespace pristine::analysis::semantic

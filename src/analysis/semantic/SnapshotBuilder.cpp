@@ -8,6 +8,8 @@
 #include "slang/ast/Compilation.h"
 #include "slang/diagnostics/DiagnosticEngine.h"
 #include "slang/diagnostics/Diagnostics.h"
+#include "slang/parsing/Token.h"
+#include "slang/syntax/AllSyntax.h"
 #include "slang/syntax/SyntaxTree.h"
 #include "slang/text/SourceManager.h"
 #include "slang/util/Bag.h"
@@ -51,6 +53,20 @@ std::string diagnosticUri(const slang::SourceManager& source_manager,
         return {};
     }
     return withoutTrailingSlash(normalizeFileUri(file_name));
+}
+
+std::string sourceUri(const slang::SourceManager& source_manager, slang::SourceLocation location) {
+    if (!location.valid()) {
+        return {};
+    }
+    location = source_manager.getFullyOriginalLoc(location);
+    const auto path = source_manager.getFullPath(location.buffer());
+    if (!path.empty()) {
+        return pathToFileUri(path);
+    }
+    const auto file_name = source_manager.getFileName(location);
+    return file_name.empty() ? std::string{}
+                             : withoutTrailingSlash(normalizeFileUri(file_name));
 }
 
 slang::Bag makeCompilationOptions(const SemanticEngineConfig& config) {
@@ -105,6 +121,7 @@ void buildVisibleMacroIndex(SnapshotData& data,
         };
 
         std::vector<SnapshotVisibleMacro> visible;
+        std::vector<SnapshotMacroUndef> visible_undefs;
         std::set<std::string> visited_uris;
         std::vector<PendingMacroSource> pending{{.uri = uri, .available_after = {}}};
         while (!pending.empty()) {
@@ -119,7 +136,18 @@ void buildVisibleMacroIndex(SnapshotData& data,
                     visible.push_back(SnapshotVisibleMacro{
                         .definition = macro,
                         .source_uri = current.uri,
-                        .available_after = current.uri == uri ? macro.range : current.available_after});
+                        .available_after = current.uri == uri ? macro.range : current.available_after,
+                        .unavailable_after = std::nullopt});
+                }
+            }
+            if (const auto undefs_it = data.macro_undefs_by_uri.find(current.uri);
+                undefs_it != data.macro_undefs_by_uri.end()) {
+                for (const auto& undef : undefs_it->second) {
+                    auto visible_undef = undef;
+                    if (current.uri != uri) {
+                        visible_undef.range = current.available_after;
+                    }
+                    visible_undefs.push_back(std::move(visible_undef));
                 }
             }
             auto included = affected_dependencies.includedUris(current.uri);
@@ -161,7 +189,82 @@ void buildVisibleMacroIndex(SnapshotData& data,
             }
             return left.definition.name < right.definition.name;
         });
+        std::sort(visible_undefs.begin(), visible_undefs.end(), [](const auto& left, const auto& right) {
+            if (left.range.start_line != right.range.start_line) {
+                return left.range.start_line < right.range.start_line;
+            }
+            if (left.range.start_character != right.range.start_character) {
+                return left.range.start_character < right.range.start_character;
+            }
+            if (left.source_uri != right.source_uri) {
+                return left.source_uri < right.source_uri;
+            }
+            return left.name < right.name;
+        });
+        for (auto& macro : visible) {
+            const auto undef = std::find_if(visible_undefs.begin(), visible_undefs.end(), [&](const auto& value) {
+                if (value.name != macro.definition.name) {
+                    return false;
+                }
+                return value.range.start_line > macro.available_after.start_line ||
+                       (value.range.start_line == macro.available_after.start_line &&
+                        value.range.start_character >= macro.available_after.start_character);
+            });
+            if (undef != visible_undefs.end()) {
+                macro.unavailable_after = undef->range;
+            }
+        }
         data.visible_macros_by_uri.emplace(uri, std::move(visible));
+    }
+}
+
+void collectMacroUndefs(SnapshotData& data,
+                        const slang::SourceManager& source_manager,
+                        const slang::syntax::SyntaxNode& node) {
+    if (node.kind == slang::syntax::SyntaxKind::UndefDirective) {
+        const auto& directive = node.as<slang::syntax::UndefDirectiveSyntax>();
+        const auto uri = sourceUri(source_manager, directive.name.location());
+        if (!uri.empty()) {
+            data.macro_undefs_by_uri[uri].push_back(SnapshotMacroUndef{
+                .name = std::string(directive.name.valueText()),
+                .source_uri = uri,
+                .range = sourceRangeForSourceRange(source_manager, directive.sourceRange())});
+        }
+    }
+    for (size_t index = 0; index < node.getChildCount(); ++index) {
+        if (const auto* child = node.childNode(index)) {
+            collectMacroUndefs(data, source_manager, *child);
+            continue;
+        }
+        auto* token = const_cast<slang::syntax::SyntaxNode&>(node).childTokenPtr(index);
+        if (token == nullptr) {
+            continue;
+        }
+        for (const auto& trivia : token->trivia()) {
+            if (trivia.syntax() != nullptr) {
+                collectMacroUndefs(data, source_manager, *trivia.syntax());
+            }
+        }
+    }
+}
+
+void buildMacroUndefIndex(SnapshotData& data) {
+    data.macro_undefs_by_uri.clear();
+    for (const auto& tree : data.syntax_trees) {
+        if (tree != nullptr) {
+            collectMacroUndefs(data, *data.source_manager, tree->root());
+        }
+    }
+    for (auto& [_, undefs] : data.macro_undefs_by_uri) {
+        std::sort(undefs.begin(), undefs.end(), [](const auto& left, const auto& right) {
+            if (left.range.start_line != right.range.start_line) {
+                return left.range.start_line < right.range.start_line;
+            }
+            if (left.range.start_character != right.range.start_character) {
+                return left.range.start_character < right.range.start_character;
+            }
+            return left.name < right.name;
+        });
     }
 }
 
@@ -298,6 +401,10 @@ SnapshotBuildOutput SnapshotBuilder::build(SnapshotBuildInput input) const {
             for (const auto& include : include_directives) {
                 addUnique(included_uris, joinFileUri(uriDirectory(uri), include.target));
             }
+            for (const auto& included_uri : included_uris) {
+                output.affected_dependencies.addSemanticDependency(
+                    AffectedDependencyEdgeKind::MacroInclude, included_uri, uri);
+            }
             output.affected_dependencies.setIncludedUris(uri, std::move(included_uris));
 
             const auto append_symbol_ranges = [&](const auto& self,
@@ -323,6 +430,7 @@ SnapshotBuildOutput SnapshotBuilder::build(SnapshotBuildInput input) const {
         }
     }
 
+    buildMacroUndefIndex(*data);
     buildVisibleMacroIndex(*data, output.affected_dependencies);
 
     if (!data->syntax_trees.empty()) {
@@ -418,6 +526,23 @@ SnapshotBuildOutput SnapshotBuilder::build(SnapshotBuildInput input) const {
                             AffectedDependencyEdgeKind::ModuleInstance,
                             module_it->second,
                             uri);
+                    }
+                }
+
+                for (const auto& [uri, invocations] : data->callable_invocations_by_uri) {
+                    for (const auto& invocation : invocations) {
+                        if (!invocation.resolved || invocation.target_stable_id.empty()) {
+                            continue;
+                        }
+                        const auto target_it = data->symbols_by_id.find(invocation.target_stable_id);
+                        if (target_it == data->symbols_by_id.end()) {
+                            continue;
+                        }
+                        const auto& target_uri = target_it->second.identity.location.uri;
+                        if (!target_uri.empty() && target_uri != uri) {
+                            output.affected_dependencies.addSemanticDependency(
+                                AffectedDependencyEdgeKind::CallableType, target_uri, uri);
+                        }
                     }
                 }
             }

@@ -68,20 +68,18 @@ TEST_CASE("CodeActionProvider creates include, module, port, and typedef fixes",
                                                     .range = rangeAt(3, 2, 28),
                                                     .selection_range = rangeAt(3, 16, 25),
                                                     .module_selection_range = rangeAt(3, 2, 15)}},
-        .symbols_by_id = {{"pkg",
-                           DiagnosticSymbol{.identity = SemanticSymbolIdentity{.stable_id = "pkg",
-                                                                               .name = "defs",
-                                                                               .kind = "Package",
-                                                                               .location = SemanticLocation{
-                                                                                   .uri = "file:///workspace/rtl/defs.sv",
-                                                                                   .range = rangeAt(0, 8, 12)}}}},
-                          {"pkg_only",
-                           DiagnosticSymbol{.identity = SemanticSymbolIdentity{.stable_id = "pkg_only",
-                                                                               .name = "pkg_only_t",
-                                                                               .kind = "TypeAlias",
-                                                                               .location = SemanticLocation{
-                                                                                   .uri = "file:///workspace/rtl/defs.sv",
-                                                                                   .range = rangeAt(1, 22, 32)}}}}},
+        .packages_by_name = {{"defs",
+                              SnapshotPackageVisibility{
+                                  .package_name = "defs",
+                                  .uri = "file:///workspace/rtl/defs.sv",
+                                  .candidates = {SnapshotVisibilityCandidate{
+                                      .identity = SemanticSymbolIdentity{
+                                          .stable_id = "pkg_only",
+                                          .name = "pkg_only_t",
+                                          .kind = "TypeAlias",
+                                          .location = SemanticLocation{
+                                              .uri = "file:///workspace/rtl/defs.sv",
+                                              .range = rangeAt(1, 22, 32)}}}}}}},
         .diagnostics = {SemanticEngineDiagnostic{.uri = std::string(uri),
                                                  .code = "unresolvedType",
                                                  .message = "Type 'missing_t' could not be resolved.",
@@ -204,6 +202,14 @@ TEST_CASE("CodeActionProvider creates macro definitions from slang macro diagnos
                               .document = SemanticEngineDocument{.uri = std::string(uri),
                                                                  .text = document_text},
                               .range = rangeAt(1, 17, 25),
+                              .macro_invocations = {MacroInvocationFact{
+                                  .name = "MISSING",
+                                  .range = rangeAt(1, 17, 39),
+                                  .selection_range = rangeAt(1, 18, 25),
+                                  .arguments = {"ready", "valid"},
+                                  .argument_ranges = {rangeAt(1, 26, 31), rangeAt(1, 33, 38)},
+                                  .function_like = true,
+                                  .resolved = false}},
                               .diagnostics = {SemanticEngineDiagnostic{
                                   .uri = std::string(uri),
                                   .code = "slang:UnknownDirective",
@@ -234,26 +240,21 @@ TEST_CASE("CodeActionProvider expands indexed object and function macros",
                                "  assign ready = `READY;\n"
                                "  assign sum = `ADD(lhs_value, rhs_value);\n"
                                "endmodule\n";
-    const std::unordered_map<std::string, std::vector<MacroDefinition>> macros_by_uri{
-        {std::string(uri),
-         {MacroDefinition{.name = "READY",
-                          .body = "1'b1",
-                          .range = rangeAt(0, 0, 18),
-                          .selection_range = rangeAt(0, 8, 13),
-                          .function_like = false},
-          MacroDefinition{.name = "ADD",
-                          .parameters = {"lhs", "rhs"},
-                          .body = "((lhs) + (rhs))",
-                          .range = rangeAt(1, 0, 39),
-                          .selection_range = rangeAt(1, 8, 11),
-                          .function_like = true}}}};
 
     CodeActionContext object_context{.generation = 12,
                                      .snapshot_available = true,
                                      .document = SemanticEngineDocument{.uri = std::string(uri),
                                                                         .text = document_text},
                                      .range = rangeAt(3, 18, 24),
-                                     .macros_by_uri = &macros_by_uri};
+                                     .macro_invocations = {MacroInvocationFact{
+                                         .name = "READY",
+                                         .definition_uri = std::string(uri),
+                                         .definition = MacroDefinition{.name = "READY", .body = "1'b1"},
+                                         .range = rangeAt(3, 17, 23),
+                                         .selection_range = rangeAt(3, 18, 23),
+                                         .expansion_text = "1'b1",
+                                         .function_like = false,
+                                         .resolved = true}}};
     const auto object_result = codeActionsAt(object_context);
 
     REQUIRE_FALSE(object_result.unresolved);
@@ -267,7 +268,19 @@ TEST_CASE("CodeActionProvider expands indexed object and function macros",
                                        .document = SemanticEngineDocument{.uri = std::string(uri),
                                                                           .text = document_text},
                                        .range = rangeAt(4, 15, 19),
-                                       .macros_by_uri = &macros_by_uri};
+                                       .macro_invocations = {MacroInvocationFact{
+                                           .name = "ADD",
+                                           .definition_uri = std::string(uri),
+                                           .definition = MacroDefinition{.name = "ADD",
+                                                                         .parameters = {"lhs", "rhs"},
+                                                                         .body = "((lhs) + (rhs))",
+                                                                         .function_like = true},
+                                           .range = rangeAt(4, 15, 42),
+                                           .selection_range = rangeAt(4, 16, 19),
+                                           .arguments = {"lhs_value", "rhs_value"},
+                                           .expansion_text = "((lhs_value) + (rhs_value))",
+                                           .function_like = true,
+                                           .resolved = true}}};
     const auto function_result = codeActionsAt(function_context);
 
     REQUIRE_FALSE(function_result.unresolved);

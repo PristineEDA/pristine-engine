@@ -63,6 +63,12 @@ int main() {
                         "  assign " + name + " = " + name + ";\n";
             if (include_workspace_probe) {
                 text += "  unit_0 u0();\n";
+                text += "  function automatic int add(input int lhs, input int rhs);\n";
+                text += "    return lhs + rhs;\n";
+                text += "  endfunction\n";
+                text += "  localparam int sum = add(1, 2);\n";
+                text += "`define TWICE(x) ((x) + (x))\n";
+                text += "  localparam int doubled = `TWICE(3);\n";
             }
             text += "endmodule\n";
             return text;
@@ -113,16 +119,39 @@ int main() {
         const auto end_rename = Clock::now();
 
         const auto start_signature = Clock::now();
-        const auto signature = engine.signatureHelpAt(target_uri, 2, 10);
+        const auto signature = engine.signatureHelpAt(target_uri, 7, 30);
         const auto end_signature = Clock::now();
+        const auto start_signature_warm = Clock::now();
+        const auto signature_warm = engine.signatureHelpAt(target_uri, 7, 30);
+        const auto end_signature_warm = Clock::now();
 
         const auto start_inlay = Clock::now();
         const auto inlay = engine.inlayHints(target_uri,
                                              pristine::analysis::ParseRange{.start_line = 0,
                                                                             .start_character = 0,
-                                                                            .end_line = 4,
+                                                                            .end_line = 11,
                                                                             .end_character = 0});
         const auto end_inlay = Clock::now();
+        const auto start_inlay_warm = Clock::now();
+        const auto inlay_warm = engine.inlayHints(target_uri,
+                                                  pristine::analysis::ParseRange{
+                                                      .start_line = 0,
+                                                      .start_character = 0,
+                                                      .end_line = 11,
+                                                      .end_character = 0});
+        const auto end_inlay_warm = Clock::now();
+
+        const auto start_macro_definition = Clock::now();
+        const auto macro_definition = engine.definitionsAt(target_uri, 9, 31);
+        const auto end_macro_definition = Clock::now();
+        const auto start_macro_expand = Clock::now();
+        const auto macro_expand = engine.codeActionsAt(
+            target_uri,
+            pristine::analysis::ParseRange{.start_line = 9,
+                                           .start_character = 27,
+                                           .end_line = 9,
+                                           .end_character = 36});
+        const auto end_macro_expand = Clock::now();
 
         const auto start_semantic_tokens = Clock::now();
         const auto semantic_tokens = engine.semanticTokens(target_uri);
@@ -158,7 +187,13 @@ int main() {
                                      completion.scanned_global_symbol_count != 0 ||
                                      workspace_completion.unresolved ||
                                      workspace_completion.items.empty() ||
-                                     workspace_completion.scanned_global_symbol_count != 0;
+                                     workspace_completion.scanned_global_symbol_count != 0 ||
+                                     signature.unresolved || signature_warm.unresolved ||
+                                     signature.label.empty() || signature_warm.label != signature.label ||
+                                     signature.scanned_global_symbol_count != 0 ||
+                                     inlay.unresolved || inlay_warm.unresolved ||
+                                     inlay.scanned_global_symbol_count != 0 ||
+                                     macro_definition.locations.empty() || macro_expand.actions.empty();
 
         if (!first_baseline) {
             std::cout << ",";
@@ -178,7 +213,13 @@ int main() {
                   << "\"referenceMicros\":" << elapsedMicros(start_query, end_query) << ","
                   << "\"renameMicros\":" << elapsedMicros(start_rename, end_rename) << ","
                   << "\"signatureHelpMicros\":" << elapsedMicros(start_signature, end_signature) << ","
+                  << "\"signatureHelpWarmMicros\":"
+                  << elapsedMicros(start_signature_warm, end_signature_warm) << ","
                   << "\"inlayHintMicros\":" << elapsedMicros(start_inlay, end_inlay) << ","
+                  << "\"inlayHintWarmMicros\":" << elapsedMicros(start_inlay_warm, end_inlay_warm) << ","
+                  << "\"macroDefinitionMicros\":"
+                  << elapsedMicros(start_macro_definition, end_macro_definition) << ","
+                  << "\"macroExpandMicros\":" << elapsedMicros(start_macro_expand, end_macro_expand) << ","
                   << "\"semanticTokensMicros\":" << elapsedMicros(start_semantic_tokens, end_semantic_tokens) << ","
                   << "\"workspaceSymbolMicros\":0,"
                   << "\"moduleHierarchyMicros\":" << elapsedMicros(start_hierarchy, end_hierarchy) << ","
@@ -213,6 +254,18 @@ int main() {
                   << "\"workspaceCompletionScannedWorkspaceCandidates\":"
                   << workspace_completion.scanned_workspace_candidate_count << ","
                   << "\"inlayHintCount\":" << inlay.hints.size() << ","
+                  << "\"signatureScannedInvocations\":"
+                  << signature.scanned_invocation_count << ","
+                  << "\"signatureMacroScannedVisibleDefinitions\":"
+                  << signature.scanned_macro_definition_count << ","
+                  << "\"signatureScannedGlobalSymbols\":"
+                  << signature.scanned_global_symbol_count << ","
+                  << "\"inlayScannedInvocations\":" << inlay.scanned_invocation_count << ","
+                  << "\"inlayMacroScannedVisibleDefinitions\":"
+                  << inlay.scanned_macro_definition_count << ","
+                  << "\"inlayScannedGlobalSymbols\":" << inlay.scanned_global_symbol_count << ","
+                  << "\"macroDefinitionCount\":" << macro_definition.locations.size() << ","
+                  << "\"macroExpandActionCount\":" << macro_expand.actions.size() << ","
                   << "\"semanticTokenCount\":" << semantic_tokens.tokens.size() << ","
                   << "\"moduleHierarchyRootCount\":" << hierarchy.roots.size() << ","
                   << "\"schematicModuleCount\":" << schematic.modules.size() << ","

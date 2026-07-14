@@ -194,7 +194,11 @@ std::string queryCacheStatsDetail(const SemanticQueryCacheStats& stats) {
         << " workspaceSymbols=" << stats.workspace_symbols_entries
         << " hierarchy=" << stats.module_hierarchy_entries
         << " schematic=" << stats.schematic_entries
-        << " backwardCone=" << stats.backward_cone_entries;
+        << " backwardCone=" << stats.backward_cone_entries
+        << " signatureScannedInvocations=" << stats.signature_scanned_invocations
+        << " inlayScannedInvocations=" << stats.inlay_scanned_invocations
+        << " macroScannedVisibleDefinitions=" << stats.macro_scanned_visible_definitions
+        << " scannedGlobalSymbols=" << stats.scanned_global_symbols;
     return out.str();
 }
 
@@ -328,8 +332,11 @@ semantic::CodeActionContext codeActionContextFor(const semantic::SnapshotData* d
             instances_it != ast_index.module_instances_by_uri.end()) {
             context.module_instances = instances_it->second;
         }
-        context.symbols_by_id = ast_index.diagnostic_symbols_by_id;
-        context.macros_by_uri = &ast_index.macros_by_uri;
+        context.packages_by_name = ast_index.package_visibility_by_name;
+        if (const auto macros_it = ast_index.macro_invocations_by_uri.find(context.document.uri);
+            macros_it != ast_index.macro_invocations_by_uri.end()) {
+            context.macro_invocations = macros_it->second;
+        }
         context.package_imports_by_uri = ast_index.package_imports_by_uri;
     }
     return context;
@@ -473,6 +480,11 @@ SemanticQueryCacheStats SemanticEngine::queryCacheStats() const {
                                    .misses = stats.misses,
                                    .stores = stats.stores,
                                    .evictions = stats.evictions,
+                                   .signature_scanned_invocations = stats.signature_scanned_invocations,
+                                   .inlay_scanned_invocations = stats.inlay_scanned_invocations,
+                                   .macro_scanned_visible_definitions =
+                                       stats.macro_scanned_visible_definitions,
+                                   .scanned_global_symbols = stats.scanned_global_symbols,
                                    .diagnostics_entries = stats.diagnostics_entries,
                                    .workspace_symbols_entries = stats.workspace_symbols_entries,
                                    .references_entries = stats.references_entries,
@@ -872,6 +884,23 @@ SemanticLookupResult SemanticEngine::lookupAt(std::string_view uri, int line, in
 SemanticReferenceResult SemanticEngine::definitionsAt(std::string_view uri,
                                                       int line,
                                                       int character) const {
+    const auto& current_snapshot = snapshot();
+    const auto document_uri = withoutTrailingSlash(normalizeFileUri(uri));
+    const auto ast_index = semantic::buildAstIndexView(snapshotData(), current_snapshot.generation);
+    if (const auto macro = semantic::macroInvocationAt(ast_index, document_uri, line, character)) {
+        SemanticReferenceResult result;
+        result.generation = current_snapshot.generation;
+        result.unresolved = !macro->resolved || macro->definition_uri.empty();
+        if (!result.unresolved) {
+            result.locations.push_back(SemanticLocation{.uri = macro->definition_uri,
+                                                        .range = macro->definition.selection_range});
+        }
+        else {
+            result.messages.push_back("macro definition is unresolved in the indexed preprocessor facts");
+        }
+        return result;
+    }
+
     const auto lookup = lookupAt(uri, line, character);
     SemanticReferenceResult result;
     result.generation = lookup.generation;
@@ -1058,6 +1087,25 @@ SemanticReferenceResult SemanticEngine::implementationsAt(std::string_view uri,
 }
 
 SemanticHoverResult SemanticEngine::hoverAt(std::string_view uri, int line, int character) const {
+    const auto& current_snapshot = snapshot();
+    const auto document_uri = withoutTrailingSlash(normalizeFileUri(uri));
+    const auto ast_index = semantic::buildAstIndexView(snapshotData(), current_snapshot.generation);
+    if (const auto macro = semantic::macroInvocationAt(ast_index, document_uri, line, character)) {
+        SemanticHoverResult result;
+        result.generation = current_snapshot.generation;
+        result.range = macro->selection_range;
+        result.unresolved = !macro->resolved;
+        if (result.unresolved) {
+            result.messages.push_back("macro definition is unresolved in the indexed preprocessor facts");
+            return result;
+        }
+        result.contents = "**macro** `" + semantic::macroSignatureLabel(macro->definition) + "`";
+        if (!macro->definition.body.empty()) {
+            result.contents += "\n\nExpansion: `" + macro->expansion_text + "`";
+        }
+        return result;
+    }
+
     PRISTINE_DEBUG_TRACE_SCOPE("semantic.hoverAt",
                                std::string(uri) + ":" + std::to_string(line) + ":" +
                                    std::to_string(character));
@@ -1246,12 +1294,10 @@ SemanticSignatureHelpResult SemanticEngine::signatureHelpAt(std::string_view uri
     };
     const auto* data = snapshotData();
     const auto ast_index = semantic::buildAstIndexView(data, current_snapshot.generation);
-    const auto document_it = documents_.find(document_uri);
 
     semantic::SignatureInlayContext context;
     context.generation = current_snapshot.generation;
     context.document_uri = document_uri;
-    context.document_text = document_it == documents_.end() ? nullptr : &document_it->second.text;
     context.modules_by_name = data == nullptr ? nullptr : &ast_index.modules_by_name;
     context.snapshot_available = data != nullptr;
     if (data != nullptr) {
@@ -1259,13 +1305,13 @@ SemanticSignatureHelpResult SemanticEngine::signatureHelpAt(std::string_view uri
         if (instances_it != ast_index.signature_module_instances_by_uri.end()) {
             context.module_instances = instances_it->second;
         }
-        const auto macros_it = ast_index.macros_by_uri.find(document_uri);
-        if (macros_it != ast_index.macros_by_uri.end()) {
-            context.macros = macros_it->second;
+        const auto macros_it = ast_index.macro_invocations_by_uri.find(document_uri);
+        if (macros_it != ast_index.macro_invocations_by_uri.end()) {
+            context.macro_invocations = macros_it->second;
         }
-        const auto calls_it = ast_index.signature_calls_by_uri.find(document_uri);
-        if (calls_it != ast_index.signature_calls_by_uri.end()) {
-            context.calls = calls_it->second;
+        const auto calls_it = ast_index.callable_invocations_by_uri.find(document_uri);
+        if (calls_it != ast_index.callable_invocations_by_uri.end()) {
+            context.callable_invocations = calls_it->second;
         }
     }
     return finish(semantic::signatureHelpAt(context, line, character));
@@ -1292,8 +1338,6 @@ SemanticInlayHintResult SemanticEngine::inlayHints(std::string_view uri, ParseRa
     semantic::SignatureInlayContext context;
     context.generation = current_snapshot.generation;
     context.document_uri = document_uri;
-    const auto document_it = documents_.find(document_uri);
-    context.document_text = document_it == documents_.end() ? nullptr : &document_it->second.text;
     context.modules_by_name = data == nullptr ? nullptr : &ast_index.modules_by_name;
     context.snapshot_available = data != nullptr;
     if (const auto symbols_it = ast_index.inlay_symbols_by_uri.find(document_uri);
@@ -1305,9 +1349,13 @@ SemanticInlayHintResult SemanticEngine::inlayHints(std::string_view uri, ParseRa
         if (instances_it != ast_index.signature_module_instances_by_uri.end()) {
             context.module_instances = instances_it->second;
         }
-        const auto calls_it = ast_index.signature_calls_by_uri.find(document_uri);
-        if (calls_it != ast_index.signature_calls_by_uri.end()) {
-            context.calls = calls_it->second;
+        const auto calls_it = ast_index.callable_invocations_by_uri.find(document_uri);
+        if (calls_it != ast_index.callable_invocations_by_uri.end()) {
+            context.callable_invocations = calls_it->second;
+        }
+        const auto macros_it = ast_index.macro_invocations_by_uri.find(document_uri);
+        if (macros_it != ast_index.macro_invocations_by_uri.end()) {
+            context.macro_invocations = macros_it->second;
         }
     }
     return finish(semantic::inlayHints(context, range));
@@ -1330,11 +1378,11 @@ SemanticSelectionRangeResult SemanticEngine::selectionRangesAt(std::string_view 
     const auto* data = snapshotData();
     const auto ast_index = semantic::buildAstIndexView(data, lookup.generation);
     if (lookup.unresolved) {
-        if (const auto calls_it = ast_index.signature_calls_by_uri.find(document_uri);
-            calls_it != ast_index.signature_calls_by_uri.end()) {
+        if (const auto calls_it = ast_index.callable_invocations_by_uri.find(document_uri);
+            calls_it != ast_index.callable_invocations_by_uri.end()) {
             const auto call_it = std::find_if(calls_it->second.begin(),
                                               calls_it->second.end(),
-                                              [&](const semantic::SignatureInlayCall& call) {
+                                              [&](const semantic::CallableInvocationFact& call) {
                                                   return containsPosition(call.selection_range,
                                                                           line,
                                                                           character);

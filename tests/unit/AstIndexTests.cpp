@@ -939,10 +939,10 @@ TEST_CASE("AstIndex derives function and task signature calls from slang AST",
     REQUIRE(output.data != nullptr);
 
     const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
-    REQUIRE(view.signature_calls_by_uri.contains("file:///workspace/calls.sv"));
-    const auto& calls = view.signature_calls_by_uri.at("file:///workspace/calls.sv");
+    REQUIRE(view.callable_invocations_by_uri.contains("file:///workspace/calls.sv"));
+    const auto& calls = view.callable_invocations_by_uri.at("file:///workspace/calls.sv");
 
-    const auto add_call = std::find_if(calls.begin(), calls.end(), [](const SignatureInlayCall& call) {
+    const auto add_call = std::find_if(calls.begin(), calls.end(), [](const CallableInvocationFact& call) {
         return call.name == "add";
     });
     REQUIRE(add_call != calls.end());
@@ -957,7 +957,7 @@ TEST_CASE("AstIndex derives function and task signature calls from slang AST",
     CHECK(add_call->parameters[0] == "input int lhs");
     CHECK(add_call->parameters[1] == "input int rhs");
 
-    const auto emit_call = std::find_if(calls.begin(), calls.end(), [](const SignatureInlayCall& call) {
+    const auto emit_call = std::find_if(calls.begin(), calls.end(), [](const CallableInvocationFact& call) {
         return call.name == "emit";
     });
     REQUIRE(emit_call != calls.end());
@@ -1304,6 +1304,215 @@ TEST_CASE("AstIndex indexes ordinary module instance members for hierarchical co
     }
 }
 
+TEST_CASE("AstIndex callable invocation facts preserve AST argument ranges",
+          "[analysis][semantic][ast-index][callable][arguments]") {
+    SnapshotBuildInput input{.generation = 70,
+                             .documents = {{"file:///workspace/args.sv",
+                                            SemanticEngineDocument{
+                                                .uri = "file:///workspace/args.sv",
+                                                .text = "module top; function int add(input int lhs, input int rhs); return lhs + rhs; endfunction int value = add(10, 20); endmodule\n",
+                                                .is_open = true}}}};
+    auto output = SnapshotBuilder{}.build(std::move(input));
+    REQUIRE(output.data != nullptr);
+    const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
+    const auto& calls = view.callable_invocations_by_uri.at("file:///workspace/args.sv");
+    REQUIRE(calls.size() == 1);
+    REQUIRE(calls.front().argument_ranges.size() == 2);
+    CHECK(calls.front().argument_ranges[0].start_character <
+          calls.front().argument_ranges[1].start_character);
+    CHECK(calls.front().resolved);
+    CHECK_FALSE(calls.front().target_stable_id.empty());
+}
+
+TEST_CASE("AstIndex macro invocation resolves the preceding definition",
+          "[analysis][semantic][ast-index][macro][definition]") {
+    SnapshotBuildInput input{.generation = 71,
+                             .documents = {{"file:///workspace/macro.sv",
+                                            SemanticEngineDocument{
+                                                .uri = "file:///workspace/macro.sv",
+                                                .text = "`define ADD(a, b) ((a) + (b))\nmodule top; int value = `ADD(1, 2); endmodule\n",
+                                                .is_open = true}}}};
+    auto output = SnapshotBuilder{}.build(std::move(input));
+    REQUIRE(output.data != nullptr);
+    const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
+    const auto& macros = view.macro_invocations_by_uri.at("file:///workspace/macro.sv");
+    REQUIRE(macros.size() == 1);
+    CHECK(macros.front().resolved);
+    CHECK(macros.front().definition.parameters == std::vector<std::string>{"a", "b"});
+    CHECK(macros.front().expansion_text == "((1) + (2))");
+}
+
+TEST_CASE("AstIndex macro invocation does not see a later definition",
+          "[analysis][semantic][ast-index][macro][ordering][no-fallback]") {
+    SnapshotBuildInput input{.generation = 72,
+                             .documents = {{"file:///workspace/later.sv",
+                                            SemanticEngineDocument{
+                                                .uri = "file:///workspace/later.sv",
+                                                .text = "module top; int value = `LATER; endmodule\n`define LATER 1\n",
+                                                .is_open = true}}}};
+    auto output = SnapshotBuilder{}.build(std::move(input));
+    REQUIRE(output.data != nullptr);
+    const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
+    const auto& macros = view.macro_invocations_by_uri.at("file:///workspace/later.sv");
+    REQUIRE(macros.size() == 1);
+    CHECK_FALSE(macros.front().resolved);
+    CHECK(macros.front().definition_uri.empty());
+}
+
+TEST_CASE("AstIndex macro invocation selects the latest preceding redefine",
+          "[analysis][semantic][ast-index][macro][redefine]") {
+    SnapshotBuildInput input{.generation = 73,
+                             .documents = {{"file:///workspace/redefine.sv",
+                                            SemanticEngineDocument{
+                                                .uri = "file:///workspace/redefine.sv",
+                                                .text = "`define VALUE 1\n`define VALUE 2\nmodule top; int value = `VALUE; endmodule\n",
+                                                .is_open = true}}}};
+    auto output = SnapshotBuilder{}.build(std::move(input));
+    REQUIRE(output.data != nullptr);
+    const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
+    const auto& macros = view.macro_invocations_by_uri.at("file:///workspace/redefine.sv");
+    REQUIRE(macros.size() == 1);
+    CHECK(macros.front().resolved);
+    CHECK(macros.front().expansion_text == "2");
+}
+
+TEST_CASE("AstIndex macro invocation rejects a definition after undef",
+          "[analysis][semantic][ast-index][macro][undef][no-fallback]") {
+    SnapshotBuildInput input{.generation = 74,
+                             .documents = {{"file:///workspace/undef.sv",
+                                            SemanticEngineDocument{
+                                                .uri = "file:///workspace/undef.sv",
+                                                .text = "`define VALUE 1\n`undef VALUE\nmodule top; int value = `VALUE; endmodule\n",
+                                                .is_open = true}}}};
+    auto output = SnapshotBuilder{}.build(std::move(input));
+    REQUIRE(output.data != nullptr);
+    const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
+    const auto& macros = view.macro_invocations_by_uri.at("file:///workspace/undef.sv");
+    REQUIRE(macros.size() == 1);
+    CHECK_FALSE(macros.front().resolved);
+    CHECK(output.data->macro_undefs_by_uri.at("file:///workspace/undef.sv").size() == 1);
+}
+
+TEST_CASE("AstIndex resolves included macros and records macro include invalidation",
+          "[analysis][semantic][ast-index][macro][include][affected]") {
+    SnapshotBuildInput input{
+        .generation = 75,
+        .documents = {
+            {"file:///workspace/defs.svh",
+             SemanticEngineDocument{.uri = "file:///workspace/defs.svh", .text = "`define FLAG 1\n"}},
+            {"file:///workspace/top.sv",
+             SemanticEngineDocument{.uri = "file:///workspace/top.sv",
+                                    .text = "`include \"defs.svh\"\nmodule top; int value = `FLAG; endmodule\n",
+                                    .is_open = true}}}};
+    auto output = SnapshotBuilder{}.build(std::move(input));
+    REQUIRE(output.data != nullptr);
+    const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
+    const auto& macros = view.macro_invocations_by_uri.at("file:///workspace/top.sv");
+    REQUIRE(macros.size() == 1);
+    CHECK(macros.front().resolved);
+    CHECK(macros.front().definition_uri == "file:///workspace/defs.svh");
+    CHECK(output.affected_dependencies.dependentUris(
+              "file:///workspace/defs.svh", AffectedDependencyEdgeKind::MacroInclude) ==
+          std::vector<std::string>{"file:///workspace/top.sv"});
+}
+
+TEST_CASE("AstIndex records cross-file callable type invalidation edges",
+          "[analysis][semantic][ast-index][callable][affected]") {
+    SnapshotBuildInput input{
+        .generation = 76,
+        .documents = {
+            {"file:///workspace/api.sv",
+             SemanticEngineDocument{.uri = "file:///workspace/api.sv",
+                                    .text = "package api; function int add(input int value); return value; endfunction endpackage\n"}},
+            {"file:///workspace/top.sv",
+             SemanticEngineDocument{.uri = "file:///workspace/top.sv",
+                                    .text = "module top; import api::*; int value = add(1); endmodule\n",
+                                    .is_open = true}}}};
+    auto output = SnapshotBuilder{}.build(std::move(input));
+    REQUIRE(output.data != nullptr);
+    CHECK(output.affected_dependencies.dependentUris(
+              "file:///workspace/api.sv", AffectedDependencyEdgeKind::CallableType) ==
+          std::vector<std::string>{"file:///workspace/top.sv"});
+}
+
+TEST_CASE("AstIndex orders nested callable invocations by source range deterministically",
+          "[analysis][semantic][ast-index][callable][nested][deterministic]") {
+    SnapshotBuildInput input{.generation = 77,
+                             .documents = {{"file:///workspace/nested-calls.sv",
+                                            SemanticEngineDocument{
+                                                .uri = "file:///workspace/nested-calls.sv",
+                                                .text = "module top; function int id(input int value); return value; endfunction int value = id(id(1)); endmodule\n",
+                                                .is_open = true}}}};
+    auto output = SnapshotBuilder{}.build(std::move(input));
+    REQUIRE(output.data != nullptr);
+    const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
+    const auto& calls = view.callable_invocations_by_uri.at("file:///workspace/nested-calls.sv");
+    REQUIRE(calls.size() == 2);
+    CHECK(calls[0].range.start_character <= calls[1].range.start_character);
+    CHECK(calls[0].target_stable_id == calls[1].target_stable_id);
+}
+
+TEST_CASE("AstIndex expands nested function-like macros during index construction",
+          "[analysis][semantic][ast-index][macro][nested-expansion]") {
+    SnapshotBuildInput input{.generation = 78,
+                             .documents = {{"file:///workspace/nested-macro.sv",
+                                            SemanticEngineDocument{
+                                                .uri = "file:///workspace/nested-macro.sv",
+                                                .text = "`define ADD(a, b) ((a) + (b))\n`define TWICE(x) `ADD(x, x)\nmodule top; int value = `TWICE(3); endmodule\n",
+                                                .is_open = true}}}};
+    auto output = SnapshotBuilder{}.build(std::move(input));
+    REQUIRE(output.data != nullptr);
+    const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
+    const auto& macros = view.macro_invocations_by_uri.at("file:///workspace/nested-macro.sv");
+    const auto twice = std::find_if(macros.begin(), macros.end(), [](const auto& macro) {
+        return macro.name == "TWICE";
+    });
+    REQUIRE(twice != macros.end());
+    CHECK(twice->resolved);
+    CHECK(twice->expansion_text == "((3) + (3))");
+}
+
+TEST_CASE("AstIndex bounds recursive macro expansion cycles",
+          "[analysis][semantic][ast-index][macro][expansion-cycle]") {
+    SnapshotBuildInput input{.generation = 79,
+                             .documents = {{"file:///workspace/macro-cycle.sv",
+                                            SemanticEngineDocument{
+                                                .uri = "file:///workspace/macro-cycle.sv",
+                                                .text = "`define A `B\n`define B `A\nmodule top; int value = `A; endmodule\n",
+                                                .is_open = true}}}};
+    auto output = SnapshotBuilder{}.build(std::move(input));
+    REQUIRE(output.data != nullptr);
+    const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
+    const auto& macros = view.macro_invocations_by_uri.at("file:///workspace/macro-cycle.sv");
+    const auto invocation = std::find_if(macros.begin(), macros.end(), [](const auto& macro) {
+        return macro.name == "A" && macro.range.start_line == 2;
+    });
+    REQUIRE(invocation != macros.end());
+    CHECK(invocation->resolved);
+    CHECK(invocation->expansion_text.size() <= 2);
+}
+
+TEST_CASE("AstIndex preserves empty named-port ranges for signature active parameter",
+          "[analysis][semantic][ast-index][signature][module][named-port]") {
+    SnapshotBuildInput input{.generation = 80,
+                             .documents = {{"file:///workspace/empty-ports.sv",
+                                            SemanticEngineDocument{
+                                                .uri = "file:///workspace/empty-ports.sv",
+                                                .text = "module child(input logic clk, output logic rst_n); endmodule\nmodule top; child child_i(.clk(), .rst_n()); endmodule\n",
+                                                .is_open = true}}}};
+    auto output = SnapshotBuilder{}.build(std::move(input));
+    REQUIRE(output.data != nullptr);
+    const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
+    const auto& instances =
+        view.signature_module_instances_by_uri.at("file:///workspace/empty-ports.sv");
+    REQUIRE(instances.size() == 1);
+    REQUIRE(instances.front().connections.size() == 2);
+    CHECK(instances.front().connections[0].port_name == "clk");
+    CHECK(instances.front().connections[1].port_name == "rst_n");
+    CHECK(instances.front().connections[0].range.start_character <
+          instances.front().connections[1].range.start_character);
+}
+
 TEST_CASE("SnapshotBuilder limits macro visibility to document include closure",
           "[analysis][semantic][ast-index][visibility][macro]") {
     SnapshotBuildInput input{
@@ -1386,8 +1595,8 @@ TEST_CASE("AstIndex indexes class method calls as callable visibility facts",
     auto output = SnapshotBuilder{}.build(std::move(input));
     REQUIRE(output.data != nullptr);
     const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
-    const auto calls = view.signature_calls_by_uri.find("file:///workspace/class-call.sv");
-    REQUIRE(calls != view.signature_calls_by_uri.end());
+    const auto calls = view.callable_invocations_by_uri.find("file:///workspace/class-call.sv");
+    REQUIRE(calls != view.callable_invocations_by_uri.end());
     REQUIRE(calls->second.size() == 1);
     const auto& call = calls->second.front();
     CHECK(call.name == "sum");

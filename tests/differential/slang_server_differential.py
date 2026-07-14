@@ -2,6 +2,8 @@ import json
 import os
 import pathlib
 import queue
+import json
+import re
 import subprocess
 import sys
 import tempfile
@@ -95,6 +97,37 @@ FIXTURES: tuple[DifferentialFixture, ...] = (
                 position={"line": 2, "character": 19},
                 required=("MUX",),
                 optional=True,
+            ),
+        ),
+    ),
+    DifferentialFixture(
+        name="macro hover definition and signature",
+        sources={
+            "macro-navigation.sv": (
+                "`define ADD(lhs, rhs) ((lhs) + (rhs))\n"
+                "module top;\n"
+                "  int value = `ADD(1, 2);\n"
+                "endmodule\n"
+            )
+        },
+        checks=(
+            DifferentialCheck(
+                kind="hover",
+                uri="macro-navigation.sv",
+                position={"line": 2, "character": 17},
+                required=("ADD",),
+            ),
+            DifferentialCheck(
+                kind="definition",
+                uri="macro-navigation.sv",
+                position={"line": 2, "character": 17},
+                min_count=1,
+            ),
+            DifferentialCheck(
+                kind="signatureHelp",
+                uri="macro-navigation.sv",
+                position={"line": 2, "character": 22},
+                required=("ADD",),
             ),
         ),
     ),
@@ -881,10 +914,32 @@ def check_signature_help(
     labels: set[str] = set()
     for signature in signatures:
         label = signature.get("label", "") if isinstance(signature, dict) else ""
-        for token in ("add",):
-            if token in label:
-                labels.add(token)
+        labels.update(re.findall(r"[A-Za-z_$][A-Za-z0-9_$]*", label))
     return labels
+
+
+def check_hover(session: LspSession, request_id: int, uri: str, position: dict[str, int]) -> set[str]:
+    response = session.request(
+        request_id,
+        "textDocument/hover",
+        {"textDocument": {"uri": uri}, "position": position},
+        allow_error=True,
+    )
+    if "error" in response:
+        raise UnsupportedCheck("textDocument/hover is not supported")
+    return set(re.findall(r"[A-Za-z_$][A-Za-z0-9_$]*", json.dumps(response.get("result"))))
+
+
+def check_definition(session: LspSession, request_id: int, uri: str, position: dict[str, int]) -> int:
+    response = session.request(
+        request_id,
+        "textDocument/definition",
+        {"textDocument": {"uri": uri}, "position": position},
+        allow_error=True,
+    )
+    if "error" in response:
+        raise UnsupportedCheck("textDocument/definition is not supported")
+    return len(response_items(response.get("result")))
 
 
 def check_references(
@@ -1018,6 +1073,14 @@ def run_fixture(server: pathlib.Path, root: pathlib.Path, fixture: DifferentialF
                 elif check.kind == "signatureHelp":
                     assert check.uri is not None and check.position is not None
                     observed[key] = check_signature_help(
+                        session, request_id, source_uris[check.uri], check.position
+                    )
+                elif check.kind == "hover":
+                    assert check.uri is not None and check.position is not None
+                    observed[key] = check_hover(session, request_id, source_uris[check.uri], check.position)
+                elif check.kind == "definition":
+                    assert check.uri is not None and check.position is not None
+                    observed[key] = check_definition(
                         session, request_id, source_uris[check.uri], check.position
                     )
                 elif check.kind == "references":

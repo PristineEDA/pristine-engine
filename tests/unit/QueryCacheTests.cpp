@@ -203,4 +203,38 @@ TEST_CASE("QueryCache snapshots and resets counters without clearing entries",
     CHECK(reset.total_entries == 4);
 }
 
+TEST_CASE("QueryCache aggregates and resets URI-local invocation scan telemetry",
+          "[analysis][semantic][query-cache][telemetry][callable][macro]") {
+    QueryCache cache;
+    cache.storeSignatureHelp(
+        1,
+        "file:///workspace/top.sv",
+        2,
+        8,
+        SemanticSignatureHelpResult{.scanned_invocation_count = 3,
+                                    .scanned_macro_definition_count = 2,
+                                    .scanned_global_symbol_count = 0});
+    cache.storeInlayHints(
+        1,
+        "file:///workspace/top.sv",
+        ParseRange{.start_line = 0, .start_character = 0, .end_line = 4, .end_character = 0},
+        SemanticInlayHintResult{.scanned_invocation_count = 5,
+                                .scanned_macro_definition_count = 1,
+                                .scanned_global_symbol_count = 0});
+
+    const auto stats = cache.stats();
+    CHECK(stats.signature_scanned_invocations == 3);
+    CHECK(stats.inlay_scanned_invocations == 5);
+    CHECK(stats.macro_scanned_visible_definitions == 3);
+    CHECK(stats.scanned_global_symbols == 0);
+
+    const auto snapshot = cache.snapshotAndResetStats();
+    CHECK(snapshot.signature_scanned_invocations == 3);
+    const auto reset = cache.stats();
+    CHECK(reset.signature_scanned_invocations == 0);
+    CHECK(reset.inlay_scanned_invocations == 0);
+    CHECK(reset.macro_scanned_visible_definitions == 0);
+    CHECK(reset.scanned_global_symbols == 0);
+}
+
 } // namespace pristine::analysis::semantic

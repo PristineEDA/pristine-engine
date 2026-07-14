@@ -158,12 +158,18 @@ def main() -> int:
         assert "queryCacheSignatureHelpEntries" in summary
         assert "queryCacheInlayHintEntries" in summary
         assert "queryCacheCodeActionEntries" in summary
+        assert "signatureScannedInvocations" in summary
+        assert "inlayScannedInvocations" in summary
+        assert "macroScannedVisibleDefinitions" in summary
+        assert summary["scannedGlobalSymbols"] == 0
         assert summary["outlineRootCount"] >= 1
         assert summary["outlineItemCount"] >= 5
         assert summary["outlineMicros"] >= 0
         assert summary["hoverMicros"] >= 0
         assert summary["moduleHierarchyColdMicros"] >= 0
         assert summary["schematicMicros"] >= 0
+        assert summary["backwardConeMicros"] >= 0
+        assert "backwardConeNodeCount" in summary
         assert summary["hierarchyRootCount"] >= 1
         assert summary["schematicModuleCount"] >= 1
         assert summary["serverExitCode"] == 0
@@ -184,14 +190,16 @@ def main() -> int:
         assert sum(1 for line in trace_lines if '"method":"systemverilog/moduleHierarchy"' in line) == 2
         assert sum(1 for line in trace_lines if '"method":"systemverilog/schematic"' in line) == 1
         assert not any('"method":"workspace/symbol"' in line for line in trace_lines)
-        assert not any('"method":"systemverilog/backwardCone"' in line for line in trace_lines)
+        assert any('"method":"systemverilog/backwardCone"' in line for line in trace_lines)
         completion_index = next(
             index for index, line in enumerate(trace_lines)
-            if '"method":"textDocument/completion"' in line
+            if '"direction":"client->server"' in line
+            and '"method":"textDocument/completion"' in line
         )
         document_symbol_indexes = [
             index for index, line in enumerate(trace_lines)
-            if '"method":"textDocument/documentSymbol"' in line
+            if '"direction":"client->server"' in line
+            and '"method":"textDocument/documentSymbol"' in line
         ]
         assert document_symbol_indexes and completion_index > max(document_symbol_indexes)
 

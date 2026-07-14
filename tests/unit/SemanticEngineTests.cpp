@@ -2399,4 +2399,70 @@ TEST_CASE("SemanticEngine macro completion respects definition and include order
     CHECK(replaced->documentation.find("2") == std::string::npos);
 }
 
+TEST_CASE("SemanticEngine macro hover uses indexed invocation expansion",
+          "[analysis][semantic-engine][macro][hover][no-text-scan]") {
+    SemanticEngine engine;
+    engine.updateDocument("file:///workspace/macro-hover.sv",
+                          "`define ADD(a, b) ((a) + (b))\n"
+                          "module top;\n"
+                          "  int value = `ADD(1, 2);\n"
+                          "endmodule\n",
+                          SemanticEngineDocumentState{.version = 1, .is_open = true});
+    const auto hover = engine.hoverAt("file:///workspace/macro-hover.sv", 2, 17);
+    REQUIRE_FALSE(hover.unresolved);
+    CHECK(hover.contents.find("ADD(a, b)") != std::string::npos);
+    CHECK(hover.contents.find("((1) + (2))") != std::string::npos);
+}
+
+TEST_CASE("SemanticEngine macro definition uses indexed definition identity",
+          "[analysis][semantic-engine][macro][definition][no-text-scan]") {
+    SemanticEngine engine;
+    engine.updateDocument("file:///workspace/macro-definition.sv",
+                          "`define FLAG 1\nmodule top; int value = `FLAG; endmodule\n",
+                          SemanticEngineDocumentState{.version = 1, .is_open = true});
+    const auto definition = engine.definitionsAt("file:///workspace/macro-definition.sv", 1, 27);
+    REQUIRE_FALSE(definition.unresolved);
+    REQUIRE(definition.locations.size() == 1);
+    CHECK(definition.locations.front().uri == "file:///workspace/macro-definition.sv");
+    CHECK(definition.locations.front().range.start_line == 0);
+}
+
+TEST_CASE("SemanticEngine macro expansion action consumes indexed expansion text",
+          "[analysis][semantic-engine][macro][code-action][no-text-scan]") {
+    SemanticEngine engine;
+    engine.updateDocument("file:///workspace/macro-action.sv",
+                          "`define INC(value) ((value) + 1)\n"
+                          "module top; int value = `INC(2); endmodule\n",
+                          SemanticEngineDocumentState{.version = 1, .is_open = true});
+    const auto actions = engine.codeActionsAt(
+        "file:///workspace/macro-action.sv",
+        ParseRange{.start_line = 1, .start_character = 24, .end_line = 1, .end_character = 31});
+    const auto expand = std::find_if(actions.actions.begin(), actions.actions.end(), [](const auto& action) {
+        return action.title == "Expand macro 'INC'";
+    });
+    REQUIRE(expand != actions.actions.end());
+    REQUIRE_FALSE(expand->edits.empty());
+    CHECK(expand->edits.front().new_text == "((2) + 1)");
+}
+
+TEST_CASE("SemanticEngine document change invalidates indexed macro hover",
+          "[analysis][semantic-engine][macro][affected][cache]") {
+    SemanticEngine engine;
+    const auto uri = std::string("file:///workspace/macro-change.sv");
+    engine.updateDocument(uri,
+                          "`define FLAG 1\nmodule top; int value = `FLAG; endmodule\n",
+                          SemanticEngineDocumentState{.version = 1, .is_open = true});
+    const auto first = engine.hoverAt(uri, 1, 27);
+    REQUIRE_FALSE(first.unresolved);
+    CHECK(first.contents.find("Expansion: `1`") != std::string::npos);
+
+    engine.updateDocument(uri,
+                          "`define FLAG 2\nmodule top; int value = `FLAG; endmodule\n",
+                          SemanticEngineDocumentState{.version = 2, .is_open = true});
+    const auto second = engine.hoverAt(uri, 1, 27);
+    REQUIRE_FALSE(second.unresolved);
+    CHECK(second.contents.find("Expansion: `2`") != std::string::npos);
+    CHECK(second.contents.find("Expansion: `1`") == std::string::npos);
+}
+
 } // namespace pristine::analysis

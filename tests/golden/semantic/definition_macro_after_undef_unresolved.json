@@ -1,0 +1,1 @@
+{"name":"macro definition after undef is unresolved","sources":[{"uri":"file:///golden/semantic/macro-undef.sv","text":"`define FLAG 1\n`undef FLAG\nmodule top; int value = `FLAG; endmodule\n"}],"request":{"kind":"definition","uri":"file:///golden/semantic/macro-undef.sv","line":2,"character":27},"expected":{"unresolved":true,"count":0}}

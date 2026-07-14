@@ -23,24 +23,40 @@ struct SignatureInlayModuleInstance {
     std::vector<SchematicConnection> connections;
 };
 
-struct SignatureInlayCall {
+struct CallableInvocationFact {
+    std::string target_stable_id;
     std::string name;
     std::string kind;
     std::string return_type;
+    std::string receiver_type;
     ParseRange range;
     ParseRange selection_range;
     std::vector<std::string> parameters;
+    std::vector<ParseRange> argument_ranges;
+    bool resolved = true;
+};
+
+struct MacroInvocationFact {
+    std::string name;
+    std::string definition_uri;
+    MacroDefinition definition;
+    ParseRange range;
+    ParseRange selection_range;
+    std::vector<std::string> arguments;
+    std::vector<ParseRange> argument_ranges;
+    std::string expansion_text;
+    bool function_like = false;
+    bool resolved = false;
 };
 
 struct SignatureInlayContext {
     std::uint64_t generation = 0;
     std::string document_uri;
-    const std::string* document_text = nullptr;
     const std::unordered_map<std::string, ModuleDefinition>* modules_by_name = nullptr;
     std::vector<SignatureInlaySymbol> symbols;
     std::vector<SignatureInlayModuleInstance> module_instances;
-    std::vector<SignatureInlayCall> calls;
-    std::vector<MacroDefinition> macros;
+    std::vector<CallableInvocationFact> callable_invocations;
+    std::vector<MacroInvocationFact> macro_invocations;
     bool snapshot_available = false;
 };
 

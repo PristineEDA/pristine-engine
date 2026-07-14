@@ -80,6 +80,7 @@ struct Metrics {
     long long hierarchy_cold_micros = 0;
     long long hierarchy_warm_micros = 0;
     long long schematic_micros = 0;
+    long long backward_cone_micros = 0;
     long long hierarchy_cold_closure_build_micros = 0;
     long long hierarchy_warm_closure_build_micros = 0;
     long long schematic_closure_build_micros = 0;
@@ -128,6 +129,10 @@ struct Metrics {
     long long query_cache_schematic_entries = 0;
     long long query_cache_backward_cone_entries = 0;
     long long query_cache_code_action_entries = 0;
+    long long signature_scanned_invocations = 0;
+    long long inlay_scanned_invocations = 0;
+    long long macro_scanned_visible_definitions = 0;
+    long long scanned_global_symbols = 0;
     long long shutdown_micros = 0;
     long long total_micros = 0;
     size_t outline_root_count = 0;
@@ -140,6 +145,7 @@ struct Metrics {
     size_t schematic_module_count = 0;
     size_t schematic_cell_count = 0;
     size_t schematic_net_count = 0;
+    size_t backward_cone_node_count = 0;
     bool partial = false;
     bool truncated = false;
     size_t messages_count = 0;
@@ -783,6 +789,11 @@ void collectQueryCacheMetrics(const lsp::json::Object& response, Metrics& metric
     metrics.query_cache_schematic_entries = integerValue(response, "queryCacheSchematicEntries");
     metrics.query_cache_backward_cone_entries = integerValue(response, "queryCacheBackwardConeEntries");
     metrics.query_cache_code_action_entries = integerValue(response, "queryCacheCodeActionEntries");
+    metrics.signature_scanned_invocations = integerValue(response, "signatureScannedInvocations");
+    metrics.inlay_scanned_invocations = integerValue(response, "inlayScannedInvocations");
+    metrics.macro_scanned_visible_definitions =
+        integerValue(response, "macroScannedVisibleDefinitions");
+    metrics.scanned_global_symbols = integerValue(response, "scannedGlobalSymbols");
     metrics.background_diagnostics_state = stringValue(response, "backgroundDiagnosticsState");
     metrics.background_diagnostics_phase = stringValue(response, "backgroundDiagnosticsPhase");
     metrics.background_diagnostics_elapsed_micros =
@@ -1001,19 +1012,6 @@ public:
         std::this_thread::sleep_for(timeout);
     }
 
-    bool waitForDiagnosticsNotificationCount(size_t target_count,
-                                             std::chrono::milliseconds timeout,
-                                             const std::string& opened_uri) {
-        const auto deadline = Clock::now() + timeout;
-        while (Clock::now() < deadline) {
-            (void)request("textDocument/documentSymbol", textDocumentParams(opened_uri));
-            if (diagnostics_notification_count_ >= target_count) {
-                return true;
-            }
-        }
-        return diagnostics_notification_count_ >= target_count;
-    }
-
 private:
     lsp::Process process_;
     lsp::Connection connection_;
@@ -1089,6 +1087,7 @@ std::string summaryJson(const Metrics& metrics) {
         << "\"moduleHierarchyColdMicros\":" << metrics.hierarchy_cold_micros << ","
         << "\"moduleHierarchyWarmMicros\":" << metrics.hierarchy_warm_micros << ","
         << "\"schematicMicros\":" << metrics.schematic_micros << ","
+        << "\"backwardConeMicros\":" << metrics.backward_cone_micros << ","
         << "\"moduleHierarchyColdClosureUsed\":" << boolJson(metrics.hierarchy_cold_closure_used) << ","
         << "\"moduleHierarchyColdClosureRoot\":"
         << jsonString(metrics.hierarchy_cold_closure_root) << ","
@@ -1158,6 +1157,11 @@ std::string summaryJson(const Metrics& metrics) {
         << "\"queryCacheSchematicEntries\":" << metrics.query_cache_schematic_entries << ","
         << "\"queryCacheBackwardConeEntries\":" << metrics.query_cache_backward_cone_entries << ","
         << "\"queryCacheCodeActionEntries\":" << metrics.query_cache_code_action_entries << ","
+        << "\"signatureScannedInvocations\":" << metrics.signature_scanned_invocations << ","
+        << "\"inlayScannedInvocations\":" << metrics.inlay_scanned_invocations << ","
+        << "\"macroScannedVisibleDefinitions\":"
+        << metrics.macro_scanned_visible_definitions << ","
+        << "\"scannedGlobalSymbols\":" << metrics.scanned_global_symbols << ","
         << "\"shutdownMicros\":" << metrics.shutdown_micros << ","
         << "\"totalMicros\":" << metrics.total_micros << ","
         << "\"outlineRootCount\":" << metrics.outline_root_count << ","
@@ -1170,6 +1174,7 @@ std::string summaryJson(const Metrics& metrics) {
         << "\"schematicModuleCount\":" << metrics.schematic_module_count << ","
         << "\"schematicCellCount\":" << metrics.schematic_cell_count << ","
         << "\"schematicNetCount\":" << metrics.schematic_net_count << ","
+        << "\"backwardConeNodeCount\":" << metrics.backward_cone_node_count << ","
         << "\"partial\":" << boolJson(metrics.partial) << ","
         << "\"truncated\":" << boolJson(metrics.truncated) << ","
         << "\"messagesCount\":" << metrics.messages_count << ","
@@ -1385,27 +1390,6 @@ int main(int argc, char** argv) {
         writeOperation(operation_log, "textDocument/hover", metrics.hover_micros, &hover);
         writeStage(operation_log, "hover:end", std::to_string(metrics.hover_micros) + "us");
 
-        writeStage(operation_log, "semanticDiagnostics:begin");
-        start = Clock::now();
-        if (args.mode == "large-workspace") {
-            client.passiveDiagnosticsWait(std::chrono::milliseconds(2000));
-            metrics.semantic_diagnostics_published = client.diagnosticsNotificationCount() >= 2;
-        }
-        else {
-            metrics.semantic_diagnostics_published =
-                client.waitForDiagnosticsNotificationCount(2,
-                                                           std::chrono::milliseconds(2000),
-                                                           opened_source.uri);
-        }
-        metrics.semantic_diagnostics_micros = elapsedMicros(start, Clock::now());
-        if (!metrics.semantic_diagnostics_published) {
-            metrics.background_diagnostics_skipped_reason = "timeout";
-        }
-        writeOperation(operation_log, "semanticDiagnostics:wait", metrics.semantic_diagnostics_micros);
-        writeStage(operation_log,
-                   "semanticDiagnostics:end",
-                   metrics.semantic_diagnostics_published ? "published" : "timeout");
-
         const auto [completion_line, completion_character] =
             firstModuleBodyPosition(opened_source.text);
         writeStage(operation_log, "completion:cold:begin");
@@ -1484,6 +1468,19 @@ int main(int argc, char** argv) {
                    "inlayHint:end",
                    std::to_string(metrics.inlay_hint_micros) + "us");
 
+        writeStage(operation_log, "semanticDiagnostics:begin");
+        start = Clock::now();
+        client.passiveDiagnosticsWait(std::chrono::milliseconds(2000));
+        metrics.semantic_diagnostics_published = client.diagnosticsNotificationCount() >= 2;
+        metrics.semantic_diagnostics_micros = elapsedMicros(start, Clock::now());
+        if (!metrics.semantic_diagnostics_published) {
+            metrics.background_diagnostics_skipped_reason = "timeout";
+        }
+        writeOperation(operation_log, "semanticDiagnostics:wait", metrics.semantic_diagnostics_micros);
+        writeStage(operation_log,
+                   "semanticDiagnostics:end",
+                   metrics.semantic_diagnostics_published ? "published" : "timeout");
+
         const auto hierarchy_request_top = args.top_module.empty() ? std::string{} : metrics.top_module;
 
         writeStage(operation_log, "moduleHierarchy:cold:begin", hierarchy_request_top);
@@ -1519,6 +1516,23 @@ int main(int argc, char** argv) {
         collectSchematicMetrics(schematic, metrics);
         writeOperation(operation_log, "systemverilog/schematic", metrics.schematic_micros, &schematic);
         writeStage(operation_log, "schematic:end", std::to_string(metrics.schematic_micros) + "us");
+
+        writeStage(operation_log, "backwardCone:begin", opened_source.uri);
+        start = Clock::now();
+        auto backward_cone = client.request(
+            "systemverilog/backwardCone",
+            hoverParams(opened_source.uri, hover_line, hover_character));
+        metrics.backward_cone_micros = elapsedMicros(start, Clock::now());
+        metrics.backward_cone_node_count = backward_cone.isObject()
+                                               ? arraySize(backward_cone.object(), "nodes")
+                                               : 0;
+        writeOperation(operation_log,
+                       "systemverilog/backwardCone",
+                       metrics.backward_cone_micros,
+                       &backward_cone);
+        writeStage(operation_log,
+                   "backwardCone:end",
+                   std::to_string(metrics.backward_cone_micros) + "us");
 
         writeStage(operation_log, "shutdown:begin");
         start = Clock::now();

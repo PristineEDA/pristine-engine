@@ -1,0 +1,1 @@
+{"name":"indexed function macro hover","sources":[{"uri":"file:///golden/semantic/macro-function-hover.sv","text":"`define ADD(a, b) ((a) + (b))\nmodule top; int value = `ADD(1, 2); endmodule\n"}],"request":{"kind":"hover","uri":"file:///golden/semantic/macro-function-hover.sv","line":1,"character":27},"expected":{"contentsContains":["ADD(a, b)","((1) + (2))"]}}

@@ -92,6 +92,10 @@ void QueryCache::resetStats() {
     misses_ = 0;
     stores_ = 0;
     evictions_ = 0;
+    signature_scanned_invocations_ = 0;
+    inlay_scanned_invocations_ = 0;
+    macro_scanned_visible_definitions_ = 0;
+    scanned_global_symbols_ = 0;
 }
 
 QueryCache::Stats QueryCache::snapshotAndResetStats() {
@@ -120,6 +124,10 @@ QueryCache::Stats QueryCache::stats() const {
     result.misses = misses_;
     result.stores = stores_;
     result.evictions = evictions_;
+    result.signature_scanned_invocations = signature_scanned_invocations_;
+    result.inlay_scanned_invocations = inlay_scanned_invocations_;
+    result.macro_scanned_visible_definitions = macro_scanned_visible_definitions_;
+    result.scanned_global_symbols = scanned_global_symbols_;
     result.diagnostics_entries = diagnostics_by_uri_.size();
     result.workspace_symbols_entries = workspace_symbols_by_key_.size();
     result.references_entries = references_by_key_.size();
@@ -296,6 +304,9 @@ void QueryCache::storeSignatureHelp(std::uint64_t generation,
                                     int line,
                                     int character,
                                     SemanticSignatureHelpResult result) {
+    signature_scanned_invocations_ += result.scanned_invocation_count;
+    macro_scanned_visible_definitions_ += result.scanned_macro_definition_count;
+    scanned_global_symbols_ += result.scanned_global_symbol_count;
     SignatureHelpEntry entry;
     entry.generation = generation;
     entry.sequence = nextSequence();
@@ -321,6 +332,9 @@ void QueryCache::storeInlayHints(std::uint64_t generation,
                                  std::string_view uri,
                                  ParseRange range,
                                  SemanticInlayHintResult result) {
+    inlay_scanned_invocations_ += result.scanned_invocation_count;
+    macro_scanned_visible_definitions_ += result.scanned_macro_definition_count;
+    scanned_global_symbols_ += result.scanned_global_symbol_count;
     InlayHintsEntry entry;
     entry.generation = generation;
     entry.sequence = nextSequence();

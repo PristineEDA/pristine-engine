@@ -110,8 +110,14 @@ def main() -> int:
     assert summary["completionResolveMicros"] >= 0
     assert summary["signatureHelpMicros"] >= 0
     assert summary["inlayHintMicros"] >= 0
+    assert "signatureScannedInvocations" in summary
+    assert "inlayScannedInvocations" in summary
+    assert "macroScannedVisibleDefinitions" in summary
+    assert summary["scannedGlobalSymbols"] == 0
     assert summary["moduleHierarchyColdMicros"] >= 0
     assert summary["schematicMicros"] >= 0
+    assert summary["backwardConeMicros"] >= 0
+    assert "backwardConeNodeCount" in summary
     assert summary["hierarchyRootCount"] >= 1
     assert summary["schematicModuleCount"] >= 1
     assert summary["serverExitCode"] == 0
@@ -130,6 +136,7 @@ def main() -> int:
     assert any('"method":"textDocument/inlayHint"' in line for line in trace_lines)
     assert any('"method":"systemverilog/moduleHierarchy"' in line for line in trace_lines)
     assert any('"method":"systemverilog/schematic"' in line for line in trace_lines)
+    assert any('"method":"systemverilog/backwardCone"' in line for line in trace_lines)
     assert not any('"method":"workspace/symbol"' in line for line in trace_lines)
 
     test_status.emit(

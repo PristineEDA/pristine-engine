@@ -59,7 +59,8 @@ struct AstIndexView {
     std::unordered_map<std::string, std::vector<PackageImport>> package_imports_by_uri;
     std::unordered_map<std::string, std::vector<SnapshotModuleInstance>> module_instances_by_uri;
     std::unordered_map<std::string, std::vector<SignatureInlayModuleInstance>> signature_module_instances_by_uri;
-    std::unordered_map<std::string, std::vector<SignatureInlayCall>> signature_calls_by_uri;
+    std::unordered_map<std::string, std::vector<CallableInvocationFact>> callable_invocations_by_uri;
+    std::unordered_map<std::string, std::vector<MacroInvocationFact>> macro_invocations_by_uri;
     std::unordered_map<std::string, std::vector<SignatureInlaySymbol>> inlay_symbols_by_uri;
     std::vector<NavigationReference> navigation_references;
     std::unordered_map<std::string, SemanticSymbolIdentity> navigation_symbols_by_id;
@@ -114,6 +115,11 @@ void buildAstIndexes(SnapshotData& data,
                                                                      std::string_view uri,
                                                                      int line,
                                                                      int character);
+
+[[nodiscard]] std::optional<MacroInvocationFact> macroInvocationAt(const AstIndexView& view,
+                                                                   std::string_view uri,
+                                                                   int line,
+                                                                   int character);
 
 [[nodiscard]] std::optional<SemanticLocation> declarationLocationForSymbol(
     const slang::SourceManager& source_manager,

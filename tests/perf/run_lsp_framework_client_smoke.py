@@ -105,6 +105,8 @@ def main() -> int:
         assert trace_summary["hoverMicros"] >= 0
         assert trace_summary["hierarchyRootCount"] == 1
         assert trace_summary["schematicModuleCount"] >= 1
+        assert trace_summary["backwardConeMicros"] >= 0
+        assert "backwardConeNodeCount" in trace_summary
         assert trace_summary["syntaxCacheMisses"] >= 1
         assert trace_summary["syntaxCacheStores"] >= 1
         assert trace_summary["syntaxCacheEntries"] >= 1
@@ -115,6 +117,10 @@ def main() -> int:
         assert "queryCacheSignatureHelpEntries" in trace_summary
         assert "queryCacheInlayHintEntries" in trace_summary
         assert "queryCacheCodeActionEntries" in trace_summary
+        assert "signatureScannedInvocations" in trace_summary
+        assert "inlayScannedInvocations" in trace_summary
+        assert "macroScannedVisibleDefinitions" in trace_summary
+        assert trace_summary["scannedGlobalSymbols"] == 0
         assert trace_summary["syntaxDiagnosticsPublished"] is True
         assert "backgroundDiagnosticsState" in trace_summary
         assert "backgroundDiagnosticsPhase" in trace_summary
@@ -136,14 +142,16 @@ def main() -> int:
         assert any('"method":"systemverilog/moduleHierarchy"' in line for line in trace_lines)
         assert any('"method":"systemverilog/schematic"' in line for line in trace_lines)
         assert not any('"method":"workspace/symbol"' in line for line in trace_lines)
-        assert not any('"method":"systemverilog/backwardCone"' in line for line in trace_lines)
+        assert any('"method":"systemverilog/backwardCone"' in line for line in trace_lines)
         completion_index = next(
             index for index, line in enumerate(trace_lines)
-            if '"method":"textDocument/completion"' in line
+            if '"direction":"client->server"' in line
+            and '"method":"textDocument/completion"' in line
         )
         document_symbol_indexes = [
             index for index, line in enumerate(trace_lines)
-            if '"method":"textDocument/documentSymbol"' in line
+            if '"direction":"client->server"' in line
+            and '"method":"textDocument/documentSymbol"' in line
         ]
         assert document_symbol_indexes and completion_index > max(document_symbol_indexes)
 
