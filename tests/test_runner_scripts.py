@@ -127,6 +127,10 @@ class FullTestStatusRunnerTests(unittest.TestCase):
         )
         return self.runner.load_gate_manifest(manifest_path)
 
+    def test_differential_ctest_inherits_runtime_slang_root(self) -> None:
+        cmake_text = (ROOT / "tests" / "CMakeLists.txt").read_text(encoding="utf-8")
+        self.assertNotIn('ENVIRONMENT "SLANG_SERVER_ROOT=', cmake_text)
+
     def test_summary_reports_required_missing_and_optional_skip(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             manifest = self.write_manifest(
@@ -223,7 +227,7 @@ class FullTestStatusRunnerTests(unittest.TestCase):
                 ),
             ]
 
-            required_skips = self.runner.required_skip_results(results, manifest)
+            required_skips = self.runner.required_skip_results(results, manifest, {})
 
         self.assertEqual([result.name for result in required_skips], ["pristine_lsp_core_e2e"])
 
@@ -243,7 +247,7 @@ class FullTestStatusRunnerTests(unittest.TestCase):
                 skip_reason="SKIP: missing binary",
             )
 
-            optional = self.runner.required_skip_results([result], manifest)
+            optional = self.runner.required_skip_results([result], manifest, {})
             required = self.runner.required_skip_results(
                 [result],
                 manifest,

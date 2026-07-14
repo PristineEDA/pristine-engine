@@ -98,7 +98,6 @@ add_test(
 	COMMAND Python3::Interpreter ${CMAKE_CURRENT_SOURCE_DIR}/differential/slang_server_differential.py
 		$<TARGET_FILE:pristine-engine>)
 set_tests_properties(pristine_differential_slang_server PROPERTIES
-	ENVIRONMENT "SLANG_SERVER_ROOT=$ENV{SLANG_SERVER_ROOT}"
 	LABELS "differential"
 	SKIP_REGULAR_EXPRESSION "SKIP:")
 

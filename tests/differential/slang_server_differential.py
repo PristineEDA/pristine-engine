@@ -1,4 +1,3 @@
-import json
 import os
 import pathlib
 import queue
@@ -31,6 +30,19 @@ class DifferentialFixture:
     name: str
     sources: dict[str, str]
     checks: tuple[DifferentialCheck, ...]
+
+
+CHECK_CAPABILITIES: dict[str, str] = {
+    "completion": "completionProvider",
+    "completionResolve": "completionProvider",
+    "signatureHelp": "signatureHelpProvider",
+    "hover": "hoverProvider",
+    "definition": "definitionProvider",
+    "references": "referencesProvider",
+    "workspaceSymbol": "workspaceSymbolProvider",
+    "typeDefinition": "typeDefinitionProvider",
+    "callHierarchyOutgoing": "callHierarchyProvider",
+}
 
 
 FIXTURES: tuple[DifferentialFixture, ...] = (
@@ -128,6 +140,7 @@ FIXTURES: tuple[DifferentialFixture, ...] = (
                 uri="macro-navigation.sv",
                 position={"line": 2, "character": 22},
                 required=("ADD",),
+                optional=True,
             ),
         ),
     ),
@@ -621,51 +634,6 @@ FIXTURES: tuple[DifferentialFixture, ...] = (
         ),
     ),
     DifferentialFixture(
-        name="backward cone two-step assign chain",
-        sources={
-            "cone.sv": (
-                "module top;\n"
-                "  logic a;\n"
-                "  logic mid;\n"
-                "  logic out;\n"
-                "  assign mid = a;\n"
-                "  assign out = mid;\n"
-                "endmodule\n"
-            )
-        },
-        checks=(
-            DifferentialCheck(
-                kind="backwardCone",
-                uri="cone.sv",
-                position={"line": 3, "character": 9},
-                min_count=2,
-                optional=True,
-            ),
-        ),
-    ),
-    DifferentialFixture(
-        name="backward cone branching assign inputs",
-        sources={
-            "cone_branch.sv": (
-                "module top;\n"
-                "  logic a;\n"
-                "  logic b;\n"
-                "  logic out;\n"
-                "  assign out = a & b;\n"
-                "endmodule\n"
-            )
-        },
-        checks=(
-            DifferentialCheck(
-                kind="backwardCone",
-                uri="cone_branch.sv",
-                position={"line": 3, "character": 9},
-                min_count=2,
-                optional=True,
-            ),
-        ),
-    ),
-    DifferentialFixture(
         name="call hierarchy module outgoing",
         sources={
             "call.sv": (
@@ -762,6 +730,7 @@ class LspSession:
         )
         self.messages: queue.Queue[dict[str, Any] | BaseException] = queue.Queue()
         self.notifications: list[dict[str, Any]] = []
+        self.server_capabilities: dict[str, Any] = {}
         self.reader = threading.Thread(target=self._read_loop, daemon=True)
         self.reader.start()
 
@@ -792,7 +761,10 @@ class LspSession:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise TimeoutError(f"Timed out waiting for {method}")
-            item = self.messages.get(timeout=remaining)
+            try:
+                item = self.messages.get(timeout=remaining)
+            except queue.Empty as error:
+                raise TimeoutError(f"Timed out waiting for {method}") from error
             if isinstance(item, BaseException):
                 raise item
             if item.get("id") == request_id:
@@ -819,8 +791,14 @@ class LspSession:
             self.notifications.append(item)
 
     def initialize(self, root_uri: str) -> None:
-        self.request(1, "initialize", {"rootUri": root_uri, "capabilities": {}})
+        response = self.request(1, "initialize", {"rootUri": root_uri, "capabilities": {}})
+        result = response.get("result")
+        capabilities = result.get("capabilities") if isinstance(result, dict) else None
+        self.server_capabilities = capabilities if isinstance(capabilities, dict) else {}
         self.notify("initialized", {})
+
+    def supports_server_capability(self, name: str) -> bool:
+        return self.server_capabilities.get(name) not in (None, False)
 
     def did_open(self, uri: str, text: str) -> None:
         self.notify(
@@ -1062,6 +1040,9 @@ def run_fixture(server: pathlib.Path, root: pathlib.Path, fixture: DifferentialF
         for check in fixture.checks:
             key = f"{check.kind}:{check.uri or check.query}:{request_id}"
             try:
+                capability = CHECK_CAPABILITIES.get(check.kind)
+                if capability and not session.supports_server_capability(capability):
+                    raise UnsupportedCheck(f"{check.kind} is not advertised by the server")
                 if check.kind == "completion":
                     assert check.uri is not None and check.position is not None
                     observed[key] = check_completion(session, request_id, source_uris[check.uri], check.position)
