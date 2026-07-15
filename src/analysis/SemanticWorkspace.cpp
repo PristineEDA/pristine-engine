@@ -238,6 +238,10 @@ std::vector<SemanticEngineDiagnostic> SemanticWorkspace::engineDiagnosticsFor(st
     return semantic_engine_.diagnosticsFor(uri);
 }
 
+SemanticInactiveRegionResult SemanticWorkspace::engineInactiveRegions(std::string_view uri) const {
+    return semantic_engine_.inactiveRegions(uri);
+}
+
 SemanticConeTrace SemanticWorkspace::engineBackwardConeAt(std::string_view uri,
                                                           int line,
                                                           int character) const {

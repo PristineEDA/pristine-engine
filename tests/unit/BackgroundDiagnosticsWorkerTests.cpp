@@ -35,13 +35,15 @@ TEST_CASE("BackgroundDiagnosticsWorker publishes full diagnostics for a current 
     std::condition_variable cv;
     bool published = false;
     std::vector<analysis::SemanticEngineDiagnostic> published_diagnostics;
+    std::uint64_t published_inactive_generation = 0;
 
     BackgroundDiagnosticsWorker worker(
-        [&](std::string, std::vector<analysis::SemanticEngineDiagnostic> diagnostics) {
+        [&](std::string, BackgroundDiagnosticsWorker::PublishPayload payload) {
             {
                 std::lock_guard lock(mutex);
                 published = true;
-                published_diagnostics = std::move(diagnostics);
+                published_diagnostics = std::move(payload.diagnostics);
+                published_inactive_generation = payload.inactive_regions.generation;
             }
             cv.notify_one();
         },
@@ -55,6 +57,7 @@ TEST_CASE("BackgroundDiagnosticsWorker publishes full diagnostics for a current 
     std::unique_lock lock(mutex);
     REQUIRE(cv.wait_for(lock, std::chrono::seconds(5), [&]() { return published; }));
     CHECK_FALSE(published_diagnostics.empty());
+    CHECK(published_inactive_generation > 0);
     lock.unlock();
     REQUIRE(worker.waitUntilIdle(std::chrono::seconds(5)));
     const auto state = worker.stateSnapshot();
@@ -72,7 +75,7 @@ TEST_CASE("BackgroundDiagnosticsWorker suppresses stale publish decisions",
     bool published = false;
 
     BackgroundDiagnosticsWorker worker(
-        [&](std::string, std::vector<analysis::SemanticEngineDiagnostic>) {
+        [&](std::string, BackgroundDiagnosticsWorker::PublishPayload) {
             std::lock_guard lock(mutex);
             published = true;
         },
@@ -104,7 +107,7 @@ TEST_CASE("BackgroundDiagnosticsWorker suppresses stale publish decisions",
 TEST_CASE("BackgroundDiagnosticsWorker exposes pending running and idle state snapshots",
           "[server][diagnostics][background]") {
     BackgroundDiagnosticsWorker worker(
-        [](std::string, std::vector<analysis::SemanticEngineDiagnostic>) {},
+        [](std::string, BackgroundDiagnosticsWorker::PublishPayload) {},
         [](const BackgroundDiagnosticsWorker::Document&, std::uint64_t) {
             return BackgroundDiagnosticsWorker::PublishDecision{.publish = false,
                                                                 .skip_reason = "document-closed"};

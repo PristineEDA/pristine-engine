@@ -206,6 +206,7 @@ void BackgroundDiagnosticsWorker::loop() {
                 }
 
                 auto diagnostics = background_workspace.engineDiagnosticsFor(document.uri);
+                auto inactive_regions = background_workspace.engineInactiveRegions(document.uri);
 
                 if (!isCurrentJob(job.request_generation, "stale-after-diagnostics")) {
                     break;
@@ -226,7 +227,9 @@ void BackgroundDiagnosticsWorker::loop() {
                         decision.skip_reason.empty() ? "publish-suppressed" : decision.skip_reason);
                     continue;
                 }
-                publish_(document.uri, std::move(diagnostics));
+                publish_(document.uri,
+                         PublishPayload{.diagnostics = std::move(diagnostics),
+                                        .inactive_regions = std::move(inactive_regions)});
                 setState(StateKind::Published, "published", document.uri);
             }
             if (job.open_documents.empty()) {

@@ -95,6 +95,8 @@ void QueryCache::resetStats() {
     signature_scanned_invocations_ = 0;
     inlay_scanned_invocations_ = 0;
     macro_scanned_visible_definitions_ = 0;
+    completion_resolve_scanned_facts_ = 0;
+    diagnostic_lookup_scanned_facts_ = 0;
     scanned_global_symbols_ = 0;
 }
 
@@ -127,6 +129,8 @@ QueryCache::Stats QueryCache::stats() const {
     result.signature_scanned_invocations = signature_scanned_invocations_;
     result.inlay_scanned_invocations = inlay_scanned_invocations_;
     result.macro_scanned_visible_definitions = macro_scanned_visible_definitions_;
+    result.completion_resolve_scanned_facts = completion_resolve_scanned_facts_;
+    result.diagnostic_lookup_scanned_facts = diagnostic_lookup_scanned_facts_;
     result.scanned_global_symbols = scanned_global_symbols_;
     result.diagnostics_entries = diagnostics_by_uri_.size();
     result.workspace_symbols_entries = workspace_symbols_by_key_.size();
@@ -146,6 +150,14 @@ QueryCache::Stats QueryCache::stats() const {
                            result.schematic_entries + result.backward_cone_entries +
                            result.code_actions_entries;
     return result;
+}
+
+void QueryCache::recordCompletionResolveFactLookup(size_t count) {
+    completion_resolve_scanned_facts_ += count;
+}
+
+void QueryCache::recordDiagnosticLookupFacts(size_t count) {
+    diagnostic_lookup_scanned_facts_ += count;
 }
 
 std::optional<std::vector<SemanticEngineDiagnostic>> QueryCache::diagnostics(

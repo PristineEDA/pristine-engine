@@ -90,6 +90,7 @@ public:
                                                     int line,
                                                     int character) const;
     [[nodiscard]] std::vector<SemanticEngineDiagnostic> engineDiagnosticsFor(std::string_view uri) const;
+    [[nodiscard]] SemanticInactiveRegionResult engineInactiveRegions(std::string_view uri) const;
     [[nodiscard]] SemanticConeTrace engineBackwardConeAt(std::string_view uri,
                                                          int line,
                                                          int character) const;

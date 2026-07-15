@@ -27,6 +27,7 @@ struct DiagnosticContext {
     SemanticEngineDocument document;
     std::vector<SemanticEngineDiagnostic> snapshot_diagnostics;
     std::unordered_map<std::string, DiagnosticSymbol> symbols_by_id;
+    SnapshotDiagnosticLookupIndex lookup_index;
     std::vector<DiagnosticReference> references;
     std::unordered_map<std::string, std::vector<SnapshotAssignmentEdge>> assignment_edges_by_uri;
     std::unordered_map<std::string, std::vector<SnapshotTypeReference>> type_references_by_uri;
@@ -34,6 +35,7 @@ struct DiagnosticContext {
     std::unordered_map<std::string, std::vector<PackageImport>> package_imports_by_uri;
     std::unordered_map<std::string, ModuleDefinition> modules_by_name;
     std::unordered_map<std::string, std::vector<SnapshotModuleInstance>> module_instances_by_uri;
+    mutable size_t lookup_scanned_fact_count = 0;
 };
 
 [[nodiscard]] std::vector<SemanticEngineDiagnostic> diagnosticsFor(const DiagnosticContext& context);

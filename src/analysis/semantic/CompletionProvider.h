@@ -22,12 +22,6 @@ struct CompletionContext {
     bool module_instantiation_position = false;
 };
 
-struct CompletionResolveSymbol {
-    SemanticSymbolIdentity identity;
-    std::string type_display;
-    std::string value_display;
-};
-
 struct CompletionMemberCandidate {
     SemanticSymbolIdentity identity;
 };
@@ -38,11 +32,7 @@ struct CompletionMemberContext {
 };
 
 struct CompletionResolveContext {
-    const std::unordered_map<std::string, ModuleDefinition>* modules_by_name = nullptr;
-    const std::unordered_map<std::string, std::string>* module_uris_by_name = nullptr;
-    const std::unordered_map<std::string, std::vector<MacroDefinition>>* macros_by_uri = nullptr;
-    std::optional<CompletionResolveSymbol> symbol;
-    std::optional<CompletionResolveSymbol> member;
+    const std::unordered_map<std::string, SnapshotCompletionResolveFact>* facts_by_id = nullptr;
 };
 
 struct CompletionQueryContext {
@@ -98,6 +88,9 @@ struct CompletionQueryContext {
 [[nodiscard]] std::string macroSignatureLabel(const MacroDefinition& macro);
 [[nodiscard]] std::string macroInsertText(const MacroDefinition& macro);
 [[nodiscard]] std::string macroDocumentation(const MacroDefinition& macro);
+[[nodiscard]] std::string macroCompletionResolveId(const SnapshotVisibleMacro& macro);
+[[nodiscard]] std::string portCompletionResolveId(std::string_view module_stable_id,
+                                                   const SchematicPort& port);
 [[nodiscard]] std::string moduleDocumentation(const ModuleDefinition& module,
                                              std::string_view declaration_uri);
 [[nodiscard]] std::string portDocumentation(const ModuleDefinition& module,

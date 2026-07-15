@@ -36,6 +36,7 @@
 #include <cctype>
 #include <limits>
 #include <set>
+#include <span>
 #include <string_view>
 #include <type_traits>
 #include <utility>
@@ -196,6 +197,30 @@ bool isTypeDefinitionKind(std::string_view kind) {
 
 bool isModuleDefinitionKind(std::string_view kind) {
     return kind == "Definition" || kind == "Instance" || kind == "InstanceBody";
+}
+
+bool isPackageMemberDefinitionKind(std::string_view kind) {
+    return isTypeDefinitionKind(kind) || kind == "Parameter" || kind == "EnumValue" ||
+           kind == "Variable" || kind == "Net";
+}
+
+bool isDuplicateSymbolDiagnosticKind(std::string_view kind) {
+    return kind == "Net" || kind == "Variable" || kind == "Parameter" || kind == "TypeAlias" ||
+           kind == "Type" || kind == "ClassType" || kind == "EnumType" || kind == "EnumValue" ||
+           kind == "Field" || kind == "Member" || kind == "Subroutine";
+}
+
+bool identityLess(const SemanticSymbolIdentity& lhs, const SemanticSymbolIdentity& rhs) {
+    if (lhs.location.uri != rhs.location.uri) {
+        return lhs.location.uri < rhs.location.uri;
+    }
+    if (!sameRange(lhs.location.range, rhs.location.range)) {
+        return locationLess(lhs.location, rhs.location);
+    }
+    if (lhs.kind != rhs.kind) {
+        return lhs.kind < rhs.kind;
+    }
+    return lhs.stable_id < rhs.stable_id;
 }
 
 bool documentImportsPackage(const SnapshotData& data,
@@ -1737,6 +1762,133 @@ std::string expandNestedMacroText(const SnapshotData& data,
     return result;
 }
 
+void appendInactiveTokens(SnapshotData& data,
+                          const slang::SourceManager& source_manager,
+                          slang::BufferID buffer,
+                          const slang::syntax::TokenList& tokens) {
+    if (tokens.empty() || tokens.front().location().buffer() != buffer) {
+        return;
+    }
+    const auto location = locationForSourceRange(
+        source_manager,
+        slang::SourceRange(tokens.front().location(), tokens.back().range().end()));
+    if (!location.has_value() || location->uri.empty()) {
+        return;
+    }
+    data.inactive_regions_by_uri[location->uri].push_back(
+        SnapshotInactiveRegion{.location = *location,
+                               .directive_id = location->uri + "|inactive|" +
+                                                   std::to_string(location->range.start_line) + ":" +
+                                                   std::to_string(location->range.start_character)});
+}
+
+void collectInactiveRegions(SnapshotData& data,
+                            const slang::SourceManager& source_manager,
+                            slang::BufferID buffer,
+                            const slang::syntax::SyntaxNode& node);
+
+void collectInactiveTrivia(SnapshotData& data,
+                           const slang::SourceManager& source_manager,
+                           slang::BufferID buffer,
+                           std::span<const slang::parsing::Trivia> trivia_list) {
+    for (const auto& trivia : trivia_list) {
+        if (trivia.kind == slang::parsing::TriviaKind::Directive && trivia.syntax() != nullptr) {
+            collectInactiveRegions(data, source_manager, buffer, *trivia.syntax());
+        }
+        if (trivia.kind == slang::parsing::TriviaKind::SkippedTokens) {
+            for (const auto& skipped : trivia.getSkippedTokens()) {
+                collectInactiveTrivia(data, source_manager, buffer, skipped.trivia());
+            }
+            continue;
+        }
+
+        const auto* syntax = trivia.syntax();
+        if (syntax == nullptr || syntax->getFirstToken().location().buffer() != buffer) {
+            continue;
+        }
+        if (slang::syntax::ConditionalBranchDirectiveSyntax::isKind(syntax->kind)) {
+            appendInactiveTokens(data,
+                                 source_manager,
+                                 buffer,
+                                 syntax->as<slang::syntax::ConditionalBranchDirectiveSyntax>().disabledTokens);
+        }
+        else if (slang::syntax::UnconditionalBranchDirectiveSyntax::isKind(syntax->kind)) {
+            appendInactiveTokens(data,
+                                 source_manager,
+                                 buffer,
+                                 syntax->as<slang::syntax::UnconditionalBranchDirectiveSyntax>().disabledTokens);
+        }
+    }
+}
+
+void collectInactiveRegions(SnapshotData& data,
+                            const slang::SourceManager& source_manager,
+                            slang::BufferID buffer,
+                            const slang::syntax::SyntaxNode& node) {
+    for (size_t index = 0; index < node.getChildCount(); ++index) {
+        if (const auto* child = node.childNode(index)) {
+            collectInactiveRegions(data, source_manager, buffer, *child);
+            continue;
+        }
+        auto* token = const_cast<slang::syntax::SyntaxNode&>(node).childTokenPtr(index);
+        if (token != nullptr) {
+            collectInactiveTrivia(data, source_manager, buffer, token->trivia());
+        }
+    }
+}
+
+void buildInactiveRegionIndex(SnapshotData& data) {
+    data.inactive_regions_by_uri.clear();
+    data.inactive_region_count = 0;
+    const auto started_at = std::chrono::steady_clock::now();
+    if (!data.source_manager) {
+        return;
+    }
+    for (const auto& tree : data.syntax_trees) {
+        if (tree == nullptr || tree->getSourceBufferIds().empty()) {
+            continue;
+        }
+        collectInactiveRegions(data,
+                               *data.source_manager,
+                               tree->getSourceBufferIds().front(),
+                               tree->root());
+    }
+    for (auto& [_, regions] : data.inactive_regions_by_uri) {
+        std::sort(regions.begin(), regions.end(), [](const auto& lhs, const auto& rhs) {
+            return locationLess(lhs.location, rhs.location);
+        });
+        std::vector<SnapshotInactiveRegion> merged;
+        for (const auto& region : regions) {
+            if (!merged.empty() && rangesOverlapOrTouch(merged.back().location.range, region.location.range)) {
+                auto& prior = merged.back().location.range;
+                if (region.location.range.end_line > prior.end_line ||
+                    (region.location.range.end_line == prior.end_line &&
+                     region.location.range.end_character > prior.end_character)) {
+                    prior.end_line = region.location.range.end_line;
+                    prior.end_character = region.location.range.end_character;
+                }
+                continue;
+            }
+            merged.push_back(region);
+        }
+        data.inactive_region_count += merged.size();
+        regions = std::move(merged);
+    }
+    data.inactive_region_build_micros = std::chrono::duration_cast<std::chrono::microseconds>(
+                                               std::chrono::steady_clock::now() - started_at)
+                                               .count();
+}
+
+bool isInactiveMacroRange(const SnapshotData& data, std::string_view uri, const ParseRange& range) {
+    const auto regions = data.inactive_regions_by_uri.find(std::string(uri));
+    if (regions == data.inactive_regions_by_uri.end()) {
+        return false;
+    }
+    return std::any_of(regions->second.begin(), regions->second.end(), [&](const auto& region) {
+        return rangeContainsRange(region.location.range, range);
+    });
+}
+
 void indexMacroUsage(SnapshotData& data,
                      const slang::SourceManager& source_manager,
                      const slang::syntax::MacroUsageSyntax& usage) {
@@ -1759,6 +1911,9 @@ void indexMacroUsage(SnapshotData& data,
     fact.name = std::move(name);
     fact.range = invocation_location->range;
     fact.selection_range = selection_location->range;
+    if (isInactiveMacroRange(data, selection_location->uri, fact.range)) {
+        return;
+    }
     if (usage.args != nullptr) {
         fact.function_like = true;
         for (const auto* argument : usage.args->args) {
@@ -4219,6 +4374,178 @@ void sortSnapshotIndexes(SnapshotData& data) {
     }
 }
 
+void buildProviderLookupIndexes(SnapshotData& data) {
+    data.completion_resolve_by_id.clear();
+    data.diagnostic_lookup_index = {};
+
+    std::unordered_map<std::string, std::vector<std::string>> package_names_by_uri;
+    for (const auto& [stable_id, indexed_symbol] : data.symbols_by_id) {
+        const auto& identity = indexed_symbol.identity;
+        data.completion_resolve_by_id.emplace(
+            stable_id,
+            SnapshotCompletionResolveFact{.kind = SnapshotCompletionResolveKind::Symbol,
+                                          .identity = identity,
+                                          .type_display = indexed_symbol.type_display,
+                                          .value_display = indexed_symbol.value_display,
+                                          .module_uri = {},
+                                          .module = std::nullopt,
+                                          .port = std::nullopt,
+                                          .macro = std::nullopt});
+        if (identity.kind == "Package") {
+            data.diagnostic_lookup_index.package_definition_ids_by_name[identity.name].push_back(stable_id);
+            package_names_by_uri[identity.location.uri].push_back(identity.name);
+        }
+    }
+
+    for (auto& [_, names] : package_names_by_uri) {
+        std::sort(names.begin(), names.end());
+        names.erase(std::unique(names.begin(), names.end()), names.end());
+    }
+
+    for (const auto& [stable_id, indexed_symbol] : data.symbols_by_id) {
+        const auto& identity = indexed_symbol.identity;
+        if (isTypeDefinitionKind(identity.kind) && !isModuleDefinitionKind(identity.kind)) {
+            data.diagnostic_lookup_index.type_definition_locations_by_name[identity.name].push_back(
+                identity.location);
+        }
+        if (isPackageMemberDefinitionKind(identity.kind)) {
+            if (const auto packages = package_names_by_uri.find(identity.location.uri);
+                packages != package_names_by_uri.end()) {
+                auto& names = data.diagnostic_lookup_index.package_names_by_member[identity.name];
+                names.insert(names.end(), packages->second.begin(), packages->second.end());
+                for (const auto& package_name : packages->second) {
+                    ++data.diagnostic_lookup_index.package_member_definition_counts[
+                        package_name + "\x1f" + identity.name];
+                }
+            }
+        }
+        if (isDuplicateSymbolDiagnosticKind(identity.kind) && !identity.name.empty() &&
+            !identity.location.uri.empty()) {
+            data.diagnostic_lookup_index.duplicate_symbols_by_uri[identity.location.uri].push_back(identity);
+        }
+    }
+
+    for (const auto& [stable_id, member] : data.member_completions_by_stable_id) {
+        auto type_display = member.type_display;
+        if (type_display.empty()) {
+            if (const auto symbol = data.symbols_by_id.find(stable_id);
+                symbol != data.symbols_by_id.end()) {
+                type_display = symbol->second.type_display;
+            }
+        }
+        data.completion_resolve_by_id.insert_or_assign(
+            stable_id,
+            SnapshotCompletionResolveFact{.kind = SnapshotCompletionResolveKind::Member,
+                                          .identity = member.identity,
+                                          .type_display = std::move(type_display),
+                                          .value_display = {},
+                                          .module_uri = {},
+                                          .module = std::nullopt,
+                                          .port = std::nullopt,
+                                          .macro = std::nullopt});
+    }
+
+    for (const auto& [module_name, module] : data.modules_by_name) {
+        const auto module_id_it = data.module_definition_ids_by_name.find(module_name);
+        const auto module_id = module_id_it == data.module_definition_ids_by_name.end()
+                                   ? "module|" + module_name
+                                   : module_id_it->second;
+        auto identity = SemanticSymbolIdentity{.stable_id = module_id,
+                                               .name = module.name,
+                                               .kind = "Definition",
+                                               .location = SemanticLocation{
+                                                   .uri = data.module_uris_by_name.contains(module_name)
+                                                              ? data.module_uris_by_name.at(module_name)
+                                                              : std::string{},
+                                                   .range = module.selection_range}};
+        if (const auto indexed = data.symbols_by_id.find(module_id); indexed != data.symbols_by_id.end()) {
+            identity = indexed->second.identity;
+        }
+        const auto module_uri = data.module_uris_by_name.contains(module_name)
+                                    ? data.module_uris_by_name.at(module_name)
+                                    : std::string{};
+        data.completion_resolve_by_id.insert_or_assign(
+            module_id,
+            SnapshotCompletionResolveFact{.kind = SnapshotCompletionResolveKind::Module,
+                                          .identity = identity,
+                                          .type_display = {},
+                                          .value_display = {},
+                                          .module_uri = module_uri,
+                                          .module = module,
+                                          .port = std::nullopt,
+                                          .macro = std::nullopt});
+
+        const auto append_port = [&](const SchematicPort& port) {
+            data.completion_resolve_by_id.insert_or_assign(
+                portCompletionResolveId(module_id, port),
+                SnapshotCompletionResolveFact{.kind = SnapshotCompletionResolveKind::Port,
+                                              .identity = identity,
+                                              .type_display = {},
+                                              .value_display = {},
+                                              .module_uri = module_uri,
+                                              .module = module,
+                                              .port = port,
+                                              .macro = std::nullopt});
+        };
+        if (module.port_details.empty()) {
+            for (const auto& port_name : module.ports) {
+                append_port(SchematicPort{.name = port_name,
+                                          .direction = {},
+                                          .width_text = {},
+                                          .range = module.selection_range,
+                                          .selection_range = module.selection_range});
+            }
+        }
+        else {
+            for (const auto& port : module.port_details) {
+                append_port(port);
+            }
+        }
+    }
+
+    for (const auto& [_, visible_macros] : data.visible_macros_by_uri) {
+        for (const auto& visible_macro : visible_macros) {
+            const auto resolve_id = macroCompletionResolveId(visible_macro);
+            SemanticSymbolIdentity identity;
+            identity.stable_id = resolve_id;
+            identity.name = visible_macro.definition.name;
+            identity.kind = "Macro";
+            identity.location = SemanticLocation{.uri = visible_macro.source_uri,
+                                                 .range = visible_macro.definition.selection_range};
+            data.completion_resolve_by_id.insert_or_assign(
+                resolve_id,
+                SnapshotCompletionResolveFact{.kind = SnapshotCompletionResolveKind::Macro,
+                                              .identity = std::move(identity),
+                                              .type_display = {},
+                                              .value_display = {},
+                                              .module_uri = {},
+                                              .module = std::nullopt,
+                                              .port = std::nullopt,
+                                              .macro = visible_macro.definition});
+        }
+    }
+
+    for (auto& [_, ids] : data.diagnostic_lookup_index.package_definition_ids_by_name) {
+        std::sort(ids.begin(), ids.end());
+        ids.erase(std::unique(ids.begin(), ids.end()), ids.end());
+    }
+    for (auto& [_, locations] : data.diagnostic_lookup_index.type_definition_locations_by_name) {
+        std::sort(locations.begin(), locations.end(), locationLess);
+        locations.erase(std::unique(locations.begin(), locations.end(), sameLocation), locations.end());
+    }
+    for (auto& [_, names] : data.diagnostic_lookup_index.package_names_by_member) {
+        std::sort(names.begin(), names.end());
+        names.erase(std::unique(names.begin(), names.end()), names.end());
+    }
+    for (auto& [_, symbols] : data.diagnostic_lookup_index.duplicate_symbols_by_uri) {
+        std::sort(symbols.begin(), symbols.end(), identityLess);
+        symbols.erase(std::unique(symbols.begin(), symbols.end(), [](const auto& lhs, const auto& rhs) {
+                          return lhs.stable_id == rhs.stable_id;
+                      }),
+                      symbols.end());
+    }
+}
+
 bool fuzzyMatch(std::string_view query, std::string_view candidate) {
     if (query.empty()) {
         return true;
@@ -4307,6 +4634,10 @@ void buildAstIndexes(SnapshotData& data,
         root.visit(visitor);
     }
     {
+        PRISTINE_DEBUG_TRACE_SCOPE_SIMPLE("astIndex.buildInactiveRegionIndex");
+        buildInactiveRegionIndex(data);
+    }
+    {
         PRISTINE_DEBUG_TRACE_SCOPE_SIMPLE("astIndex.buildMacroInvocationIndex");
         buildMacroInvocationIndex(data);
     }
@@ -4386,6 +4717,10 @@ void buildAstIndexes(SnapshotData& data,
     {
         PRISTINE_DEBUG_TRACE_SCOPE_SIMPLE("astIndex.sortSnapshotIndexes");
         sortSnapshotIndexes(data);
+    }
+    {
+        PRISTINE_DEBUG_TRACE_SCOPE_SIMPLE("astIndex.buildProviderLookupIndexes");
+        buildProviderLookupIndexes(data);
     }
 }
 
@@ -4560,6 +4895,19 @@ std::optional<MacroInvocationFact> macroInvocationAt(const AstIndexView& view,
     return best == nullptr ? std::nullopt : std::optional<MacroInvocationFact>(*best);
 }
 
+std::vector<ParseRange> inactiveRegionsForUri(const AstIndexView& view, std::string_view uri) {
+    const auto it = view.inactive_regions_by_uri.find(std::string(uri));
+    if (it == view.inactive_regions_by_uri.end()) {
+        return {};
+    }
+    std::vector<ParseRange> regions;
+    regions.reserve(it->second.size());
+    for (const auto& region : it->second) {
+        regions.push_back(region.location.range);
+    }
+    return regions;
+}
+
 AstIndexView buildAstIndexView(const SnapshotData* data, std::uint64_t generation) {
     AstIndexView view;
     view.generation = generation;
@@ -4588,11 +4936,16 @@ AstIndexView buildAstIndexView(const SnapshotData* data, std::uint64_t generatio
     view.workspace_visibility = data->workspace_visibility;
     view.module_definition_ids_by_name = data->module_definition_ids_by_name;
     view.visible_macros_by_uri = data->visible_macros_by_uri;
+    view.completion_resolve_by_id = data->completion_resolve_by_id;
+    view.diagnostic_lookup_index = data->diagnostic_lookup_index;
+    view.inactive_regions_by_uri = data->inactive_regions_by_uri;
     view.scope_visibility_count = data->scope_visibility_count;
     view.package_visibility_count = data->package_visibility_count;
     view.member_visibility_count = data->member_visibility_count;
     view.callable_visibility_count = data->callable_visibility_count;
     view.scope_visibility_build_micros = data->scope_visibility_build_micros;
+    view.inactive_region_count = data->inactive_region_count;
+    view.inactive_region_build_micros = data->inactive_region_build_micros;
     view.include_directives_by_uri = data->include_directives_by_uri;
     view.macros_by_uri = data->macros_by_uri;
     view.package_imports_by_uri = data->package_imports_by_uri;

@@ -1014,8 +1014,9 @@ analysis::SemanticEngineConfig semanticConfigForWorkspace(const workspace::State
 ServerSession::ServerSession(std::string server_name, std::string server_version) :
     server_name_(std::move(server_name)), server_version_(std::move(server_version)) {
     background_diagnostics_worker_ = std::make_unique<BackgroundDiagnosticsWorker>(
-        [this](std::string uri, std::vector<analysis::SemanticEngineDiagnostic> diagnostics) {
-            publishDiagnostics(uri, std::move(diagnostics));
+        [this](std::string uri, BackgroundDiagnosticsWorker::PublishPayload payload) {
+            publishDiagnostics(uri, std::move(payload.diagnostics));
+            publishInactiveRegions(uri, payload.inactive_regions);
         },
         [this](const BackgroundDiagnosticsWorker::Document& document,
                std::uint64_t semantic_generation) -> BackgroundDiagnosticsWorker::PublishDecision {
@@ -1167,7 +1168,9 @@ void ServerSession::bind(jsonrpc::JsonRpcServer& server) {
 
 jsonrpc::Json ServerSession::handleInitialize(const jsonrpc::Json& params) {
     PRISTINE_DEBUG_TRACE_SCOPE_SIMPLE("server.initialize");
-    workspace_manager_.initialize(lsp::parseInitializeParams(params));
+    const auto initialize_params = lsp::parseInitializeParams(params);
+    inactive_regions_supported_ = initialize_params.inactive_regions_supported;
+    workspace_manager_.initialize(initialize_params);
     {
         std::lock_guard semantic_lock(semantic_mutex_);
         semantic_workspace_.clear();
@@ -2262,6 +2265,7 @@ void ServerSession::handleDidClose(const jsonrpc::Json& params) {
 
     const auto did_close = lsp::parseDidCloseTextDocumentParams(params);
     clearDiagnostics(did_close.text_document.uri);
+    clearInactiveRegions(did_close.text_document.uri);
     {
         std::lock_guard state_lock(state_mutex_);
         document_store_.close(did_close);
@@ -2421,6 +2425,7 @@ void ServerSession::publishDiagnostics(std::string_view uri) {
     jsonrpc::Json diagnostics = jsonrpc::Json::array();
     bool syntax_first = false;
     size_t semantic_document_count = 0;
+    std::optional<analysis::SemanticInactiveRegionResult> inactive_regions;
     {
         std::lock_guard semantic_lock(semantic_mutex_);
         semantic_document_count = semantic_workspace_.documentCount();
@@ -2442,6 +2447,9 @@ void ServerSession::publishDiagnostics(std::string_view uri) {
         {
             std::lock_guard semantic_lock(semantic_mutex_);
             semantic_diagnostics = semantic_workspace_.engineDiagnosticsFor(document_uri);
+            if (inactive_regions_supported_) {
+                inactive_regions = semantic_workspace_.engineInactiveRegions(document_uri);
+            }
         }
         for (const auto& diagnostic : semantic_diagnostics) {
             diagnostics.push_back(makeDiagnosticJson(diagnostic.range,
@@ -2455,6 +2463,9 @@ void ServerSession::publishDiagnostics(std::string_view uri) {
     server_->sendNotification("textDocument/publishDiagnostics",
                               jsonrpc::Json{{"uri", document_uri},
                                             {"diagnostics", std::move(diagnostics)}});
+    if (inactive_regions.has_value()) {
+        publishInactiveRegions(document_uri, *inactive_regions);
+    }
     if (syntax_first) {
         (void)semantic_document_count;
         scheduleSemanticDiagnosticsPublish(true);
@@ -2479,6 +2490,39 @@ void ServerSession::publishDiagnostics(std::string_view uri,
     server_->sendNotification("textDocument/publishDiagnostics",
                               jsonrpc::Json{{"uri", std::string(uri)},
                                             {"diagnostics", std::move(diagnostics_json)}});
+}
+
+void ServerSession::publishInactiveRegions(
+    std::string_view uri,
+    const analysis::SemanticInactiveRegionResult& result) {
+    if (!inactive_regions_supported_ || !server_ || result.unresolved) {
+        return;
+    }
+    std::string document_uri;
+    {
+        std::lock_guard state_lock(state_mutex_);
+        const auto* document = document_store_.find(uri);
+        if (document == nullptr) {
+            return;
+        }
+        document_uri = document->uri;
+    }
+    jsonrpc::Json regions = jsonrpc::Json::array();
+    for (const auto& range : result.regions) {
+        regions.push_back(toRangeJson(range));
+    }
+    server_->sendNotification("textDocument/inactiveRegions",
+                              jsonrpc::Json{{"uri", std::move(document_uri)},
+                                            {"regions", std::move(regions)}});
+}
+
+void ServerSession::clearInactiveRegions(std::string_view uri) {
+    if (!inactive_regions_supported_ || !server_) {
+        return;
+    }
+    server_->sendNotification("textDocument/inactiveRegions",
+                              jsonrpc::Json{{"uri", std::string(uri)},
+                                            {"regions", jsonrpc::Json::array()}});
 }
 
 void ServerSession::scheduleSemanticDiagnosticsPublish(bool allow_cold_snapshot_build) {

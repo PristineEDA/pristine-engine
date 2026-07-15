@@ -86,6 +86,9 @@ private:
     void removeSemanticDocument(std::string_view uri);
     void publishDiagnostics(std::string_view uri);
     void publishDiagnostics(std::string_view uri, std::vector<analysis::SemanticEngineDiagnostic> diagnostics);
+    void publishInactiveRegions(std::string_view uri,
+                                const analysis::SemanticInactiveRegionResult& result);
+    void clearInactiveRegions(std::string_view uri);
     void scheduleSemanticDiagnosticsPublish(bool allow_cold_snapshot_build = true);
     void stopBackgroundDiagnostics();
     void clearDiagnostics(std::string_view uri);
@@ -96,6 +99,7 @@ private:
     std::string server_version_;
     bool initialized_ = false;
     bool shutdown_requested_ = false;
+    bool inactive_regions_supported_ = false;
     jsonrpc::JsonRpcServer* server_ = nullptr;
     analysis::CompilationService compilation_service_;
     analysis::SyntaxDocumentCache syntax_cache_;

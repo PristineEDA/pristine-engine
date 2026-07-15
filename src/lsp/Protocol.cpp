@@ -118,6 +118,19 @@ InitializeParams parseInitializeParams(const Json& params) {
         }
     }
 
+    const auto capabilities_it = params.find("capabilities");
+    if (capabilities_it != params.end() && capabilities_it->is_object()) {
+        const auto experimental_it = capabilities_it->find("experimental");
+        if (experimental_it != capabilities_it->end() && experimental_it->is_object()) {
+            const auto inactive_it = experimental_it->find("inactiveRegions");
+            if (inactive_it != experimental_it->end() && inactive_it->is_object()) {
+                const auto enabled_it = inactive_it->find("inactiveRegions");
+                result.inactive_regions_supported = enabled_it != inactive_it->end() &&
+                                                   enabled_it->is_boolean() && enabled_it->get<bool>();
+            }
+        }
+    }
+
     return result;
 }
 

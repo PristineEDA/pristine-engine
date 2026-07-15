@@ -21,6 +21,8 @@ public:
         std::uint64_t signature_scanned_invocations = 0;
         std::uint64_t inlay_scanned_invocations = 0;
         std::uint64_t macro_scanned_visible_definitions = 0;
+        std::uint64_t completion_resolve_scanned_facts = 0;
+        std::uint64_t diagnostic_lookup_scanned_facts = 0;
         std::uint64_t scanned_global_symbols = 0;
         size_t diagnostics_entries = 0;
         size_t workspace_symbols_entries = 0;
@@ -154,6 +156,8 @@ public:
                           std::string_view uri,
                           ParseRange range,
                           SemanticCodeActionResult result);
+    void recordCompletionResolveFactLookup(size_t count);
+    void recordDiagnosticLookupFacts(size_t count);
 
 private:
     struct DiagnosticsEntry {
@@ -269,6 +273,8 @@ private:
     std::uint64_t signature_scanned_invocations_ = 0;
     std::uint64_t inlay_scanned_invocations_ = 0;
     std::uint64_t macro_scanned_visible_definitions_ = 0;
+    std::uint64_t completion_resolve_scanned_facts_ = 0;
+    std::uint64_t diagnostic_lookup_scanned_facts_ = 0;
     std::uint64_t scanned_global_symbols_ = 0;
 };
 

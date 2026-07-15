@@ -1287,6 +1287,34 @@ TEST_CASE("SemanticEngine provides AST-backed macro completions and resolve docs
     CHECK(completion->detail == "Macro function");
     CHECK(completion->insert_text.find("${1:lhs}") != std::string::npos);
     CHECK(completion->documentation.find("Parameters") != std::string::npos);
+    CHECK(completion->stable_id.rfind("completion-macro:", 0) == 0);
+    engine.resetQueryCacheStats();
+    const auto resolved = engine.resolveCompletion(completion->stable_id, completion->label);
+    CHECK_FALSE(resolved.unresolved);
+    CHECK(resolved.documentation.find("((lhs) + (rhs))") != std::string::npos);
+    const auto stats = engine.queryCacheStats();
+    CHECK(stats.completion_resolve_scanned_facts == 1);
+    CHECK(stats.scanned_global_symbols == 0);
+}
+
+TEST_CASE("SemanticEngine exposes AST-indexed inactive preprocessor regions",
+          "[analysis][semantic-engine][preprocessor][inactive-regions]") {
+    SemanticEngine engine;
+    engine.updateDocument("file:///workspace/inactive.sv",
+                          "`ifdef DISABLED\n"
+                          "  logic disabled_value;\n"
+                          "`else\n"
+                          "  logic active_value;\n"
+                          "`endif\n"
+                          "module top; endmodule\n",
+                          SemanticEngineDocumentState{.version = 1, .is_open = true});
+
+    const auto regions = engine.inactiveRegions("file:///workspace/inactive.sv");
+    CHECK_FALSE(regions.unresolved);
+    REQUIRE_FALSE(regions.regions.empty());
+    CHECK(regions.regions.front().start_line == 1);
+    CHECK(regions.indexed_region_count >= 1);
+    CHECK(regions.build_micros >= 0);
 }
 
 TEST_CASE("SemanticEngine builds selection parent chains from AST and syntax ranges",

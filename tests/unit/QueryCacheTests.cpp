@@ -237,4 +237,22 @@ TEST_CASE("QueryCache aggregates and resets URI-local invocation scan telemetry"
     CHECK(reset.scanned_global_symbols == 0);
 }
 
+TEST_CASE("QueryCache records direct completion and diagnostic lookup telemetry",
+          "[analysis][semantic][query-cache][telemetry][lookup]") {
+    QueryCache cache;
+    cache.recordCompletionResolveFactLookup(1);
+    cache.recordDiagnosticLookupFacts(4);
+
+    const auto stats = cache.stats();
+    CHECK(stats.completion_resolve_scanned_facts == 1);
+    CHECK(stats.diagnostic_lookup_scanned_facts == 4);
+    CHECK(stats.scanned_global_symbols == 0);
+
+    const auto snapshot = cache.snapshotAndResetStats();
+    CHECK(snapshot.completion_resolve_scanned_facts == 1);
+    CHECK(snapshot.diagnostic_lookup_scanned_facts == 4);
+    CHECK(cache.stats().completion_resolve_scanned_facts == 0);
+    CHECK(cache.stats().diagnostic_lookup_scanned_facts == 0);
+}
+
 } // namespace pristine::analysis::semantic

@@ -1302,6 +1302,14 @@ TEST_CASE("AstIndex indexes ordinary module instance members for hierarchical co
             return member.qualifier == "u_child" && member.identity.name == name;
         }));
     }
+    const auto data_i = std::find_if(members->second.begin(), members->second.end(), [](const auto& member) {
+        return member.qualifier == "u_child" && member.identity.name == "data_i";
+    });
+    REQUIRE(data_i != members->second.end());
+    const auto resolve = view.completion_resolve_by_id.find(data_i->identity.stable_id);
+    REQUIRE(resolve != view.completion_resolve_by_id.end());
+    CHECK(resolve->second.kind == SnapshotCompletionResolveKind::Member);
+    CHECK(resolve->second.type_display == "logic");
 }
 
 TEST_CASE("AstIndex callable invocation facts preserve AST argument ranges",
@@ -1340,6 +1348,41 @@ TEST_CASE("AstIndex macro invocation resolves the preceding definition",
     CHECK(macros.front().resolved);
     CHECK(macros.front().definition.parameters == std::vector<std::string>{"a", "b"});
     CHECK(macros.front().expansion_text == "((1) + (2))");
+    const auto visible = view.visible_macros_by_uri.find("file:///workspace/macro.sv");
+    REQUIRE(visible != view.visible_macros_by_uri.end());
+    REQUIRE_FALSE(visible->second.empty());
+    const auto resolve_id = macroCompletionResolveId(visible->second.front());
+    CAPTURE(resolve_id, view.completion_resolve_by_id.size());
+    CHECK(view.completion_resolve_by_id.contains(resolve_id));
+}
+
+TEST_CASE("AstIndex indexes disabled conditional regions and excludes inactive macro invocations",
+          "[analysis][semantic][ast-index][macro][inactive-region][no-fallback]") {
+    SnapshotBuildInput input{.generation = 711,
+                             .documents = {{"file:///workspace/inactive.sv",
+                                            SemanticEngineDocument{
+                                                .uri = "file:///workspace/inactive.sv",
+                                                .text = "`define VALUE 1\n"
+                                                        "`ifdef DISABLED\n"
+                                                        "  int disabled_value = `VALUE;\n"
+                                                        "`else\n"
+                                                        "  int active_value = `VALUE;\n"
+                                                        "`endif\n"
+                                                        "module top; endmodule\n",
+                                                .is_open = true}}}};
+    auto output = SnapshotBuilder{}.build(std::move(input));
+    REQUIRE(output.data != nullptr);
+    const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
+    const auto regions = inactiveRegionsForUri(view, "file:///workspace/inactive.sv");
+    REQUIRE_FALSE(regions.empty());
+    CHECK(regions.front().start_line == 2);
+    CHECK(view.inactive_region_count >= 1);
+    CHECK(view.inactive_region_build_micros >= 0);
+    const auto macros = view.macro_invocations_by_uri.find("file:///workspace/inactive.sv");
+    REQUIRE(macros != view.macro_invocations_by_uri.end());
+    REQUIRE(macros->second.size() == 1);
+    CHECK(macros->second.front().resolved);
+    CHECK(macros->second.front().range.start_line == 4);
 }
 
 TEST_CASE("AstIndex macro invocation does not see a later definition",

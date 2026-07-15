@@ -49,11 +49,16 @@ struct AstIndexView {
     std::vector<SnapshotVisibilityCandidate> workspace_visibility;
     std::unordered_map<std::string, std::string> module_definition_ids_by_name;
     std::unordered_map<std::string, std::vector<SnapshotVisibleMacro>> visible_macros_by_uri;
+    std::unordered_map<std::string, SnapshotCompletionResolveFact> completion_resolve_by_id;
+    SnapshotDiagnosticLookupIndex diagnostic_lookup_index;
+    std::unordered_map<std::string, std::vector<SnapshotInactiveRegion>> inactive_regions_by_uri;
     size_t scope_visibility_count = 0;
     size_t package_visibility_count = 0;
     size_t member_visibility_count = 0;
     size_t callable_visibility_count = 0;
     std::int64_t scope_visibility_build_micros = 0;
+    size_t inactive_region_count = 0;
+    std::int64_t inactive_region_build_micros = 0;
     std::unordered_map<std::string, std::vector<IncludeDirective>> include_directives_by_uri;
     std::unordered_map<std::string, std::vector<MacroDefinition>> macros_by_uri;
     std::unordered_map<std::string, std::vector<PackageImport>> package_imports_by_uri;
@@ -120,6 +125,9 @@ void buildAstIndexes(SnapshotData& data,
                                                                    std::string_view uri,
                                                                    int line,
                                                                    int character);
+
+[[nodiscard]] std::vector<ParseRange> inactiveRegionsForUri(const AstIndexView& view,
+                                                             std::string_view uri);
 
 [[nodiscard]] std::optional<SemanticLocation> declarationLocationForSymbol(
     const slang::SourceManager& source_manager,

@@ -51,6 +51,11 @@ public:
         std::string skip_reason;
     };
 
+    struct PublishPayload {
+        std::vector<analysis::SemanticEngineDiagnostic> diagnostics;
+        analysis::SemanticInactiveRegionResult inactive_regions;
+    };
+
     struct StateSnapshot {
         StateKind state = StateKind::Idle;
         std::uint64_t request_generation = 0;
@@ -61,8 +66,7 @@ public:
         size_t open_document_count = 0;
     };
 
-    using PublishCallback =
-        std::function<void(std::string, std::vector<analysis::SemanticEngineDiagnostic>)>;
+    using PublishCallback = std::function<void(std::string, PublishPayload)>;
     using ShouldPublishCallback =
         std::function<PublishDecision(const Document&, std::uint64_t semantic_generation)>;
 

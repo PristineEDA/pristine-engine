@@ -79,26 +79,6 @@ bool isUserTypeReferenceName(std::string_view name) {
     return !isBuiltinTypeName(head);
 }
 
-bool isTypeDefinitionKind(std::string_view kind) {
-    return kind == "Definition" || kind == "TypeAlias" || kind == "Type" || kind == "ClassType" ||
-           kind == "EnumType" || kind == "Interface" || kind == "Modport";
-}
-
-bool isModuleDefinitionKind(std::string_view kind) {
-    return kind == "Definition" || kind == "Instance" || kind == "InstanceBody";
-}
-
-bool isPackageMemberDefinitionKind(std::string_view kind) {
-    return isTypeDefinitionKind(kind) || kind == "Parameter" || kind == "EnumValue" ||
-           kind == "Variable" || kind == "Net";
-}
-
-bool isDuplicateSymbolDiagnosticKind(std::string_view kind) {
-    return kind == "Net" || kind == "Variable" || kind == "Parameter" || kind == "TypeAlias" ||
-           kind == "Type" || kind == "ClassType" || kind == "EnumType" || kind == "EnumValue" ||
-           kind == "Field" || kind == "Member" || kind == "Subroutine";
-}
-
 std::string unknownIncludeMessage(std::string_view target) {
     return std::string("Include file '") + std::string(target) + "' could not be resolved.";
 }
@@ -253,47 +233,27 @@ std::optional<DiagnosticSymbol> symbolForId(const DiagnosticContext& context,
 
 std::vector<std::string> packageDefinitionIds(const DiagnosticContext& context,
                                               std::string_view package_name) {
-    std::vector<std::string> result;
-    for (const auto& [stable_id, symbol] : context.symbols_by_id) {
-        if (symbol.identity.name == package_name && symbol.identity.kind == "Package") {
-            result.push_back(stable_id);
-        }
-    }
-    std::sort(result.begin(), result.end());
-    return result;
+    ++context.lookup_scanned_fact_count;
+    const auto it = context.lookup_index.package_definition_ids_by_name.find(std::string(package_name));
+    return it == context.lookup_index.package_definition_ids_by_name.end() ? std::vector<std::string>{}
+                                                                            : it->second;
 }
 
 std::vector<SemanticLocation> typeDefinitionLocationsByName(const DiagnosticContext& context,
                                                             std::string_view name) {
-    std::vector<SemanticLocation> locations;
-    for (const auto& [_, symbol] : context.symbols_by_id) {
-        if (symbol.identity.name == name && isTypeDefinitionKind(symbol.identity.kind) &&
-            !isModuleDefinitionKind(symbol.identity.kind)) {
-            locations.push_back(symbol.identity.location);
-        }
-    }
-    return locations;
+    ++context.lookup_scanned_fact_count;
+    const auto it = context.lookup_index.type_definition_locations_by_name.find(std::string(name));
+    return it == context.lookup_index.type_definition_locations_by_name.end()
+               ? std::vector<SemanticLocation>{}
+               : it->second;
 }
 
 std::vector<std::string> packageNamesDefiningMember(const DiagnosticContext& context,
                                                     std::string_view member_name) {
-    std::vector<std::string> result;
-    for (const auto& [_, symbol] : context.symbols_by_id) {
-        const auto& identity = symbol.identity;
-        if (identity.name != member_name || !isPackageMemberDefinitionKind(identity.kind)) {
-            continue;
-        }
-        for (const auto& [__, package_symbol] : context.symbols_by_id) {
-            const auto& package_identity = package_symbol.identity;
-            if (package_identity.kind == "Package" &&
-                package_identity.location.uri == identity.location.uri) {
-                result.push_back(package_identity.name);
-            }
-        }
-    }
-    std::sort(result.begin(), result.end());
-    result.erase(std::unique(result.begin(), result.end()), result.end());
-    return result;
+    ++context.lookup_scanned_fact_count;
+    const auto it = context.lookup_index.package_names_by_member.find(std::string(member_name));
+    return it == context.lookup_index.package_names_by_member.end() ? std::vector<std::string>{}
+                                                                      : it->second;
 }
 
 bool documentImportsPackage(const DiagnosticContext& context, std::string_view package_name) {
@@ -315,12 +275,13 @@ bool hasTypeDefinitionSymbol(const DiagnosticContext& context, std::string_view 
 void appendDuplicateSymbolDiagnostics(std::vector<SemanticEngineDiagnostic>& result,
                                       const DiagnosticContext& context) {
     std::map<std::string, std::vector<SemanticSymbolIdentity>> by_scope_and_name;
-    for (const auto& [_, symbol] : context.symbols_by_id) {
-        const auto& identity = symbol.identity;
-        if (identity.location.uri == context.document.uri && !identity.name.empty() &&
-            isDuplicateSymbolDiagnosticKind(identity.kind)) {
-            by_scope_and_name[duplicateScopeKey(identity) + identity.name].push_back(identity);
-        }
+    ++context.lookup_scanned_fact_count;
+    const auto candidates = context.lookup_index.duplicate_symbols_by_uri.find(context.document.uri);
+    if (candidates == context.lookup_index.duplicate_symbols_by_uri.end()) {
+        return;
+    }
+    for (const auto& identity : candidates->second) {
+        by_scope_and_name[duplicateScopeKey(identity) + identity.name].push_back(identity);
     }
     for (auto& [_, symbols] : by_scope_and_name) {
         if (symbols.size() < 2) {
@@ -412,20 +373,11 @@ void appendAmbiguousReferenceDiagnostics(std::vector<SemanticEngineDiagnostic>& 
         }
         size_t definition_count = 0;
         for (const auto& import : imports_it->second) {
-            for (const auto& package_id : packageDefinitionIds(context, import.package_name)) {
-                const auto package_it = context.symbols_by_id.find(package_id);
-                if (package_it == context.symbols_by_id.end()) {
-                    continue;
-                }
-                definition_count += static_cast<size_t>(
-                    std::count_if(context.symbols_by_id.begin(),
-                                  context.symbols_by_id.end(),
-                                  [&](const auto& candidate_entry) {
-                                      const auto& candidate = candidate_entry.second.identity;
-                                      return candidate.location.uri == package_it->second.identity.location.uri &&
-                                             candidate.name == reference.type_name &&
-                                             isPackageMemberDefinitionKind(candidate.kind);
-                                  }));
+            ++context.lookup_scanned_fact_count;
+            const auto count_it = context.lookup_index.package_member_definition_counts.find(
+                import.package_name + "\x1f" + reference.type_name);
+            if (count_it != context.lookup_index.package_member_definition_counts.end()) {
+                definition_count += count_it->second;
             }
         }
         if (definition_count < 2) {

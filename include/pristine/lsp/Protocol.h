@@ -191,9 +191,10 @@ struct WorkspaceFolder {
 };
 
 struct InitializeParams {
-	std::optional<std::vector<WorkspaceFolder>> workspace_folders;
-	std::optional<std::string> root_uri;
-	std::optional<std::string> root_path;
+    std::optional<std::vector<WorkspaceFolder>> workspace_folders;
+    std::optional<std::string> root_uri;
+    std::optional<std::string> root_path;
+    bool inactive_regions_supported = false;
 };
 
 Json makeInitializeResult(std::string_view server_name, std::string_view server_version);

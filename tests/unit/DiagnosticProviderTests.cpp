@@ -114,6 +114,25 @@ TEST_CASE("DiagnosticProvider aggregates UX diagnostics and dedupes snapshot dia
                                                                                .kind = "TypeAlias",
                                                                                .location = locationAt("file:///workspace/pkg_c.sv",
                                                                                                       rangeAt(1, 22, 32))}}}},
+        .lookup_index =
+            SnapshotDiagnosticLookupIndex{
+                .package_definition_ids_by_name = {{"pkg_a", {"pkg_a"}},
+                                                    {"pkg_b", {"pkg_b"}},
+                                                    {"pkg_c", {"pkg_c"}}},
+                .package_names_by_member = {{"word_t", {"pkg_a", "pkg_b"}},
+                                            {"pkg_only_t", {"pkg_c"}}},
+                .package_member_definition_counts = {{"pkg_a\x1fword_t", 1},
+                                                      {"pkg_b\x1fword_t", 1}},
+                .duplicate_symbols_by_uri =
+                    {{std::string(uri),
+                      {SemanticSymbolIdentity{.stable_id = "ready_1",
+                                              .name = "ready",
+                                              .kind = "Variable",
+                                              .location = locationAt(std::string(uri), rangeAt(1, 8, 13))},
+                       SemanticSymbolIdentity{.stable_id = "ready_2",
+                                              .name = "ready",
+                                              .kind = "Variable",
+                                              .location = locationAt(std::string(uri), rangeAt(2, 8, 13))}}}}},
         .references = {DiagnosticReference{.stable_id = "lhs",
                                            .location = locationAt(std::string(uri), rangeAt(10, 9, 12))},
                        DiagnosticReference{.stable_id = "rhs",
@@ -188,6 +207,7 @@ TEST_CASE("DiagnosticProvider aggregates UX diagnostics and dedupes snapshot dia
     CHECK(std::any_of(diagnostics.begin(), diagnostics.end(), [](const SemanticEngineDiagnostic& diagnostic) {
         return diagnostic.code == "unresolvedModule";
     }));
+    CHECK(context.lookup_scanned_fact_count > 0);
 }
 
 TEST_CASE("DiagnosticProvider reports ambiguous missing imports without choosing a package",
@@ -225,6 +245,8 @@ TEST_CASE("DiagnosticProvider reports ambiguous missing imports without choosing
                                                                                .kind = "TypeAlias",
                                                                                .location = locationAt("file:///workspace/pkg_b.sv",
                                                                                                       rangeAt(1, 22, 30))}}}},
+        .lookup_index = SnapshotDiagnosticLookupIndex{
+            .package_names_by_member = {{"shared_t", {"pkg_a", "pkg_b"}}}},
         .type_references_by_uri = {{std::string(uri),
                                     {SnapshotTypeReference{.reference = locationAt(std::string(uri),
                                                                                    rangeAt(1, 2, 10)),
@@ -242,6 +264,7 @@ TEST_CASE("DiagnosticProvider reports ambiguous missing imports without choosing
     CHECK(std::none_of(diagnostics.begin(), diagnostics.end(), [](const SemanticEngineDiagnostic& diagnostic) {
         return diagnostic.code == "missingImport";
     }));
+    CHECK(context.lookup_scanned_fact_count > 0);
 }
 
 } // namespace pristine::analysis::semantic

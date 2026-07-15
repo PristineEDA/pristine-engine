@@ -1943,7 +1943,7 @@ TEST_CASE("ServerSession returns macro completions and resolves macro documentat
         R"({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}})",
         R"({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///workspace/macro-completion.sv","languageId":"systemverilog","version":1,"text":"`define LOCAL_FLAG 1\n`define LOCAL_ADD(a, b) ((a) + (b))\nmodule top;\n  logic ready;\n  assign ready = `LOC\nendmodule\n"}}})",
         R"({"jsonrpc":"2.0","id":2,"method":"textDocument/completion","params":{"textDocument":{"uri":"file:///workspace/macro-completion.sv"},"position":{"line":4,"character":21},"context":{"triggerKind":1}}})",
-        R"json({"jsonrpc":"2.0","id":3,"method":"completionItem/resolve","params":{"label":"LOCAL_ADD","kind":3,"detail":"Macro function","data":{"source":"semanticEngine","stableId":"file:///workspace/macro-completion.sv|macro|LOCAL_ADD","label":"LOCAL_ADD"}}})json"};
+        R"json({"jsonrpc":"2.0","id":3,"method":"completionItem/resolve","params":{"label":"LOCAL_ADD","kind":3,"detail":"Macro function","data":{"source":"semanticEngine","stableId":"completion-macro:file:///workspace/macro-completion.sv:LOCAL_ADD:1:8:1:0","label":"LOCAL_ADD"}}})json"};
 
     CHECK(rpc_server.run(transport) == 0);
 
@@ -2704,6 +2704,52 @@ TEST_CASE("ServerSession survives invalid workspace config", "[server][workspace
     CHECK(state.config_loaded == false);
     REQUIRE(state.config_error.has_value());
     CHECK(state.config_error->find("Failed to parse workspace config") != std::string::npos);
+}
+
+TEST_CASE("ServerSession publishes client-gated inactive regions and clears them on close",
+          "[server][preprocessor][inactive-regions]") {
+    jsonrpc::JsonRpcServer rpc_server;
+    ServerSession session{"pristine-engine", kTestServerVersion};
+    session.bind(rpc_server);
+
+    constexpr std::string_view uri = "file:///workspace/inactive.sv";
+    const auto text = std::string("`ifdef DISABLED\n"
+                                  "  logic disabled_value;\n"
+                                  "`else\n"
+                                  "  logic active_value;\n"
+                                  "`endif\n"
+                                  "module top; endmodule\n");
+    ScriptedTransport transport{
+        R"({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{"experimental":{"inactiveRegions":{"inactiveRegions":true}}}}})",
+        std::string(R"({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":")") +
+            std::string(uri) + R"(","languageId":"systemverilog","version":1,"text":)" +
+            jsonrpc::Json(text).dump() + R"(}}})",
+        std::string(R"({"jsonrpc":"2.0","method":"textDocument/didClose","params":{"textDocument":{"uri":")") +
+            std::string(uri) + R"("}}})"};
+
+    CHECK(rpc_server.run(transport) == 0);
+    const auto notifications = findNotifications(transport, "textDocument/inactiveRegions");
+    REQUIRE(notifications.size() == 2);
+    CHECK(notifications.front().at("params").at("uri").get<std::string>() == std::string(uri));
+    REQUIRE_FALSE(notifications.front().at("params").at("regions").empty());
+    CHECK(notifications.back().at("params").at("regions").empty());
+}
+
+TEST_CASE("ServerSession does not publish inactive regions without client capability",
+          "[server][preprocessor][inactive-regions][capability]") {
+    jsonrpc::JsonRpcServer rpc_server;
+    ServerSession session{"pristine-engine", kTestServerVersion};
+    session.bind(rpc_server);
+
+    constexpr std::string_view uri = "file:///workspace/inactive-unsupported.sv";
+    ScriptedTransport transport{
+        R"({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}})",
+        std::string(R"({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":")") +
+            std::string(uri) +
+            R"(","languageId":"systemverilog","version":1,"text":"`ifdef DISABLED\nlogic hidden;\n`endif\nmodule top; endmodule\n"}}})"};
+
+    CHECK(rpc_server.run(transport) == 0);
+    CHECK(findNotifications(transport, "textDocument/inactiveRegions").empty());
 }
 
 } // namespace pristine::server

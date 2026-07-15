@@ -85,6 +85,40 @@ struct SnapshotVisibleMacro {
     std::optional<ParseRange> unavailable_after;
 };
 
+enum class SnapshotCompletionResolveKind {
+    Symbol,
+    Member,
+    Module,
+    Port,
+    Macro,
+};
+
+// A completion item's data is an opaque key into this build-time view. Providers
+// must not reconstruct a target by parsing the key or scanning unrelated facts.
+struct SnapshotCompletionResolveFact {
+    SnapshotCompletionResolveKind kind = SnapshotCompletionResolveKind::Symbol;
+    SemanticSymbolIdentity identity;
+    std::string type_display;
+    std::string value_display;
+    std::string module_uri;
+    std::optional<ModuleDefinition> module;
+    std::optional<SchematicPort> port;
+    std::optional<MacroDefinition> macro;
+};
+
+struct SnapshotDiagnosticLookupIndex {
+    std::unordered_map<std::string, std::vector<std::string>> package_definition_ids_by_name;
+    std::unordered_map<std::string, std::vector<SemanticLocation>> type_definition_locations_by_name;
+    std::unordered_map<std::string, std::vector<std::string>> package_names_by_member;
+    std::unordered_map<std::string, size_t> package_member_definition_counts;
+    std::unordered_map<std::string, std::vector<SemanticSymbolIdentity>> duplicate_symbols_by_uri;
+};
+
+struct SnapshotInactiveRegion {
+    SemanticLocation location;
+    std::string directive_id;
+};
+
 struct SnapshotMacroUndef {
     std::string name;
     std::string source_uri;
@@ -166,11 +200,16 @@ struct SnapshotData {
     std::vector<SnapshotVisibilityCandidate> workspace_visibility;
     std::unordered_map<std::string, std::string> module_definition_ids_by_name;
     std::unordered_map<std::string, std::vector<SnapshotVisibleMacro>> visible_macros_by_uri;
+    std::unordered_map<std::string, SnapshotCompletionResolveFact> completion_resolve_by_id;
+    SnapshotDiagnosticLookupIndex diagnostic_lookup_index;
+    std::unordered_map<std::string, std::vector<SnapshotInactiveRegion>> inactive_regions_by_uri;
     size_t scope_visibility_count = 0;
     size_t package_visibility_count = 0;
     size_t member_visibility_count = 0;
     size_t callable_visibility_count = 0;
     std::int64_t scope_visibility_build_micros = 0;
+    size_t inactive_region_count = 0;
+    std::int64_t inactive_region_build_micros = 0;
     std::vector<SnapshotModuleEntry> module_entries;
     std::unordered_map<std::string, ModuleDefinition> modules_by_name;
     std::unordered_map<std::string, std::string> module_uris_by_name;

@@ -198,6 +198,8 @@ std::string queryCacheStatsDetail(const SemanticQueryCacheStats& stats) {
         << " signatureScannedInvocations=" << stats.signature_scanned_invocations
         << " inlayScannedInvocations=" << stats.inlay_scanned_invocations
         << " macroScannedVisibleDefinitions=" << stats.macro_scanned_visible_definitions
+        << " completionResolveScannedFacts=" << stats.completion_resolve_scanned_facts
+        << " diagnosticLookupScannedFacts=" << stats.diagnostic_lookup_scanned_facts
         << " scannedGlobalSymbols=" << stats.scanned_global_symbols;
     return out.str();
 }
@@ -276,6 +278,7 @@ semantic::DiagnosticContext diagnosticContextFor(const SnapshotData* data,
         return context;
     }
     context.symbols_by_id = ast_index.diagnostic_symbols_by_id;
+    context.lookup_index = ast_index.diagnostic_lookup_index;
     context.references = ast_index.diagnostic_references;
     context.assignment_edges_by_uri = ast_index.assignment_edges_by_uri;
     context.type_references_by_uri = ast_index.type_references_by_uri;
@@ -484,6 +487,10 @@ SemanticQueryCacheStats SemanticEngine::queryCacheStats() const {
                                    .inlay_scanned_invocations = stats.inlay_scanned_invocations,
                                    .macro_scanned_visible_definitions =
                                        stats.macro_scanned_visible_definitions,
+                                   .completion_resolve_scanned_facts =
+                                       stats.completion_resolve_scanned_facts,
+                                   .diagnostic_lookup_scanned_facts =
+                                       stats.diagnostic_lookup_scanned_facts,
                                    .scanned_global_symbols = stats.scanned_global_symbols,
                                    .diagnostics_entries = stats.diagnostics_entries,
                                    .workspace_symbols_entries = stats.workspace_symbols_entries,
@@ -781,7 +788,25 @@ std::vector<SemanticEngineDiagnostic> SemanticEngine::diagnosticsFor(std::string
                                         workspace_root_uri_,
                                         ast_index);
     auto result = semantic::diagnosticsFor(context);
+    query_cache_->recordDiagnosticLookupFacts(context.lookup_scanned_fact_count);
     query_cache_->storeDiagnostics(current_snapshot.generation, document_uri, result);
+    return result;
+}
+
+SemanticInactiveRegionResult SemanticEngine::inactiveRegions(std::string_view uri) const {
+    const auto& current_snapshot = snapshot();
+    SemanticInactiveRegionResult result;
+    result.generation = current_snapshot.generation;
+    const auto* data = snapshotData();
+    if (data == nullptr) {
+        result.unresolved = true;
+        result.messages.push_back("AST-backed SemanticEngine snapshot is unavailable");
+        return result;
+    }
+    const auto ast_index = semantic::buildAstIndexView(data, current_snapshot.generation);
+    result.regions = semantic::inactiveRegionsForUri(ast_index, withoutTrailingSlash(normalizeFileUri(uri)));
+    result.indexed_region_count = ast_index.inactive_region_count;
+    result.build_micros = ast_index.inactive_region_build_micros;
     return result;
 }
 
@@ -1254,22 +1279,8 @@ SemanticCompletionItem SemanticEngine::resolveCompletion(std::string_view stable
     }
 
     semantic::CompletionResolveContext context;
-    context.modules_by_name = &ast_index.modules_by_name;
-    context.module_uris_by_name = &ast_index.module_uris_by_name;
-    context.macros_by_uri = &ast_index.macros_by_uri;
-
-    const auto symbol_it = data->symbols_by_id.find(std::string(stable_id));
-    if (symbol_it != data->symbols_by_id.end()) {
-        context.symbol = semantic::CompletionResolveSymbol{.identity = symbol_it->second.identity,
-                                                           .type_display = symbol_it->second.type_display,
-                                                           .value_display = symbol_it->second.value_display};
-    }
-    else if (const auto member_it = ast_index.member_completions_by_stable_id.find(std::string(stable_id));
-             member_it != ast_index.member_completions_by_stable_id.end()) {
-        context.member = semantic::CompletionResolveSymbol{.identity = member_it->second.identity,
-                                                           .type_display = member_it->second.type_display,
-                                                           .value_display = {}};
-    }
+    context.facts_by_id = &ast_index.completion_resolve_by_id;
+    query_cache_->recordCompletionResolveFactLookup(1);
     return semantic::resolveCompletionItem(stable_id, label, context);
 }
 

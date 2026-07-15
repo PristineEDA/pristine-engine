@@ -56,6 +56,15 @@ struct SemanticLocation {
     ParseRange range;
 };
 
+struct SemanticInactiveRegionResult {
+    std::uint64_t generation = 0;
+    std::vector<ParseRange> regions;
+    std::vector<std::string> messages;
+    size_t indexed_region_count = 0;
+    std::int64_t build_micros = 0;
+    bool unresolved = false;
+};
+
 struct SemanticSymbolIdentity {
     std::string stable_id;
     std::string name;
@@ -449,6 +458,8 @@ struct SemanticQueryCacheStats {
     std::uint64_t signature_scanned_invocations = 0;
     std::uint64_t inlay_scanned_invocations = 0;
     std::uint64_t macro_scanned_visible_definitions = 0;
+    std::uint64_t completion_resolve_scanned_facts = 0;
+    std::uint64_t diagnostic_lookup_scanned_facts = 0;
     std::uint64_t scanned_global_symbols = 0;
     size_t diagnostics_entries = 0;
     size_t workspace_symbols_entries = 0;
@@ -490,6 +501,7 @@ public:
     [[nodiscard]] const SemanticEngineSnapshot& snapshot() const;
     [[nodiscard]] SemanticWorkspaceDiscoverySnapshot workspaceDiscovery() const;
     [[nodiscard]] std::vector<SemanticEngineDiagnostic> diagnosticsFor(std::string_view uri) const;
+    [[nodiscard]] SemanticInactiveRegionResult inactiveRegions(std::string_view uri) const;
     [[nodiscard]] SemanticLookupResult lookupAt(std::string_view uri, int line, int character) const;
     [[nodiscard]] SemanticReferenceResult definitionsAt(std::string_view uri,
                                                         int line,
