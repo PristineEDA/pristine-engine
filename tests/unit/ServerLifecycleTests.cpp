@@ -2155,8 +2155,10 @@ TEST_CASE("ServerSession handles Tier 2 rename highlight and document links", "[
     CHECK(highlight_response.at("id") == 2);
     REQUIRE(highlight_response.at("result").size() == 3);
     CHECK(highlight_response.at("result").at(0).at("range").at("start").at("line") == 4);
+    CHECK(highlight_response.at("result").at(0).at("kind") == 1);
     CHECK(highlight_response.at("result").at(1).at("range").at("start").at("line") == 5);
-    CHECK(highlight_response.at("result").at(2).at("kind") == 1);
+    CHECK(highlight_response.at("result").at(1).at("kind") == 3);
+    CHECK(highlight_response.at("result").at(2).at("kind") == 2);
 
     const auto rename_response = parseOutput(transport, 3);
     CHECK(rename_response.at("id") == 3);
@@ -2321,7 +2323,12 @@ TEST_CASE("ServerSession returns inferred SystemVerilog module hierarchy", "[ser
     CHECK(top.at("uri") == toFileUri(top_path));
     REQUIRE(top.at("children").size() == 2);
 
-    const auto& child = top.at("children").at(0);
+    const auto& top_children = top.at("children");
+    const auto child_it = std::find_if(top_children.begin(), top_children.end(), [](const auto& item) {
+        return item.at("moduleName") == "child" && item.at("instanceName") == "u_child";
+    });
+    REQUIRE(child_it != top_children.end());
+    const auto& child = *child_it;
     CHECK(child.at("moduleName") == "child");
     CHECK(child.at("kind") == "module");
     CHECK(child.at("instanceName") == "u_child");
@@ -2342,7 +2349,11 @@ TEST_CASE("ServerSession returns inferred SystemVerilog module hierarchy", "[ser
     CHECK(leaf.at("uri") == toFileUri(leaf_path));
     CHECK(leaf.at("children").empty());
 
-    const auto& interface_instance = top.at("children").at(1);
+    const auto interface_it = std::find_if(top_children.begin(), top_children.end(), [](const auto& item) {
+        return item.at("moduleName") == "bus_if" && item.at("instanceName") == "bus";
+    });
+    REQUIRE(interface_it != top_children.end());
+    const auto& interface_instance = *interface_it;
     CHECK(interface_instance.at("moduleName") == "bus_if");
     CHECK(interface_instance.at("kind") == "interface");
     CHECK(interface_instance.at("instanceName") == "bus");
@@ -2477,37 +2488,43 @@ TEST_CASE("ServerSession handles standard call hierarchy", "[server][hierarchy]"
     const auto child_uri = toFileUri(child_path);
     const auto top_uri = toFileUri(top_path);
 
-    const auto top_item = std::string(
-        R"({"name":"top","kind":2,"uri":")") + top_uri +
-        R"(","range":{"start":{"line":0,"character":0},"end":{"line":0,"character":0}},"selectionRange":{"start":{"line":0,"character":7},"end":{"line":0,"character":10}}})";
-    const auto child_item = std::string(
-        R"({"name":"child","kind":2,"uri":")") + child_uri +
-        R"(","range":{"start":{"line":0,"character":0},"end":{"line":0,"character":0}},"selectionRange":{"start":{"line":0,"character":7},"end":{"line":0,"character":12}}})";
-
-    ScriptedTransport transport{
+    ScriptedTransport prepare_transport{
         std::string(R"({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"rootUri":")") +
             toFileUri(workspace.root()) + R"("}})",
         std::string(R"({"jsonrpc":"2.0","id":2,"method":"textDocument/prepareCallHierarchy","params":{"textDocument":{"uri":")") +
             top_uri + R"("},"position":{"line":0,"character":8}}})",
-        std::string(R"({"jsonrpc":"2.0","id":3,"method":"callHierarchy/outgoingCalls","params":{"item":)" +
-            top_item + R"(}})"),
         std::string(R"({"jsonrpc":"2.0","id":4,"method":"textDocument/prepareCallHierarchy","params":{"textDocument":{"uri":")") +
-            top_uri + R"("},"position":{"line":1,"character":3}}})",
-        std::string(R"({"jsonrpc":"2.0","id":5,"method":"callHierarchy/incomingCalls","params":{"item":)" +
-            child_item + R"(}})")};
+            top_uri + R"("},"position":{"line":1,"character":3}}})"};
 
-    const int exit_code = rpc_server.run(transport);
+    const int prepare_exit_code = rpc_server.run(prepare_transport);
 
-    CHECK(exit_code == 0);
-    REQUIRE(transport.outputs().size() == 5);
+    CHECK(prepare_exit_code == 0);
+    REQUIRE(prepare_transport.outputs().size() == 3);
 
-    const auto prepare_top_response = parseOutput(transport, 1);
+    const auto prepare_top_response = parseOutput(prepare_transport, 1);
     CHECK(prepare_top_response.at("id") == 2);
     REQUIRE(prepare_top_response.at("result").size() == 1);
     CHECK(prepare_top_response.at("result").at(0).at("name") == "top");
     CHECK(prepare_top_response.at("result").at(0).at("uri") == top_uri);
+    REQUIRE(prepare_top_response.at("result").at(0).contains("data"));
 
-    const auto outgoing_response = parseOutput(transport, 2);
+    const auto prepare_child_response = parseOutput(prepare_transport, 2);
+    CHECK(prepare_child_response.at("id") == 4);
+    REQUIRE(prepare_child_response.at("result").size() == 1);
+    CHECK(prepare_child_response.at("result").at(0).at("name") == "child");
+    CHECK(prepare_child_response.at("result").at(0).at("uri") == child_uri);
+    REQUIRE(prepare_child_response.at("result").at(0).contains("data"));
+
+    ScriptedTransport calls_transport{
+        std::string(R"({"jsonrpc":"2.0","id":3,"method":"callHierarchy/outgoingCalls","params":{"item":)") +
+            prepare_top_response.at("result").at(0).dump() + R"(}})",
+        std::string(R"({"jsonrpc":"2.0","id":5,"method":"callHierarchy/incomingCalls","params":{"item":)") +
+            prepare_child_response.at("result").at(0).dump() + R"(}})"};
+    const int calls_exit_code = rpc_server.run(calls_transport);
+    CHECK(calls_exit_code == 0);
+    REQUIRE(calls_transport.outputs().size() == 2);
+
+    const auto outgoing_response = parseOutput(calls_transport, 0);
     CHECK(outgoing_response.at("id") == 3);
     REQUIRE(outgoing_response.at("result").size() == 1);
     CHECK(outgoing_response.at("result").at(0).at("to").at("name") == "child");
@@ -2515,13 +2532,7 @@ TEST_CASE("ServerSession handles standard call hierarchy", "[server][hierarchy]"
     CHECK(outgoing_response.at("result").at(0).at("fromRanges").at(0).at("start").at("line") == 1);
     CHECK(outgoing_response.at("result").at(0).at("fromRanges").at(0).at("start").at("character") == 2);
 
-    const auto prepare_child_response = parseOutput(transport, 3);
-    CHECK(prepare_child_response.at("id") == 4);
-    REQUIRE(prepare_child_response.at("result").size() == 1);
-    CHECK(prepare_child_response.at("result").at(0).at("name") == "child");
-    CHECK(prepare_child_response.at("result").at(0).at("uri") == child_uri);
-
-    const auto incoming_response = parseOutput(transport, 4);
+    const auto incoming_response = parseOutput(calls_transport, 1);
     CHECK(incoming_response.at("id") == 5);
     REQUIRE(incoming_response.at("result").size() == 1);
     CHECK(incoming_response.at("result").at(0).at("from").at("name") == "top");

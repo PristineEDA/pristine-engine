@@ -539,6 +539,41 @@ void runReferencesFixture(SemanticEngine& engine, const nlohmann::json& fixture)
     }
 }
 
+void runDocumentHighlightFixture(SemanticEngine& engine, const nlohmann::json& fixture) {
+    const auto& request = fixture.at("request");
+    const auto& expected = fixture.at("expected");
+    const auto result = engine.documentHighlightsAt(request.at("uri").get<std::string>(),
+                                                    request.at("line").get<int>(),
+                                                    request.at("character").get<int>());
+    CHECK(result.unresolved == expected.value("unresolved", false));
+    if (expected.contains("count")) {
+        CHECK(result.occurrences.size() == expected.at("count").get<size_t>());
+    }
+    const auto count_role = [&](SemanticReferenceRole role) {
+        return static_cast<size_t>(std::count_if(result.occurrences.begin(),
+                                                 result.occurrences.end(),
+                                                 [&](const SemanticReferenceOccurrence& occurrence) {
+                                                     return occurrence.role == role;
+                                                 }));
+    };
+    if (expected.contains("declarationCount")) {
+        CHECK(count_role(SemanticReferenceRole::Declaration) ==
+              expected.at("declarationCount").get<size_t>());
+    }
+    if (expected.contains("readCount")) {
+        CHECK(count_role(SemanticReferenceRole::Read) == expected.at("readCount").get<size_t>());
+    }
+    if (expected.contains("writeCount")) {
+        CHECK(count_role(SemanticReferenceRole::Write) == expected.at("writeCount").get<size_t>());
+    }
+    if (expected.contains("typeCount")) {
+        CHECK(count_role(SemanticReferenceRole::Type) == expected.at("typeCount").get<size_t>());
+    }
+    if (expected.contains("instanceCount")) {
+        CHECK(count_role(SemanticReferenceRole::Instance) == expected.at("instanceCount").get<size_t>());
+    }
+}
+
 void runRenameFixture(SemanticEngine& engine, const nlohmann::json& fixture) {
     const auto& request = fixture.at("request");
     const auto& expected = fixture.at("expected");
@@ -1078,6 +1113,10 @@ void runCallHierarchyFixture(SemanticEngine& engine, const nlohmann::json& fixtu
                                                       request.at("line").get<int>(),
                                                       request.at("character").get<int>());
     CHECK(prepared.unresolved == expected.value("unresolved", false));
+    if (expected.contains("preparedCount")) {
+        CHECK(prepared.items.size() == expected.at("preparedCount").get<size_t>());
+    }
+    CHECK(prepared.scanned_module_count == 0);
     if (expected.contains("preparedNames")) {
         for (const auto& expected_name : expected.at("preparedNames")) {
             const auto name = expected_name.get<std::string>();
@@ -1093,6 +1132,10 @@ void runCallHierarchyFixture(SemanticEngine& engine, const nlohmann::json& fixtu
         REQUIRE_FALSE(prepared.items.empty());
         const auto outgoing = engine.outgoingCalls(prepared.items.front());
         REQUIRE_FALSE(outgoing.unresolved);
+        if (expected.contains("outgoingCount")) {
+            CHECK(outgoing.calls.size() == expected.at("outgoingCount").get<size_t>());
+        }
+        CHECK(outgoing.scanned_module_count == 0);
         for (const auto& expected_name : expected.at("outgoingNames")) {
             const auto name = expected_name.get<std::string>();
             CAPTURE(name);
@@ -1107,6 +1150,10 @@ void runCallHierarchyFixture(SemanticEngine& engine, const nlohmann::json& fixtu
         REQUIRE_FALSE(prepared.items.empty());
         const auto incoming = engine.incomingCalls(prepared.items.front());
         REQUIRE_FALSE(incoming.unresolved);
+        if (expected.contains("incomingCount")) {
+            CHECK(incoming.calls.size() == expected.at("incomingCount").get<size_t>());
+        }
+        CHECK(incoming.scanned_module_count == 0);
         for (const auto& expected_name : expected.at("incomingNames")) {
             const auto name = expected_name.get<std::string>();
             CAPTURE(name);
@@ -1214,6 +1261,9 @@ TEST_CASE("JSON semantic golden fixtures exercise stable request shapes",
         }
         else if (kind == "references") {
             runReferencesFixture(engine, fixture);
+        }
+        else if (kind == "documentHighlight") {
+            runDocumentHighlightFixture(engine, fixture);
         }
         else if (kind == "rename") {
             runRenameFixture(engine, fixture);

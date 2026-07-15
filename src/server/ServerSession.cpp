@@ -60,8 +60,15 @@ jsonrpc::Json toPositionJson(int line, int character) {
     return jsonrpc::Json{{"line", line}, {"character", character}};
 }
 
-jsonrpc::Json toDocumentHighlightJson(const analysis::SemanticLocation& location) {
-    return jsonrpc::Json{{"range", toRangeJson(location.range)}, {"kind", 1}};
+jsonrpc::Json toDocumentHighlightJson(const analysis::SemanticReferenceOccurrence& occurrence) {
+    int kind = 1;
+    if (occurrence.role == analysis::SemanticReferenceRole::Read) {
+        kind = 2;
+    }
+    else if (occurrence.role == analysis::SemanticReferenceRole::Write) {
+        kind = 3;
+    }
+    return jsonrpc::Json{{"range", toRangeJson(occurrence.location.range)}, {"kind", kind}};
 }
 
 jsonrpc::Json makeDiagnosticJson(const analysis::ParseRange& range,
@@ -700,6 +707,9 @@ void appendQueryCacheTelemetry(jsonrpc::Json& result,
     result["signatureScannedInvocations"] = stats.signature_scanned_invocations;
     result["inlayScannedInvocations"] = stats.inlay_scanned_invocations;
     result["macroScannedVisibleDefinitions"] = stats.macro_scanned_visible_definitions;
+    result["referenceLookupScannedOccurrences"] = stats.reference_lookup_scanned_occurrences;
+    result["callHierarchyScannedEdges"] = stats.call_hierarchy_scanned_edges;
+    result["callHierarchyScannedModules"] = stats.call_hierarchy_scanned_modules;
     result["scannedGlobalSymbols"] = stats.scanned_global_symbols;
     result["queryCacheEntries"] = stats.total_entries;
     result["queryCacheDiagnosticsEntries"] = stats.diagnostics_entries;
@@ -766,12 +776,17 @@ void appendSyntaxCacheTelemetry(jsonrpc::Json& result,
 }
 
 jsonrpc::Json toCallHierarchyItemJson(const analysis::SemanticCallHierarchyItem& item) {
-    return jsonrpc::Json{{"name", item.name},
-                         {"kind", item.kind},
-                         {"detail", item.detail},
-                         {"uri", item.uri},
-                         {"range", toRangeJson(item.range)},
-                         {"selectionRange", toRangeJson(item.selection_range)}};
+    auto result = jsonrpc::Json{{"name", item.name},
+                                {"kind", item.kind},
+                                {"detail", item.detail},
+                                {"uri", item.uri},
+                                {"range", toRangeJson(item.range)},
+                                {"selectionRange", toRangeJson(item.selection_range)}};
+    if (!item.opaque_id.empty()) {
+        result["data"] = jsonrpc::Json{{"pristineCallHierarchyId", item.opaque_id},
+                                        {"generation", item.generation}};
+    }
+    return result;
 }
 
 analysis::ParseRange parseRangeFromLspRange(const lsp::Range& range) {
@@ -787,6 +802,8 @@ analysis::SemanticCallHierarchyItem toSemanticCallHierarchyItem(const lsp::CallH
     result.uri = item.uri;
     result.range = parseRangeFromLspRange(item.range);
     result.selection_range = parseRangeFromLspRange(item.selection_range);
+    result.opaque_id = item.opaque_id.value_or(std::string{});
+    result.generation = item.generation;
     return result;
 }
 
@@ -1717,9 +1734,9 @@ jsonrpc::Json ServerSession::handleDocumentHighlight(const jsonrpc::Json& params
     if (highlights.unresolved) {
         return result;
     }
-    for (const auto& location : highlights.locations) {
-        if (location.uri == document->uri) {
-            result.push_back(toDocumentHighlightJson(location));
+    for (const auto& occurrence : highlights.occurrences) {
+        if (occurrence.location.uri == document->uri) {
+            result.push_back(toDocumentHighlightJson(occurrence));
         }
     }
 

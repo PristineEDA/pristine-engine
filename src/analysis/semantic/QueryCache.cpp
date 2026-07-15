@@ -97,6 +97,9 @@ void QueryCache::resetStats() {
     macro_scanned_visible_definitions_ = 0;
     completion_resolve_scanned_facts_ = 0;
     diagnostic_lookup_scanned_facts_ = 0;
+    reference_lookup_scanned_occurrences_ = 0;
+    call_hierarchy_scanned_edges_ = 0;
+    call_hierarchy_scanned_modules_ = 0;
     scanned_global_symbols_ = 0;
 }
 
@@ -131,6 +134,9 @@ QueryCache::Stats QueryCache::stats() const {
     result.macro_scanned_visible_definitions = macro_scanned_visible_definitions_;
     result.completion_resolve_scanned_facts = completion_resolve_scanned_facts_;
     result.diagnostic_lookup_scanned_facts = diagnostic_lookup_scanned_facts_;
+    result.reference_lookup_scanned_occurrences = reference_lookup_scanned_occurrences_;
+    result.call_hierarchy_scanned_edges = call_hierarchy_scanned_edges_;
+    result.call_hierarchy_scanned_modules = call_hierarchy_scanned_modules_;
     result.scanned_global_symbols = scanned_global_symbols_;
     result.diagnostics_entries = diagnostics_by_uri_.size();
     result.workspace_symbols_entries = workspace_symbols_by_key_.size();
@@ -150,6 +156,15 @@ QueryCache::Stats QueryCache::stats() const {
                            result.schematic_entries + result.backward_cone_entries +
                            result.code_actions_entries;
     return result;
+}
+
+void QueryCache::recordReferenceLookup(size_t scanned_occurrences) {
+    reference_lookup_scanned_occurrences_ += scanned_occurrences;
+}
+
+void QueryCache::recordCallHierarchyScan(size_t scanned_edges, size_t scanned_modules) {
+    call_hierarchy_scanned_edges_ += scanned_edges;
+    call_hierarchy_scanned_modules_ += scanned_modules;
 }
 
 void QueryCache::recordCompletionResolveFactLookup(size_t count) {

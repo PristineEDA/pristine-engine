@@ -73,6 +73,14 @@ struct AstIndexView {
     std::vector<DiagnosticReference> diagnostic_references;
     std::unordered_map<std::string, DesignGraphSymbol> design_graph_symbols_by_id;
     std::unordered_map<std::string, std::vector<DesignGraphRangeSymbol>> design_graph_symbol_ranges_by_uri;
+    SnapshotModuleCallEdgeIndex module_call_edge_index;
+};
+
+struct ReferenceOccurrenceLookup {
+    std::string stable_id;
+    SemanticLocation location;
+    SemanticReferenceRole role = SemanticReferenceRole::Read;
+    size_t scanned_occurrence_count = 0;
 };
 
 [[nodiscard]] constexpr std::string_view astIndexProviderName() {
@@ -105,11 +113,20 @@ void buildAstIndexes(SnapshotData& data,
                                                             int line,
                                                             int character);
 
+[[nodiscard]] std::optional<ReferenceOccurrenceLookup> referenceOccurrenceAtLocation(
+    const SnapshotData& data,
+    std::string_view uri,
+    int line,
+    int character);
+
 [[nodiscard]] std::vector<SemanticLocation> locationsForSymbol(const SnapshotData& data,
                                                                std::string_view stable_id,
                                                                bool include_declaration,
                                                                size_t max_locations,
                                                                bool& truncated);
+[[nodiscard]] SemanticReferenceRole referenceRoleAtLocation(const SnapshotData& data,
+                                                            std::string_view stable_id,
+                                                            const SemanticLocation& location);
 
 [[nodiscard]] std::vector<SemanticLocation> moduleImplementationLocations(const SnapshotData& data,
                                                                           std::string_view module_name,

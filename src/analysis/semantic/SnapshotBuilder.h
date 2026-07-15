@@ -38,6 +38,15 @@ struct SnapshotIndexedReference {
     std::string name;
     SemanticLocation location;
     bool is_declaration = false;
+    SemanticReferenceRole role = SemanticReferenceRole::Read;
+};
+
+// URI-local occurrence indexes keep cursor lookup independent from the total
+// number of references in the snapshot. The ranges are stored as indexes into
+// SnapshotData::references so the canonical occurrence facts have one owner.
+struct SnapshotReferenceOccurrenceIndex {
+    std::vector<size_t> reference_indexes;
+    std::vector<ParseRange> prefix_max_end_ranges;
 };
 
 struct SnapshotMemberCompletion {
@@ -128,6 +137,7 @@ struct SnapshotMacroUndef {
 struct SnapshotModuleInstance {
     std::string module_name;
     std::string instance_name;
+    std::string instance_stable_id;
     std::string type_display;
     std::string target_stable_id;
     std::string uri;
@@ -141,6 +151,37 @@ struct SnapshotModuleInstance {
 struct SnapshotModuleEntry {
     std::string uri;
     ModuleDefinition definition;
+};
+
+struct SnapshotModuleCallHierarchyItem {
+    std::string id;
+    std::string name;
+    std::string kind;
+    std::string uri;
+    ParseRange range;
+    ParseRange selection_range;
+};
+
+struct SnapshotModuleCallEdge {
+    std::string caller_item_id;
+    std::string callee_item_id;
+    std::string instance_id;
+    std::string uri;
+    ParseRange range;
+    ParseRange selection_range;
+};
+
+struct SnapshotModuleCallHierarchyRange {
+    ParseRange range;
+    std::string item_id;
+};
+
+struct SnapshotModuleCallEdgeIndex {
+    std::unordered_map<std::string, SnapshotModuleCallHierarchyItem> items_by_id;
+    std::vector<SnapshotModuleCallEdge> edges;
+    std::unordered_map<std::string, std::vector<size_t>> edges_by_caller_item_id;
+    std::unordered_map<std::string, std::vector<size_t>> edges_by_callee_item_id;
+    std::unordered_map<std::string, std::vector<SnapshotModuleCallHierarchyRange>> items_by_uri;
 };
 
 struct SnapshotAssignmentEdgeSeed {
@@ -188,6 +229,8 @@ struct SnapshotData {
     std::unordered_map<const slang::ast::Symbol*, std::string> ids_by_symbol;
     std::vector<SnapshotIndexedReference> references;
     std::unordered_map<std::string, std::vector<size_t>> references_by_symbol;
+    std::unordered_map<std::string, std::vector<std::string>> reference_aliases_by_id;
+    std::unordered_map<std::string, SnapshotReferenceOccurrenceIndex> reference_occurrences_by_uri;
     std::unordered_map<std::string, std::vector<SemanticCompletionItem>> completions_by_uri;
     std::unordered_map<std::string, std::vector<SnapshotMemberCompletion>> member_completions_by_uri;
     std::unordered_map<std::string,
@@ -211,6 +254,7 @@ struct SnapshotData {
     size_t inactive_region_count = 0;
     std::int64_t inactive_region_build_micros = 0;
     std::vector<SnapshotModuleEntry> module_entries;
+    SnapshotModuleCallEdgeIndex module_call_edge_index;
     std::unordered_map<std::string, ModuleDefinition> modules_by_name;
     std::unordered_map<std::string, std::string> module_uris_by_name;
     std::unordered_map<std::string, SemanticModuleSignature> ast_module_signatures_by_name;

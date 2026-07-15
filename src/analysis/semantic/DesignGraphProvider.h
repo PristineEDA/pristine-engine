@@ -33,6 +33,7 @@ struct DesignGraphContext {
     std::unordered_map<std::string, std::string> module_uris_by_name;
     std::unordered_map<std::string, SemanticModuleSignature> module_signatures_by_name;
     std::vector<DesignGraphModuleEntry> module_entries;
+    SnapshotModuleCallEdgeIndex module_call_edge_index;
     std::unordered_map<std::string, DesignGraphSymbol> symbols_by_id;
     std::unordered_map<std::string, std::vector<SnapshotAssignmentEdge>> assignment_edges_by_uri;
     std::unordered_map<std::string, std::vector<DesignGraphRangeSymbol>> symbol_ranges_by_uri;

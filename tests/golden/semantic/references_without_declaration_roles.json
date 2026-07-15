@@ -1,0 +1,1 @@
+{"name":"references exclude declaration while preserving reads and writes","sources":[{"uri":"file:///golden/semantic/ref-no-decl.sv","text":"module top;\n  logic value;\n  assign value = value;\nendmodule\n"}],"request":{"kind":"references","uri":"file:///golden/semantic/ref-no-decl.sv","line":1,"character":9,"includeDeclaration":false},"expected":{"count":2}}

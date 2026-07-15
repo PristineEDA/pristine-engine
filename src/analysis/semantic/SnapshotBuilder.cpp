@@ -71,7 +71,9 @@ std::string sourceUri(const slang::SourceManager& source_manager, slang::SourceL
 
 slang::Bag makeCompilationOptions(const SemanticEngineConfig& config) {
     slang::ast::CompilationOptions compilation_options;
-    compilation_options.flags |= slang::ast::CompilationFlags::LintMode;
+    if (config.top_modules.empty()) {
+        compilation_options.flags |= slang::ast::CompilationFlags::LintMode;
+    }
     compilation_options.flags |= slang::ast::CompilationFlags::IgnoreUnknownModules;
     compilation_options.flags |= slang::ast::CompilationFlags::AllowUseBeforeDeclare;
     compilation_options.errorLimit = 0;

@@ -23,6 +23,9 @@ public:
         std::uint64_t macro_scanned_visible_definitions = 0;
         std::uint64_t completion_resolve_scanned_facts = 0;
         std::uint64_t diagnostic_lookup_scanned_facts = 0;
+        std::uint64_t reference_lookup_scanned_occurrences = 0;
+        std::uint64_t call_hierarchy_scanned_edges = 0;
+        std::uint64_t call_hierarchy_scanned_modules = 0;
         std::uint64_t scanned_global_symbols = 0;
         size_t diagnostics_entries = 0;
         size_t workspace_symbols_entries = 0;
@@ -43,6 +46,8 @@ public:
     [[nodiscard]] Stats snapshotAndResetStats();
     void setMaxEntriesPerQuery(size_t max_entries);
     [[nodiscard]] Stats stats() const;
+    void recordReferenceLookup(size_t scanned_occurrences);
+    void recordCallHierarchyScan(size_t scanned_edges, size_t scanned_modules);
 
     [[nodiscard]] std::optional<std::vector<SemanticEngineDiagnostic>> diagnostics(
         std::uint64_t generation,
@@ -275,6 +280,9 @@ private:
     std::uint64_t macro_scanned_visible_definitions_ = 0;
     std::uint64_t completion_resolve_scanned_facts_ = 0;
     std::uint64_t diagnostic_lookup_scanned_facts_ = 0;
+    std::uint64_t reference_lookup_scanned_occurrences_ = 0;
+    std::uint64_t call_hierarchy_scanned_edges_ = 0;
+    std::uint64_t call_hierarchy_scanned_modules_ = 0;
     std::uint64_t scanned_global_symbols_ = 0;
 };
 

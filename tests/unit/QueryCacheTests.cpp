@@ -255,4 +255,32 @@ TEST_CASE("QueryCache records direct completion and diagnostic lookup telemetry"
     CHECK(cache.stats().diagnostic_lookup_scanned_facts == 0);
 }
 
+TEST_CASE("QueryCache records URI-local reference and indexed call-edge scan telemetry",
+          "[analysis][semantic][query-cache][telemetry][reference][call-hierarchy]") {
+    QueryCache cache;
+    cache.recordReferenceLookup(3);
+    cache.recordReferenceLookup(2);
+    cache.recordCallHierarchyScan(4, 0);
+
+    const auto stats = cache.stats();
+    CHECK(stats.reference_lookup_scanned_occurrences == 5);
+    CHECK(stats.call_hierarchy_scanned_edges == 4);
+    CHECK(stats.call_hierarchy_scanned_modules == 0);
+    CHECK(stats.scanned_global_symbols == 0);
+}
+
+TEST_CASE("QueryCache reset clears reference and call hierarchy scan telemetry",
+          "[analysis][semantic][query-cache][telemetry][reset]") {
+    QueryCache cache;
+    cache.recordReferenceLookup(7);
+    cache.recordCallHierarchyScan(5, 0);
+
+    const auto snapshot = cache.snapshotAndResetStats();
+    CHECK(snapshot.reference_lookup_scanned_occurrences == 7);
+    CHECK(snapshot.call_hierarchy_scanned_edges == 5);
+    CHECK(snapshot.call_hierarchy_scanned_modules == 0);
+    CHECK(cache.stats().reference_lookup_scanned_occurrences == 0);
+    CHECK(cache.stats().call_hierarchy_scanned_edges == 0);
+}
+
 } // namespace pristine::analysis::semantic

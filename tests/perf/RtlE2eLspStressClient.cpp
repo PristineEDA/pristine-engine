@@ -71,6 +71,8 @@ struct Metrics {
     long long first_response_micros = 0;
     long long outline_micros = 0;
     long long hover_micros = 0;
+    long long references_micros = 0;
+    long long call_hierarchy_micros = 0;
     long long semantic_diagnostics_micros = 0;
     long long completion_cold_micros = 0;
     long long completion_warm_micros = 0;
@@ -133,11 +135,18 @@ struct Metrics {
     long long inlay_scanned_invocations = 0;
     long long macro_scanned_visible_definitions = 0;
     long long scanned_global_symbols = 0;
+    long long reference_lookup_scanned_occurrences = 0;
+    long long call_hierarchy_scanned_edges = 0;
+    long long call_hierarchy_scanned_modules = 0;
     long long shutdown_micros = 0;
     long long total_micros = 0;
     size_t outline_root_count = 0;
     size_t outline_item_count = 0;
     size_t hover_result_count = 0;
+    size_t references_count = 0;
+    size_t call_hierarchy_prepare_count = 0;
+    size_t call_hierarchy_incoming_count = 0;
+    size_t call_hierarchy_outgoing_count = 0;
     size_t completion_item_count = 0;
     size_t inlay_hint_count = 0;
     bool signature_help_resolved = false;
@@ -579,6 +588,20 @@ lsp::json::Value hoverParams(const std::string& uri, int line, int character) {
     return lsp::json::Value(std::move(params));
 }
 
+lsp::json::Value referencesParams(const std::string& uri, int line, int character) {
+    auto params = hoverParams(uri, line, character).object();
+    lsp::json::Object context;
+    context["includeDeclaration"] = lsp::json::Value(true);
+    params["context"] = lsp::json::Value(std::move(context));
+    return lsp::json::Value(std::move(params));
+}
+
+lsp::json::Value callHierarchyItemParams(const lsp::json::Value& item) {
+    lsp::json::Object params;
+    params["item"] = item;
+    return lsp::json::Value(std::move(params));
+}
+
 lsp::json::Value fullDocumentRangeParams(const std::string& uri) {
     auto params = textDocumentParams(uri).object();
     lsp::json::Object start;
@@ -794,6 +817,10 @@ void collectQueryCacheMetrics(const lsp::json::Object& response, Metrics& metric
     metrics.macro_scanned_visible_definitions =
         integerValue(response, "macroScannedVisibleDefinitions");
     metrics.scanned_global_symbols = integerValue(response, "scannedGlobalSymbols");
+    metrics.reference_lookup_scanned_occurrences =
+        integerValue(response, "referenceLookupScannedOccurrences");
+    metrics.call_hierarchy_scanned_edges = integerValue(response, "callHierarchyScannedEdges");
+    metrics.call_hierarchy_scanned_modules = integerValue(response, "callHierarchyScannedModules");
     metrics.background_diagnostics_state = stringValue(response, "backgroundDiagnosticsState");
     metrics.background_diagnostics_phase = stringValue(response, "backgroundDiagnosticsPhase");
     metrics.background_diagnostics_elapsed_micros =
@@ -1071,6 +1098,8 @@ std::string summaryJson(const Metrics& metrics) {
         << "\"firstResponseMicros\":" << metrics.first_response_micros << ","
         << "\"outlineMicros\":" << metrics.outline_micros << ","
         << "\"hoverMicros\":" << metrics.hover_micros << ","
+        << "\"referencesMicros\":" << metrics.references_micros << ","
+        << "\"callHierarchyMicros\":" << metrics.call_hierarchy_micros << ","
         << "\"semanticDiagnosticsPublished\":" << boolJson(metrics.semantic_diagnostics_published) << ","
         << "\"semanticDiagnosticsMicros\":" << metrics.semantic_diagnostics_micros << ","
         << "\"completionColdMicros\":" << metrics.completion_cold_micros << ","
@@ -1162,11 +1191,19 @@ std::string summaryJson(const Metrics& metrics) {
         << "\"macroScannedVisibleDefinitions\":"
         << metrics.macro_scanned_visible_definitions << ","
         << "\"scannedGlobalSymbols\":" << metrics.scanned_global_symbols << ","
+        << "\"referenceLookupScannedOccurrences\":"
+        << metrics.reference_lookup_scanned_occurrences << ","
+        << "\"callHierarchyScannedEdges\":" << metrics.call_hierarchy_scanned_edges << ","
+        << "\"callHierarchyScannedModules\":" << metrics.call_hierarchy_scanned_modules << ","
         << "\"shutdownMicros\":" << metrics.shutdown_micros << ","
         << "\"totalMicros\":" << metrics.total_micros << ","
         << "\"outlineRootCount\":" << metrics.outline_root_count << ","
         << "\"outlineItemCount\":" << metrics.outline_item_count << ","
         << "\"hoverResultCount\":" << metrics.hover_result_count << ","
+        << "\"referencesCount\":" << metrics.references_count << ","
+        << "\"callHierarchyPrepareCount\":" << metrics.call_hierarchy_prepare_count << ","
+        << "\"callHierarchyIncomingCount\":" << metrics.call_hierarchy_incoming_count << ","
+        << "\"callHierarchyOutgoingCount\":" << metrics.call_hierarchy_outgoing_count << ","
         << "\"completionItemCount\":" << metrics.completion_item_count << ","
         << "\"signatureHelpResolved\":" << boolJson(metrics.signature_help_resolved) << ","
         << "\"inlayHintCount\":" << metrics.inlay_hint_count << ","

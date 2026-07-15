@@ -408,14 +408,48 @@ void appendUniqueMessage(std::vector<std::string>& messages, std::string message
     }
 }
 
-SemanticCallHierarchyItem callHierarchyItemFor(const ModuleDefinition& definition,
-                                               const std::string& uri) {
-    return SemanticCallHierarchyItem{.name = definition.name,
-                                     .kind = definition.kind == "interface" ? 11 : 2,
-                                     .detail = definition.kind,
-                                     .uri = uri,
-                                     .range = definition.range,
-                                     .selection_range = definition.selection_range};
+int callHierarchyRangeLengthScore(const ParseRange& range) {
+    return (range.end_line - range.start_line) * 100000 +
+           (range.end_character - range.start_character);
+}
+
+SemanticCallHierarchyItem callHierarchyItemFor(const SnapshotModuleCallHierarchyItem& item,
+                                               std::uint64_t generation) {
+    return SemanticCallHierarchyItem{.name = item.name,
+                                     .kind = item.kind == "interface" ? 11 : 2,
+                                     .detail = item.kind,
+                                     .uri = item.uri,
+                                     .range = item.range,
+                                     .selection_range = item.selection_range,
+                                     .opaque_id = item.id,
+                                     .generation = generation};
+}
+
+std::optional<std::string> callHierarchyItemIdAt(const SnapshotModuleCallEdgeIndex& index,
+                                                  std::string_view uri,
+                                                  int line,
+                                                  int character,
+                                                  size_t& scanned_ranges) {
+    const auto ranges_it = index.items_by_uri.find(std::string(uri));
+    if (ranges_it == index.items_by_uri.end()) {
+        return std::nullopt;
+    }
+
+    const SnapshotModuleCallHierarchyRange* best = nullptr;
+    for (const auto& candidate : ranges_it->second) {
+        ++scanned_ranges;
+        if (!parseRangeContainsPosition(candidate.range, line, character)) {
+            continue;
+        }
+        if (best == nullptr || callHierarchyRangeLengthScore(candidate.range) <
+                                   callHierarchyRangeLengthScore(best->range) ||
+            (callHierarchyRangeLengthScore(candidate.range) ==
+                 callHierarchyRangeLengthScore(best->range) &&
+             candidate.item_id < best->item_id)) {
+            best = &candidate;
+        }
+    }
+    return best == nullptr ? std::nullopt : std::optional<std::string>{best->item_id};
 }
 
 std::string hierarchyMemoKey(std::string_view module_name,
@@ -672,40 +706,21 @@ SemanticCallHierarchyPrepareResult prepareCallHierarchy(const DesignGraphContext
         return result;
     }
 
-    for (const auto& entry : context.module_entries) {
-        const auto& definition = entry.definition;
-        if (entry.uri != document_uri) {
-            continue;
-        }
-        for (const auto& instance : definition.instances) {
-            if (!parseRangeContainsPosition(instance.module_selection_range, line, character) &&
-                !parseRangeContainsPosition(instance.selection_range, line, character)) {
-                continue;
-            }
-            const auto target_it = context.modules_by_name.find(instance.module_name);
-            if (target_it == context.modules_by_name.end()) {
-                result.unresolved = true;
-                result.messages.push_back("Call hierarchy target module is unresolved.");
-                return result;
-            }
-            const auto target_uri_it = context.module_uris_by_name.find(target_it->first);
-            result.items.push_back(callHierarchyItemFor(
-                target_it->second,
-                target_uri_it == context.module_uris_by_name.end() ? std::string{} : target_uri_it->second));
-            return result;
-        }
-        if (parseRangeContainsPosition(definition.selection_range, line, character)) {
-            result.items.push_back(callHierarchyItemFor(definition, entry.uri));
-            return result;
-        }
-        if (parseRangeContainsPosition(definition.range, line, character)) {
-            result.items.push_back(callHierarchyItemFor(definition, entry.uri));
+    const auto item_id = callHierarchyItemIdAt(context.module_call_edge_index,
+                                               document_uri,
+                                               line,
+                                               character,
+                                               result.scanned_edge_count);
+    if (item_id.has_value()) {
+        const auto item_it = context.module_call_edge_index.items_by_id.find(*item_id);
+        if (item_it != context.module_call_edge_index.items_by_id.end()) {
+            result.items.push_back(callHierarchyItemFor(item_it->second, context.generation));
             return result;
         }
     }
 
     result.unresolved = true;
-    result.messages.push_back("No design hierarchy item at position.");
+    result.messages.push_back("No indexed module call hierarchy item at position.");
     return result;
 }
 
@@ -719,30 +734,31 @@ SemanticCallHierarchyCallsResult incomingCalls(const DesignGraphContext& context
         return result;
     }
 
-    const auto target_entry_it = std::find_if(context.module_entries.begin(),
-                                              context.module_entries.end(),
-                                              [&](const DesignGraphModuleEntry& entry) {
-                                                  return entry.definition.name == item.name &&
-                                                         entry.uri == item.uri &&
-                                                         sameParseRange(entry.definition.selection_range,
-                                                                        item.selection_range);
-                                              });
-    if (target_entry_it == context.module_entries.end()) {
+    if (item.opaque_id.empty() || item.generation != context.generation) {
         result.unresolved = true;
-        result.messages.push_back("Call hierarchy target module is not indexed.");
+        result.messages.push_back("Call hierarchy item identity is missing or stale.");
         return result;
     }
 
-    for (const auto& caller_entry : context.module_entries) {
-        const auto& caller = caller_entry.definition;
-        for (const auto& instance : caller.instances) {
-            if (instance.module_name != target_entry_it->definition.name) {
-                continue;
-            }
-            result.calls.push_back(SemanticCallHierarchyCall{
-                .item = callHierarchyItemFor(caller, caller_entry.uri),
-                .from_ranges = {instance.module_selection_range}});
+    const auto incoming_it = context.module_call_edge_index.edges_by_callee_item_id.find(item.opaque_id);
+    if (incoming_it == context.module_call_edge_index.edges_by_callee_item_id.end()) {
+        if (!context.module_call_edge_index.items_by_id.contains(item.opaque_id)) {
+            result.unresolved = true;
+            result.messages.push_back("Call hierarchy target module is not indexed.");
         }
+        return result;
+    }
+
+    for (const auto edge_index : incoming_it->second) {
+        ++result.scanned_edge_count;
+        const auto& edge = context.module_call_edge_index.edges[edge_index];
+        const auto caller_it = context.module_call_edge_index.items_by_id.find(edge.caller_item_id);
+        if (caller_it == context.module_call_edge_index.items_by_id.end()) {
+            continue;
+        }
+        result.calls.push_back(SemanticCallHierarchyCall{
+            .item = callHierarchyItemFor(caller_it->second, context.generation),
+            .from_ranges = {edge.selection_range}});
     }
     return result;
 }
@@ -757,31 +773,31 @@ SemanticCallHierarchyCallsResult outgoingCalls(const DesignGraphContext& context
         return result;
     }
 
-    const auto source_entry_it = std::find_if(context.module_entries.begin(),
-                                              context.module_entries.end(),
-                                              [&](const DesignGraphModuleEntry& entry) {
-                                                  return entry.definition.name == item.name &&
-                                                         entry.uri == item.uri &&
-                                                         sameParseRange(entry.definition.selection_range,
-                                                                        item.selection_range);
-                                              });
-    if (source_entry_it == context.module_entries.end()) {
+    if (item.opaque_id.empty() || item.generation != context.generation) {
         result.unresolved = true;
-        result.messages.push_back("Call hierarchy source module is not indexed.");
+        result.messages.push_back("Call hierarchy item identity is missing or stale.");
         return result;
     }
 
-    for (const auto& instance : source_entry_it->definition.instances) {
-        const auto target_it = context.modules_by_name.find(instance.module_name);
-        if (target_it == context.modules_by_name.end()) {
+    const auto outgoing_it = context.module_call_edge_index.edges_by_caller_item_id.find(item.opaque_id);
+    if (outgoing_it == context.module_call_edge_index.edges_by_caller_item_id.end()) {
+        if (!context.module_call_edge_index.items_by_id.contains(item.opaque_id)) {
+            result.unresolved = true;
+            result.messages.push_back("Call hierarchy source module is not indexed.");
+        }
+        return result;
+    }
+
+    for (const auto edge_index : outgoing_it->second) {
+        ++result.scanned_edge_count;
+        const auto& edge = context.module_call_edge_index.edges[edge_index];
+        const auto callee_it = context.module_call_edge_index.items_by_id.find(edge.callee_item_id);
+        if (callee_it == context.module_call_edge_index.items_by_id.end()) {
             continue;
         }
-        const auto target_uri_it = context.module_uris_by_name.find(target_it->first);
         result.calls.push_back(SemanticCallHierarchyCall{
-            .item = callHierarchyItemFor(
-                target_it->second,
-                target_uri_it == context.module_uris_by_name.end() ? std::string{} : target_uri_it->second),
-            .from_ranges = {instance.module_selection_range}});
+            .item = callHierarchyItemFor(callee_it->second, context.generation),
+            .from_ranges = {edge.selection_range}});
     }
     return result;
 }

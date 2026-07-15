@@ -366,6 +366,22 @@ TEST_CASE("SemanticEngine exposes first-batch LSP-neutral query contracts",
     const auto highlights = engine.documentHighlightsAt("file:///workspace/top.sv", 1, 9);
     REQUIRE_FALSE(highlights.unresolved);
     CHECK(highlights.locations.size() == 3);
+    REQUIRE(highlights.occurrences.size() == 3);
+    CHECK(std::count_if(highlights.occurrences.begin(),
+                        highlights.occurrences.end(),
+                        [](const SemanticReferenceOccurrence& occurrence) {
+                            return occurrence.role == SemanticReferenceRole::Declaration;
+                        }) == 1);
+    CHECK(std::count_if(highlights.occurrences.begin(),
+                        highlights.occurrences.end(),
+                        [](const SemanticReferenceOccurrence& occurrence) {
+                            return occurrence.role == SemanticReferenceRole::Write;
+                        }) == 1);
+    CHECK(std::count_if(highlights.occurrences.begin(),
+                        highlights.occurrences.end(),
+                        [](const SemanticReferenceOccurrence& occurrence) {
+                            return occurrence.role == SemanticReferenceRole::Read;
+                        }) == 1);
 
     const auto prepare = engine.prepareRenameAt("file:///workspace/top.sv", 1, 9);
     REQUIRE_FALSE(prepare.unresolved);

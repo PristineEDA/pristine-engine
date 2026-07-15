@@ -1,0 +1,1 @@
+{"name":"call hierarchy does not fall back from an unindexed position","config":{"topModules":["top"]},"sources":[{"uri":"file:///golden/semantic/call-unresolved.sv","text":"module top; endmodule\n"}],"request":{"kind":"callHierarchy","uri":"file:///golden/semantic/call-unresolved.sv","line":5,"character":0},"expected":{"unresolved":true,"preparedCount":0}}

@@ -200,6 +200,9 @@ std::string queryCacheStatsDetail(const SemanticQueryCacheStats& stats) {
         << " macroScannedVisibleDefinitions=" << stats.macro_scanned_visible_definitions
         << " completionResolveScannedFacts=" << stats.completion_resolve_scanned_facts
         << " diagnosticLookupScannedFacts=" << stats.diagnostic_lookup_scanned_facts
+        << " referenceLookupScannedOccurrences=" << stats.reference_lookup_scanned_occurrences
+        << " callHierarchyScannedEdges=" << stats.call_hierarchy_scanned_edges
+        << " callHierarchyScannedModules=" << stats.call_hierarchy_scanned_modules
         << " scannedGlobalSymbols=" << stats.scanned_global_symbols;
     return out.str();
 }
@@ -227,6 +230,7 @@ semantic::DesignGraphContext designGraphContextFor(const SnapshotData* data,
     context.module_uris_by_name = ast_index.module_uris_by_name;
     context.module_signatures_by_name = ast_index.module_signatures_by_name;
     context.module_entries = ast_index.design_graph_module_entries;
+    context.module_call_edge_index = ast_index.module_call_edge_index;
     context.assignment_edges_by_uri = ast_index.assignment_edges_by_uri;
     context.symbols_by_id = ast_index.design_graph_symbols_by_id;
     context.symbol_ranges_by_uri = ast_index.design_graph_symbol_ranges_by_uri;
@@ -491,6 +495,10 @@ SemanticQueryCacheStats SemanticEngine::queryCacheStats() const {
                                        stats.completion_resolve_scanned_facts,
                                    .diagnostic_lookup_scanned_facts =
                                        stats.diagnostic_lookup_scanned_facts,
+                                   .reference_lookup_scanned_occurrences =
+                                       stats.reference_lookup_scanned_occurrences,
+                                   .call_hierarchy_scanned_edges = stats.call_hierarchy_scanned_edges,
+                                   .call_hierarchy_scanned_modules = stats.call_hierarchy_scanned_modules,
                                    .scanned_global_symbols = stats.scanned_global_symbols,
                                    .diagnostics_entries = stats.diagnostics_entries,
                                    .workspace_symbols_entries = stats.workspace_symbols_entries,
@@ -876,31 +884,20 @@ SemanticLookupResult SemanticEngine::lookupAt(std::string_view uri, int line, in
         return result;
     }
 
-    const auto id = semantic::symbolIdAtLocation(*data, document_uri, line, character);
-    if (!id.has_value()) {
+    const auto occurrence = semantic::referenceOccurrenceAtLocation(*data, document_uri, line, character);
+    if (!occurrence.has_value()) {
         result.messages.push_back("no AST symbol at position");
         return result;
     }
 
-    const auto symbol_it = data->symbols_by_id.find(*id);
+    query_cache_->recordReferenceLookup(occurrence->scanned_occurrence_count);
+    const auto symbol_it = data->symbols_by_id.find(occurrence->stable_id);
     if (symbol_it == data->symbols_by_id.end()) {
         result.messages.push_back("AST symbol identity is not indexed");
         return result;
     }
 
-    const auto reference_it = std::find_if(data->references.begin(),
-                                           data->references.end(),
-                                           [&](const semantic::SnapshotIndexedReference& reference) {
-                                               return reference.stable_id == *id &&
-                                                      reference.location.uri == document_uri &&
-                                                      containsPosition(reference.location.range, line, character);
-                                           });
-    if (reference_it != data->references.end()) {
-        result.query_location = reference_it->location;
-    }
-    else {
-        result.query_location = symbol_it->second.identity.location;
-    }
+    result.query_location = occurrence->location;
     result.symbol = symbol_it->second.identity;
     result.unresolved = false;
     return result;
@@ -1012,13 +1009,22 @@ SemanticReferenceResult SemanticEngine::referencesAt(std::string_view uri,
     if (!lookup.symbol.has_value()) {
         return finish(std::move(result));
     }
-
     const auto* data = snapshotData();
     if (data == nullptr) {
         result.unresolved = true;
         result.messages.push_back("AST-backed SemanticEngine snapshot is unavailable");
         return finish(std::move(result));
     }
+    const auto populate_occurrences = [&] {
+        result.occurrences.clear();
+        result.occurrences.reserve(result.locations.size());
+        for (const auto& location : result.locations) {
+            result.occurrences.push_back(
+                SemanticReferenceOccurrence{.location = location,
+                                            .role = semantic::referenceRoleAtLocation(
+                                                *data, lookup.symbol->stable_id, location)});
+        }
+    };
 
     if (const auto instance = semantic::moduleInstanceAt(*data, document_uri, line, character)) {
         result.locations = semantic::moduleImplementationLocations(*data,
@@ -1039,6 +1045,7 @@ SemanticReferenceResult SemanticEngine::referencesAt(std::string_view uri,
         std::sort(result.locations.begin(), result.locations.end(), locationLess);
         result.locations.erase(std::unique(result.locations.begin(), result.locations.end(), sameLocation),
                                result.locations.end());
+        populate_occurrences();
         result.unresolved = false;
         return finish(std::move(result));
     }
@@ -1069,6 +1076,7 @@ SemanticReferenceResult SemanticEngine::referencesAt(std::string_view uri,
         result.locations.erase(std::unique(result.locations.begin(), result.locations.end(), sameLocation),
                                result.locations.end());
     }
+    populate_occurrences();
     return finish(std::move(result));
 }
 
@@ -1083,6 +1091,13 @@ SemanticReferenceResult SemanticEngine::documentHighlightsAt(std::string_view ur
                                               return location.uri != document_uri;
                                           }),
                            result.locations.end());
+    result.occurrences.erase(
+        std::remove_if(result.occurrences.begin(),
+                       result.occurrences.end(),
+                       [&](const SemanticReferenceOccurrence& occurrence) {
+                           return occurrence.location.uri != document_uri;
+                       }),
+        result.occurrences.end());
     return result;
 }
 
@@ -1564,7 +1579,9 @@ SemanticCallHierarchyPrepareResult SemanticEngine::prepareCallHierarchy(std::str
     const auto* data = snapshotData();
     const auto ast_index = semantic::buildAstIndexView(data, current_snapshot.generation);
     auto context = designGraphContextFor(data, current_snapshot, config_, ast_index);
-    return semantic::prepareCallHierarchy(context, document_uri, line, character);
+    auto result = semantic::prepareCallHierarchy(context, document_uri, line, character);
+    query_cache_->recordCallHierarchyScan(result.scanned_edge_count, result.scanned_module_count);
+    return result;
 }
 
 SemanticCallHierarchyCallsResult SemanticEngine::incomingCalls(const SemanticCallHierarchyItem& item) const {
@@ -1572,7 +1589,9 @@ SemanticCallHierarchyCallsResult SemanticEngine::incomingCalls(const SemanticCal
     const auto* data = snapshotData();
     const auto ast_index = semantic::buildAstIndexView(data, current_snapshot.generation);
     auto context = designGraphContextFor(data, current_snapshot, config_, ast_index);
-    return semantic::incomingCalls(context, item);
+    auto result = semantic::incomingCalls(context, item);
+    query_cache_->recordCallHierarchyScan(result.scanned_edge_count, result.scanned_module_count);
+    return result;
 }
 
 SemanticCallHierarchyCallsResult SemanticEngine::outgoingCalls(const SemanticCallHierarchyItem& item) const {
@@ -1580,7 +1599,9 @@ SemanticCallHierarchyCallsResult SemanticEngine::outgoingCalls(const SemanticCal
     const auto* data = snapshotData();
     const auto ast_index = semantic::buildAstIndexView(data, current_snapshot.generation);
     auto context = designGraphContextFor(data, current_snapshot, config_, ast_index);
-    return semantic::outgoingCalls(context, item);
+    auto result = semantic::outgoingCalls(context, item);
+    query_cache_->recordCallHierarchyScan(result.scanned_edge_count, result.scanned_module_count);
+    return result;
 }
 
 SemanticConeTrace SemanticEngine::backwardConeAt(std::string_view uri,

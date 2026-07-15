@@ -38,7 +38,11 @@ void writeQueryCacheStats(const pristine::analysis::SemanticQueryCacheStats& sta
               << "\"queryCacheWorkspaceSymbolEntries\":" << stats.workspace_symbols_entries << ","
               << "\"queryCacheModuleHierarchyEntries\":" << stats.module_hierarchy_entries << ","
               << "\"queryCacheSchematicEntries\":" << stats.schematic_entries << ","
-              << "\"queryCacheBackwardConeEntries\":" << stats.backward_cone_entries << ",";
+              << "\"queryCacheBackwardConeEntries\":" << stats.backward_cone_entries << ","
+              << "\"referenceLookupScannedOccurrences\":"
+              << stats.reference_lookup_scanned_occurrences << ","
+              << "\"callHierarchyScannedEdges\":" << stats.call_hierarchy_scanned_edges << ","
+              << "\"callHierarchyScannedModules\":" << stats.call_hierarchy_scanned_modules << ",";
 }
 
 } // namespace
@@ -113,6 +117,12 @@ int main() {
         const auto start_query = Clock::now();
         const auto references = engine.referencesAt(target_uri, 1, 10, true);
         const auto end_query = Clock::now();
+        const auto start_query_warm = Clock::now();
+        const auto references_warm = engine.referencesAt(target_uri, 1, 10, true);
+        const auto end_query_warm = Clock::now();
+        const auto start_highlight = Clock::now();
+        const auto highlights = engine.documentHighlightsAt(target_uri, 1, 10);
+        const auto end_highlight = Clock::now();
 
         const auto start_rename = Clock::now();
         const auto rename = engine.renameAt(target_uri, 1, 10, "renamed");
@@ -163,6 +173,14 @@ int main() {
         const auto hierarchy = engine.moduleHierarchy(target_module_name, 4);
         const auto end_hierarchy = Clock::now();
 
+        const auto start_call_hierarchy = Clock::now();
+        const auto call_prepare = engine.prepareCallHierarchy(target_uri, 0, 8);
+        pristine::analysis::SemanticCallHierarchyCallsResult call_outgoing;
+        if (!call_prepare.items.empty()) {
+            call_outgoing = engine.outgoingCalls(call_prepare.items.front());
+        }
+        const auto end_call_hierarchy = Clock::now();
+
         const auto start_schematic = Clock::now();
         const auto schematic = engine.schematic(target_module_name, 4);
         const auto end_schematic = Clock::now();
@@ -193,7 +211,12 @@ int main() {
                                      signature.scanned_global_symbol_count != 0 ||
                                      inlay.unresolved || inlay_warm.unresolved ||
                                      inlay.scanned_global_symbol_count != 0 ||
-                                     macro_definition.locations.empty() || macro_expand.actions.empty();
+                                     macro_definition.locations.empty() || macro_expand.actions.empty() ||
+                                     references.unresolved || references_warm.unresolved ||
+                                     references.locations.size() != references_warm.locations.size() ||
+                                     highlights.unresolved ||
+                                     call_prepare.unresolved || call_prepare.items.empty() ||
+                                     call_outgoing.unresolved || cache_stats.call_hierarchy_scanned_modules != 0;
 
         if (!first_baseline) {
             std::cout << ",";
@@ -211,6 +234,8 @@ int main() {
                   << "\"completionResolveMicros\":" << completion_resolve_micros << ","
                   << "\"workspaceCompletionMicros\":" << workspace_completion_micros << ","
                   << "\"referenceMicros\":" << elapsedMicros(start_query, end_query) << ","
+                  << "\"referenceWarmMicros\":" << elapsedMicros(start_query_warm, end_query_warm) << ","
+                  << "\"documentHighlightMicros\":" << elapsedMicros(start_highlight, end_highlight) << ","
                   << "\"renameMicros\":" << elapsedMicros(start_rename, end_rename) << ","
                   << "\"signatureHelpMicros\":" << elapsedMicros(start_signature, end_signature) << ","
                   << "\"signatureHelpWarmMicros\":"
@@ -223,6 +248,8 @@ int main() {
                   << "\"semanticTokensMicros\":" << elapsedMicros(start_semantic_tokens, end_semantic_tokens) << ","
                   << "\"workspaceSymbolMicros\":0,"
                   << "\"moduleHierarchyMicros\":" << elapsedMicros(start_hierarchy, end_hierarchy) << ","
+                  << "\"callHierarchyMicros\":"
+                  << elapsedMicros(start_call_hierarchy, end_call_hierarchy) << ","
                   << "\"schematicMicros\":" << elapsedMicros(start_schematic, end_schematic) << ","
                   << "\"backwardConeMicros\":" << elapsedMicros(start_cone, end_cone) << ","
                   << "\"codeActionMicros\":" << elapsedMicros(start_code_action, end_code_action) << ","
@@ -230,6 +257,9 @@ int main() {
         writeQueryCacheStats(cache_stats);
         std::cout
                   << "\"referenceCount\":" << references.locations.size() << ","
+                  << "\"referenceWarmCount\":" << references_warm.locations.size() << ","
+                  << "\"documentHighlightCount\":" << highlights.locations.size() << ","
+                  << "\"callHierarchyOutgoingCount\":" << call_outgoing.calls.size() << ","
                   << "\"completionCount\":" << completion.items.size() << ","
                   << "\"completionWarmCount\":" << completion_warm.items.size() << ","
                   << "\"completionScannedCandidateCount\":"

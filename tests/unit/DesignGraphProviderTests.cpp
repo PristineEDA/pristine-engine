@@ -71,18 +71,53 @@ DesignGraphContext simpleDesignContext() {
                                                                               .range = rangeAt(3, 28, 34)}}}}},
         .uri = "file:///workspace/top.sv"};
 
-    return DesignGraphContext{.generation = 9,
-                              .snapshot_available = true,
-                              .top_modules = {"top"},
-                              .modules_by_name = {{"child", child}, {"top", top}},
-                              .module_uris_by_name = {{"child", "file:///workspace/child.sv"},
-                                                      {"top", "file:///workspace/top.sv"}},
-                              .module_signatures_by_name = {{"child", child_signature},
-                                                            {"top", top_signature}},
-                              .module_entries = {DesignGraphModuleEntry{.uri = "file:///workspace/child.sv",
-                                                                         .definition = child},
-                                                 DesignGraphModuleEntry{.uri = "file:///workspace/top.sv",
-                                                                        .definition = top}}};
+    DesignGraphContext context{.generation = 9,
+                               .snapshot_available = true,
+                               .top_modules = {"top"},
+                               .modules_by_name = {{"child", child}, {"top", top}},
+                               .module_uris_by_name = {{"child", "file:///workspace/child.sv"},
+                                                       {"top", "file:///workspace/top.sv"}},
+                               .module_signatures_by_name = {{"child", child_signature},
+                                                             {"top", top_signature}},
+                               .module_entries = {DesignGraphModuleEntry{.uri = "file:///workspace/child.sv",
+                                                                          .definition = child},
+                                                  DesignGraphModuleEntry{.uri = "file:///workspace/top.sv",
+                                                                         .definition = top}}};
+    auto& call_index = context.module_call_edge_index;
+    call_index.items_by_id.emplace(
+        "module|child",
+        SnapshotModuleCallHierarchyItem{.id = "module|child",
+                                        .name = "child",
+                                        .kind = "module",
+                                        .uri = "file:///workspace/child.sv",
+                                        .range = child.range,
+                                        .selection_range = child.selection_range});
+    call_index.items_by_id.emplace(
+        "module|top",
+        SnapshotModuleCallHierarchyItem{.id = "module|top",
+                                        .name = "top",
+                                        .kind = "module",
+                                        .uri = "file:///workspace/top.sv",
+                                        .range = top.range,
+                                        .selection_range = top.selection_range});
+    call_index.edges.push_back(SnapshotModuleCallEdge{.caller_item_id = "module|top",
+                                                      .callee_item_id = "module|child",
+                                                      .instance_id = "instance|u_child",
+                                                      .uri = "file:///workspace/top.sv",
+                                                      .range = top.instances.front().range,
+                                                      .selection_range =
+                                                          top.instances.front().module_selection_range});
+    call_index.edges_by_caller_item_id["module|top"] = {0};
+    call_index.edges_by_callee_item_id["module|child"] = {0};
+    call_index.items_by_uri["file:///workspace/child.sv"] = {
+        SnapshotModuleCallHierarchyRange{.range = child.range, .item_id = "module|child"}};
+    call_index.items_by_uri["file:///workspace/top.sv"] = {
+        SnapshotModuleCallHierarchyRange{.range = top.range, .item_id = "module|top"},
+        SnapshotModuleCallHierarchyRange{.range = top.instances.front().selection_range,
+                                         .item_id = "module|child"},
+        SnapshotModuleCallHierarchyRange{.range = top.instances.front().module_selection_range,
+                                         .item_id = "module|child"}};
+    return context;
 }
 
 SemanticSymbolIdentity symbol(std::string stable_id, std::string name, int line, int start, int end) {
@@ -892,12 +927,17 @@ TEST_CASE("DesignGraphProvider prepares incoming and outgoing call hierarchy",
     REQUIRE_FALSE(prepared.unresolved);
     REQUIRE(prepared.items.size() == 1);
     CHECK(prepared.items.front().name == "child");
+    CHECK_FALSE(prepared.items.front().opaque_id.empty());
+    CHECK(prepared.items.front().generation == context.generation);
+    CHECK(prepared.scanned_module_count == 0);
 
     const auto incoming = incomingCalls(context, prepared.items.front());
     REQUIRE_FALSE(incoming.unresolved);
     REQUIRE(incoming.calls.size() == 1);
     CHECK(incoming.calls.front().item.name == "top");
     CHECK(incoming.calls.front().from_ranges.front().start_line == 3);
+    CHECK(incoming.scanned_edge_count == 1);
+    CHECK(incoming.scanned_module_count == 0);
 
     const auto top_prepare = prepareCallHierarchy(context, "file:///workspace/top.sv", 2, 8);
     REQUIRE_FALSE(top_prepare.unresolved);
@@ -906,6 +946,114 @@ TEST_CASE("DesignGraphProvider prepares incoming and outgoing call hierarchy",
     REQUIRE_FALSE(outgoing.unresolved);
     REQUIRE(outgoing.calls.size() == 1);
     CHECK(outgoing.calls.front().item.name == "child");
+    CHECK(outgoing.scanned_edge_count == 1);
+    CHECK(outgoing.scanned_module_count == 0);
+}
+
+TEST_CASE("DesignGraphProvider rejects stale call hierarchy item generations",
+          "[analysis][semantic][design-graph-provider][call-hierarchy][stale]") {
+    const auto context = simpleDesignContext();
+    auto prepared = prepareCallHierarchy(context, "file:///workspace/top.sv", 2, 8);
+    REQUIRE(prepared.items.size() == 1);
+    --prepared.items.front().generation;
+
+    const auto outgoing = outgoingCalls(context, prepared.items.front());
+    CHECK(outgoing.unresolved);
+    CHECK(outgoing.calls.empty());
+    CHECK(outgoing.scanned_module_count == 0);
+}
+
+TEST_CASE("DesignGraphProvider rejects forged call hierarchy opaque ids",
+          "[analysis][semantic][design-graph-provider][call-hierarchy][forged]") {
+    const auto context = simpleDesignContext();
+    auto prepared = prepareCallHierarchy(context, "file:///workspace/top.sv", 2, 8);
+    REQUIRE(prepared.items.size() == 1);
+    prepared.items.front().opaque_id = "module|forged";
+
+    const auto outgoing = outgoingCalls(context, prepared.items.front());
+    CHECK(outgoing.unresolved);
+    CHECK(outgoing.calls.empty());
+    CHECK(outgoing.scanned_module_count == 0);
+}
+
+TEST_CASE("DesignGraphProvider returns empty indexed calls for an uninstantiated module",
+          "[analysis][semantic][design-graph-provider][call-hierarchy][leaf]") {
+    const auto context = simpleDesignContext();
+    const auto prepared = prepareCallHierarchy(context, "file:///workspace/child.sv", 0, 8);
+    REQUIRE(prepared.items.size() == 1);
+
+    const auto outgoing = outgoingCalls(context, prepared.items.front());
+    CHECK_FALSE(outgoing.unresolved);
+    CHECK(outgoing.calls.empty());
+    CHECK(outgoing.scanned_edge_count == 0);
+}
+
+TEST_CASE("DesignGraphProvider does not scan modules for a missing call hierarchy URI",
+          "[analysis][semantic][design-graph-provider][call-hierarchy][missing]") {
+    const auto context = simpleDesignContext();
+    const auto prepared = prepareCallHierarchy(context, "file:///workspace/missing.sv", 0, 0);
+
+    CHECK(prepared.unresolved);
+    CHECK(prepared.items.empty());
+    CHECK(prepared.scanned_edge_count == 0);
+    CHECK(prepared.scanned_module_count == 0);
+}
+
+TEST_CASE("DesignGraphProvider rejects call hierarchy items without opaque identity",
+          "[analysis][semantic][design-graph-provider][call-hierarchy][missing-id]") {
+    const auto context = simpleDesignContext();
+    auto prepared = prepareCallHierarchy(context, "file:///workspace/top.sv", 2, 8);
+    REQUIRE(prepared.items.size() == 1);
+    prepared.items.front().opaque_id.clear();
+
+    const auto outgoing = outgoingCalls(context, prepared.items.front());
+    CHECK(outgoing.unresolved);
+    CHECK(outgoing.calls.empty());
+    CHECK(outgoing.scanned_edge_count == 0);
+}
+
+TEST_CASE("DesignGraphProvider prepares a module definition from its indexed range",
+          "[analysis][semantic][design-graph-provider][call-hierarchy][definition-range]") {
+    const auto context = simpleDesignContext();
+    const auto prepared = prepareCallHierarchy(context, "file:///workspace/top.sv", 2, 8);
+
+    REQUIRE_FALSE(prepared.unresolved);
+    REQUIRE(prepared.items.size() == 1);
+    CHECK(prepared.items.front().opaque_id == "module|top");
+    CHECK(prepared.scanned_module_count == 0);
+}
+
+TEST_CASE("DesignGraphProvider prepares a callee from an indexed instance range",
+          "[analysis][semantic][design-graph-provider][call-hierarchy][instance-range]") {
+    const auto context = simpleDesignContext();
+    const auto prepared = prepareCallHierarchy(context, "file:///workspace/top.sv", 3, 10);
+
+    REQUIRE_FALSE(prepared.unresolved);
+    REQUIRE(prepared.items.size() == 1);
+    CHECK(prepared.items.front().opaque_id == "module|child");
+    CHECK(prepared.scanned_module_count == 0);
+}
+
+TEST_CASE("DesignGraphProvider preserves repeated instance call edges",
+          "[analysis][semantic][design-graph-provider][call-hierarchy][repeated]") {
+    auto context = simpleDesignContext();
+    context.module_call_edge_index.edges.push_back(
+        SnapshotModuleCallEdge{.caller_item_id = "module|top",
+                               .callee_item_id = "module|child",
+                               .instance_id = "instance|u_child_second",
+                               .uri = "file:///workspace/top.sv",
+                               .range = rangeAt(4, 2, 35),
+                               .selection_range = rangeAt(4, 2, 7)});
+    context.module_call_edge_index.edges_by_caller_item_id["module|top"] = {0, 1};
+    context.module_call_edge_index.edges_by_callee_item_id["module|child"] = {0, 1};
+
+    const auto top = prepareCallHierarchy(context, "file:///workspace/top.sv", 2, 8);
+    REQUIRE(top.items.size() == 1);
+    const auto outgoing = outgoingCalls(context, top.items.front());
+    REQUIRE(outgoing.calls.size() == 2);
+    CHECK(outgoing.calls[0].from_ranges.front().start_line == 3);
+    CHECK(outgoing.calls[1].from_ranges.front().start_line == 4);
+    CHECK(outgoing.scanned_edge_count == 2);
 }
 
 TEST_CASE("DesignGraphProvider reports unavailable snapshot",

@@ -256,10 +256,23 @@ SignatureHelpParams parseSignatureHelpParams(const Json& params) {
 }
 
 CallHierarchyItem parseCallHierarchyItem(const Json& value) {
-    return CallHierarchyItem{.name = value.at("name").get<std::string>(),
+    CallHierarchyItem result{.name = value.at("name").get<std::string>(),
                              .uri = value.at("uri").get<std::string>(),
                              .range = parseRange(value.at("range")),
-                             .selection_range = parseRange(value.at("selectionRange"))};
+                             .selection_range = parseRange(value.at("selectionRange")),
+                             .opaque_id = std::nullopt,
+                             .generation = 0};
+    if (const auto data = value.find("data"); data != value.end() && data->is_object()) {
+        if (const auto opaque_id = data->find("pristineCallHierarchyId");
+            opaque_id != data->end() && opaque_id->is_string()) {
+            result.opaque_id = opaque_id->get<std::string>();
+        }
+        if (const auto generation = data->find("generation");
+            generation != data->end() && generation->is_number_unsigned()) {
+            result.generation = generation->get<std::uint64_t>();
+        }
+    }
+    return result;
 }
 
 CallHierarchyPrepareParams parseCallHierarchyPrepareParams(const Json& params) {

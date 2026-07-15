@@ -1,0 +1,1 @@
+{"name":"rename updates output port declaration and assignment","sources":[{"uri":"file:///golden/semantic/rename-output.sv","text":"module top(input logic a, output logic y);\n  assign y = a;\nendmodule\n"}],"request":{"kind":"rename","uri":"file:///golden/semantic/rename-output.sv","line":0,"character":39,"newName":"result"},"expected":{"count":2,"allNewText":"result"}}

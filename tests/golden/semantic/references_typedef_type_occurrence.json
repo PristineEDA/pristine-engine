@@ -1,0 +1,1 @@
+{"name":"references include AST-backed typedef type occurrence","sources":[{"uri":"file:///golden/semantic/ref-type.sv","text":"package defs; typedef logic word_t; endpackage\nmodule top; defs::word_t value; endmodule\n"}],"request":{"kind":"references","uri":"file:///golden/semantic/ref-type.sv","line":1,"character":20,"includeDeclaration":true},"expected":{"count":2}}

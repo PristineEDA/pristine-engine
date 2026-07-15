@@ -29,6 +29,25 @@ AstIndexSymbol symbol(std::string stable_id,
                                                            .range = rangeAt(line, 2, 12)}}};
 }
 
+auto buildReferenceCallDesign(std::string top_source =
+                                  "module top;\n"
+                                  "  logic ready;\n"
+                                  "  assign ready = ready;\n"
+                                  "  child u_child();\n"
+                                  "endmodule\n") {
+    SnapshotBuildInput input{.generation = 91,
+                             .documents = {{"file:///workspace/child.sv",
+                                            SemanticEngineDocument{.uri = "file:///workspace/child.sv",
+                                                                   .text = "module child; endmodule\n",
+                                                                   .version = 1}},
+                                           {"file:///workspace/top.sv",
+                                            SemanticEngineDocument{.uri = "file:///workspace/top.sv",
+                                                                   .text = std::move(top_source),
+                                                                   .version = 1,
+                                                                   .is_open = true}}}};
+    return SnapshotBuilder{}.build(std::move(input));
+}
+
 TEST_CASE("AstIndex filters, sorts, and maps workspace symbols",
           "[analysis][semantic][ast-index][workspace-symbol]") {
     const AstIndexContext context{
@@ -143,6 +162,9 @@ TEST_CASE("AstIndex prefers typed same-range symbol references deterministically
                                                        .name = "data",
                                                        .location = location,
                                                        .is_declaration = true});
+    data.reference_occurrences_by_uri[location.uri] =
+        SnapshotReferenceOccurrenceIndex{.reference_indexes = {0, 1},
+                                         .prefix_max_end_ranges = {location.range, location.range}};
 
     const auto id = symbolIdAtLocation(data, "file:///workspace/typed.sv", 1, 28);
 
@@ -186,6 +208,7 @@ TEST_CASE("AstIndex builds provider-facing graph, diagnostic, and signature view
     data.module_instances_by_uri["file:///workspace/top.sv"] = {
         SnapshotModuleInstance{.module_name = "child",
                                .instance_name = "u_child",
+                               .instance_stable_id = {},
                                .uri = "file:///workspace/top.sv",
                                .range = rangeAt(4, 2, 26),
                                .selection_range = rangeAt(4, 8, 15),
@@ -248,6 +271,156 @@ TEST_CASE("AstIndex builds AST symbol, reference, and module instance indexes",
     REQUIRE_FALSE(truncated);
     REQUIRE(implementations.size() == 1);
     CHECK(implementations.front().uri == "file:///workspace/top.sv");
+}
+
+TEST_CASE("AstIndex builds URI-local reference occurrence ranges",
+          "[analysis][semantic][ast-index][reference-occurrence]") {
+    auto output = buildReferenceCallDesign();
+    REQUIRE(output.data != nullptr);
+
+    const auto& index = output.data->reference_occurrences_by_uri;
+    REQUIRE(index.contains("file:///workspace/top.sv"));
+    REQUIRE(index.contains("file:///workspace/child.sv"));
+    const auto& top = index.at("file:///workspace/top.sv");
+    CHECK(top.reference_indexes.size() == top.prefix_max_end_ranges.size());
+    CHECK_FALSE(top.reference_indexes.empty());
+}
+
+TEST_CASE("AstIndex reference occurrence lookup returns the exact token range",
+          "[analysis][semantic][ast-index][reference-occurrence][range]") {
+    auto output = buildReferenceCallDesign();
+    REQUIRE(output.data != nullptr);
+
+    const auto lookup = referenceOccurrenceAtLocation(*output.data,
+                                                      "file:///workspace/top.sv",
+                                                      2,
+                                                      17);
+    REQUIRE(lookup.has_value());
+    CHECK(lookup->location.range.start_line == 2);
+    CHECK(lookup->location.range.start_character == 17);
+    CHECK(lookup->location.range.end_character == 22);
+}
+
+TEST_CASE("AstIndex reference occurrence lookup does not inspect unrelated URIs",
+          "[analysis][semantic][ast-index][reference-occurrence][uri-local]") {
+    auto output = buildReferenceCallDesign();
+    REQUIRE(output.data != nullptr);
+
+    const auto lookup = referenceOccurrenceAtLocation(*output.data,
+                                                      "file:///workspace/missing.sv",
+                                                      0,
+                                                      0);
+    CHECK_FALSE(lookup.has_value());
+}
+
+TEST_CASE("AstIndex reference occurrence lookup scans fewer than snapshot-wide references",
+          "[analysis][semantic][ast-index][reference-occurrence][zero-global-scan]") {
+    auto output = buildReferenceCallDesign();
+    REQUIRE(output.data != nullptr);
+
+    const auto lookup = referenceOccurrenceAtLocation(*output.data,
+                                                      "file:///workspace/top.sv",
+                                                      1,
+                                                      9);
+    REQUIRE(lookup.has_value());
+    CHECK(lookup->scanned_occurrence_count > 0);
+    CHECK(lookup->scanned_occurrence_count < output.data->references.size());
+}
+
+TEST_CASE("AstIndex classifies declaration reference occurrences",
+          "[analysis][semantic][ast-index][reference-occurrence][role][declaration]") {
+    auto output = buildReferenceCallDesign();
+    REQUIRE(output.data != nullptr);
+
+    const auto lookup = referenceOccurrenceAtLocation(*output.data,
+                                                      "file:///workspace/top.sv",
+                                                      1,
+                                                      9);
+    REQUIRE(lookup.has_value());
+    CHECK(lookup->role == SemanticReferenceRole::Declaration);
+}
+
+TEST_CASE("AstIndex classifies assignment reads and writes",
+          "[analysis][semantic][ast-index][reference-occurrence][role][read-write]") {
+    auto output = buildReferenceCallDesign();
+    REQUIRE(output.data != nullptr);
+
+    const auto write = referenceOccurrenceAtLocation(*output.data,
+                                                     "file:///workspace/top.sv",
+                                                     2,
+                                                     10);
+    const auto read = referenceOccurrenceAtLocation(*output.data,
+                                                    "file:///workspace/top.sv",
+                                                    2,
+                                                    18);
+    REQUIRE(write.has_value());
+    REQUIRE(read.has_value());
+    CHECK(write->role == SemanticReferenceRole::Write);
+    CHECK(read->role == SemanticReferenceRole::Read);
+}
+
+TEST_CASE("AstIndex classifies module instantiation references",
+          "[analysis][semantic][ast-index][reference-occurrence][role][instance]") {
+    auto output = buildReferenceCallDesign();
+    REQUIRE(output.data != nullptr);
+
+    const auto lookup = referenceOccurrenceAtLocation(*output.data,
+                                                      "file:///workspace/top.sv",
+                                                      3,
+                                                      3);
+    REQUIRE(lookup.has_value());
+    CHECK(lookup->role == SemanticReferenceRole::Instance);
+}
+
+TEST_CASE("AstIndex classifies declared type references",
+          "[analysis][semantic][ast-index][reference-occurrence][role][type]") {
+    SnapshotBuildInput input{
+        .generation = 93,
+        .documents = {{"file:///workspace/types.sv",
+                       SemanticEngineDocument{.uri = "file:///workspace/types.sv",
+                                              .text = "package defs; typedef logic word_t; endpackage\n"
+                                                      "module top; defs::word_t value; endmodule\n",
+                                              .version = 1,
+                                              .is_open = true}}}};
+    auto output = SnapshotBuilder{}.build(std::move(input));
+    REQUIRE(output.data != nullptr);
+
+    const auto lookup = referenceOccurrenceAtLocation(*output.data,
+                                                      "file:///workspace/types.sv",
+                                                      1,
+                                                      20);
+    REQUIRE(lookup.has_value());
+    CHECK(lookup->role == SemanticReferenceRole::Type);
+}
+
+TEST_CASE("AstIndex builds direct caller and callee module edge maps",
+          "[analysis][semantic][ast-index][module-call-edge]") {
+    auto output = buildReferenceCallDesign();
+    REQUIRE(output.data != nullptr);
+
+    const auto& index = output.data->module_call_edge_index;
+    REQUIRE(index.edges.size() == 1);
+    const auto& edge = index.edges.front();
+    CHECK(index.items_by_id.contains(edge.caller_item_id));
+    CHECK(index.items_by_id.contains(edge.callee_item_id));
+    REQUIRE(index.edges_by_caller_item_id.contains(edge.caller_item_id));
+    REQUIRE(index.edges_by_callee_item_id.contains(edge.callee_item_id));
+    CHECK(index.edges_by_caller_item_id.at(edge.caller_item_id) == std::vector<size_t>{0});
+    CHECK(index.edges_by_callee_item_id.at(edge.callee_item_id) == std::vector<size_t>{0});
+}
+
+TEST_CASE("AstIndex keeps repeated module call edges independently addressable",
+          "[analysis][semantic][ast-index][module-call-edge][repeated]") {
+    auto output = buildReferenceCallDesign("module top;\n"
+                                           "  child u_first();\n"
+                                           "  child u_second();\n"
+                                           "endmodule\n");
+    REQUIRE(output.data != nullptr);
+
+    const auto& edges = output.data->module_call_edge_index.edges;
+    REQUIRE(edges.size() == 2);
+    CHECK(edges[0].instance_id != edges[1].instance_id);
+    CHECK(edges[0].selection_range.start_line != edges[1].selection_range.start_line);
 }
 
 TEST_CASE("AstIndex derives module signatures and schematic views from slang AST",
@@ -585,6 +758,36 @@ TEST_CASE("AstIndex promotes generated module instances into schematic cells",
                                                         connection.signal == "clk";
                                              });
                       }));
+}
+
+TEST_CASE("AstIndex preserves elaborated generated instances as distinct call edges",
+          "[analysis][semantic][ast-index][module-call-edge][generate]") {
+    SnapshotBuildInput input{.generation = 92,
+                             .config = SemanticEngineConfig{.top_modules = {"top"}},
+                             .documents = {{"file:///workspace/generated-call.sv",
+                                            SemanticEngineDocument{
+                                                .uri = "file:///workspace/generated-call.sv",
+                                                .text = "module child; endmodule\n"
+                                                        "module top;\n"
+                                                        "  genvar i;\n"
+                                                        "  generate\n"
+                                                        "  for (i = 0; i < 2; i = i + 1) begin : g\n"
+                                                        "    child u_child();\n"
+                                                        "  end\n"
+                                                        "  endgenerate\n"
+                                                        "endmodule\n",
+                                                .version = 1,
+                                                .is_open = true}}}};
+
+    auto output = SnapshotBuilder{}.build(std::move(input));
+    REQUIRE(output.data != nullptr);
+    const auto& instances = output.data->module_instances_by_uri.at(
+        "file:///workspace/generated-call.sv");
+    REQUIRE(instances.size() == 2);
+    CHECK(instances[0].instance_stable_id != instances[1].instance_stable_id);
+    const auto& edges = output.data->module_call_edge_index.edges;
+    REQUIRE(edges.size() == 2);
+    CHECK(edges[0].instance_id != edges[1].instance_id);
 }
 
 TEST_CASE("AstIndex preserves generated schematic port width and connection facts",

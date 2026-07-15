@@ -175,6 +175,7 @@ TEST_CASE("DiagnosticProvider aggregates UX diagnostics and dedupes snapshot dia
         .module_instances_by_uri = {{std::string(uri),
                                      {SnapshotModuleInstance{.module_name = "missing_child",
                                                              .instance_name = "u_missing",
+                                                             .instance_stable_id = {},
                                                              .uri = std::string(uri),
                                                              .range = rangeAt(12, 2, 28),
                                                              .selection_range = rangeAt(12, 16, 25),

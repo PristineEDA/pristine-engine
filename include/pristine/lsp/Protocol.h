@@ -2,6 +2,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -143,6 +144,8 @@ struct CallHierarchyItem {
 	std::string uri;
 	Range range;
 	Range selection_range;
+	std::optional<std::string> opaque_id;
+	std::uint64_t generation = 0;
 };
 
 struct CallHierarchyCallsParams {

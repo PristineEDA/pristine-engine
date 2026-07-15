@@ -56,6 +56,19 @@ struct SemanticLocation {
     ParseRange range;
 };
 
+enum class SemanticReferenceRole {
+    Declaration,
+    Read,
+    Write,
+    Type,
+    Instance,
+};
+
+struct SemanticReferenceOccurrence {
+    SemanticLocation location;
+    SemanticReferenceRole role = SemanticReferenceRole::Read;
+};
+
 struct SemanticInactiveRegionResult {
     std::uint64_t generation = 0;
     std::vector<ParseRange> regions;
@@ -84,6 +97,7 @@ struct SemanticLookupResult {
 struct SemanticReferenceResult {
     std::uint64_t generation = 0;
     std::vector<SemanticLocation> locations;
+    std::vector<SemanticReferenceOccurrence> occurrences;
     std::vector<std::string> messages;
     bool unresolved = false;
     bool truncated = false;
@@ -286,12 +300,16 @@ struct SemanticCallHierarchyItem {
     std::string uri;
     ParseRange range;
     ParseRange selection_range;
+    std::string opaque_id;
+    std::uint64_t generation = 0;
 };
 
 struct SemanticCallHierarchyPrepareResult {
     std::uint64_t generation = 0;
     std::vector<SemanticCallHierarchyItem> items;
     std::vector<std::string> messages;
+    size_t scanned_edge_count = 0;
+    size_t scanned_module_count = 0;
     bool unresolved = false;
 };
 
@@ -304,6 +322,8 @@ struct SemanticCallHierarchyCallsResult {
     std::uint64_t generation = 0;
     std::vector<SemanticCallHierarchyCall> calls;
     std::vector<std::string> messages;
+    size_t scanned_edge_count = 0;
+    size_t scanned_module_count = 0;
     bool unresolved = false;
 };
 
@@ -460,6 +480,9 @@ struct SemanticQueryCacheStats {
     std::uint64_t macro_scanned_visible_definitions = 0;
     std::uint64_t completion_resolve_scanned_facts = 0;
     std::uint64_t diagnostic_lookup_scanned_facts = 0;
+    std::uint64_t reference_lookup_scanned_occurrences = 0;
+    std::uint64_t call_hierarchy_scanned_edges = 0;
+    std::uint64_t call_hierarchy_scanned_modules = 0;
     std::uint64_t scanned_global_symbols = 0;
     size_t diagnostics_entries = 0;
     size_t workspace_symbols_entries = 0;

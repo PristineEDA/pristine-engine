@@ -14,6 +14,7 @@
 #include "slang/ast/expressions/CallExpression.h"
 #include "slang/ast/expressions/OperatorExpressions.h"
 #include "slang/ast/symbols/InstanceSymbols.h"
+#include "slang/ast/symbols/BlockSymbols.h"
 #include "slang/ast/symbols/MemberSymbols.h"
 #include "slang/ast/symbols/ClassSymbols.h"
 #include "slang/ast/symbols/CompilationUnitSymbols.h"
@@ -97,6 +98,20 @@ bool containsPosition(const ParseRange& range, int line, int character) {
         return false;
     }
     return true;
+}
+
+bool positionLess(int left_line, int left_character, int right_line, int right_character) {
+    return left_line < right_line ||
+           (left_line == right_line && left_character < right_character);
+}
+
+bool rangeEndLess(const ParseRange& lhs, const ParseRange& rhs) {
+    return positionLess(lhs.end_line, lhs.end_character, rhs.end_line, rhs.end_character);
+}
+
+bool rangeEndBeforePosition(const ParseRange& range, int line, int character) {
+    return positionLess(range.end_line, range.end_character, line, character) ||
+           (range.end_line == line && range.end_character == character);
 }
 
 int rangeLengthScore(const ParseRange& range) {
@@ -853,6 +868,22 @@ std::string symbolStableId(const slang::SourceManager& source_manager,
            std::to_string(location.range.start_line) + ":" +
            std::to_string(location.range.start_character) + ":" +
            std::to_string(source_manager.getFullyOriginalLoc(symbol.location).offset());
+}
+
+std::string instanceStableId(const slang::SourceManager& source_manager,
+                             const slang::ast::InstanceSymbol& instance,
+                             const SemanticLocation& location) {
+    std::string path = instance.getHierarchicalPath();
+    if (path.empty()) {
+        path = instance.getLexicalPath();
+    }
+    if (path.empty()) {
+        path = std::string(instance.name);
+    }
+    return location.uri + "|" + path + "|Instance|" +
+           std::to_string(location.range.start_line) + ":" +
+           std::to_string(location.range.start_character) + ":" +
+           std::to_string(source_manager.getFullyOriginalLoc(instance.location).offset());
 }
 
 std::optional<SchematicPort> schematicPortForAstPort(const slang::SourceManager& source_manager,
@@ -2812,14 +2843,20 @@ void insertReference(SnapshotData& data,
                      std::string stable_id,
                      std::string name,
                      SemanticLocation location,
-                     bool is_declaration) {
-    const auto duplicate = std::any_of(data.references.begin(),
-                                       data.references.end(),
-                                       [&](const auto& reference) {
-                                           return reference.stable_id == stable_id &&
-                                                  sameLocation(reference.location, location);
-                                       });
-    if (duplicate) {
+                     SemanticReferenceRole role) {
+    const auto duplicate = std::find_if(data.references.begin(),
+                                        data.references.end(),
+                                        [&](const auto& reference) {
+                                            return reference.stable_id == stable_id &&
+                                                   sameLocation(reference.location, location);
+                                        });
+    if (duplicate != data.references.end()) {
+        if (role == SemanticReferenceRole::Declaration || role == SemanticReferenceRole::Write ||
+            (role == SemanticReferenceRole::Type && duplicate->role == SemanticReferenceRole::Read) ||
+            (role == SemanticReferenceRole::Instance && duplicate->role == SemanticReferenceRole::Read)) {
+            duplicate->role = role;
+            duplicate->is_declaration = role == SemanticReferenceRole::Declaration;
+        }
         return;
     }
 
@@ -2827,8 +2864,23 @@ void insertReference(SnapshotData& data,
     data.references.push_back(SnapshotIndexedReference{.stable_id = std::move(stable_id),
                                                        .name = std::move(name),
                                                        .location = std::move(location),
-                                                       .is_declaration = is_declaration});
+                                                       .is_declaration = role == SemanticReferenceRole::Declaration,
+                                                       .role = role});
     data.references_by_symbol[data.references.back().stable_id].push_back(index);
+}
+
+void markReferenceRole(SnapshotData& data,
+                       std::string_view stable_id,
+                       std::string_view uri,
+                       const ParseRange& containing_range,
+                       SemanticReferenceRole role) {
+    for (auto& reference : data.references) {
+        if (reference.stable_id == stable_id && reference.location.uri == uri &&
+            !reference.is_declaration &&
+            rangeContainsRange(containing_range, reference.location.range)) {
+            reference.role = role;
+        }
+    }
 }
 
 std::optional<std::string> findUniqueModuleDefinitionSymbolId(const SnapshotData& data,
@@ -3348,7 +3400,11 @@ void indexSymbolReferences(SnapshotData& data,
             return;
         }
 
-        insertReference(data, id_it->second, std::string(symbol.name), *location, false);
+        insertReference(data,
+                        id_it->second,
+                        std::string(symbol.name),
+                        *location,
+                        SemanticReferenceRole::Read);
     });
 }
 
@@ -3368,6 +3424,7 @@ void indexModuleInstanceBinding(SnapshotData& data,
         return;
     }
     const auto definition_id = symbolStableId(source_manager, definition, *definition_location);
+    const auto instance_id = instanceStableId(source_manager, instance, *instance_location);
 
     const auto document_it = documents.find(instance_location->uri);
     const auto* document = document_it == documents.end() ? nullptr : &document_it->second;
@@ -3398,10 +3455,15 @@ void indexModuleInstanceBinding(SnapshotData& data,
 
     auto& instances = data.module_instances_by_uri[instance_location->uri];
     for (auto& module_instance : instances) {
+        if (!module_instance.instance_stable_id.empty() &&
+            module_instance.instance_stable_id != instance_id) {
+            continue;
+        }
         if (module_instance.instance_name == instance.name && module_instance.uri == instance_location->uri &&
             (rangeContainsRange(module_instance.range, instance_location->range) ||
              rangesOverlapOrTouch(module_instance.selection_range, instance_location->range))) {
             module_instance.module_name = std::string(definition.name);
+            module_instance.instance_stable_id = instance_id;
             module_instance.type_display = type_display;
             module_instance.target_stable_id = definition_id;
             if (!cell->connections.empty() || module_instance.port_connections.empty()) {
@@ -3415,6 +3477,7 @@ void indexModuleInstanceBinding(SnapshotData& data,
 
     instances.push_back(SnapshotModuleInstance{.module_name = std::string(definition.name),
                                                .instance_name = std::string(instance.name),
+                                               .instance_stable_id = instance_id,
                                                .type_display = std::move(type_display),
                                                .target_stable_id = definition_id,
                                                .uri = instance_location->uri,
@@ -3463,6 +3526,7 @@ void upsertModuleInstanceCandidate(SnapshotData& data,
     const auto type_display = module_name;
     instances.push_back(SnapshotModuleInstance{.module_name = std::move(module_name),
                                                .instance_name = std::move(instance_name),
+                                               .instance_stable_id = {},
                                                .type_display = type_display,
                                                .target_stable_id = {},
                                                .uri = instance_location.uri,
@@ -3761,7 +3825,7 @@ void addModuleInstantiationReferences(SnapshotData& data,
                             *target_id,
                             instance.module_name,
                             SemanticLocation{.uri = document_uri, .range = instance.module_selection_range},
-                            false);
+                            SemanticReferenceRole::Instance);
         }
     }
 }
@@ -3771,6 +3835,12 @@ void sortModuleInstances(SnapshotData& data) {
         std::sort(instances.begin(), instances.end(), [](const auto& lhs, const auto& rhs) {
             if (lhs.uri != rhs.uri) {
                 return lhs.uri < rhs.uri;
+            }
+            if (lhs.instance_stable_id != rhs.instance_stable_id) {
+                if (lhs.instance_stable_id.empty() != rhs.instance_stable_id.empty()) {
+                    return !lhs.instance_stable_id.empty();
+                }
+                return lhs.instance_stable_id < rhs.instance_stable_id;
             }
             const auto lhs_key = rangeKey(lhs.selection_range);
             const auto rhs_key = rangeKey(rhs.selection_range);
@@ -3792,6 +3862,10 @@ void sortModuleInstances(SnapshotData& data) {
         instances.erase(std::unique(instances.begin(),
                                     instances.end(),
                                     [](const auto& lhs, const auto& rhs) {
+                                        if (!lhs.instance_stable_id.empty() &&
+                                            !rhs.instance_stable_id.empty()) {
+                                            return lhs.instance_stable_id == rhs.instance_stable_id;
+                                        }
                                         return lhs.uri == rhs.uri &&
                                                rangeKey(lhs.selection_range) == rangeKey(rhs.selection_range);
                                      }),
@@ -3831,6 +3905,115 @@ void attachInstancesToModuleDefinitions(SnapshotData& data) {
         if (entry_it != data.module_entries.end()) {
             entry_it->definition = definition;
         }
+    }
+}
+
+void buildModuleCallEdgeIndex(SnapshotData& data) {
+    auto& index = data.module_call_edge_index;
+    index = {};
+
+    for (const auto& entry : data.module_entries) {
+        const auto definition_id = data.module_definition_ids_by_name.find(entry.definition.name);
+        if (definition_id == data.module_definition_ids_by_name.end()) {
+            continue;
+        }
+        const auto [item_it, inserted] = index.items_by_id.emplace(
+            definition_id->second,
+            SnapshotModuleCallHierarchyItem{.id = definition_id->second,
+                                            .name = entry.definition.name,
+                                            .kind = entry.definition.kind,
+                                            .uri = entry.uri,
+                                            .range = entry.definition.range,
+                                            .selection_range = entry.definition.selection_range});
+        if (inserted) {
+            index.items_by_uri[entry.uri].push_back(
+                SnapshotModuleCallHierarchyRange{.range = item_it->second.range, .item_id = item_it->first});
+        }
+    }
+
+    for (const auto& [uri, instances] : data.module_instances_by_uri) {
+        for (const auto& instance : instances) {
+            if (instance.target_stable_id.empty() ||
+                !index.items_by_id.contains(instance.target_stable_id)) {
+                continue;
+            }
+
+            const SnapshotModuleCallHierarchyItem* caller = nullptr;
+            for (const auto& [_, candidate] : index.items_by_id) {
+                if (candidate.uri != uri ||
+                    !rangeContainsRange(candidate.range, instance.selection_range)) {
+                    continue;
+                }
+                if (caller == nullptr || rangeLengthScore(candidate.range) < rangeLengthScore(caller->range) ||
+                    (rangeLengthScore(candidate.range) == rangeLengthScore(caller->range) &&
+                     candidate.id < caller->id)) {
+                    caller = &candidate;
+                }
+            }
+            if (caller == nullptr) {
+                continue;
+            }
+
+            const auto instance_id = !instance.instance_stable_id.empty()
+                                         ? instance.instance_stable_id
+                                         : caller->id + "|instance|" + uri + "|" +
+                                               rangeKey(instance.selection_range) + "|" +
+                                               instance.instance_name;
+            index.edges.push_back(SnapshotModuleCallEdge{.caller_item_id = caller->id,
+                                                         .callee_item_id = instance.target_stable_id,
+                                                         .instance_id = instance_id,
+                                                         .uri = uri,
+                                                         .range = instance.range,
+                                                         .selection_range = instance.module_selection_range});
+            index.items_by_uri[uri].push_back(SnapshotModuleCallHierarchyRange{
+                .range = instance.selection_range, .item_id = instance.target_stable_id});
+            index.items_by_uri[uri].push_back(SnapshotModuleCallHierarchyRange{
+                .range = instance.module_selection_range, .item_id = instance.target_stable_id});
+        }
+    }
+
+    std::sort(index.edges.begin(), index.edges.end(), [](const auto& lhs, const auto& rhs) {
+        if (lhs.caller_item_id != rhs.caller_item_id) {
+            return lhs.caller_item_id < rhs.caller_item_id;
+        }
+        if (lhs.callee_item_id != rhs.callee_item_id) {
+            return lhs.callee_item_id < rhs.callee_item_id;
+        }
+        if (lhs.uri != rhs.uri) {
+            return lhs.uri < rhs.uri;
+        }
+        if (rangeKey(lhs.selection_range) != rangeKey(rhs.selection_range)) {
+            return rangeKey(lhs.selection_range) < rangeKey(rhs.selection_range);
+        }
+        return lhs.instance_id < rhs.instance_id;
+    });
+    index.edges.erase(std::unique(index.edges.begin(),
+                                  index.edges.end(),
+                                  [](const auto& lhs, const auto& rhs) {
+                                      return lhs.caller_item_id == rhs.caller_item_id &&
+                                             lhs.callee_item_id == rhs.callee_item_id &&
+                                             lhs.instance_id == rhs.instance_id;
+                                  }),
+                      index.edges.end());
+
+    for (size_t edge_index = 0; edge_index < index.edges.size(); ++edge_index) {
+        const auto& edge = index.edges[edge_index];
+        index.edges_by_caller_item_id[edge.caller_item_id].push_back(edge_index);
+        index.edges_by_callee_item_id[edge.callee_item_id].push_back(edge_index);
+    }
+    for (auto& [_, ranges] : index.items_by_uri) {
+        std::sort(ranges.begin(), ranges.end(), [](const auto& lhs, const auto& rhs) {
+            if (!sameRange(lhs.range, rhs.range)) {
+                return rangeKey(lhs.range) < rangeKey(rhs.range);
+            }
+            return lhs.item_id < rhs.item_id;
+        });
+        ranges.erase(std::unique(ranges.begin(),
+                                 ranges.end(),
+                                 [](const auto& lhs, const auto& rhs) {
+                                     return lhs.item_id == rhs.item_id && sameRange(lhs.range, rhs.range);
+                                 }),
+                     ranges.end());
     }
 }
 
@@ -3887,7 +4070,7 @@ void addDeclarationReferences(SnapshotData& data) {
                         stable_id,
                         indexed_symbol.identity.name,
                         indexed_symbol.identity.location,
-                        true);
+                        SemanticReferenceRole::Declaration);
     }
 }
 
@@ -3912,6 +4095,15 @@ struct SemanticIndexVisitor
         const auto* parent_scope = symbol.getParentScope();
         return parent_scope != nullptr &&
                parent_scope->asSymbol().kind == slang::ast::SymbolKind::ClassType;
+    }
+
+    void handle(const slang::ast::GenerateBlockArraySymbol& symbol) {
+        insertSymbol(data, source_manager, symbol);
+        for (const auto* entry : symbol.entries) {
+            if (entry != nullptr) {
+                entry->visit(*this);
+            }
+        }
     }
 
     template<typename T>
@@ -3939,6 +4131,22 @@ struct SemanticIndexVisitor
         requires std::is_base_of_v<slang::ast::Expression, T>
     {
         indexSymbolReferences(data, source_manager, expression);
+        if constexpr (std::is_same_v<T, slang::ast::AssignmentExpression>) {
+            expression.left().visitSymbolReferences(
+                [&](const slang::ast::Expression& reference_expression,
+                    const slang::ast::Symbol& symbol) {
+                    const auto id_it = data.ids_by_symbol.find(&symbol);
+                    const auto location = locationForSourceRange(source_manager,
+                                                                 reference_expression.sourceRange);
+                    if (id_it != data.ids_by_symbol.end() && location.has_value()) {
+                        insertReference(data,
+                                        id_it->second,
+                                        std::string(symbol.name),
+                                        *location,
+                                        SemanticReferenceRole::Write);
+                    }
+                });
+        }
         if constexpr (std::is_same_v<T, slang::ast::CallExpression>) {
             addSignatureCall(data, source_manager, expression);
         }
@@ -4006,6 +4214,11 @@ void buildAssignmentEdges(SnapshotData& data) {
         if (!left_id.has_value()) {
             continue;
         }
+        markReferenceRole(data,
+                          *left_id,
+                          seed.uri,
+                          seed.left_range,
+                          SemanticReferenceRole::Write);
 
         bool emitted_right_reference = false;
         for (const auto& reference : data.references) {
@@ -4272,10 +4485,89 @@ void buildTypeReferences(SnapshotData& data,
         std::sort(references.begin(), references.end(), [](const auto& lhs, const auto& rhs) {
             return locationLess(lhs.reference, rhs.reference);
         });
+        for (const auto& reference : references) {
+            std::optional<std::string> target_id;
+            for (const auto& definition : reference.definitions) {
+                for (const auto& [stable_id, indexed_symbol] : data.symbols_by_id) {
+                    if (sameLocation(indexed_symbol.identity.location, definition) &&
+                        (!target_id.has_value() || stable_id < *target_id)) {
+                        target_id = stable_id;
+                    }
+                }
+            }
+            if (target_id.has_value()) {
+                insertReference(data,
+                                *target_id,
+                                reference.type_name,
+                                reference.reference,
+                                SemanticReferenceRole::Type);
+            }
+        }
+    }
+}
+
+void buildSameRangeReferenceAliasIndex(SnapshotData& data) {
+    data.reference_aliases_by_id.clear();
+    std::unordered_map<std::string, std::vector<const SnapshotIndexedReference*>> declarations_by_key;
+    for (const auto& reference : data.references) {
+        if (!reference.is_declaration) {
+            continue;
+        }
+        const auto key = reference.location.uri + "\n" + rangeKey(reference.location.range) + "\n" +
+                         reference.name;
+        declarations_by_key[key].push_back(&reference);
+    }
+
+    for (const auto& [_, declarations] : declarations_by_key) {
+        if (declarations.size() < 2) {
+            continue;
+        }
+        std::vector<std::string> aliases;
+        aliases.reserve(declarations.size());
+        for (const auto* declaration : declarations) {
+            aliases.push_back(declaration->stable_id);
+        }
+        std::sort(aliases.begin(), aliases.end());
+        aliases.erase(std::unique(aliases.begin(), aliases.end()), aliases.end());
+        for (const auto& alias : aliases) {
+            data.reference_aliases_by_id[alias] = aliases;
+        }
     }
 }
 
 void sortSnapshotIndexes(SnapshotData& data) {
+    data.reference_occurrences_by_uri.clear();
+    for (size_t index = 0; index < data.references.size(); ++index) {
+        const auto& reference = data.references[index];
+        data.reference_occurrences_by_uri[reference.location.uri].reference_indexes.push_back(index);
+    }
+    for (auto& [_, occurrence_index] : data.reference_occurrences_by_uri) {
+        auto& indexes = occurrence_index.reference_indexes;
+        std::sort(indexes.begin(), indexes.end(), [&](size_t lhs, size_t rhs) {
+            const auto& left = data.references[lhs];
+            const auto& right = data.references[rhs];
+            if (!sameRange(left.location.range, right.location.range)) {
+                return locationLess(left.location, right.location);
+            }
+            if (left.is_declaration != right.is_declaration) {
+                return left.is_declaration;
+            }
+            return left.stable_id < right.stable_id;
+        });
+        occurrence_index.prefix_max_end_ranges.clear();
+        occurrence_index.prefix_max_end_ranges.reserve(indexes.size());
+        for (const auto index : indexes) {
+            const auto& range = data.references[index].location.range;
+            if (occurrence_index.prefix_max_end_ranges.empty() ||
+                rangeEndLess(occurrence_index.prefix_max_end_ranges.back(), range)) {
+                occurrence_index.prefix_max_end_ranges.push_back(range);
+            }
+            else {
+                occurrence_index.prefix_max_end_ranges.push_back(
+                    occurrence_index.prefix_max_end_ranges.back());
+            }
+        }
+    }
     for (auto& [_, indexes] : data.references_by_symbol) {
         std::sort(indexes.begin(), indexes.end(), [&](size_t lhs, size_t rhs) {
             return locationLess(data.references[lhs].location, data.references[rhs].location);
@@ -4707,12 +4999,20 @@ void buildAstIndexes(SnapshotData& data,
         addModuleInstantiationReferences(data, documents);
     }
     {
+        PRISTINE_DEBUG_TRACE_SCOPE_SIMPLE("astIndex.buildModuleCallEdgeIndex");
+        buildModuleCallEdgeIndex(data);
+    }
+    {
         PRISTINE_DEBUG_TRACE_SCOPE_SIMPLE("astIndex.buildAssignmentEdges");
         buildAssignmentEdges(data);
     }
     {
         PRISTINE_DEBUG_TRACE_SCOPE_SIMPLE("astIndex.buildTypeReferences");
         buildTypeReferences(data, documents);
+    }
+    {
+        PRISTINE_DEBUG_TRACE_SCOPE_SIMPLE("astIndex.buildSameRangeReferenceAliasIndex");
+        buildSameRangeReferenceAliasIndex(data);
     }
     {
         PRISTINE_DEBUG_TRACE_SCOPE_SIMPLE("astIndex.sortSnapshotIndexes");
@@ -4774,23 +5074,66 @@ std::vector<SemanticLocation> typeDefinitionLocationsAt(const AstIndexView& view
     return {};
 }
 
+std::optional<ReferenceOccurrenceLookup> referenceOccurrenceAtLocation(const SnapshotData& data,
+                                                                         std::string_view uri,
+                                                                         int line,
+                                                                         int character) {
+    const auto occurrences_it = data.reference_occurrences_by_uri.find(std::string(uri));
+    if (occurrences_it == data.reference_occurrences_by_uri.end()) {
+        return std::nullopt;
+    }
+
+    const auto& occurrence_index = occurrences_it->second;
+    const auto& indexes = occurrence_index.reference_indexes;
+    const auto upper = std::upper_bound(indexes.begin(),
+                                        indexes.end(),
+                                        std::pair{line, character},
+                                        [&](const auto& position, size_t index) {
+                                            const auto& range = data.references[index].location.range;
+                                            return positionLess(position.first,
+                                                                position.second,
+                                                                range.start_line,
+                                                                range.start_character);
+                                        });
+    if (upper == indexes.begin()) {
+        return std::nullopt;
+    }
+
+    const SnapshotIndexedReference* best_reference = nullptr;
+    size_t scanned = 0;
+    for (auto it = upper; it != indexes.begin();) {
+        --it;
+        ++scanned;
+        const auto& reference = data.references[*it];
+        if (containsPosition(reference.location.range, line, character) &&
+            (best_reference == nullptr || referenceBetterForLookup(data, reference, *best_reference))) {
+            best_reference = &reference;
+        }
+
+        const auto prefix_index = static_cast<size_t>(std::distance(indexes.begin(), it));
+        if (prefix_index == 0 ||
+            rangeEndBeforePosition(occurrence_index.prefix_max_end_ranges[prefix_index - 1],
+                                   line,
+                                   character)) {
+            break;
+        }
+    }
+
+    if (best_reference == nullptr) {
+        return std::nullopt;
+    }
+    return ReferenceOccurrenceLookup{.stable_id = best_reference->stable_id,
+                                     .location = best_reference->location,
+                                     .role = best_reference->role,
+                                     .scanned_occurrence_count = scanned};
+}
+
 std::optional<std::string> symbolIdAtLocation(const SnapshotData& data,
                                               std::string_view uri,
                                               int line,
                                               int character) {
-    const SnapshotIndexedReference* best_reference = nullptr;
-    for (const auto& reference : data.references) {
-        if (reference.location.uri != uri || !containsPosition(reference.location.range, line, character)) {
-            continue;
-        }
-        if (best_reference == nullptr || referenceBetterForLookup(data, reference, *best_reference)) {
-            best_reference = &reference;
-        }
-    }
-    if (best_reference == nullptr) {
-        return std::nullopt;
-    }
-    return best_reference->stable_id;
+    const auto occurrence = referenceOccurrenceAtLocation(data, uri, line, character);
+    return occurrence.has_value() ? std::optional<std::string>{occurrence->stable_id} : std::nullopt;
 }
 
 std::vector<SemanticLocation> locationsForSymbol(const SnapshotData& data,
@@ -4799,25 +5142,55 @@ std::vector<SemanticLocation> locationsForSymbol(const SnapshotData& data,
                                                  size_t max_locations,
                                                  bool& truncated) {
     std::vector<SemanticLocation> locations;
-    const auto references_it = data.references_by_symbol.find(std::string(stable_id));
-    if (references_it == data.references_by_symbol.end()) {
-        return locations;
-    }
-
-    for (const auto index : references_it->second) {
-        const auto& reference = data.references[index];
-        if (!include_declaration && reference.is_declaration) {
+    const auto aliases_it = data.reference_aliases_by_id.find(std::string(stable_id));
+    const std::vector<std::string> single_id{std::string(stable_id)};
+    const auto& ids = aliases_it == data.reference_aliases_by_id.end() ? single_id
+                                                                       : aliases_it->second;
+    for (const auto& id : ids) {
+        const auto references_it = data.references_by_symbol.find(id);
+        if (references_it == data.references_by_symbol.end()) {
             continue;
         }
-        locations.push_back(reference.location);
-        if (max_locations > 0 && locations.size() >= max_locations) {
-            truncated = true;
+        for (const auto index : references_it->second) {
+            const auto& reference = data.references[index];
+            if (!include_declaration && reference.is_declaration) {
+                continue;
+            }
+            locations.push_back(reference.location);
+            if (max_locations > 0 && locations.size() >= max_locations) {
+                truncated = true;
+                break;
+            }
+        }
+        if (truncated) {
             break;
         }
     }
     std::sort(locations.begin(), locations.end(), locationLess);
     locations.erase(std::unique(locations.begin(), locations.end(), sameLocation), locations.end());
     return locations;
+}
+
+SemanticReferenceRole referenceRoleAtLocation(const SnapshotData& data,
+                                              std::string_view stable_id,
+                                              const SemanticLocation& location) {
+    const auto aliases_it = data.reference_aliases_by_id.find(std::string(stable_id));
+    const std::vector<std::string> single_id{std::string(stable_id)};
+    const auto& ids = aliases_it == data.reference_aliases_by_id.end() ? single_id
+                                                                       : aliases_it->second;
+    for (const auto& id : ids) {
+        const auto references_it = data.references_by_symbol.find(id);
+        if (references_it == data.references_by_symbol.end()) {
+            continue;
+        }
+        for (const auto index : references_it->second) {
+            const auto& reference = data.references[index];
+            if (sameLocation(reference.location, location)) {
+                return reference.role;
+            }
+        }
+    }
+    return SemanticReferenceRole::Read;
 }
 
 std::vector<SemanticLocation> moduleImplementationLocations(const SnapshotData& data,
@@ -4927,6 +5300,7 @@ AstIndexView buildAstIndexView(const SnapshotData* data, std::uint64_t generatio
     }
     view.assignment_edges_by_uri = data->assignment_edges_by_uri;
     view.type_references_by_uri = data->type_references_by_uri;
+    view.module_call_edge_index = data->module_call_edge_index;
     view.member_completions_by_uri = data->member_completions_by_uri;
     view.member_completions_by_qualifier_by_uri = data->member_completions_by_qualifier_by_uri;
     view.member_completions_by_stable_id = data->member_completions_by_stable_id;
