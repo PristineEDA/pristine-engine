@@ -1,0 +1,1 @@
+{"name":"navigation implementation does not scan names when no edge exists","sources":[{"uri":"file:///golden/navigation/implementation-unresolved.sv","text":"module child; endmodule\nmodule top; endmodule\n"}],"request":{"kind":"implementation","uri":"file:///golden/navigation/implementation-unresolved.sv","line":0,"character":8},"expected":{"unresolved":true,"count":0}}

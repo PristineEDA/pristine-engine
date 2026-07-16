@@ -1,39 +1,71 @@
 #pragma once
 
-#include "pristine/analysis/SemanticEngine.h"
+#include "SnapshotBuilder.h"
 
 #include <cstdint>
 #include <string>
 #include <string_view>
-#include <unordered_map>
 #include <vector>
 
 namespace pristine::analysis::semantic {
 
-struct NavigationReference {
-    std::string stable_id;
-    SemanticLocation location;
-    bool is_declaration = false;
-};
-
 struct NavigationContext {
+    SemanticEngineMode mode = SemanticEngineMode::Shallow;
     std::uint64_t generation = 0;
     bool snapshot_available = false;
     std::string document_uri;
     const std::string* document_text = nullptr;
-    std::unordered_map<std::string, SemanticSymbolIdentity> symbols_by_id;
-    std::vector<NavigationReference> references;
-    std::vector<ParseRange> selection_ranges;
+    const SnapshotNavigationOccurrenceIndex* occurrence_index = nullptr;
+    const std::unordered_map<std::string, std::vector<SnapshotNavigationOccurrence>>*
+        occurrences_by_symbol = nullptr;
+    const std::unordered_map<std::string, std::vector<std::string>>* reference_aliases_by_id = nullptr;
+    const std::unordered_map<std::string, SnapshotNavigationTargetFact>* targets_by_id = nullptr;
+    const SnapshotImplementationEdgeIndex* implementation_edges = nullptr;
+    const std::vector<SnapshotTypeReference>* type_references = nullptr;
+    const std::vector<MacroInvocationFact>* macro_invocations = nullptr;
+    const std::vector<CallableInvocationFact>* callable_invocations = nullptr;
+    const SnapshotSelectionRangeIndex* selection_range_index = nullptr;
 };
 
 [[nodiscard]] constexpr std::string_view navigationProviderName() {
     return "NavigationProvider";
 }
 
+[[nodiscard]] SemanticLookupResult lookupAt(const NavigationContext& context,
+                                            int line,
+                                            int character);
+[[nodiscard]] SemanticReferenceResult definitionsAt(const NavigationContext& context,
+                                                     int line,
+                                                     int character);
+[[nodiscard]] SemanticReferenceResult typeDefinitionsAt(const NavigationContext& context,
+                                                         int line,
+                                                         int character);
+[[nodiscard]] SemanticReferenceResult referencesAt(const NavigationContext& context,
+                                                    int line,
+                                                    int character,
+                                                    bool include_declaration,
+                                                    size_t max_locations);
+[[nodiscard]] SemanticReferenceResult documentHighlightsAt(const NavigationContext& context,
+                                                            int line,
+                                                            int character,
+                                                            size_t max_locations);
+[[nodiscard]] SemanticReferenceResult implementationsAt(const NavigationContext& context,
+                                                         int line,
+                                                         int character,
+                                                         size_t max_locations);
+[[nodiscard]] SemanticHoverResult hoverAt(const NavigationContext& context, int line, int character);
+[[nodiscard]] SemanticPrepareRenameResult prepareRenameAt(const NavigationContext& context,
+                                                           int line,
+                                                           int character);
+[[nodiscard]] SemanticRenameResult renameAt(const NavigationContext& context,
+                                             int line,
+                                             int character,
+                                             std::string_view new_name,
+                                             size_t max_locations);
+
 [[nodiscard]] SemanticTokenResult semanticTokens(const NavigationContext& context);
 
 [[nodiscard]] SemanticSelectionRangeResult selectionRangesAt(const NavigationContext& context,
-                                                             const SemanticLookupResult& lookup,
                                                              int line,
                                                              int character);
 

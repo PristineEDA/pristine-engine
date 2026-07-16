@@ -1,0 +1,1 @@
+{"name":"navigation definition resolves an active macro invocation","sources":[{"uri":"file:///golden/navigation/macro-definition.sv","text":"`define WIDTH 8\nmodule top;\n  logic [`WIDTH-1:0] value;\nendmodule\n"}],"request":{"kind":"definition","uri":"file:///golden/navigation/macro-definition.sv","line":2,"character":10},"expected":{"unresolved":false,"count":1}}

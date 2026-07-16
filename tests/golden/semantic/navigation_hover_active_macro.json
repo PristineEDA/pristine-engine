@@ -1,0 +1,1 @@
+{"name":"navigation hover resolves an active macro invocation","sources":[{"uri":"file:///golden/navigation/active-macro.sv","text":"`define WIDTH 8\nmodule top;\n  logic [`WIDTH-1:0] value;\nendmodule\n"}],"request":{"kind":"hover","uri":"file:///golden/navigation/active-macro.sv","line":2,"character":10},"expected":{"unresolved":false,"contentsContains":["WIDTH"]}}

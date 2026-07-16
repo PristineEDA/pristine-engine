@@ -4619,6 +4619,34 @@ void sortSnapshotIndexes(SnapshotData& data) {
                                  }),
                      ranges.end());
     }
+
+    data.selection_range_indexes_by_uri.clear();
+    for (const auto& [uri, ranges] : data.selection_ranges_by_uri) {
+        auto& index = data.selection_range_indexes_by_uri[uri];
+        index.ranges = ranges;
+        std::sort(index.ranges.begin(), index.ranges.end(), [](const ParseRange& left, const ParseRange& right) {
+            if (left.start_line != right.start_line) {
+                return left.start_line < right.start_line;
+            }
+            if (left.start_character != right.start_character) {
+                return left.start_character < right.start_character;
+            }
+            if (left.end_line != right.end_line) {
+                return left.end_line < right.end_line;
+            }
+            return left.end_character < right.end_character;
+        });
+        index.prefix_max_end_ranges.reserve(index.ranges.size());
+        for (const auto& range : index.ranges) {
+            if (index.prefix_max_end_ranges.empty() ||
+                rangeEndLess(index.prefix_max_end_ranges.back(), range)) {
+                index.prefix_max_end_ranges.push_back(range);
+            }
+            else {
+                index.prefix_max_end_ranges.push_back(index.prefix_max_end_ranges.back());
+            }
+        }
+    }
     for (auto& [_, calls] : data.callable_invocations_by_uri) {
         std::sort(calls.begin(), calls.end(), [](const auto& lhs, const auto& rhs) {
             if (lhs.range.start_line != rhs.range.start_line) {
@@ -4663,6 +4691,170 @@ void sortSnapshotIndexes(SnapshotData& data) {
                                       return left.identity.stable_id == right.identity.stable_id;
                                   }),
                       symbols.end());
+    }
+}
+
+void buildNavigationIndexes(SnapshotData& data) {
+    data.navigation_targets_by_id.clear();
+    data.navigation_occurrences_by_uri.clear();
+    data.navigation_occurrences_by_symbol.clear();
+    data.implementation_edge_index = {};
+
+    for (const auto& [stable_id, indexed] : data.symbols_by_id) {
+        SnapshotNavigationTargetFact target;
+        target.identity = indexed.identity;
+        target.type_display = indexed.type_display;
+        target.value_display = indexed.value_display;
+        target.rename_eligible = !target.identity.name.empty() &&
+                                 !target.identity.location.uri.empty() &&
+                                 !sameRange(target.identity.location.range, ParseRange{});
+
+        // This is the only point that asks slang for a declared type. The
+        // provider later consumes the copied source location, never an AST pointer.
+        if (indexed.symbol != nullptr) {
+            if (const auto* declared_type = indexed.symbol->getDeclaredType()) {
+                const auto& type = declared_type->getType();
+                if (const auto type_location = declarationLocationForSymbol(*data.source_manager, type)) {
+                    target.type_definition_locations.push_back(*type_location);
+                }
+            }
+        }
+        std::sort(target.type_definition_locations.begin(),
+                  target.type_definition_locations.end(),
+                  locationLess);
+        target.type_definition_locations.erase(
+            std::unique(target.type_definition_locations.begin(),
+                        target.type_definition_locations.end(),
+                        sameLocation),
+            target.type_definition_locations.end());
+        data.navigation_targets_by_id.emplace(stable_id, std::move(target));
+    }
+
+    for (const auto& reference : data.references) {
+        const auto target_it = data.navigation_targets_by_id.find(reference.stable_id);
+        const auto has_type_display = target_it != data.navigation_targets_by_id.end() &&
+                                      !target_it->second.type_display.empty();
+        auto occurrence = SnapshotNavigationOccurrence{.stable_id = reference.stable_id,
+                                                        .location = reference.location,
+                                                        .is_declaration = reference.is_declaration,
+                                                        .role = reference.role,
+                                                        .has_type_display = has_type_display};
+        data.navigation_occurrences_by_uri[reference.location.uri].occurrences.push_back(occurrence);
+        data.navigation_occurrences_by_symbol[reference.stable_id].push_back(std::move(occurrence));
+    }
+
+    const auto occurrence_less = [](const SnapshotNavigationOccurrence& left,
+                                    const SnapshotNavigationOccurrence& right) {
+        if (!sameRange(left.location.range, right.location.range)) {
+            return locationLess(left.location, right.location);
+        }
+        if (left.is_declaration != right.is_declaration) {
+            return left.is_declaration;
+        }
+        if (left.has_type_display != right.has_type_display) {
+            return left.has_type_display;
+        }
+        return left.stable_id < right.stable_id;
+    };
+    for (auto& [_, index] : data.navigation_occurrences_by_uri) {
+        std::sort(index.occurrences.begin(), index.occurrences.end(), occurrence_less);
+        index.prefix_max_end_ranges.reserve(index.occurrences.size());
+        for (const auto& occurrence : index.occurrences) {
+            const auto& range = occurrence.location.range;
+            if (index.prefix_max_end_ranges.empty() ||
+                rangeEndLess(index.prefix_max_end_ranges.back(), range)) {
+                index.prefix_max_end_ranges.push_back(range);
+            }
+            else {
+                index.prefix_max_end_ranges.push_back(index.prefix_max_end_ranges.back());
+            }
+        }
+    }
+    for (auto& [_, occurrences] : data.navigation_occurrences_by_symbol) {
+        std::sort(occurrences.begin(), occurrences.end(), occurrence_less);
+    }
+
+    const auto append_edge = [&](std::string target_id,
+                                 std::string implementation_id,
+                                 SemanticLocation location,
+                                 std::string kind) {
+        if (target_id.empty() || implementation_id.empty() || location.uri.empty()) {
+            return;
+        }
+        auto& edges = data.implementation_edge_index.edges;
+        const auto duplicate = std::any_of(edges.begin(), edges.end(), [&](const auto& edge) {
+            return edge.target_stable_id == target_id &&
+                   edge.implementation_stable_id == implementation_id &&
+                   edge.kind == kind && sameLocation(edge.location, location);
+        });
+        if (!duplicate) {
+            edges.push_back(SnapshotImplementationEdge{.target_stable_id = std::move(target_id),
+                                                       .implementation_stable_id = std::move(implementation_id),
+                                                       .location = std::move(location),
+                                                       .kind = std::move(kind)});
+        }
+    };
+
+    for (const auto& [_, instances] : data.module_instances_by_uri) {
+        for (const auto& instance : instances) {
+            auto target_id = instance.target_stable_id;
+            if (target_id.empty()) {
+                if (const auto definition = data.module_definition_ids_by_name.find(instance.module_name);
+                    definition != data.module_definition_ids_by_name.end()) {
+                    target_id = definition->second;
+                }
+            }
+            append_edge(std::move(target_id),
+                        instance.instance_stable_id,
+                        SemanticLocation{.uri = instance.uri, .range = instance.module_selection_range},
+                        "moduleInstance");
+        }
+    }
+
+    for (const auto& [stable_id, indexed] : data.symbols_by_id) {
+        if (indexed.symbol == nullptr) {
+            continue;
+        }
+        if (indexed.symbol->kind == slang::ast::SymbolKind::ClassType) {
+            const auto& derived = indexed.symbol->as<slang::ast::ClassType>();
+            if (const auto* base_type = derived.getBaseClass(); base_type != nullptr && base_type->isClass()) {
+                const auto& base = base_type->getCanonicalType().as<slang::ast::ClassType>();
+                if (const auto base_id = data.ids_by_symbol.find(&base); base_id != data.ids_by_symbol.end()) {
+                    append_edge(base_id->second,
+                                stable_id,
+                                indexed.identity.location,
+                                "classDerived");
+                }
+            }
+        }
+        else if (indexed.symbol->kind == slang::ast::SymbolKind::Subroutine) {
+            const auto& subroutine = indexed.symbol->as<slang::ast::SubroutineSymbol>();
+            if (const auto* base = subroutine.getOverride(); base != nullptr) {
+                if (const auto base_id = data.ids_by_symbol.find(base); base_id != data.ids_by_symbol.end()) {
+                    append_edge(base_id->second,
+                                stable_id,
+                                indexed.identity.location,
+                                "callableOverride");
+                }
+            }
+        }
+    }
+
+    auto& edges = data.implementation_edge_index.edges;
+    std::sort(edges.begin(), edges.end(), [](const auto& left, const auto& right) {
+        if (left.target_stable_id != right.target_stable_id) {
+            return left.target_stable_id < right.target_stable_id;
+        }
+        if (!sameLocation(left.location, right.location)) {
+            return locationLess(left.location, right.location);
+        }
+        if (left.kind != right.kind) {
+            return left.kind < right.kind;
+        }
+        return left.implementation_stable_id < right.implementation_stable_id;
+    });
+    for (size_t index = 0; index < edges.size(); ++index) {
+        data.implementation_edge_index.edges_by_target_stable_id[edges[index].target_stable_id].push_back(index);
     }
 }
 
@@ -5019,6 +5211,10 @@ void buildAstIndexes(SnapshotData& data,
         sortSnapshotIndexes(data);
     }
     {
+        PRISTINE_DEBUG_TRACE_SCOPE_SIMPLE("astIndex.buildNavigationIndexes");
+        buildNavigationIndexes(data);
+    }
+    {
         PRISTINE_DEBUG_TRACE_SCOPE_SIMPLE("astIndex.buildProviderLookupIndexes");
         buildProviderLookupIndexes(data);
     }
@@ -5128,6 +5324,57 @@ std::optional<ReferenceOccurrenceLookup> referenceOccurrenceAtLocation(const Sna
                                      .scanned_occurrence_count = scanned};
 }
 
+std::optional<SnapshotNavigationOccurrence> navigationOccurrenceAtLocation(
+    const SnapshotNavigationOccurrenceIndex& index,
+    int line,
+    int character,
+    size_t& scanned_occurrences) {
+    scanned_occurrences = 0;
+    const auto upper = std::upper_bound(index.occurrences.begin(),
+                                        index.occurrences.end(),
+                                        std::pair{line, character},
+                                        [&](const auto& position,
+                                            const SnapshotNavigationOccurrence& occurrence) {
+                                            return positionLess(position.first,
+                                                                position.second,
+                                                                occurrence.location.range.start_line,
+                                                                occurrence.location.range.start_character);
+                                        });
+    if (upper == index.occurrences.begin()) {
+        return std::nullopt;
+    }
+
+    const SnapshotNavigationOccurrence* best = nullptr;
+    for (auto it = upper; it != index.occurrences.begin();) {
+        --it;
+        ++scanned_occurrences;
+        if (containsPosition(it->location.range, line, character)) {
+            if (best == nullptr || it->location.range.start_line > best->location.range.start_line ||
+                (it->location.range.start_line == best->location.range.start_line &&
+                 it->location.range.start_character > best->location.range.start_character) ||
+                (it->location.range.start_line == best->location.range.start_line &&
+                 it->location.range.start_character == best->location.range.start_character &&
+                 it->is_declaration != best->is_declaration && it->is_declaration) ||
+                (it->location.range.start_line == best->location.range.start_line &&
+                 it->location.range.start_character == best->location.range.start_character &&
+                 it->is_declaration == best->is_declaration &&
+                 it->has_type_display != best->has_type_display && it->has_type_display) ||
+                (it->location.range.start_line == best->location.range.start_line &&
+                 it->location.range.start_character == best->location.range.start_character &&
+                 it->is_declaration == best->is_declaration &&
+                 it->has_type_display == best->has_type_display && it->stable_id < best->stable_id)) {
+                best = &*it;
+            }
+        }
+        const auto prefix_index = static_cast<size_t>(std::distance(index.occurrences.begin(), it));
+        if (prefix_index == 0 ||
+            rangeEndBeforePosition(index.prefix_max_end_ranges[prefix_index - 1], line, character)) {
+            break;
+        }
+    }
+    return best == nullptr ? std::nullopt : std::optional<SnapshotNavigationOccurrence>(*best);
+}
+
 std::optional<std::string> symbolIdAtLocation(const SnapshotData& data,
                                               std::string_view uri,
                                               int line,
@@ -5191,54 +5438,6 @@ SemanticReferenceRole referenceRoleAtLocation(const SnapshotData& data,
         }
     }
     return SemanticReferenceRole::Read;
-}
-
-std::vector<SemanticLocation> moduleImplementationLocations(const SnapshotData& data,
-                                                            std::string_view module_name,
-                                                            size_t max_locations,
-                                                            bool& truncated) {
-    std::vector<SemanticLocation> locations;
-    for (const auto& [_, instances] : data.module_instances_by_uri) {
-        for (const auto& instance : instances) {
-            if (instance.module_name != module_name) {
-                continue;
-            }
-            locations.push_back(SemanticLocation{.uri = instance.uri,
-                                                 .range = instance.module_selection_range});
-            if (max_locations > 0 && locations.size() >= max_locations) {
-                truncated = true;
-                break;
-            }
-        }
-        if (truncated) {
-            break;
-        }
-    }
-    std::sort(locations.begin(), locations.end(), locationLess);
-    locations.erase(std::unique(locations.begin(), locations.end(), sameLocation), locations.end());
-    return locations;
-}
-
-std::optional<SnapshotModuleInstance> moduleInstanceAt(const SnapshotData& data,
-                                                       std::string_view uri,
-                                                       int line,
-                                                       int character) {
-    const auto instances_it = data.module_instances_by_uri.find(std::string(uri));
-    if (instances_it == data.module_instances_by_uri.end()) {
-        return std::nullopt;
-    }
-    std::optional<SnapshotModuleInstance> best;
-    for (const auto& instance : instances_it->second) {
-        if (!containsPosition(instance.module_selection_range, line, character)) {
-            continue;
-        }
-        if (!best.has_value() ||
-            locationLess(SemanticLocation{.uri = instance.uri, .range = instance.module_selection_range},
-                         SemanticLocation{.uri = best->uri, .range = best->module_selection_range})) {
-            best = instance;
-        }
-    }
-    return best;
 }
 
 std::optional<MacroInvocationFact> macroInvocationAt(const AstIndexView& view,
@@ -5327,6 +5526,11 @@ AstIndexView buildAstIndexView(const SnapshotData* data, std::uint64_t generatio
     view.callable_invocations_by_uri = data->callable_invocations_by_uri;
     view.macro_invocations_by_uri = data->macro_invocations_by_uri;
     view.inlay_symbols_by_uri = data->inlay_symbols_by_uri;
+    view.navigation_occurrences_by_uri = data->navigation_occurrences_by_uri;
+    view.navigation_occurrences_by_symbol = data->navigation_occurrences_by_symbol;
+    view.navigation_targets_by_id = data->navigation_targets_by_id;
+    view.implementation_edge_index = data->implementation_edge_index;
+    view.selection_range_indexes_by_uri = data->selection_range_indexes_by_uri;
     view.design_graph_module_entries.reserve(view.module_signatures_by_name.size() +
                                              data->module_entries.size());
     std::set<std::string> emitted_graph_entries;
@@ -5415,13 +5619,11 @@ AstIndexView buildAstIndexView(const SnapshotData* data, std::uint64_t generatio
     }
 
     view.symbols.reserve(data->symbols_by_id.size());
-    view.navigation_symbols_by_id.reserve(data->symbols_by_id.size());
     view.diagnostic_symbols_by_id.reserve(data->symbols_by_id.size());
     view.design_graph_symbols_by_id.reserve(data->symbols_by_id.size());
     for (const auto& [stable_id, indexed_symbol] : data->symbols_by_id) {
         view.symbols.push_back(AstIndexSymbol{.stable_id = stable_id,
                                               .identity = indexed_symbol.identity});
-        view.navigation_symbols_by_id.emplace(stable_id, indexed_symbol.identity);
         view.diagnostic_symbols_by_id.emplace(stable_id,
                                               DiagnosticSymbol{.identity = indexed_symbol.identity,
                                                                .type_display = indexed_symbol.type_display});
@@ -5432,12 +5634,8 @@ AstIndexView buildAstIndexView(const SnapshotData* data, std::uint64_t generatio
                                      stable_id);
     }
 
-    view.navigation_references.reserve(data->references.size());
     view.diagnostic_references.reserve(data->references.size());
     for (const auto& reference : data->references) {
-        view.navigation_references.push_back(NavigationReference{.stable_id = reference.stable_id,
-                                                                 .location = reference.location,
-                                                                 .is_declaration = reference.is_declaration});
         view.diagnostic_references.push_back(DiagnosticReference{.stable_id = reference.stable_id,
                                                                  .location = reference.location});
         appendUniqueDesignGraphRange(view.design_graph_symbol_ranges_by_uri[reference.location.uri],

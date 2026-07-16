@@ -1,0 +1,1 @@
+{"name":"navigation definition resolves a URI-local value","sources":[{"uri":"file:///golden/navigation/definition-local.sv","text":"module top;\n  logic value;\n  assign value = 1'b0;\nendmodule\n"}],"request":{"kind":"definition","uri":"file:///golden/navigation/definition-local.sv","line":2,"character":9},"expected":{"unresolved":false,"count":1}}

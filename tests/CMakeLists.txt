@@ -12,6 +12,7 @@ add_executable(
 	unit/GoldenSemanticTests.cpp
 	unit/LayoutProviderTests.cpp
 	unit/MessageStreamTests.cpp
+	unit/NavigationIndexTests.cpp
 	unit/NavigationProviderTests.cpp
 	unit/ProviderCompletenessMatrixTests.cpp
 	unit/QueryCacheTests.cpp

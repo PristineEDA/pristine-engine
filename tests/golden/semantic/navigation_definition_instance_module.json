@@ -1,0 +1,1 @@
+{"name":"navigation definition resolves an indexed module instance type","sources":[{"uri":"file:///golden/navigation/definition-instance.sv","text":"module child; endmodule\nmodule top;\n  child u_child();\nendmodule\n"}],"request":{"kind":"definition","uri":"file:///golden/navigation/definition-instance.sv","line":2,"character":3},"expected":{"unresolved":false,"count":1}}

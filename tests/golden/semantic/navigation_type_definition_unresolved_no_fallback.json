@@ -1,0 +1,1 @@
+{"name":"navigation type definition does not return a declaration fallback","sources":[{"uri":"file:///golden/navigation/type-unresolved.sv","text":"module top;\n  logic value;\nendmodule\n"}],"request":{"kind":"typeDefinition","uri":"file:///golden/navigation/type-unresolved.sv","line":1,"character":9},"expected":{"unresolved":true,"count":0}}

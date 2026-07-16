@@ -1,0 +1,1 @@
+{"name":"navigation highlights do not search workspace for unknown identifiers","sources":[{"uri":"file:///golden/navigation/highlight-unresolved.sv","text":"module top;\n  initial unknown_name = 1'b0;\nendmodule\n"}],"request":{"kind":"documentHighlight","uri":"file:///golden/navigation/highlight-unresolved.sv","line":1,"character":10},"expected":{"unresolved":true,"count":0}}

@@ -32,37 +32,35 @@ SemanticLocation locationAt(std::string uri, ParseRange range) {
 TEST_CASE("NavigationProvider maps semantic token kinds and declaration modifiers",
           "[analysis][semantic][navigation-provider][tokens]") {
     constexpr std::string_view uri = "file:///workspace/top.sv";
+    const auto pkg = SemanticSymbolIdentity{.stable_id = "symbol|pkg",
+                                            .name = "pkg",
+                                            .kind = "Package",
+                                            .location = locationAt(std::string(uri), rangeAt(0, 8, 11))};
+    const auto mod = SemanticSymbolIdentity{.stable_id = "symbol|mod",
+                                            .name = "child",
+                                            .kind = "Definition",
+                                            .location = locationAt(std::string(uri), rangeAt(1, 7, 12))};
+    const auto param = SemanticSymbolIdentity{.stable_id = "symbol|param",
+                                              .name = "WIDTH",
+                                              .kind = "Parameter",
+                                              .location = locationAt(std::string(uri), rangeAt(2, 18, 23))};
+    const std::unordered_map<std::string, SnapshotNavigationTargetFact> targets{
+        {pkg.stable_id, SnapshotNavigationTargetFact{.identity = pkg}},
+        {mod.stable_id, SnapshotNavigationTargetFact{.identity = mod}},
+        {param.stable_id, SnapshotNavigationTargetFact{.identity = param}}};
+    const SnapshotNavigationOccurrenceIndex occurrences{
+        .occurrences = {SnapshotNavigationOccurrence{.stable_id = mod.stable_id,
+                                                      .location = mod.location,
+                                                      .is_declaration = true},
+                        SnapshotNavigationOccurrence{.stable_id = pkg.stable_id,
+                                                      .location = locationAt(std::string(uri), rangeAt(4, 2, 5))},
+                        SnapshotNavigationOccurrence{.stable_id = param.stable_id,
+                                                      .location = locationAt(std::string(uri), rangeAt(5, 9, 14))}}};
     NavigationContext context{.generation = 13,
                               .snapshot_available = true,
                               .document_uri = std::string(uri),
-                              .symbols_by_id = {{"symbol|pkg",
-                                                 SemanticSymbolIdentity{.stable_id = "symbol|pkg",
-                                                                        .name = "pkg",
-                                                                        .kind = "Package",
-                                                                        .location = locationAt(std::string(uri),
-                                                                                               rangeAt(0, 8, 11))}},
-                                                {"symbol|mod",
-                                                 SemanticSymbolIdentity{.stable_id = "symbol|mod",
-                                                                        .name = "child",
-                                                                        .kind = "Definition",
-                                                                        .location = locationAt(std::string(uri),
-                                                                                               rangeAt(1, 7, 12))}},
-                                                {"symbol|param",
-                                                 SemanticSymbolIdentity{.stable_id = "symbol|param",
-                                                                        .name = "WIDTH",
-                                                                        .kind = "Parameter",
-                                                                        .location = locationAt(std::string(uri),
-                                                                                               rangeAt(2, 18, 23))}}},
-                              .references = {NavigationReference{.stable_id = "symbol|mod",
-                                                                 .location = locationAt(std::string(uri),
-                                                                                        rangeAt(1, 7, 12)),
-                                                                 .is_declaration = true},
-                                             NavigationReference{.stable_id = "symbol|pkg",
-                                                                 .location = locationAt(std::string(uri),
-                                                                                        rangeAt(4, 2, 5))},
-                                             NavigationReference{.stable_id = "symbol|param",
-                                                                 .location = locationAt(std::string(uri),
-                                                                                        rangeAt(5, 9, 14))}}};
+                              .occurrence_index = &occurrences,
+                              .targets_by_id = &targets};
 
     const auto result = semanticTokens(context);
 
@@ -93,17 +91,27 @@ TEST_CASE("NavigationProvider builds selection parent chain from AST ranges and 
                              "  logic ready;\n"
                              "  assign ready = ready;\n"
                              "endmodule\n";
+    const auto identity = SemanticSymbolIdentity{.stable_id = "symbol|ready",
+                                                 .name = "ready",
+                                                 .kind = "Variable",
+                                                 .location = locationAt(std::string(uri), rangeAt(2, 9, 14))};
+    const std::unordered_map<std::string, SnapshotNavigationTargetFact> targets{
+        {identity.stable_id, SnapshotNavigationTargetFact{.identity = identity}}};
+    const SnapshotNavigationOccurrenceIndex occurrences{
+        .occurrences = {SnapshotNavigationOccurrence{.stable_id = identity.stable_id,
+                                                      .location = identity.location}}};
+    const SnapshotSelectionRangeIndex selection_ranges{
+        .ranges = {rangeAt(0, 0, 3, 9), rangeAt(2, 2, 2, 23)},
+        .prefix_max_end_ranges = {rangeAt(0, 0, 3, 9), rangeAt(0, 0, 3, 9)}};
     const NavigationContext context{.generation = 17,
                                     .snapshot_available = true,
                                     .document_uri = std::string(uri),
                                     .document_text = &text,
-                                    .selection_ranges = {rangeAt(2, 2, 2, 23),
-                                                         rangeAt(0, 0, 3, 9)}};
-    const SemanticLookupResult lookup{.generation = 17,
-                                      .query_location = locationAt(std::string(uri),
-                                                                   rangeAt(2, 9, 14))};
+                                    .occurrence_index = &occurrences,
+                                    .targets_by_id = &targets,
+                                    .selection_range_index = &selection_ranges};
 
-    const auto result = selectionRangesAt(context, lookup, 2, 10);
+    const auto result = selectionRangesAt(context, 2, 10);
 
     REQUIRE_FALSE(result.unresolved);
     CHECK(result.generation == 17);

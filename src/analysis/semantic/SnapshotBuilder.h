@@ -49,6 +49,46 @@ struct SnapshotReferenceOccurrenceIndex {
     std::vector<ParseRange> prefix_max_end_ranges;
 };
 
+// Navigation queries use their own value-type occurrence view so providers do
+// not need to reach back into SnapshotData::references or AST-owned symbols.
+struct SnapshotNavigationOccurrence {
+    std::string stable_id;
+    SemanticLocation location;
+    bool is_declaration = false;
+    SemanticReferenceRole role = SemanticReferenceRole::Read;
+    bool has_type_display = false;
+};
+
+struct SnapshotNavigationOccurrenceIndex {
+    std::vector<SnapshotNavigationOccurrence> occurrences;
+    std::vector<ParseRange> prefix_max_end_ranges;
+};
+
+struct SnapshotNavigationTargetFact {
+    SemanticSymbolIdentity identity;
+    std::string type_display;
+    std::string value_display;
+    std::vector<SemanticLocation> type_definition_locations;
+    bool rename_eligible = false;
+};
+
+struct SnapshotImplementationEdge {
+    std::string target_stable_id;
+    std::string implementation_stable_id;
+    SemanticLocation location;
+    std::string kind;
+};
+
+struct SnapshotImplementationEdgeIndex {
+    std::vector<SnapshotImplementationEdge> edges;
+    std::unordered_map<std::string, std::vector<size_t>> edges_by_target_stable_id;
+};
+
+struct SnapshotSelectionRangeIndex {
+    std::vector<ParseRange> ranges;
+    std::vector<ParseRange> prefix_max_end_ranges;
+};
+
 struct SnapshotMemberCompletion {
     std::string qualifier;
     SemanticSymbolIdentity identity;
@@ -231,6 +271,11 @@ struct SnapshotData {
     std::unordered_map<std::string, std::vector<size_t>> references_by_symbol;
     std::unordered_map<std::string, std::vector<std::string>> reference_aliases_by_id;
     std::unordered_map<std::string, SnapshotReferenceOccurrenceIndex> reference_occurrences_by_uri;
+    std::unordered_map<std::string, SnapshotNavigationOccurrenceIndex> navigation_occurrences_by_uri;
+    std::unordered_map<std::string, std::vector<SnapshotNavigationOccurrence>>
+        navigation_occurrences_by_symbol;
+    std::unordered_map<std::string, SnapshotNavigationTargetFact> navigation_targets_by_id;
+    SnapshotImplementationEdgeIndex implementation_edge_index;
     std::unordered_map<std::string, std::vector<SemanticCompletionItem>> completions_by_uri;
     std::unordered_map<std::string, std::vector<SnapshotMemberCompletion>> member_completions_by_uri;
     std::unordered_map<std::string,
@@ -267,6 +312,7 @@ struct SnapshotData {
     std::unordered_map<std::string, std::vector<MacroInvocationFact>> macro_invocations_by_uri;
     std::unordered_map<std::string, std::vector<SignatureInlaySymbol>> inlay_symbols_by_uri;
     std::unordered_map<std::string, std::vector<ParseRange>> selection_ranges_by_uri;
+    std::unordered_map<std::string, SnapshotSelectionRangeIndex> selection_range_indexes_by_uri;
     std::unordered_map<std::string, std::vector<MacroDefinition>> macros_by_uri;
     std::unordered_map<std::string, std::vector<SnapshotMacroUndef>> macro_undefs_by_uri;
     std::unordered_map<std::string, std::vector<PackageImport>> package_imports_by_uri;

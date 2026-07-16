@@ -497,6 +497,31 @@ void runTypeDefinitionFixture(SemanticEngine& engine, const nlohmann::json& fixt
     checkLocations(result.locations, expected);
 }
 
+void runImplementationFixture(SemanticEngine& engine, const nlohmann::json& fixture) {
+    const auto& request = fixture.at("request");
+    const auto& expected = fixture.at("expected");
+    const auto result = engine.implementationsAt(request.at("uri").get<std::string>(),
+                                                 request.at("line").get<int>(),
+                                                 request.at("character").get<int>());
+    CHECK(result.unresolved == expected.value("unresolved", false));
+    checkLocations(result.locations, expected);
+}
+
+void runPrepareRenameFixture(SemanticEngine& engine, const nlohmann::json& fixture) {
+    const auto& request = fixture.at("request");
+    const auto& expected = fixture.at("expected");
+    const auto result = engine.prepareRenameAt(request.at("uri").get<std::string>(),
+                                               request.at("line").get<int>(),
+                                               request.at("character").get<int>());
+    CHECK(result.unresolved == expected.value("unresolved", false));
+    if (expected.contains("placeholder")) {
+        CHECK(result.placeholder == expected.at("placeholder").get<std::string>());
+    }
+    if (expected.contains("range")) {
+        CHECK(rangeMatchesJson(result.range, expected.at("range")));
+    }
+}
+
 void runHoverFixture(SemanticEngine& engine, const nlohmann::json& fixture) {
     const auto& request = fixture.at("request");
     const auto& expected = fixture.at("expected");
@@ -1255,6 +1280,12 @@ TEST_CASE("JSON semantic golden fixtures exercise stable request shapes",
         }
         else if (kind == "typeDefinition") {
             runTypeDefinitionFixture(engine, fixture);
+        }
+        else if (kind == "implementation") {
+            runImplementationFixture(engine, fixture);
+        }
+        else if (kind == "prepareRename") {
+            runPrepareRenameFixture(engine, fixture);
         }
         else if (kind == "hover") {
             runHoverFixture(engine, fixture);

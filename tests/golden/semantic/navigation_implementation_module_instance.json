@@ -1,0 +1,1 @@
+{"name":"navigation implementation uses module instance edges","sources":[{"uri":"file:///golden/navigation/implementation-module.sv","text":"module child; endmodule\nmodule top;\n  child u_child();\nendmodule\n"}],"request":{"kind":"implementation","uri":"file:///golden/navigation/implementation-module.sv","line":0,"character":8},"expected":{"unresolved":false,"count":1}}

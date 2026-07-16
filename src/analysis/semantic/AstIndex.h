@@ -67,8 +67,12 @@ struct AstIndexView {
     std::unordered_map<std::string, std::vector<CallableInvocationFact>> callable_invocations_by_uri;
     std::unordered_map<std::string, std::vector<MacroInvocationFact>> macro_invocations_by_uri;
     std::unordered_map<std::string, std::vector<SignatureInlaySymbol>> inlay_symbols_by_uri;
-    std::vector<NavigationReference> navigation_references;
-    std::unordered_map<std::string, SemanticSymbolIdentity> navigation_symbols_by_id;
+    std::unordered_map<std::string, SnapshotNavigationOccurrenceIndex> navigation_occurrences_by_uri;
+    std::unordered_map<std::string, std::vector<SnapshotNavigationOccurrence>>
+        navigation_occurrences_by_symbol;
+    std::unordered_map<std::string, SnapshotNavigationTargetFact> navigation_targets_by_id;
+    SnapshotImplementationEdgeIndex implementation_edge_index;
+    std::unordered_map<std::string, SnapshotSelectionRangeIndex> selection_range_indexes_by_uri;
     std::unordered_map<std::string, DiagnosticSymbol> diagnostic_symbols_by_id;
     std::vector<DiagnosticReference> diagnostic_references;
     std::unordered_map<std::string, DesignGraphSymbol> design_graph_symbols_by_id;
@@ -119,6 +123,12 @@ void buildAstIndexes(SnapshotData& data,
     int line,
     int character);
 
+[[nodiscard]] std::optional<SnapshotNavigationOccurrence> navigationOccurrenceAtLocation(
+    const SnapshotNavigationOccurrenceIndex& index,
+    int line,
+    int character,
+    size_t& scanned_occurrences);
+
 [[nodiscard]] std::vector<SemanticLocation> locationsForSymbol(const SnapshotData& data,
                                                                std::string_view stable_id,
                                                                bool include_declaration,
@@ -127,16 +137,6 @@ void buildAstIndexes(SnapshotData& data,
 [[nodiscard]] SemanticReferenceRole referenceRoleAtLocation(const SnapshotData& data,
                                                             std::string_view stable_id,
                                                             const SemanticLocation& location);
-
-[[nodiscard]] std::vector<SemanticLocation> moduleImplementationLocations(const SnapshotData& data,
-                                                                          std::string_view module_name,
-                                                                          size_t max_locations,
-                                                                          bool& truncated);
-
-[[nodiscard]] std::optional<SnapshotModuleInstance> moduleInstanceAt(const SnapshotData& data,
-                                                                     std::string_view uri,
-                                                                     int line,
-                                                                     int character);
 
 [[nodiscard]] std::optional<MacroInvocationFact> macroInvocationAt(const AstIndexView& view,
                                                                    std::string_view uri,

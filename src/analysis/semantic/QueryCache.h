@@ -26,11 +26,22 @@ public:
         std::uint64_t reference_lookup_scanned_occurrences = 0;
         std::uint64_t call_hierarchy_scanned_edges = 0;
         std::uint64_t call_hierarchy_scanned_modules = 0;
+        std::uint64_t navigation_occurrence_scanned = 0;
+        std::uint64_t navigation_target_lookup_scanned = 0;
+        std::uint64_t implementation_edge_scanned = 0;
+        std::uint64_t semantic_token_scanned_occurrences = 0;
+        std::uint64_t selection_range_scanned_candidates = 0;
         std::uint64_t scanned_global_symbols = 0;
         size_t diagnostics_entries = 0;
         size_t workspace_symbols_entries = 0;
         size_t references_entries = 0;
         size_t rename_entries = 0;
+        size_t hover_entries = 0;
+        size_t definition_entries = 0;
+        size_t type_definition_entries = 0;
+        size_t implementation_entries = 0;
+        size_t prepare_rename_entries = 0;
+        size_t document_highlight_entries = 0;
         size_t completions_entries = 0;
         size_t signature_help_entries = 0;
         size_t inlay_hints_entries = 0;
@@ -48,6 +59,11 @@ public:
     [[nodiscard]] Stats stats() const;
     void recordReferenceLookup(size_t scanned_occurrences);
     void recordCallHierarchyScan(size_t scanned_edges, size_t scanned_modules);
+    void recordNavigationScan(size_t scanned_occurrences,
+                              size_t scanned_targets,
+                              size_t scanned_implementation_edges,
+                              size_t scanned_tokens,
+                              size_t scanned_selection_candidates);
 
     [[nodiscard]] std::optional<std::vector<SemanticEngineDiagnostic>> diagnostics(
         std::uint64_t generation,
@@ -77,6 +93,68 @@ public:
                          int character,
                          bool include_declaration,
                          SemanticReferenceResult result);
+
+    [[nodiscard]] std::optional<SemanticHoverResult> hover(std::uint64_t generation,
+                                                            std::string_view uri,
+                                                            int line,
+                                                            int character) const;
+    void storeHover(std::uint64_t generation,
+                    std::string_view uri,
+                    int line,
+                    int character,
+                    SemanticHoverResult result);
+
+    [[nodiscard]] std::optional<SemanticReferenceResult> definitions(std::uint64_t generation,
+                                                                       std::string_view uri,
+                                                                       int line,
+                                                                       int character) const;
+    void storeDefinitions(std::uint64_t generation,
+                          std::string_view uri,
+                          int line,
+                          int character,
+                          SemanticReferenceResult result);
+
+    [[nodiscard]] std::optional<SemanticReferenceResult> typeDefinitions(std::uint64_t generation,
+                                                                           std::string_view uri,
+                                                                           int line,
+                                                                           int character) const;
+    void storeTypeDefinitions(std::uint64_t generation,
+                              std::string_view uri,
+                              int line,
+                              int character,
+                              SemanticReferenceResult result);
+
+    [[nodiscard]] std::optional<SemanticReferenceResult> implementations(std::uint64_t generation,
+                                                                          std::string_view uri,
+                                                                          int line,
+                                                                          int character) const;
+    void storeImplementations(std::uint64_t generation,
+                              std::string_view uri,
+                              int line,
+                              int character,
+                              SemanticReferenceResult result);
+
+    [[nodiscard]] std::optional<SemanticPrepareRenameResult> prepareRename(
+        std::uint64_t generation,
+        std::string_view uri,
+        int line,
+        int character) const;
+    void storePrepareRename(std::uint64_t generation,
+                            std::string_view uri,
+                            int line,
+                            int character,
+                            SemanticPrepareRenameResult result);
+
+    [[nodiscard]] std::optional<SemanticReferenceResult> documentHighlights(
+        std::uint64_t generation,
+        std::string_view uri,
+        int line,
+        int character) const;
+    void storeDocumentHighlights(std::uint64_t generation,
+                                 std::string_view uri,
+                                 int line,
+                                 int character,
+                                 SemanticReferenceResult result);
 
     [[nodiscard]] std::optional<SemanticRenameResult> rename(
         std::uint64_t generation,
@@ -188,6 +266,24 @@ private:
         SemanticRenameResult result;
     };
 
+    struct HoverEntry {
+        std::uint64_t generation = 0;
+        std::uint64_t sequence = 0;
+        SemanticHoverResult result;
+    };
+
+    struct ReferenceResultEntry {
+        std::uint64_t generation = 0;
+        std::uint64_t sequence = 0;
+        SemanticReferenceResult result;
+    };
+
+    struct PrepareRenameEntry {
+        std::uint64_t generation = 0;
+        std::uint64_t sequence = 0;
+        SemanticPrepareRenameResult result;
+    };
+
     struct CompletionEntry {
         std::uint64_t generation = 0;
         std::uint64_t sequence = 0;
@@ -261,6 +357,12 @@ private:
     std::unordered_map<std::string, WorkspaceSymbolsEntry> workspace_symbols_by_key_;
     std::unordered_map<std::string, ReferencesEntry> references_by_key_;
     std::unordered_map<std::string, RenameEntry> rename_by_key_;
+    std::unordered_map<std::string, HoverEntry> hover_by_key_;
+    std::unordered_map<std::string, ReferenceResultEntry> definitions_by_key_;
+    std::unordered_map<std::string, ReferenceResultEntry> type_definitions_by_key_;
+    std::unordered_map<std::string, ReferenceResultEntry> implementations_by_key_;
+    std::unordered_map<std::string, PrepareRenameEntry> prepare_rename_by_key_;
+    std::unordered_map<std::string, ReferenceResultEntry> document_highlights_by_key_;
     std::unordered_map<std::string, CompletionEntry> completions_by_key_;
     std::unordered_map<std::string, SignatureHelpEntry> signature_help_by_key_;
     std::unordered_map<std::string, InlayHintsEntry> inlay_hints_by_key_;
@@ -283,6 +385,11 @@ private:
     std::uint64_t reference_lookup_scanned_occurrences_ = 0;
     std::uint64_t call_hierarchy_scanned_edges_ = 0;
     std::uint64_t call_hierarchy_scanned_modules_ = 0;
+    std::uint64_t navigation_occurrence_scanned_ = 0;
+    std::uint64_t navigation_target_lookup_scanned_ = 0;
+    std::uint64_t implementation_edge_scanned_ = 0;
+    std::uint64_t semantic_token_scanned_occurrences_ = 0;
+    std::uint64_t selection_range_scanned_candidates_ = 0;
     std::uint64_t scanned_global_symbols_ = 0;
 };
 

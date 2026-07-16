@@ -1,0 +1,1 @@
+{"name":"navigation prepare rename rejects macro occurrences","sources":[{"uri":"file:///golden/navigation/macro-rename.sv","text":"`define WIDTH 8\nmodule top;\n  logic [`WIDTH-1:0] value;\nendmodule\n"}],"request":{"kind":"prepareRename","uri":"file:///golden/navigation/macro-rename.sv","line":2,"character":10},"expected":{"unresolved":true}}

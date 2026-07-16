@@ -110,6 +110,19 @@ TEST_CASE("AstIndex builds provider-facing symbol and reference views",
         .name = "ready",
         .location = ready_identity.location,
         .is_declaration = true});
+    data.navigation_targets_by_id.emplace(
+        "symbol|ready",
+        SnapshotNavigationTargetFact{.identity = ready_identity, .type_display = "logic"});
+    data.navigation_occurrences_by_uri["file:///workspace/top.sv"].occurrences = {
+        SnapshotNavigationOccurrence{.stable_id = "symbol|ready",
+                                     .location = data.references[0].location,
+                                     .has_type_display = true},
+        SnapshotNavigationOccurrence{.stable_id = "symbol|ready",
+                                     .location = ready_identity.location,
+                                     .is_declaration = true,
+                                     .has_type_display = true}};
+    data.navigation_occurrences_by_symbol["symbol|ready"] =
+        data.navigation_occurrences_by_uri["file:///workspace/top.sv"].occurrences;
 
     const auto view = buildAstIndexView(&data, 42);
 
@@ -117,16 +130,16 @@ TEST_CASE("AstIndex builds provider-facing symbol and reference views",
     CHECK(view.snapshot_available);
     REQUIRE(view.symbols.size() == 1);
     CHECK(view.symbols.front().stable_id == "symbol|ready");
-    REQUIRE(view.navigation_symbols_by_id.contains("symbol|ready"));
-    CHECK(view.navigation_symbols_by_id.at("symbol|ready").name == "ready");
+    REQUIRE(view.navigation_targets_by_id.contains("symbol|ready"));
+    CHECK(view.navigation_targets_by_id.at("symbol|ready").identity.name == "ready");
     REQUIRE(view.diagnostic_symbols_by_id.contains("symbol|ready"));
     CHECK(view.diagnostic_symbols_by_id.at("symbol|ready").type_display == "logic");
     REQUIRE(view.design_graph_symbols_by_id.contains("symbol|ready"));
-    REQUIRE(view.navigation_references.size() == 2);
-    CHECK(std::any_of(view.navigation_references.begin(),
-                      view.navigation_references.end(),
-                      [](const NavigationReference& reference) {
-                          return reference.is_declaration;
+    REQUIRE(view.navigation_occurrences_by_uri.contains("file:///workspace/top.sv"));
+    CHECK(std::any_of(view.navigation_occurrences_by_uri.at("file:///workspace/top.sv").occurrences.begin(),
+                      view.navigation_occurrences_by_uri.at("file:///workspace/top.sv").occurrences.end(),
+                      [](const SnapshotNavigationOccurrence& occurrence) {
+                          return occurrence.is_declaration;
                       }));
     REQUIRE(view.design_graph_symbol_ranges_by_uri.contains("file:///workspace/top.sv"));
     CHECK(view.design_graph_symbol_ranges_by_uri.at("file:///workspace/top.sv").size() == 2);
@@ -260,17 +273,12 @@ TEST_CASE("AstIndex builds AST symbol, reference, and module instance indexes",
     REQUIRE(data.symbols_by_id.contains(*child_id));
     CHECK(data.symbols_by_id.at(*child_id).identity.location.uri == "file:///workspace/child.sv");
 
-    const auto instance = moduleInstanceAt(data, "file:///workspace/top.sv", 3, 4);
-    REQUIRE(instance.has_value());
-    CHECK(instance->module_name == "child");
-    CHECK(instance->instance_name == "u_child");
-    CHECK(instance->target_stable_id == *child_id);
-
-    bool truncated = false;
-    const auto implementations = moduleImplementationLocations(data, "child", 100, truncated);
-    REQUIRE_FALSE(truncated);
-    REQUIRE(implementations.size() == 1);
-    CHECK(implementations.front().uri == "file:///workspace/top.sv");
+    const auto edges_it = data.implementation_edge_index.edges_by_target_stable_id.find(*child_id);
+    REQUIRE(edges_it != data.implementation_edge_index.edges_by_target_stable_id.end());
+    REQUIRE(edges_it->second.size() == 1);
+    const auto& edge = data.implementation_edge_index.edges[edges_it->second.front()];
+    CHECK(edge.target_stable_id == *child_id);
+    CHECK(edge.location.uri == "file:///workspace/top.sv");
 }
 
 TEST_CASE("AstIndex builds URI-local reference occurrence ranges",

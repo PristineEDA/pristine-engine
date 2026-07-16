@@ -1,0 +1,1 @@
+{"name":"navigation hover resolves a URI-local value","sources":[{"uri":"file:///golden/navigation/hover-local.sv","text":"module top;\n  logic value;\n  assign value = 1'b0;\nendmodule\n"}],"request":{"kind":"hover","uri":"file:///golden/navigation/hover-local.sv","line":2,"character":9},"expected":{"unresolved":false,"contentsContains":["value"]}}

@@ -91,6 +91,8 @@ struct SemanticLookupResult {
     std::optional<SemanticSymbolIdentity> symbol;
     SemanticLocation query_location;
     std::vector<std::string> messages;
+    size_t scanned_occurrence_count = 0;
+    size_t scanned_target_count = 0;
     bool unresolved = false;
 };
 
@@ -99,6 +101,8 @@ struct SemanticReferenceResult {
     std::vector<SemanticLocation> locations;
     std::vector<SemanticReferenceOccurrence> occurrences;
     std::vector<std::string> messages;
+    size_t scanned_occurrence_count = 0;
+    size_t scanned_implementation_edge_count = 0;
     bool unresolved = false;
     bool truncated = false;
 };
@@ -108,6 +112,8 @@ struct SemanticHoverResult {
     std::string contents;
     ParseRange range;
     std::vector<std::string> messages;
+    size_t scanned_occurrence_count = 0;
+    size_t scanned_target_count = 0;
     bool unresolved = false;
 };
 
@@ -116,6 +122,8 @@ struct SemanticPrepareRenameResult {
     std::string placeholder;
     ParseRange range;
     std::vector<std::string> messages;
+    size_t scanned_occurrence_count = 0;
+    size_t scanned_target_count = 0;
     bool unresolved = false;
 };
 
@@ -128,6 +136,8 @@ struct SemanticRenameResult {
     std::uint64_t generation = 0;
     std::vector<SemanticTextEdit> edits;
     std::vector<std::string> messages;
+    size_t scanned_occurrence_count = 0;
+    size_t scanned_implementation_edge_count = 0;
     bool unresolved = false;
     bool truncated = false;
 };
@@ -199,6 +209,7 @@ struct SemanticTokenResult {
     std::uint64_t generation = 0;
     std::vector<SemanticToken> tokens;
     std::vector<std::string> messages;
+    size_t scanned_occurrence_count = 0;
     bool unresolved = false;
     bool truncated = false;
 };
@@ -212,6 +223,7 @@ struct SemanticSelectionRangeResult {
     std::uint64_t generation = 0;
     std::vector<SemanticSelectionRange> ranges;
     std::vector<std::string> messages;
+    size_t scanned_candidate_count = 0;
     bool unresolved = false;
 };
 
@@ -483,11 +495,22 @@ struct SemanticQueryCacheStats {
     std::uint64_t reference_lookup_scanned_occurrences = 0;
     std::uint64_t call_hierarchy_scanned_edges = 0;
     std::uint64_t call_hierarchy_scanned_modules = 0;
+    std::uint64_t navigation_occurrence_scanned = 0;
+    std::uint64_t navigation_target_lookup_scanned = 0;
+    std::uint64_t implementation_edge_scanned = 0;
+    std::uint64_t semantic_token_scanned_occurrences = 0;
+    std::uint64_t selection_range_scanned_candidates = 0;
     std::uint64_t scanned_global_symbols = 0;
     size_t diagnostics_entries = 0;
     size_t workspace_symbols_entries = 0;
     size_t references_entries = 0;
     size_t rename_entries = 0;
+    size_t hover_entries = 0;
+    size_t definition_entries = 0;
+    size_t type_definition_entries = 0;
+    size_t implementation_entries = 0;
+    size_t prepare_rename_entries = 0;
+    size_t document_highlight_entries = 0;
     size_t completions_entries = 0;
     size_t signature_help_entries = 0;
     size_t inlay_hints_entries = 0;

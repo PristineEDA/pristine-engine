@@ -1,0 +1,1 @@
+{"name":"navigation type definition resolves an indexed declared type","sources":[{"uri":"file:///golden/navigation/type-local.sv","text":"module top;\n  typedef logic [3:0] nibble_t;\n  nibble_t value;\nendmodule\n"}],"request":{"kind":"typeDefinition","uri":"file:///golden/navigation/type-local.sv","line":2,"character":3},"expected":{"unresolved":false,"count":1}}

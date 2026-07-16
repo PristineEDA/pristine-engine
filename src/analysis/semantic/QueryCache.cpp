@@ -78,6 +78,12 @@ void QueryCache::clear() {
     workspace_symbols_by_key_.clear();
     references_by_key_.clear();
     rename_by_key_.clear();
+    hover_by_key_.clear();
+    definitions_by_key_.clear();
+    type_definitions_by_key_.clear();
+    implementations_by_key_.clear();
+    prepare_rename_by_key_.clear();
+    document_highlights_by_key_.clear();
     completions_by_key_.clear();
     signature_help_by_key_.clear();
     inlay_hints_by_key_.clear();
@@ -100,6 +106,11 @@ void QueryCache::resetStats() {
     reference_lookup_scanned_occurrences_ = 0;
     call_hierarchy_scanned_edges_ = 0;
     call_hierarchy_scanned_modules_ = 0;
+    navigation_occurrence_scanned_ = 0;
+    navigation_target_lookup_scanned_ = 0;
+    implementation_edge_scanned_ = 0;
+    semantic_token_scanned_occurrences_ = 0;
+    selection_range_scanned_candidates_ = 0;
     scanned_global_symbols_ = 0;
 }
 
@@ -114,6 +125,12 @@ void QueryCache::setMaxEntriesPerQuery(size_t max_entries) {
     evictOldestEntries(workspace_symbols_by_key_);
     evictOldestEntries(references_by_key_);
     evictOldestEntries(rename_by_key_);
+    evictOldestEntries(hover_by_key_);
+    evictOldestEntries(definitions_by_key_);
+    evictOldestEntries(type_definitions_by_key_);
+    evictOldestEntries(implementations_by_key_);
+    evictOldestEntries(prepare_rename_by_key_);
+    evictOldestEntries(document_highlights_by_key_);
     evictOldestEntries(completions_by_key_);
     evictOldestEntries(signature_help_by_key_);
     evictOldestEntries(inlay_hints_by_key_);
@@ -137,11 +154,22 @@ QueryCache::Stats QueryCache::stats() const {
     result.reference_lookup_scanned_occurrences = reference_lookup_scanned_occurrences_;
     result.call_hierarchy_scanned_edges = call_hierarchy_scanned_edges_;
     result.call_hierarchy_scanned_modules = call_hierarchy_scanned_modules_;
+    result.navigation_occurrence_scanned = navigation_occurrence_scanned_;
+    result.navigation_target_lookup_scanned = navigation_target_lookup_scanned_;
+    result.implementation_edge_scanned = implementation_edge_scanned_;
+    result.semantic_token_scanned_occurrences = semantic_token_scanned_occurrences_;
+    result.selection_range_scanned_candidates = selection_range_scanned_candidates_;
     result.scanned_global_symbols = scanned_global_symbols_;
     result.diagnostics_entries = diagnostics_by_uri_.size();
     result.workspace_symbols_entries = workspace_symbols_by_key_.size();
     result.references_entries = references_by_key_.size();
     result.rename_entries = rename_by_key_.size();
+    result.hover_entries = hover_by_key_.size();
+    result.definition_entries = definitions_by_key_.size();
+    result.type_definition_entries = type_definitions_by_key_.size();
+    result.implementation_entries = implementations_by_key_.size();
+    result.prepare_rename_entries = prepare_rename_by_key_.size();
+    result.document_highlight_entries = document_highlights_by_key_.size();
     result.completions_entries = completions_by_key_.size();
     result.signature_help_entries = signature_help_by_key_.size();
     result.inlay_hints_entries = inlay_hints_by_key_.size();
@@ -150,7 +178,10 @@ QueryCache::Stats QueryCache::stats() const {
     result.backward_cone_entries = backward_cone_by_key_.size();
     result.code_actions_entries = code_actions_by_key_.size();
     result.total_entries = result.diagnostics_entries + result.workspace_symbols_entries +
-                           result.references_entries + result.rename_entries +
+                           result.references_entries + result.rename_entries + result.hover_entries +
+                           result.definition_entries + result.type_definition_entries +
+                           result.implementation_entries + result.prepare_rename_entries +
+                           result.document_highlight_entries +
                            result.completions_entries + result.signature_help_entries +
                            result.inlay_hints_entries + result.module_hierarchy_entries +
                            result.schematic_entries + result.backward_cone_entries +
@@ -165,6 +196,18 @@ void QueryCache::recordReferenceLookup(size_t scanned_occurrences) {
 void QueryCache::recordCallHierarchyScan(size_t scanned_edges, size_t scanned_modules) {
     call_hierarchy_scanned_edges_ += scanned_edges;
     call_hierarchy_scanned_modules_ += scanned_modules;
+}
+
+void QueryCache::recordNavigationScan(size_t scanned_occurrences,
+                                      size_t scanned_targets,
+                                      size_t scanned_implementation_edges,
+                                      size_t scanned_tokens,
+                                      size_t scanned_selection_candidates) {
+    navigation_occurrence_scanned_ += scanned_occurrences;
+    navigation_target_lookup_scanned_ += scanned_targets;
+    implementation_edge_scanned_ += scanned_implementation_edges;
+    semantic_token_scanned_occurrences_ += scanned_tokens;
+    selection_range_scanned_candidates_ += scanned_selection_candidates;
 }
 
 void QueryCache::recordCompletionResolveFactLookup(size_t count) {
@@ -251,6 +294,162 @@ void QueryCache::storeReferences(std::uint64_t generation,
                                         std::move(entry));
     recordStore();
     evictOldestEntries(references_by_key_);
+}
+
+std::optional<SemanticHoverResult> QueryCache::hover(std::uint64_t generation,
+                                                      std::string_view uri,
+                                                      int line,
+                                                      int character) const {
+    const auto found = hover_by_key_.find(positionKey(uri, line, character));
+    if (found == hover_by_key_.end() || found->second.generation != generation) {
+        recordMiss();
+        return std::nullopt;
+    }
+    recordHit();
+    return found->second.result;
+}
+
+void QueryCache::storeHover(std::uint64_t generation,
+                            std::string_view uri,
+                            int line,
+                            int character,
+                            SemanticHoverResult result) {
+    hover_by_key_.insert_or_assign(positionKey(uri, line, character),
+                                   HoverEntry{.generation = generation,
+                                              .sequence = nextSequence(),
+                                              .result = std::move(result)});
+    recordStore();
+    evictOldestEntries(hover_by_key_);
+}
+
+std::optional<SemanticReferenceResult> QueryCache::definitions(std::uint64_t generation,
+                                                                std::string_view uri,
+                                                                int line,
+                                                                int character) const {
+    const auto found = definitions_by_key_.find(positionKey(uri, line, character));
+    if (found == definitions_by_key_.end() || found->second.generation != generation) {
+        recordMiss();
+        return std::nullopt;
+    }
+    recordHit();
+    return found->second.result;
+}
+
+void QueryCache::storeDefinitions(std::uint64_t generation,
+                                  std::string_view uri,
+                                  int line,
+                                  int character,
+                                  SemanticReferenceResult result) {
+    definitions_by_key_.insert_or_assign(positionKey(uri, line, character),
+                                         ReferenceResultEntry{.generation = generation,
+                                                              .sequence = nextSequence(),
+                                                              .result = std::move(result)});
+    recordStore();
+    evictOldestEntries(definitions_by_key_);
+}
+
+std::optional<SemanticReferenceResult> QueryCache::typeDefinitions(std::uint64_t generation,
+                                                                    std::string_view uri,
+                                                                    int line,
+                                                                    int character) const {
+    const auto found = type_definitions_by_key_.find(positionKey(uri, line, character));
+    if (found == type_definitions_by_key_.end() || found->second.generation != generation) {
+        recordMiss();
+        return std::nullopt;
+    }
+    recordHit();
+    return found->second.result;
+}
+
+void QueryCache::storeTypeDefinitions(std::uint64_t generation,
+                                      std::string_view uri,
+                                      int line,
+                                      int character,
+                                      SemanticReferenceResult result) {
+    type_definitions_by_key_.insert_or_assign(positionKey(uri, line, character),
+                                              ReferenceResultEntry{.generation = generation,
+                                                                   .sequence = nextSequence(),
+                                                                   .result = std::move(result)});
+    recordStore();
+    evictOldestEntries(type_definitions_by_key_);
+}
+
+std::optional<SemanticReferenceResult> QueryCache::implementations(std::uint64_t generation,
+                                                                     std::string_view uri,
+                                                                     int line,
+                                                                     int character) const {
+    const auto found = implementations_by_key_.find(positionKey(uri, line, character));
+    if (found == implementations_by_key_.end() || found->second.generation != generation) {
+        recordMiss();
+        return std::nullopt;
+    }
+    recordHit();
+    return found->second.result;
+}
+
+void QueryCache::storeImplementations(std::uint64_t generation,
+                                      std::string_view uri,
+                                      int line,
+                                      int character,
+                                      SemanticReferenceResult result) {
+    implementations_by_key_.insert_or_assign(positionKey(uri, line, character),
+                                             ReferenceResultEntry{.generation = generation,
+                                                                  .sequence = nextSequence(),
+                                                                  .result = std::move(result)});
+    recordStore();
+    evictOldestEntries(implementations_by_key_);
+}
+
+std::optional<SemanticPrepareRenameResult> QueryCache::prepareRename(std::uint64_t generation,
+                                                                       std::string_view uri,
+                                                                       int line,
+                                                                       int character) const {
+    const auto found = prepare_rename_by_key_.find(positionKey(uri, line, character));
+    if (found == prepare_rename_by_key_.end() || found->second.generation != generation) {
+        recordMiss();
+        return std::nullopt;
+    }
+    recordHit();
+    return found->second.result;
+}
+
+void QueryCache::storePrepareRename(std::uint64_t generation,
+                                    std::string_view uri,
+                                    int line,
+                                    int character,
+                                    SemanticPrepareRenameResult result) {
+    prepare_rename_by_key_.insert_or_assign(positionKey(uri, line, character),
+                                            PrepareRenameEntry{.generation = generation,
+                                                               .sequence = nextSequence(),
+                                                               .result = std::move(result)});
+    recordStore();
+    evictOldestEntries(prepare_rename_by_key_);
+}
+
+std::optional<SemanticReferenceResult> QueryCache::documentHighlights(std::uint64_t generation,
+                                                                        std::string_view uri,
+                                                                        int line,
+                                                                        int character) const {
+    const auto found = document_highlights_by_key_.find(positionKey(uri, line, character));
+    if (found == document_highlights_by_key_.end() || found->second.generation != generation) {
+        recordMiss();
+        return std::nullopt;
+    }
+    recordHit();
+    return found->second.result;
+}
+
+void QueryCache::storeDocumentHighlights(std::uint64_t generation,
+                                         std::string_view uri,
+                                         int line,
+                                         int character,
+                                         SemanticReferenceResult result) {
+    document_highlights_by_key_.insert_or_assign(positionKey(uri, line, character),
+                                                 ReferenceResultEntry{.generation = generation,
+                                                                      .sequence = nextSequence(),
+                                                                      .result = std::move(result)});
+    recordStore();
+    evictOldestEntries(document_highlights_by_key_);
 }
 
 std::optional<SemanticRenameResult> QueryCache::rename(std::uint64_t generation,

@@ -1,0 +1,1 @@
+{"name":"navigation hover uses indexed typedef target display","sources":[{"uri":"file:///golden/navigation/hover-typedef.sv","text":"module top;\n  typedef logic [3:0] nibble_t;\n  nibble_t value;\nendmodule\n"}],"request":{"kind":"hover","uri":"file:///golden/navigation/hover-typedef.sv","line":2,"character":3},"expected":{"unresolved":false,"contentsContains":["nibble_t"]}}
