@@ -240,6 +240,21 @@ struct SnapshotAssignmentEdge {
     SemanticLocation location;
     SemanticLocation expression_location;
     std::string expression;
+    std::string kind = "assignment";
+    std::string generated_instance_id;
+};
+
+// A graph endpoint retains the AST-resolved identity and direction used by
+// hierarchy, schematic, and cone queries. It is intentionally value-only so
+// provider queries never need to recover endpoint meaning from a port name.
+struct SnapshotGraphEndpointFact {
+    std::string stable_id;
+    std::string module_name;
+    std::string name;
+    std::string kind;
+    std::string direction;
+    SemanticLocation location;
+    std::string generated_instance_id;
 };
 
 // Design graph queries consume these precomputed maps rather than rebuilding
@@ -250,6 +265,8 @@ struct SnapshotDesignGraphBindingIndex {
     std::unordered_map<std::string, std::string> port_symbol_ids_by_module_port;
     std::unordered_map<std::string, std::string> parameter_symbol_ids_by_module_parameter;
     std::unordered_map<std::string, std::string> instance_ids_by_uri_range;
+    std::unordered_map<std::string, SnapshotGraphEndpointFact> endpoints_by_module_member;
+    std::unordered_map<std::string, SnapshotGraphEndpointFact> endpoints_by_stable_id;
 };
 
 struct SnapshotConeAdjacencyIndex {

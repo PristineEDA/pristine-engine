@@ -226,6 +226,7 @@ add_library(
   src/analysis/semantic/CodeActionProvider.cpp
   src/analysis/semantic/CompletionProvider.cpp
   src/analysis/semantic/DebugTrace.cpp
+  src/analysis/semantic/DesignGraphIndexBuilder.cpp
   src/analysis/semantic/DesignGraphProvider.cpp
   src/analysis/semantic/DiagnosticProvider.cpp
   src/analysis/semantic/NavigationProvider.cpp

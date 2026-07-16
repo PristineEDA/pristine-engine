@@ -67,11 +67,16 @@ int main() {
 
         const auto document_text = [](int index, bool include_workspace_probe) {
             const auto name = std::string("sig_") + std::to_string(index);
+            if (index == 0) {
+                return std::string("module unit_0(input logic in, output logic out);\n") +
+                       "  assign out = in;\nendmodule\n";
+            }
             auto text = std::string("module unit_") + std::to_string(index) + ";\n" +
                         "  logic " + name + ";\n" +
                         "  assign " + name + " = " + name + ";\n";
             if (include_workspace_probe) {
-                text += "  unit_0 u0();\n";
+                text += "  logic connected;\n";
+                text += "  unit_0 u0(.in(" + name + "), .out(connected));\n";
                 text += "  function automatic int add(input int lhs, input int rhs);\n";
                 text += "    return lhs + rhs;\n";
                 text += "  endfunction\n";
@@ -116,7 +121,7 @@ int main() {
         }
 
         const auto start_workspace_completion = Clock::now();
-        const auto workspace_completion = engine.completionsAt(target_uri, 3, 6, "unit");
+        const auto workspace_completion = engine.completionsAt(target_uri, 4, 6, "unit");
         const auto workspace_completion_micros = elapsedMicros(start_workspace_completion, Clock::now());
 
         const auto start_query = Clock::now();
@@ -134,17 +139,17 @@ int main() {
         const auto end_rename = Clock::now();
 
         const auto start_signature = Clock::now();
-        const auto signature = engine.signatureHelpAt(target_uri, 7, 30);
+        const auto signature = engine.signatureHelpAt(target_uri, 8, 29);
         const auto end_signature = Clock::now();
         const auto start_signature_warm = Clock::now();
-        const auto signature_warm = engine.signatureHelpAt(target_uri, 7, 30);
+        const auto signature_warm = engine.signatureHelpAt(target_uri, 8, 29);
         const auto end_signature_warm = Clock::now();
 
         const auto start_inlay = Clock::now();
         const auto inlay = engine.inlayHints(target_uri,
                                              pristine::analysis::ParseRange{.start_line = 0,
                                                                             .start_character = 0,
-                                                                            .end_line = 11,
+                                                                            .end_line = 12,
                                                                             .end_character = 0});
         const auto end_inlay = Clock::now();
         const auto start_inlay_warm = Clock::now();
@@ -152,19 +157,19 @@ int main() {
                                                   pristine::analysis::ParseRange{
                                                       .start_line = 0,
                                                       .start_character = 0,
-                                                      .end_line = 11,
+                                                                            .end_line = 12,
                                                       .end_character = 0});
         const auto end_inlay_warm = Clock::now();
 
         const auto start_macro_definition = Clock::now();
-        const auto macro_definition = engine.definitionsAt(target_uri, 9, 31);
+        const auto macro_definition = engine.definitionsAt(target_uri, 10, 31);
         const auto end_macro_definition = Clock::now();
         const auto start_macro_expand = Clock::now();
         const auto macro_expand = engine.codeActionsAt(
             target_uri,
-            pristine::analysis::ParseRange{.start_line = 9,
+            pristine::analysis::ParseRange{.start_line = 10,
                                            .start_character = 27,
-                                           .end_line = 9,
+                                           .end_line = 10,
                                            .end_character = 36});
         const auto end_macro_expand = Clock::now();
 
@@ -177,6 +182,7 @@ int main() {
         const auto start_hierarchy = Clock::now();
         const auto hierarchy = engine.moduleHierarchy(target_module_name, 4);
         const auto end_hierarchy = Clock::now();
+        const auto hierarchy_warm = engine.moduleHierarchy(target_module_name, 4);
 
         const auto start_call_hierarchy = Clock::now();
         const auto call_prepare = engine.prepareCallHierarchy(target_uri, 0, 8);
@@ -189,17 +195,19 @@ int main() {
         const auto start_schematic = Clock::now();
         const auto schematic = engine.schematic(target_module_name, 4);
         const auto end_schematic = Clock::now();
+        const auto schematic_warm = engine.schematic(target_module_name, 4);
 
         const auto start_cone = Clock::now();
-        const auto cone = engine.backwardConeAt(target_uri, 1, 10);
+        const auto cone = engine.backwardConeAt(target_uri, 3, 10);
         const auto end_cone = Clock::now();
+        const auto cone_warm = engine.backwardConeAt(target_uri, 3, 10);
 
         const auto start_code_action = Clock::now();
         const auto code_actions = engine.codeActionsAt(
             target_uri,
             pristine::analysis::ParseRange{.start_line = 0,
                                            .start_character = 0,
-                                           .end_line = 4,
+                                           .end_line = 11,
                                            .end_character = 0});
         const auto end_code_action = Clock::now();
         const auto cache_stats = engine.queryCacheStats();
@@ -222,6 +230,8 @@ int main() {
                                      highlights.unresolved ||
                                      call_prepare.unresolved || call_prepare.items.empty() ||
                                      call_outgoing.unresolved || cache_stats.call_hierarchy_scanned_modules != 0 ||
+                                     hierarchy_warm.unresolved || schematic_warm.unresolved || cone_warm.unresolved ||
+                                     cone.nodes.size() < 2 || cache_stats.cone_adjacency_scanned_edges == 0 ||
                                      cache_stats.graph_scanned_global_symbols != 0 ||
                                      cache_stats.cone_scanned_global_edges != 0;
 

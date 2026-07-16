@@ -2,6 +2,7 @@
 
 #include "CompletionProvider.h"
 #include "DebugTrace.h"
+#include "DesignGraphIndexBuilder.h"
 #include "pristine/analysis/SourceUtil.h"
 
 #include "slang/ast/ASTVisitor.h"
@@ -4253,7 +4254,9 @@ void buildAssignmentEdges(SnapshotData& data) {
                 .to_symbol_id = reference.stable_id,
                 .location = SemanticLocation{.uri = seed.uri, .range = seed.assignment_range},
                 .expression_location = reference.location,
-                .expression = seed.right_expression});
+                .expression = seed.right_expression,
+                .kind = "assignment",
+                .generated_instance_id = {}});
             emitted_right_reference = true;
         }
         if (!emitted_right_reference) {
@@ -4279,7 +4282,9 @@ void buildAssignmentEdges(SnapshotData& data) {
                 .to_symbol_id = *right_id,
                 .location = SemanticLocation{.uri = seed.uri, .range = seed.assignment_range},
                 .expression_location = symbol_it->second.identity.location,
-                .expression = seed.right_expression});
+                .expression = seed.right_expression,
+                .kind = "assignment",
+                .generated_instance_id = {}});
         }
     }
 
@@ -4296,7 +4301,7 @@ void buildAssignmentEdges(SnapshotData& data) {
     }
 }
 
-void buildDesignGraphIndexes(SnapshotData& data) {
+[[maybe_unused]] void buildLegacyDesignGraphIndexes(SnapshotData& data) {
     data.design_graph_binding_index = {};
     data.cone_adjacency_index = {};
     auto& bindings = data.design_graph_binding_index;
@@ -4489,7 +4494,9 @@ void buildDesignGraphIndexes(SnapshotData& data) {
                     .to_symbol_id = output ? child_symbol->second : *parent_symbol_id,
                     .location = SemanticLocation{.uri = parent.uri, .range = connection.range},
                     .expression_location = SemanticLocation{.uri = parent.uri, .range = connection.range},
-                    .expression = connection.signal.empty() ? child_port->name : connection.signal});
+                    .expression = connection.signal.empty() ? child_port->name : connection.signal,
+                    .kind = "instanceConnection",
+                    .generated_instance_id = instance.instance_stable_id});
             }
         }
     }

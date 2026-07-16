@@ -23,6 +23,8 @@ class DifferentialCheck:
     min_count: int | None = None
     include_declaration: bool = True
     optional: bool = False
+    replacement: str = "renamed_probe"
+    compare: bool = False
 
 
 @dataclass(frozen=True)
@@ -41,6 +43,11 @@ CHECK_CAPABILITIES: dict[str, str] = {
     "references": "referencesProvider",
     "workspaceSymbol": "workspaceSymbolProvider",
     "typeDefinition": "typeDefinitionProvider",
+    "implementation": "implementationProvider",
+    "documentHighlight": "documentHighlightProvider",
+    "prepareRename": "renameProvider",
+    "rename": "renameProvider",
+    "callHierarchyIncoming": "callHierarchyProvider",
     "callHierarchyOutgoing": "callHierarchyProvider",
 }
 
@@ -678,6 +685,70 @@ FIXTURES: tuple[DifferentialFixture, ...] = (
             ),
         ),
     ),
+    DifferentialFixture(
+        name="shared navigation and call hierarchy intersection",
+        sources={
+            "shared_nav.sv": (
+                "module child;\n"
+                "endmodule\n"
+                "module top;\n"
+                "  logic local_sig;\n"
+                "  assign local_sig = local_sig;\n"
+                "  child u_child();\n"
+                "endmodule\n"
+            )
+        },
+        checks=(
+            DifferentialCheck(
+                kind="implementation",
+                uri="shared_nav.sv",
+                position={"line": 0, "character": 7},
+                min_count=1,
+                optional=True,
+                compare=True,
+            ),
+            DifferentialCheck(
+                kind="documentHighlight",
+                uri="shared_nav.sv",
+                position={"line": 3, "character": 8},
+                min_count=2,
+                optional=True,
+                compare=True,
+            ),
+            DifferentialCheck(
+                kind="prepareRename",
+                uri="shared_nav.sv",
+                position={"line": 3, "character": 8},
+                min_count=1,
+                optional=True,
+                compare=True,
+            ),
+            DifferentialCheck(
+                kind="rename",
+                uri="shared_nav.sv",
+                position={"line": 3, "character": 8},
+                min_count=3,
+                optional=True,
+                compare=True,
+            ),
+            DifferentialCheck(
+                kind="callHierarchyIncoming",
+                uri="shared_nav.sv",
+                position={"line": 0, "character": 7},
+                required=("top",),
+                optional=True,
+                compare=True,
+            ),
+            DifferentialCheck(
+                kind="callHierarchyOutgoing",
+                uri="shared_nav.sv",
+                position={"line": 2, "character": 7},
+                required=("child",),
+                optional=True,
+                compare=True,
+            ),
+        ),
+    ),
 )
 
 
@@ -972,6 +1043,101 @@ def check_type_definition(session: LspSession, request_id: int, uri: str, positi
     return len(result) if isinstance(result, list) else 0
 
 
+def check_implementation(session: LspSession, request_id: int, uri: str, position: dict[str, int]) -> int:
+    response = session.request(
+        request_id,
+        "textDocument/implementation",
+        {"textDocument": {"uri": uri}, "position": position},
+        allow_error=True,
+    )
+    if "error" in response:
+        raise UnsupportedCheck("textDocument/implementation is not supported")
+    return len(response_items(response.get("result")))
+
+
+def check_document_highlight(
+    session: LspSession, request_id: int, uri: str, position: dict[str, int]
+) -> int:
+    response = session.request(
+        request_id,
+        "textDocument/documentHighlight",
+        {"textDocument": {"uri": uri}, "position": position},
+        allow_error=True,
+    )
+    if "error" in response:
+        raise UnsupportedCheck("textDocument/documentHighlight is not supported")
+    return len(response_items(response.get("result")))
+
+
+def check_prepare_rename(
+    session: LspSession, request_id: int, uri: str, position: dict[str, int]
+) -> int:
+    response = session.request(
+        request_id,
+        "textDocument/prepareRename",
+        {"textDocument": {"uri": uri}, "position": position},
+        allow_error=True,
+    )
+    if "error" in response:
+        raise UnsupportedCheck("textDocument/prepareRename is not supported")
+    return 1 if response.get("result") else 0
+
+
+def check_rename(
+    session: LspSession,
+    request_id: int,
+    uri: str,
+    position: dict[str, int],
+    replacement: str,
+) -> int:
+    response = session.request(
+        request_id,
+        "textDocument/rename",
+        {"textDocument": {"uri": uri}, "position": position, "newName": replacement},
+        allow_error=True,
+    )
+    if "error" in response:
+        raise UnsupportedCheck("textDocument/rename is not supported")
+    result = response.get("result")
+    if not isinstance(result, dict):
+        return 0
+    changes = result.get("changes", {})
+    if not isinstance(changes, dict):
+        return 0
+    return sum(len(edits) for edits in changes.values() if isinstance(edits, list))
+
+
+def check_call_hierarchy_incoming(session: LspSession,
+                                  request_id: int,
+                                  uri: str,
+                                  position: dict[str, int]) -> set[str]:
+    prepared = session.request(
+        request_id,
+        "textDocument/prepareCallHierarchy",
+        {"textDocument": {"uri": uri}, "position": position},
+        allow_error=True,
+    )
+    if "error" in prepared:
+        raise UnsupportedCheck("textDocument/prepareCallHierarchy is not supported")
+    items = response_items(prepared.get("result"))
+    if not items:
+        return set()
+    incoming = session.request(
+        request_id + 1000,
+        "callHierarchy/incomingCalls",
+        {"item": items[0]},
+        allow_error=True,
+    )
+    if "error" in incoming:
+        raise UnsupportedCheck("callHierarchy/incomingCalls is not supported")
+    names: set[str] = set()
+    for call in response_items(incoming.get("result")):
+        item = call.get("from") or call.get("item") or {}
+        if isinstance(item, dict):
+            names.add(item.get("name", ""))
+    return names
+
+
 def check_call_hierarchy_outgoing(session: LspSession,
                                   request_id: int,
                                   uri: str,
@@ -1081,6 +1247,25 @@ def run_fixture(server: pathlib.Path, root: pathlib.Path, fixture: DifferentialF
                 elif check.kind == "typeDefinition":
                     assert check.uri is not None and check.position is not None
                     observed[key] = check_type_definition(session, request_id, source_uris[check.uri], check.position)
+                elif check.kind == "implementation":
+                    assert check.uri is not None and check.position is not None
+                    observed[key] = check_implementation(session, request_id, source_uris[check.uri], check.position)
+                elif check.kind == "documentHighlight":
+                    assert check.uri is not None and check.position is not None
+                    observed[key] = check_document_highlight(session, request_id, source_uris[check.uri], check.position)
+                elif check.kind == "prepareRename":
+                    assert check.uri is not None and check.position is not None
+                    observed[key] = check_prepare_rename(session, request_id, source_uris[check.uri], check.position)
+                elif check.kind == "rename":
+                    assert check.uri is not None and check.position is not None
+                    observed[key] = check_rename(
+                        session, request_id, source_uris[check.uri], check.position, check.replacement
+                    )
+                elif check.kind == "callHierarchyIncoming":
+                    assert check.uri is not None and check.position is not None
+                    observed[key] = check_call_hierarchy_incoming(
+                        session, request_id, source_uris[check.uri], check.position
+                    )
                 elif check.kind == "callHierarchyOutgoing":
                     assert check.uri is not None and check.position is not None
                     observed[key] = check_call_hierarchy_outgoing(
@@ -1116,8 +1301,23 @@ def validate_observed(server_name: str, fixture: DifferentialFixture, observed: 
         if check.min_count is not None and value < check.min_count:
             if check.optional:
                 continue
+                raise AssertionError(
+                    f"{server_name} fixture '{fixture.name}' {check.kind} count {value} < {check.min_count}"
+                )
+
+
+def compare_observed(fixture: DifferentialFixture,
+                     pristine_observed: dict[str, Any],
+                     slang_observed: dict[str, Any]) -> None:
+    for check, pristine_value, slang_value in zip(
+        fixture.checks, pristine_observed.values(), slang_observed.values()
+    ):
+        if not check.compare or pristine_value is None or slang_value is None:
+            continue
+        if pristine_value != slang_value:
             raise AssertionError(
-                f"{server_name} fixture '{fixture.name}' {check.kind} count {value} < {check.min_count}"
+                f"shared LSP mismatch for fixture '{fixture.name}' {check.kind}: "
+                f"pristine={pristine_value!r}, slang={slang_value!r}"
             )
 
 
@@ -1146,6 +1346,7 @@ def main() -> int:
             slang_observed = run_fixture(slang_server, slang_root, fixture)
             validate_observed("pristine-engine", fixture, pristine_observed)
             validate_observed("slang-server", fixture, slang_observed)
+            compare_observed(fixture, pristine_observed, slang_observed)
 
     print(f"Compared {len(FIXTURES)} rewritten fixture(s) against slang-server")
     return 0

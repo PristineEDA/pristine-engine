@@ -3,7 +3,6 @@
 #include "pristine/analysis/SourceUtil.h"
 
 #include <algorithm>
-#include <cctype>
 #include <map>
 #include <set>
 #include <string>
@@ -37,18 +36,6 @@ std::vector<std::string> inferredHierarchyRootNames(
     std::sort(roots.begin(), roots.end());
     roots.erase(std::unique(roots.begin(), roots.end()), roots.end());
     return roots;
-}
-
-std::string lowerAsciiCopy(std::string value) {
-    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch) {
-        return static_cast<char>(std::tolower(ch));
-    });
-    return value;
-}
-
-bool isLogicOutputPortName(std::string_view port_name) {
-    const auto normalized = lowerAsciiCopy(std::string(port_name));
-    return normalized == "y" || normalized == "out" || normalized == "o" || normalized == "q";
 }
 
 const SchematicPort* findSchematicPortByName(const ModuleSchematic& schematic,
@@ -108,9 +95,18 @@ void appendEndpointByDirection(SemanticSchematicNet& net,
     net.loads.push_back(std::move(endpoint));
 }
 
-std::vector<SemanticSchematicNet> buildSchematicNets(const ModuleSchematic& schematic,
-                                                     const DesignGraphContext& context) {
+void appendUniqueMessage(std::vector<std::string>& messages, std::string message);
+
+struct SchematicNetBuildResult {
+    std::vector<SemanticSchematicNet> nets;
+    std::vector<std::string> messages;
+    bool partial = false;
+};
+
+SchematicNetBuildResult buildSchematicNets(const ModuleSchematic& schematic,
+                                           const DesignGraphContext& context) {
     std::map<std::string, SemanticSchematicNet> nets;
+    SchematicNetBuildResult result;
     const auto ensure_net = [&](std::string_view signal) -> SemanticSchematicNet& {
         auto [it, inserted] = nets.try_emplace(std::string(signal));
         if (inserted) {
@@ -154,23 +150,39 @@ std::vector<SemanticSchematicNet> buildSchematicNets(const ModuleSchematic& sche
             }
 
             std::string port_name = connection.port_name;
-            std::string direction;
+            std::string direction = "inout";
             if (target_it != context.module_signatures_by_name.end()) {
                 const auto& target_schematic = target_it->second.schematic;
                 const auto* port = !port_name.empty()
                                        ? findSchematicPortByName(target_schematic, port_name)
                                        : findSchematicPortByIndex(target_schematic, connection.port_index);
-                if (port != nullptr) {
-                    port_name = port->name;
-                    direction = port->direction;
+                if (port == nullptr) {
+                    result.partial = true;
+                    appendUniqueMessage(result.messages,
+                                        "No indexed port binding found for cell '" + cell.name + "'.");
+                    continue;
                 }
+                port_name = port->name;
+                const auto endpoint = context.binding_index.endpoints_by_module_member.find(
+                    cell.type + "\x1f" + port_name);
+                if (endpoint == context.binding_index.endpoints_by_module_member.end()) {
+                    result.partial = true;
+                    appendUniqueMessage(result.messages,
+                                        "No AST-backed endpoint binding found for '" + cell.type + "." +
+                                            port_name + "'.");
+                    continue;
+                }
+                direction = endpoint->second.direction;
+            }
+            else if (cell.kind == "module") {
+                result.partial = true;
+                appendUniqueMessage(result.messages,
+                                    "No AST-backed module signature found for cell '" + cell.name + "'.");
+                continue;
             }
 
             if (port_name.empty() && connection.port_index >= 0) {
                 port_name = std::to_string(connection.port_index);
-            }
-            if (direction.empty()) {
-                direction = isLogicOutputPortName(port_name) ? "output" : "input";
             }
 
             auto& net = ensure_net(connection.signal);
@@ -181,10 +193,9 @@ std::vector<SemanticSchematicNet> buildSchematicNets(const ModuleSchematic& sche
         }
     }
 
-    std::vector<SemanticSchematicNet> result;
-    result.reserve(nets.size());
+    result.nets.reserve(nets.size());
     for (auto& [_, net] : nets) {
-        result.push_back(std::move(net));
+        result.nets.push_back(std::move(net));
     }
     return result;
 }
@@ -443,6 +454,11 @@ SemanticSchematicResult schematic(const DesignGraphContext& context,
         const auto& schematic = signature_it->second.schematic;
         const auto& schematic_uri = signature_it->second.uri;
         emitted.insert(current);
+        auto net_result = buildSchematicNets(schematic, context);
+        result.partial = result.partial || net_result.partial;
+        for (auto& message : net_result.messages) {
+            appendUniqueMessage(result.messages, std::move(message));
+        }
         result.modules.push_back(SemanticSchematicModuleView{
             .module = SemanticSchematicModule{.id = schematic.name,
                                               .name = schematic.name,
@@ -451,7 +467,7 @@ SemanticSchematicResult schematic(const DesignGraphContext& context,
                                               .selection_range = schematic.selection_range,
                                               .ports = schematic.ports,
                                               .cells = schematic.cells},
-            .nets = buildSchematicNets(schematic, context)});
+            .nets = std::move(net_result.nets)});
 
         if (depth >= max_depth) {
             result.truncated = true;

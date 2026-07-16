@@ -1887,7 +1887,20 @@ TEST_CASE("AstIndex builds direct graph bindings and cone adjacency from module 
     CHECK_FALSE(view.design_graph_binding_index.symbol_ids_by_uri_range.empty());
     CHECK(view.design_graph_binding_index.port_symbol_ids_by_module_port.contains("child\x1f" "in"));
     CHECK(view.design_graph_binding_index.port_symbol_ids_by_module_port.contains("child\x1f" "out"));
+    const auto input_endpoint = view.design_graph_binding_index.endpoints_by_module_member.find("child\x1f" "in");
+    REQUIRE(input_endpoint != view.design_graph_binding_index.endpoints_by_module_member.end());
+    CHECK(input_endpoint->second.kind == "port");
+    CHECK(input_endpoint->second.direction == "input");
+    const auto output_endpoint = view.design_graph_binding_index.endpoints_by_module_member.find("child\x1f" "out");
+    REQUIRE(output_endpoint != view.design_graph_binding_index.endpoints_by_module_member.end());
+    CHECK(output_endpoint->second.direction == "output");
     REQUIRE(view.cone_adjacency_index.edges.size() == 3);
+    CHECK(std::count_if(view.cone_adjacency_index.edges.begin(),
+                        view.cone_adjacency_index.edges.end(),
+                        [](const SnapshotAssignmentEdge& edge) { return edge.kind == "assignment"; }) == 1);
+    CHECK(std::count_if(view.cone_adjacency_index.edges.begin(),
+                        view.cone_adjacency_index.edges.end(),
+                        [](const SnapshotAssignmentEdge& edge) { return edge.kind == "instanceConnection"; }) == 2);
     CHECK(view.cone_adjacency_index.edges_by_from_symbol_id.size() == 3);
     CHECK(view.cone_adjacency_index.edges_by_to_symbol_id.size() == 3);
 }
@@ -1923,6 +1936,11 @@ TEST_CASE("AstIndex stores generated instance bindings independently",
     const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
     CHECK(view.design_graph_binding_index.instance_ids_by_uri_range.size() >= 2);
     CHECK(view.cone_adjacency_index.edges.size() == 3);
+    CHECK(std::all_of(view.cone_adjacency_index.edges.begin(),
+                      view.cone_adjacency_index.edges.end(),
+                      [](const SnapshotAssignmentEdge& edge) {
+                          return edge.kind == "assignment" || !edge.generated_instance_id.empty();
+                      }));
 }
 
 TEST_CASE("AstIndex keeps cone adjacency deterministic across equivalent builds",

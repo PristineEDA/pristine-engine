@@ -14,6 +14,27 @@ ParseRange rangeAt(int line, int start, int end) {
                       .end_character = end};
 }
 
+void populateEndpointFacts(DesignGraphContext& context) {
+    context.binding_index.endpoints_by_module_member.clear();
+    context.binding_index.endpoints_by_stable_id.clear();
+    for (const auto& [module_name, signature] : context.module_signatures_by_name) {
+        for (const auto& port : signature.definition.port_details) {
+            const auto stable_id = "endpoint|" + module_name + "|" + port.name;
+            const auto key = module_name + "\x1f" + port.name;
+            auto fact = SnapshotGraphEndpointFact{.stable_id = stable_id,
+                                                  .module_name = module_name,
+                                                  .name = port.name,
+                                                  .kind = port.direction == "interface" ? "interface" : "port",
+                                                  .direction = port.direction,
+                                                  .location = SemanticLocation{.uri = signature.uri,
+                                                                               .range = port.selection_range},
+                                                  .generated_instance_id = {}};
+            context.binding_index.endpoints_by_module_member.insert_or_assign(key, fact);
+            context.binding_index.endpoints_by_stable_id.insert_or_assign(stable_id, std::move(fact));
+        }
+    }
+}
+
 DesignGraphContext simpleDesignContext() {
     ModuleDefinition child{.name = "child",
                            .kind = "module",
@@ -117,6 +138,7 @@ DesignGraphContext simpleDesignContext() {
                                          .item_id = "module|child"},
         SnapshotModuleCallHierarchyRange{.range = top.instances.front().module_selection_range,
                                          .item_id = "module|child"}};
+    populateEndpointFacts(context);
     return context;
 }
 
@@ -516,6 +538,7 @@ TEST_CASE("DesignGraphProvider schematic connects interface cells to same-name n
                                                      .definition = consumer},
                               DesignGraphModuleEntry{.uri = "file:///workspace/top.sv",
                                                      .definition = top}};
+    populateEndpointFacts(context);
 
     const auto graph = schematic(context, std::string_view("top"), 8);
 
@@ -552,6 +575,28 @@ TEST_CASE("DesignGraphProvider schematic connects interface cells to same-name n
                       [](const SemanticSchematicEndpoint& endpoint) {
                           return endpoint.node_id == "u_consumer" && endpoint.port_name == "bus";
                       }));
+}
+
+TEST_CASE("DesignGraphProvider reports missing endpoint bindings without port-name guessing",
+          "[analysis][design-graph-provider][schematic][no-fallback][endpoint]") {
+    auto context = simpleDesignContext();
+    context.binding_index.endpoints_by_module_member.erase("child\x1f" "out");
+
+    const auto graph = schematic(context, std::string_view("top"), 8);
+
+    REQUIRE_FALSE(graph.unresolved);
+    CHECK(graph.partial);
+    CHECK(std::any_of(graph.messages.begin(), graph.messages.end(), [](const std::string& message) {
+        return message.find("AST-backed endpoint binding") != std::string::npos;
+    }));
+    const auto top = std::find_if(graph.modules.begin(), graph.modules.end(), [](const auto& view) {
+        return view.module.name == "top";
+    });
+    REQUIRE(top != graph.modules.end());
+    const auto ready = std::find_if(top->nets.begin(), top->nets.end(), [](const auto& net) {
+        return net.name == "ready";
+    });
+    CHECK(ready == top->nets.end());
 }
 
 TEST_CASE("DesignGraphProvider traces backward cone through continuous assignments",
