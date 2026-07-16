@@ -269,6 +269,19 @@ TEST_CASE("QueryCache records URI-local reference and indexed call-edge scan tel
     CHECK(stats.scanned_global_symbols == 0);
 }
 
+TEST_CASE("QueryCache records direct graph binding and cone adjacency scan telemetry",
+          "[analysis][semantic][query-cache][telemetry][design-graph]") {
+    QueryCache cache;
+    cache.recordDesignGraphScan(3, 7, 0, 0);
+
+    const auto stats = cache.stats();
+    CHECK(stats.graph_binding_lookup_scanned_facts == 3);
+    CHECK(stats.cone_adjacency_scanned_edges == 7);
+    CHECK(stats.graph_scanned_global_symbols == 0);
+    CHECK(stats.cone_scanned_global_edges == 0);
+    CHECK(stats.scanned_global_symbols == 0);
+}
+
 TEST_CASE("QueryCache reset clears reference and call hierarchy scan telemetry",
           "[analysis][semantic][query-cache][telemetry][reset]") {
     QueryCache cache;

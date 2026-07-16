@@ -36,6 +36,8 @@ struct AstIndexView {
     std::unordered_map<std::string, std::string> module_uris_by_name;
     std::unordered_map<std::string, SemanticModuleSignature> module_signatures_by_name;
     std::vector<DesignGraphModuleEntry> design_graph_module_entries;
+    SnapshotDesignGraphBindingIndex design_graph_binding_index;
+    SnapshotConeAdjacencyIndex cone_adjacency_index;
     std::unordered_map<std::string, std::vector<SnapshotAssignmentEdge>> assignment_edges_by_uri;
     std::unordered_map<std::string, std::vector<SnapshotTypeReference>> type_references_by_uri;
     std::unordered_map<std::string, std::vector<SnapshotMemberCompletion>> member_completions_by_uri;
@@ -76,7 +78,6 @@ struct AstIndexView {
     std::unordered_map<std::string, DiagnosticSymbol> diagnostic_symbols_by_id;
     std::vector<DiagnosticReference> diagnostic_references;
     std::unordered_map<std::string, DesignGraphSymbol> design_graph_symbols_by_id;
-    std::unordered_map<std::string, std::vector<DesignGraphRangeSymbol>> design_graph_symbol_ranges_by_uri;
     SnapshotModuleCallEdgeIndex module_call_edge_index;
 };
 

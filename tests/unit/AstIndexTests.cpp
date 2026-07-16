@@ -123,6 +123,8 @@ TEST_CASE("AstIndex builds provider-facing symbol and reference views",
                                      .has_type_display = true}};
     data.navigation_occurrences_by_symbol["symbol|ready"] =
         data.navigation_occurrences_by_uri["file:///workspace/top.sv"].occurrences;
+    data.design_graph_binding_index.symbol_ids_by_uri_range.emplace(
+        "file:///workspace/top.sv\x1f" "1:2:1:7", "symbol|ready");
 
     const auto view = buildAstIndexView(&data, 42);
 
@@ -141,8 +143,10 @@ TEST_CASE("AstIndex builds provider-facing symbol and reference views",
                       [](const SnapshotNavigationOccurrence& occurrence) {
                           return occurrence.is_declaration;
                       }));
-    REQUIRE(view.design_graph_symbol_ranges_by_uri.contains("file:///workspace/top.sv"));
-    CHECK(view.design_graph_symbol_ranges_by_uri.at("file:///workspace/top.sv").size() == 2);
+    REQUIRE(view.design_graph_binding_index.symbol_ids_by_uri_range.contains(
+        "file:///workspace/top.sv\x1f" "1:2:1:7"));
+    CHECK(view.design_graph_binding_index.symbol_ids_by_uri_range.at(
+              "file:///workspace/top.sv\x1f" "1:2:1:7") == "symbol|ready");
 }
 
 TEST_CASE("AstIndex prefers typed same-range symbol references deterministically",
@@ -1861,6 +1865,104 @@ TEST_CASE("AstIndex indexes class method calls as callable visibility facts",
     CHECK(call.range.end_character == 25);
     CHECK(call.selection_range.start_character == 16);
     CHECK(call.selection_range.end_character == 19);
+}
+
+TEST_CASE("AstIndex builds direct graph bindings and cone adjacency from module connections",
+          "[analysis][semantic][ast-index][design-graph-binding][cone]") {
+    SnapshotBuildInput input{
+        .generation = 71,
+        .documents = {{"file:///workspace/child.sv",
+                       SemanticEngineDocument{.uri = "file:///workspace/child.sv",
+                                              .text = "module child(input logic in, output logic out);\n"
+                                                      "  assign out = in;\nendmodule\n"}},
+                      {"file:///workspace/top.sv",
+                       SemanticEngineDocument{.uri = "file:///workspace/top.sv",
+                                              .text = "module top;\n  logic a; logic y;\n"
+                                                      "  child u_child(.in(a), .out(y));\nendmodule\n",
+                                              .is_open = true}}}};
+    auto output = SnapshotBuilder{}.build(std::move(input));
+    REQUIRE(output.data != nullptr);
+    const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
+
+    CHECK_FALSE(view.design_graph_binding_index.symbol_ids_by_uri_range.empty());
+    CHECK(view.design_graph_binding_index.port_symbol_ids_by_module_port.contains("child\x1f" "in"));
+    CHECK(view.design_graph_binding_index.port_symbol_ids_by_module_port.contains("child\x1f" "out"));
+    REQUIRE(view.cone_adjacency_index.edges.size() == 3);
+    CHECK(view.cone_adjacency_index.edges_by_from_symbol_id.size() == 3);
+    CHECK(view.cone_adjacency_index.edges_by_to_symbol_id.size() == 3);
+}
+
+TEST_CASE("AstIndex binds assigned module ports to the resolved assignment identities",
+          "[analysis][semantic][ast-index][design-graph-binding][port]") {
+    auto output = buildReferenceCallDesign("module child(input logic in, output logic out);\n"
+                                           "  assign out = in;\nendmodule\n"
+                                           "module top; logic a; logic y; child u(.in(a), .out(y)); endmodule\n");
+    REQUIRE(output.data != nullptr);
+    const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
+    const auto out = view.design_graph_binding_index.port_symbol_ids_by_module_port.find("child\x1f" "out");
+    REQUIRE(out != view.design_graph_binding_index.port_symbol_ids_by_module_port.end());
+    CHECK(std::any_of(view.cone_adjacency_index.edges.begin(),
+                      view.cone_adjacency_index.edges.end(),
+                      [&](const SnapshotAssignmentEdge& edge) { return edge.from_symbol_id == out->second; }));
+}
+
+TEST_CASE("AstIndex stores generated instance bindings independently",
+          "[analysis][semantic][ast-index][design-graph-binding][generated]") {
+    SnapshotBuildInput input{
+        .generation = 72,
+        .config = SemanticEngineConfig{.top_modules = {"top"}},
+        .documents = {{"file:///workspace/generated.sv",
+                       SemanticEngineDocument{.uri = "file:///workspace/generated.sv",
+                                              .text = "module child(input logic in, output logic out); assign out = in; endmodule\n"
+                                                      "module top; logic a; logic y; genvar i; generate\n"
+                                                      "  for (i = 0; i < 1; i = i + 1) begin : g\n"
+                                                      "    child u(.in(a), .out(y));\n  end\nendgenerate endmodule\n",
+                                              .is_open = true}}}};
+    auto output = SnapshotBuilder{}.build(std::move(input));
+    REQUIRE(output.data != nullptr);
+    const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
+    CHECK(view.design_graph_binding_index.instance_ids_by_uri_range.size() >= 2);
+    CHECK(view.cone_adjacency_index.edges.size() == 3);
+}
+
+TEST_CASE("AstIndex keeps cone adjacency deterministic across equivalent builds",
+          "[analysis][semantic][ast-index][cone][deterministic]") {
+    const auto build = [](std::uint64_t generation) {
+        SnapshotBuildInput input{
+            .generation = generation,
+            .documents = {{"file:///workspace/chain.sv",
+                           SemanticEngineDocument{.uri = "file:///workspace/chain.sv",
+                                                  .text = "module top; logic a; logic mid; logic y;\n"
+                                                          "assign mid = a; assign y = mid; endmodule\n",
+                                                  .is_open = true}}}};
+        return SnapshotBuilder{}.build(std::move(input));
+    };
+    auto first = build(73);
+    auto second = build(74);
+    REQUIRE(first.data != nullptr);
+    REQUIRE(second.data != nullptr);
+    CHECK(first.data->cone_adjacency_index.edges.size() == second.data->cone_adjacency_index.edges.size());
+    REQUIRE(first.data->cone_adjacency_index.edges.size() == 2);
+    for (size_t index = 0; index < first.data->cone_adjacency_index.edges.size(); ++index) {
+        CHECK(first.data->cone_adjacency_index.edges[index].from_symbol_id ==
+              second.data->cone_adjacency_index.edges[index].from_symbol_id);
+        CHECK(first.data->cone_adjacency_index.edges[index].to_symbol_id ==
+              second.data->cone_adjacency_index.edges[index].to_symbol_id);
+    }
+}
+
+TEST_CASE("AstIndex leaves unresolved graph connections out of cone adjacency",
+          "[analysis][semantic][ast-index][cone][unresolved][no-fallback]") {
+    SnapshotBuildInput input{
+        .generation = 75,
+        .documents = {{"file:///workspace/missing.sv",
+                       SemanticEngineDocument{.uri = "file:///workspace/missing.sv",
+                                              .text = "module top; logic y; missing_child u(.out(y)); endmodule\n",
+                                              .is_open = true}}}};
+    auto output = SnapshotBuilder{}.build(std::move(input));
+    REQUIRE(output.data != nullptr);
+    const auto& edges = output.data->cone_adjacency_index.edges;
+    CHECK(edges.empty());
 }
 
 } // namespace

@@ -31,6 +31,10 @@ public:
         std::uint64_t implementation_edge_scanned = 0;
         std::uint64_t semantic_token_scanned_occurrences = 0;
         std::uint64_t selection_range_scanned_candidates = 0;
+        std::uint64_t graph_binding_lookup_scanned_facts = 0;
+        std::uint64_t cone_adjacency_scanned_edges = 0;
+        std::uint64_t graph_scanned_global_symbols = 0;
+        std::uint64_t cone_scanned_global_edges = 0;
         std::uint64_t scanned_global_symbols = 0;
         size_t diagnostics_entries = 0;
         size_t workspace_symbols_entries = 0;
@@ -64,6 +68,10 @@ public:
                               size_t scanned_implementation_edges,
                               size_t scanned_tokens,
                               size_t scanned_selection_candidates);
+    void recordDesignGraphScan(size_t scanned_binding_facts,
+                               size_t scanned_adjacency_edges,
+                               size_t scanned_global_symbols,
+                               size_t scanned_global_edges);
 
     [[nodiscard]] std::optional<std::vector<SemanticEngineDiagnostic>> diagnostics(
         std::uint64_t generation,
@@ -390,6 +398,10 @@ private:
     std::uint64_t implementation_edge_scanned_ = 0;
     std::uint64_t semantic_token_scanned_occurrences_ = 0;
     std::uint64_t selection_range_scanned_candidates_ = 0;
+    std::uint64_t graph_binding_lookup_scanned_facts_ = 0;
+    std::uint64_t cone_adjacency_scanned_edges_ = 0;
+    std::uint64_t graph_scanned_global_symbols_ = 0;
+    std::uint64_t cone_scanned_global_edges_ = 0;
     std::uint64_t scanned_global_symbols_ = 0;
 };
 

@@ -100,6 +100,9 @@ TEST_CASE("SemanticEngine query cache stats include graph and cone queries",
     CHECK(stats.module_hierarchy_entries >= 1);
     CHECK(stats.schematic_entries >= 1);
     CHECK(stats.backward_cone_entries >= 1);
+    CHECK(stats.graph_scanned_global_symbols == 0);
+    CHECK(stats.cone_scanned_global_edges == 0);
+    CHECK(stats.cone_adjacency_scanned_edges > 0);
 
     CHECK(engine.moduleHierarchy("top").roots.size() == 1);
     CHECK(engine.schematic("top").modules.size() >= 1);

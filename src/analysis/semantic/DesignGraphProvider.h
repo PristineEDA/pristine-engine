@@ -35,8 +35,8 @@ struct DesignGraphContext {
     std::vector<DesignGraphModuleEntry> module_entries;
     SnapshotModuleCallEdgeIndex module_call_edge_index;
     std::unordered_map<std::string, DesignGraphSymbol> symbols_by_id;
-    std::unordered_map<std::string, std::vector<SnapshotAssignmentEdge>> assignment_edges_by_uri;
-    std::unordered_map<std::string, std::vector<DesignGraphRangeSymbol>> symbol_ranges_by_uri;
+    SnapshotDesignGraphBindingIndex binding_index;
+    SnapshotConeAdjacencyIndex cone_adjacency_index;
 };
 
 [[nodiscard]] constexpr std::string_view designGraphProviderName() {

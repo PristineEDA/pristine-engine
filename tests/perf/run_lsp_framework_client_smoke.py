@@ -120,6 +120,8 @@ def main() -> int:
         assert "signatureScannedInvocations" in trace_summary
         assert "inlayScannedInvocations" in trace_summary
         assert "macroScannedVisibleDefinitions" in trace_summary
+        assert trace_summary["graphScannedGlobalSymbols"] == 0
+        assert trace_summary["coneScannedGlobalEdges"] == 0
         assert trace_summary["scannedGlobalSymbols"] == 0
         assert trace_summary["syntaxDiagnosticsPublished"] is True
         assert "backgroundDiagnosticsState" in trace_summary

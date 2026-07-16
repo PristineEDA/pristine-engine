@@ -169,6 +169,10 @@ std::string queryCacheStatsDetail(const SemanticQueryCacheStats& stats) {
         << " implementationEdgeScanned=" << stats.implementation_edge_scanned
         << " semanticTokenScannedOccurrences=" << stats.semantic_token_scanned_occurrences
         << " selectionRangeScannedCandidates=" << stats.selection_range_scanned_candidates
+        << " graphBindingLookupScannedFacts=" << stats.graph_binding_lookup_scanned_facts
+        << " coneAdjacencyScannedEdges=" << stats.cone_adjacency_scanned_edges
+        << " graphScannedGlobalSymbols=" << stats.graph_scanned_global_symbols
+        << " coneScannedGlobalEdges=" << stats.cone_scanned_global_edges
         << " scannedGlobalSymbols=" << stats.scanned_global_symbols;
     return out.str();
 }
@@ -197,9 +201,9 @@ semantic::DesignGraphContext designGraphContextFor(const SnapshotData* data,
     context.module_signatures_by_name = ast_index.module_signatures_by_name;
     context.module_entries = ast_index.design_graph_module_entries;
     context.module_call_edge_index = ast_index.module_call_edge_index;
-    context.assignment_edges_by_uri = ast_index.assignment_edges_by_uri;
     context.symbols_by_id = ast_index.design_graph_symbols_by_id;
-    context.symbol_ranges_by_uri = ast_index.design_graph_symbol_ranges_by_uri;
+    context.binding_index = ast_index.design_graph_binding_index;
+    context.cone_adjacency_index = ast_index.cone_adjacency_index;
     return context;
 }
 
@@ -491,6 +495,11 @@ SemanticQueryCacheStats SemanticEngine::queryCacheStats() const {
                                        stats.semantic_token_scanned_occurrences,
                                    .selection_range_scanned_candidates =
                                        stats.selection_range_scanned_candidates,
+                                   .graph_binding_lookup_scanned_facts =
+                                       stats.graph_binding_lookup_scanned_facts,
+                                   .cone_adjacency_scanned_edges = stats.cone_adjacency_scanned_edges,
+                                   .graph_scanned_global_symbols = stats.graph_scanned_global_symbols,
+                                   .cone_scanned_global_edges = stats.cone_scanned_global_edges,
                                    .scanned_global_symbols = stats.scanned_global_symbols,
                                    .diagnostics_entries = stats.diagnostics_entries,
                                    .workspace_symbols_entries = stats.workspace_symbols_entries,
@@ -1378,6 +1387,10 @@ SemanticSchematicResult SemanticEngine::schematic(std::optional<std::string_view
     SemanticSchematicResult result;
     result.generation = current_snapshot.generation;
     const auto finish = [&](SemanticSchematicResult value) {
+        query_cache_->recordDesignGraphScan(value.graph_binding_lookup_scanned_facts,
+                                            0,
+                                            value.graph_scanned_global_symbols,
+                                            0);
         query_cache_->storeSchematic(current_snapshot.generation, module_name, max_depth, value);
         traceQueryCacheStats("semantic.schematic.queryCache", queryCacheStats());
         return value;
@@ -1441,6 +1454,10 @@ SemanticConeTrace SemanticEngine::backwardConeAt(std::string_view uri,
     trace.messages = lookup.messages;
     trace.unresolved = lookup.unresolved;
     const auto finish = [&](SemanticConeTrace value) {
+        query_cache_->recordDesignGraphScan(0,
+                                            value.cone_adjacency_scanned_edges,
+                                            0,
+                                            value.cone_scanned_global_edges);
         query_cache_->storeBackwardCone(current_snapshot.generation,
                                         document_uri,
                                         line,

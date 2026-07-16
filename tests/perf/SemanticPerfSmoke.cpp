@@ -42,7 +42,12 @@ void writeQueryCacheStats(const pristine::analysis::SemanticQueryCacheStats& sta
               << "\"referenceLookupScannedOccurrences\":"
               << stats.reference_lookup_scanned_occurrences << ","
               << "\"callHierarchyScannedEdges\":" << stats.call_hierarchy_scanned_edges << ","
-              << "\"callHierarchyScannedModules\":" << stats.call_hierarchy_scanned_modules << ",";
+              << "\"callHierarchyScannedModules\":" << stats.call_hierarchy_scanned_modules << ","
+              << "\"graphBindingLookupScannedFacts\":"
+              << stats.graph_binding_lookup_scanned_facts << ","
+              << "\"coneAdjacencyScannedEdges\":" << stats.cone_adjacency_scanned_edges << ","
+              << "\"graphScannedGlobalSymbols\":" << stats.graph_scanned_global_symbols << ","
+              << "\"coneScannedGlobalEdges\":" << stats.cone_scanned_global_edges << ",";
 }
 
 } // namespace
@@ -216,7 +221,9 @@ int main() {
                                      references.locations.size() != references_warm.locations.size() ||
                                      highlights.unresolved ||
                                      call_prepare.unresolved || call_prepare.items.empty() ||
-                                     call_outgoing.unresolved || cache_stats.call_hierarchy_scanned_modules != 0;
+                                     call_outgoing.unresolved || cache_stats.call_hierarchy_scanned_modules != 0 ||
+                                     cache_stats.graph_scanned_global_symbols != 0 ||
+                                     cache_stats.cone_scanned_global_edges != 0;
 
         if (!first_baseline) {
             std::cout << ",";

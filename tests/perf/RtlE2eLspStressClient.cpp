@@ -134,6 +134,10 @@ struct Metrics {
     long long signature_scanned_invocations = 0;
     long long inlay_scanned_invocations = 0;
     long long macro_scanned_visible_definitions = 0;
+    long long graph_binding_lookup_scanned_facts = 0;
+    long long cone_adjacency_scanned_edges = 0;
+    long long graph_scanned_global_symbols = 0;
+    long long cone_scanned_global_edges = 0;
     long long scanned_global_symbols = 0;
     long long reference_lookup_scanned_occurrences = 0;
     long long call_hierarchy_scanned_edges = 0;
@@ -816,6 +820,11 @@ void collectQueryCacheMetrics(const lsp::json::Object& response, Metrics& metric
     metrics.inlay_scanned_invocations = integerValue(response, "inlayScannedInvocations");
     metrics.macro_scanned_visible_definitions =
         integerValue(response, "macroScannedVisibleDefinitions");
+    metrics.graph_binding_lookup_scanned_facts =
+        integerValue(response, "graphBindingLookupScannedFacts");
+    metrics.cone_adjacency_scanned_edges = integerValue(response, "coneAdjacencyScannedEdges");
+    metrics.graph_scanned_global_symbols = integerValue(response, "graphScannedGlobalSymbols");
+    metrics.cone_scanned_global_edges = integerValue(response, "coneScannedGlobalEdges");
     metrics.scanned_global_symbols = integerValue(response, "scannedGlobalSymbols");
     metrics.reference_lookup_scanned_occurrences =
         integerValue(response, "referenceLookupScannedOccurrences");
@@ -1190,6 +1199,11 @@ std::string summaryJson(const Metrics& metrics) {
         << "\"inlayScannedInvocations\":" << metrics.inlay_scanned_invocations << ","
         << "\"macroScannedVisibleDefinitions\":"
         << metrics.macro_scanned_visible_definitions << ","
+        << "\"graphBindingLookupScannedFacts\":"
+        << metrics.graph_binding_lookup_scanned_facts << ","
+        << "\"coneAdjacencyScannedEdges\":" << metrics.cone_adjacency_scanned_edges << ","
+        << "\"graphScannedGlobalSymbols\":" << metrics.graph_scanned_global_symbols << ","
+        << "\"coneScannedGlobalEdges\":" << metrics.cone_scanned_global_edges << ","
         << "\"scannedGlobalSymbols\":" << metrics.scanned_global_symbols << ","
         << "\"referenceLookupScannedOccurrences\":"
         << metrics.reference_lookup_scanned_occurrences << ","

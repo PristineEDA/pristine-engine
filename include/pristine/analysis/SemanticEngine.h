@@ -300,6 +300,8 @@ struct SemanticSchematicResult {
     std::int64_t discovery_closure_query_micros = 0;
     bool discovery_closure_used = false;
     bool discovery_closure_cache_hit = false;
+    size_t graph_binding_lookup_scanned_facts = 0;
+    size_t graph_scanned_global_symbols = 0;
     bool unresolved = false;
     bool partial = false;
     bool truncated = false;
@@ -359,6 +361,8 @@ struct SemanticConeTrace {
     std::vector<SemanticConeNode> nodes;
     std::vector<SemanticConeEdge> edges;
     std::vector<std::string> messages;
+    size_t cone_adjacency_scanned_edges = 0;
+    size_t cone_scanned_global_edges = 0;
     bool unresolved = false;
     bool partial = false;
     bool truncated = false;
@@ -500,6 +504,10 @@ struct SemanticQueryCacheStats {
     std::uint64_t implementation_edge_scanned = 0;
     std::uint64_t semantic_token_scanned_occurrences = 0;
     std::uint64_t selection_range_scanned_candidates = 0;
+    std::uint64_t graph_binding_lookup_scanned_facts = 0;
+    std::uint64_t cone_adjacency_scanned_edges = 0;
+    std::uint64_t graph_scanned_global_symbols = 0;
+    std::uint64_t cone_scanned_global_edges = 0;
     std::uint64_t scanned_global_symbols = 0;
     size_t diagnostics_entries = 0;
     size_t workspace_symbols_entries = 0;

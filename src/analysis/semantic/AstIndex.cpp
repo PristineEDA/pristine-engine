@@ -72,21 +72,6 @@ bool sameRange(const ParseRange& lhs, const ParseRange& rhs) {
            lhs.end_line == rhs.end_line && lhs.end_character == rhs.end_character;
 }
 
-void appendUniqueDesignGraphRange(std::vector<DesignGraphRangeSymbol>& ranges,
-                                  const ParseRange& range,
-                                  std::string stable_id) {
-    const auto duplicate = std::any_of(ranges.begin(),
-                                       ranges.end(),
-                                       [&](const DesignGraphRangeSymbol& existing) {
-                                           return existing.stable_id == stable_id &&
-                                                  sameRange(existing.range, range);
-                                       });
-    if (duplicate) {
-        return;
-    }
-    ranges.push_back(DesignGraphRangeSymbol{.range = range, .stable_id = std::move(stable_id)});
-}
-
 bool containsPosition(const ParseRange& range, int line, int character) {
     if (line < range.start_line || line > range.end_line) {
         return false;
@@ -502,6 +487,32 @@ std::string generatedName(std::string_view prefix, int index) {
 std::string rangeKey(const ParseRange& range) {
     return std::to_string(range.start_line) + ":" + std::to_string(range.start_character) + ":" +
            std::to_string(range.end_line) + ":" + std::to_string(range.end_character);
+}
+
+std::string designGraphUriRangeKey(std::string_view uri, const ParseRange& range) {
+    return std::string(uri) + "\x1f" + rangeKey(range);
+}
+
+std::string designGraphScopeNameKey(std::string_view uri,
+                                    const ParseRange& scope_range,
+                                    std::string_view name) {
+    return std::string(uri) + "\x1f" + rangeKey(scope_range) + "\x1f" + std::string(name);
+}
+
+std::string designGraphModuleMemberKey(std::string_view module_name, std::string_view name) {
+    return std::string(module_name) + "\x1f" + std::string(name);
+}
+
+void upsertDesignGraphBinding(std::unordered_map<std::string, std::string>& bindings,
+                              std::string key,
+                              std::string stable_id) {
+    if (stable_id.empty()) {
+        return;
+    }
+    const auto existing = bindings.find(key);
+    if (existing == bindings.end() || stable_id < existing->second) {
+        bindings.insert_or_assign(std::move(key), std::move(stable_id));
+    }
 }
 
 SchematicConnection makeConnection(std::string port_name,
@@ -4285,6 +4296,236 @@ void buildAssignmentEdges(SnapshotData& data) {
     }
 }
 
+void buildDesignGraphIndexes(SnapshotData& data) {
+    data.design_graph_binding_index = {};
+    data.cone_adjacency_index = {};
+    auto& bindings = data.design_graph_binding_index;
+
+    std::vector<const SnapshotIndexedReference*> references;
+    references.reserve(data.references.size());
+    for (const auto& reference : data.references) {
+        if (!reference.stable_id.empty() && !reference.location.uri.empty()) {
+            references.push_back(&reference);
+        }
+    }
+    std::sort(references.begin(), references.end(), [](const auto* lhs, const auto* rhs) {
+        if (!sameRange(lhs->location.range, rhs->location.range) ||
+            lhs->location.uri != rhs->location.uri) {
+            return locationLess(lhs->location, rhs->location);
+        }
+        if (lhs->is_declaration != rhs->is_declaration) {
+            return lhs->is_declaration;
+        }
+        return lhs->stable_id < rhs->stable_id;
+    });
+    for (const auto* reference : references) {
+        upsertDesignGraphBinding(bindings.symbol_ids_by_uri_range,
+                                 designGraphUriRangeKey(reference->location.uri,
+                                                        reference->location.range),
+                                 reference->stable_id);
+    }
+
+    for (const auto& [module_name, signature] : data.ast_module_signatures_by_name) {
+        if (signature.uri.empty()) {
+            continue;
+        }
+        for (const auto& [stable_id, indexed] : data.symbols_by_id) {
+            const auto& identity = indexed.identity;
+            if (identity.name.empty() || identity.location.uri != signature.uri ||
+                !rangeContainsRange(signature.definition.range, identity.location.range)) {
+                continue;
+            }
+            upsertDesignGraphBinding(bindings.symbol_ids_by_module_scope_name,
+                                     designGraphScopeNameKey(signature.uri,
+                                                             signature.definition.range,
+                                                             identity.name),
+                                     stable_id);
+            if (identity.kind.find("Parameter") != std::string::npos ||
+                identity.kind.find("Param") != std::string::npos) {
+                upsertDesignGraphBinding(bindings.parameter_symbol_ids_by_module_parameter,
+                                         designGraphModuleMemberKey(module_name, identity.name),
+                                         stable_id);
+            }
+        }
+        for (const auto& port : signature.definition.port_details) {
+            if (port.name.empty()) {
+                continue;
+            }
+            std::optional<std::string> stable_id;
+            if (const auto edges = data.assignment_edges_by_uri.find(signature.uri);
+                edges != data.assignment_edges_by_uri.end()) {
+                const auto output_port = port.direction == "output";
+                for (const auto& edge : edges->second) {
+                    const auto& candidate_id = output_port ? edge.from_symbol_id : edge.to_symbol_id;
+                    const auto candidate = data.symbols_by_id.find(candidate_id);
+                    if (candidate != data.symbols_by_id.end() &&
+                        candidate->second.identity.name == port.name &&
+                        candidate->second.identity.location.uri == signature.uri) {
+                        stable_id = candidate_id;
+                        break;
+                    }
+                }
+            }
+            if (const auto exact = bindings.symbol_ids_by_uri_range.find(
+                    designGraphUriRangeKey(signature.uri, port.selection_range));
+                !stable_id.has_value() && exact != bindings.symbol_ids_by_uri_range.end()) {
+                stable_id = exact->second;
+            }
+            if (!stable_id.has_value()) {
+                if (const auto scoped = bindings.symbol_ids_by_module_scope_name.find(
+                        designGraphScopeNameKey(signature.uri,
+                                                signature.definition.range,
+                                                port.name));
+                    scoped != bindings.symbol_ids_by_module_scope_name.end()) {
+                    stable_id = scoped->second;
+                }
+            }
+            if (stable_id.has_value()) {
+                upsertDesignGraphBinding(bindings.port_symbol_ids_by_module_port,
+                                         designGraphModuleMemberKey(module_name, port.name),
+                                         std::move(*stable_id));
+            }
+        }
+    }
+
+    for (const auto& [uri, instances] : data.module_instances_by_uri) {
+        for (const auto& instance : instances) {
+            if (instance.instance_stable_id.empty()) {
+                continue;
+            }
+            upsertDesignGraphBinding(bindings.instance_ids_by_uri_range,
+                                     designGraphUriRangeKey(uri, instance.range),
+                                     instance.instance_stable_id);
+            upsertDesignGraphBinding(bindings.instance_ids_by_uri_range,
+                                     designGraphUriRangeKey(uri, instance.selection_range),
+                                     instance.instance_stable_id);
+            upsertDesignGraphBinding(bindings.instance_ids_by_uri_range,
+                                     designGraphUriRangeKey(uri, instance.module_selection_range),
+                                     instance.instance_stable_id);
+        }
+    }
+
+    auto append_edge = [&](SnapshotAssignmentEdge edge) {
+        if (edge.from_symbol_id.empty() || edge.to_symbol_id.empty()) {
+            return;
+        }
+        data.cone_adjacency_index.edges.push_back(std::move(edge));
+    };
+    for (const auto& [_, edges] : data.assignment_edges_by_uri) {
+        for (const auto& edge : edges) {
+            append_edge(edge);
+        }
+    }
+
+    std::unordered_map<std::string, std::string> caller_module_by_instance_id;
+    for (const auto& edge : data.module_call_edge_index.edges) {
+        const auto caller = data.module_call_edge_index.items_by_id.find(edge.caller_item_id);
+        if (caller != data.module_call_edge_index.items_by_id.end() && !edge.instance_id.empty()) {
+            caller_module_by_instance_id.insert_or_assign(edge.instance_id, caller->second.name);
+        }
+    }
+    for (const auto& [_, instances] : data.module_instances_by_uri) {
+        for (const auto& instance : instances) {
+            if (instance.instance_stable_id.empty()) {
+                continue;
+            }
+            const auto caller_name = caller_module_by_instance_id.find(instance.instance_stable_id);
+            const auto child_signature = data.ast_module_signatures_by_name.find(instance.module_name);
+            if (caller_name == caller_module_by_instance_id.end() ||
+                child_signature == data.ast_module_signatures_by_name.end()) {
+                continue;
+            }
+            const auto parent_signature = data.ast_module_signatures_by_name.find(caller_name->second);
+            if (parent_signature == data.ast_module_signatures_by_name.end() ||
+                parent_signature->second.uri.empty() || child_signature->second.uri.empty()) {
+                continue;
+            }
+            const auto& parent = parent_signature->second;
+            const auto& child = child_signature->second;
+            for (const auto& connection : instance.port_connections) {
+                const SchematicPort* child_port = nullptr;
+                if (!connection.port_name.empty()) {
+                    const auto found = std::find_if(child.definition.port_details.begin(),
+                                                    child.definition.port_details.end(),
+                                                    [&](const SchematicPort& port) {
+                                                        return port.name == connection.port_name;
+                                                    });
+                    if (found != child.definition.port_details.end()) {
+                        child_port = &*found;
+                    }
+                }
+                if (child_port == nullptr && connection.port_index >= 0 &&
+                    static_cast<size_t>(connection.port_index) < child.definition.port_details.size()) {
+                    child_port = &child.definition.port_details[static_cast<size_t>(connection.port_index)];
+                }
+                if (child_port == nullptr) {
+                    continue;
+                }
+
+                std::optional<std::string> parent_symbol_id;
+                if (const auto exact = bindings.symbol_ids_by_uri_range.find(
+                        designGraphUriRangeKey(parent.uri, connection.range));
+                    exact != bindings.symbol_ids_by_uri_range.end()) {
+                    parent_symbol_id = exact->second;
+                }
+                if (!parent_symbol_id.has_value() && isSimpleSystemVerilogIdentifier(connection.signal)) {
+                    if (const auto scoped = bindings.symbol_ids_by_module_scope_name.find(
+                            designGraphScopeNameKey(parent.uri,
+                                                    parent.definition.range,
+                                                    connection.signal));
+                        scoped != bindings.symbol_ids_by_module_scope_name.end()) {
+                        parent_symbol_id = scoped->second;
+                    }
+                }
+                const auto child_symbol = bindings.port_symbol_ids_by_module_port.find(
+                    designGraphModuleMemberKey(instance.module_name, child_port->name));
+                if (!parent_symbol_id.has_value() ||
+                    child_symbol == bindings.port_symbol_ids_by_module_port.end()) {
+                    continue;
+                }
+                const auto output = child_port->direction == "output";
+                append_edge(SnapshotAssignmentEdge{
+                    .from_symbol_id = output ? *parent_symbol_id : child_symbol->second,
+                    .to_symbol_id = output ? child_symbol->second : *parent_symbol_id,
+                    .location = SemanticLocation{.uri = parent.uri, .range = connection.range},
+                    .expression_location = SemanticLocation{.uri = parent.uri, .range = connection.range},
+                    .expression = connection.signal.empty() ? child_port->name : connection.signal});
+            }
+        }
+    }
+
+    auto& adjacency = data.cone_adjacency_index;
+    std::sort(adjacency.edges.begin(), adjacency.edges.end(), [](const auto& lhs, const auto& rhs) {
+        if (lhs.from_symbol_id != rhs.from_symbol_id) {
+            return lhs.from_symbol_id < rhs.from_symbol_id;
+        }
+        if (lhs.to_symbol_id != rhs.to_symbol_id) {
+            return lhs.to_symbol_id < rhs.to_symbol_id;
+        }
+        if (!sameLocation(lhs.location, rhs.location)) {
+            return locationLess(lhs.location, rhs.location);
+        }
+        if (!sameLocation(lhs.expression_location, rhs.expression_location)) {
+            return locationLess(lhs.expression_location, rhs.expression_location);
+        }
+        return lhs.expression < rhs.expression;
+    });
+    adjacency.edges.erase(std::unique(adjacency.edges.begin(), adjacency.edges.end(), [](const auto& lhs,
+                                                                                          const auto& rhs) {
+                              return lhs.from_symbol_id == rhs.from_symbol_id &&
+                                     lhs.to_symbol_id == rhs.to_symbol_id &&
+                                     sameLocation(lhs.location, rhs.location) &&
+                                     sameLocation(lhs.expression_location, rhs.expression_location) &&
+                                     lhs.expression == rhs.expression;
+                          }),
+                          adjacency.edges.end());
+    for (size_t index = 0; index < adjacency.edges.size(); ++index) {
+        const auto& edge = adjacency.edges[index];
+        adjacency.edges_by_from_symbol_id[edge.from_symbol_id].push_back(index);
+        adjacency.edges_by_to_symbol_id[edge.to_symbol_id].push_back(index);
+    }
+}
+
 std::optional<SemanticLocation> locationForDeclaredTypeReference(
     const slang::SourceManager& source_manager,
     const slang::syntax::DataTypeSyntax& type_syntax) {
@@ -5211,6 +5452,10 @@ void buildAstIndexes(SnapshotData& data,
         sortSnapshotIndexes(data);
     }
     {
+        PRISTINE_DEBUG_TRACE_SCOPE_SIMPLE("astIndex.buildDesignGraphIndexes");
+        buildDesignGraphIndexes(data);
+    }
+    {
         PRISTINE_DEBUG_TRACE_SCOPE_SIMPLE("astIndex.buildNavigationIndexes");
         buildNavigationIndexes(data);
     }
@@ -5497,6 +5742,8 @@ AstIndexView buildAstIndexView(const SnapshotData* data, std::uint64_t generatio
             view.module_uris_by_name[name] = signature.uri;
         }
     }
+    view.design_graph_binding_index = data->design_graph_binding_index;
+    view.cone_adjacency_index = data->cone_adjacency_index;
     view.assignment_edges_by_uri = data->assignment_edges_by_uri;
     view.type_references_by_uri = data->type_references_by_uri;
     view.module_call_edge_index = data->module_call_edge_index;
@@ -5629,18 +5876,12 @@ AstIndexView buildAstIndexView(const SnapshotData* data, std::uint64_t generatio
                                                                .type_display = indexed_symbol.type_display});
         view.design_graph_symbols_by_id.emplace(stable_id,
                                                 DesignGraphSymbol{.identity = indexed_symbol.identity});
-        appendUniqueDesignGraphRange(view.design_graph_symbol_ranges_by_uri[indexed_symbol.identity.location.uri],
-                                     indexed_symbol.identity.location.range,
-                                     stable_id);
     }
 
     view.diagnostic_references.reserve(data->references.size());
     for (const auto& reference : data->references) {
         view.diagnostic_references.push_back(DiagnosticReference{.stable_id = reference.stable_id,
                                                                  .location = reference.location});
-        appendUniqueDesignGraphRange(view.design_graph_symbol_ranges_by_uri[reference.location.uri],
-                                     reference.location.range,
-                                     reference.stable_id);
     }
     return view;
 }

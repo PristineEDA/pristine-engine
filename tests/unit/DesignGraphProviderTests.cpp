@@ -128,6 +128,17 @@ SemanticSymbolIdentity symbol(std::string stable_id, std::string name, int line,
                                                                .range = rangeAt(line, start, end)}};
 }
 
+void setConeEdges(DesignGraphContext& context, std::vector<SnapshotAssignmentEdge> edges) {
+    auto& adjacency = context.cone_adjacency_index;
+    adjacency = {};
+    adjacency.edges = std::move(edges);
+    for (size_t index = 0; index < adjacency.edges.size(); ++index) {
+        const auto& edge = adjacency.edges[index];
+        adjacency.edges_by_from_symbol_id[edge.from_symbol_id].push_back(index);
+        adjacency.edges_by_to_symbol_id[edge.to_symbol_id].push_back(index);
+    }
+}
+
 TEST_CASE("DesignGraphProvider builds module hierarchy and schematic from design context",
           "[analysis][semantic][design-graph-provider]") {
     const auto context = simpleDesignContext();
@@ -554,17 +565,7 @@ TEST_CASE("DesignGraphProvider traces backward cone through continuous assignmen
                              {"symbol|b", DesignGraphSymbol{.identity = b}},
                              {"symbol|mid", DesignGraphSymbol{.identity = mid}},
                              {"symbol|out", DesignGraphSymbol{.identity = out}}};
-    context.symbol_ranges_by_uri["file:///workspace/cone.sv"] = {
-        DesignGraphRangeSymbol{.range = a.location.range, .stable_id = "symbol|a"},
-        DesignGraphRangeSymbol{.range = b.location.range, .stable_id = "symbol|b"},
-        DesignGraphRangeSymbol{.range = mid.location.range, .stable_id = "symbol|mid"},
-        DesignGraphRangeSymbol{.range = out.location.range, .stable_id = "symbol|out"},
-        DesignGraphRangeSymbol{.range = rangeAt(5, 9, 12), .stable_id = "symbol|mid"},
-        DesignGraphRangeSymbol{.range = rangeAt(5, 15, 16), .stable_id = "symbol|a"},
-        DesignGraphRangeSymbol{.range = rangeAt(5, 19, 20), .stable_id = "symbol|b"},
-        DesignGraphRangeSymbol{.range = rangeAt(6, 9, 12), .stable_id = "symbol|out"},
-        DesignGraphRangeSymbol{.range = rangeAt(6, 15, 18), .stable_id = "symbol|mid"}};
-    context.assignment_edges_by_uri["file:///workspace/cone.sv"] = {
+    setConeEdges(context, {
         SnapshotAssignmentEdge{.from_symbol_id = "symbol|mid",
                                .to_symbol_id = "symbol|a",
                                .location = SemanticLocation{.uri = "file:///workspace/cone.sv",
@@ -579,7 +580,7 @@ TEST_CASE("DesignGraphProvider traces backward cone through continuous assignmen
                                .to_symbol_id = "symbol|mid",
                                .location = SemanticLocation{.uri = "file:///workspace/cone.sv",
                                                             .range = rangeAt(6, 2, 18)},
-                               .expression = "mid"}};
+                               .expression = "mid"}});
     const SemanticLookupResult lookup{.generation = 9,
                                       .symbol = out,
                                       .unresolved = false};
@@ -659,22 +660,22 @@ TEST_CASE("DesignGraphProvider traces backward cone through cross-module instanc
                              {"top|y", DesignGraphSymbol{.identity = y}},
                              {"child|in", DesignGraphSymbol{.identity = child_in}},
                              {"child|out", DesignGraphSymbol{.identity = child_out}}};
-    context.symbol_ranges_by_uri["file:///workspace/top.sv"] = {
-        DesignGraphRangeSymbol{.range = a.location.range, .stable_id = "top|a"},
-        DesignGraphRangeSymbol{.range = y.location.range, .stable_id = "top|y"},
-        DesignGraphRangeSymbol{.range = rangeAt(5, 31, 32), .stable_id = "top|a"},
-        DesignGraphRangeSymbol{.range = rangeAt(5, 40, 41), .stable_id = "top|y"}};
-    context.symbol_ranges_by_uri["file:///workspace/child.sv"] = {
-        DesignGraphRangeSymbol{.range = child_in.location.range, .stable_id = "child|in"},
-        DesignGraphRangeSymbol{.range = child_out.location.range, .stable_id = "child|out"},
-        DesignGraphRangeSymbol{.range = rangeAt(1, 9, 12), .stable_id = "child|out"},
-        DesignGraphRangeSymbol{.range = rangeAt(1, 15, 17), .stable_id = "child|in"}};
-    context.assignment_edges_by_uri["file:///workspace/child.sv"] = {
+    setConeEdges(context, {
+        SnapshotAssignmentEdge{.from_symbol_id = "top|y",
+                               .to_symbol_id = "child|out",
+                               .location = SemanticLocation{.uri = "file:///workspace/top.sv",
+                                                            .range = rangeAt(5, 40, 41)},
+                               .expression = "y"},
         SnapshotAssignmentEdge{.from_symbol_id = "child|out",
                                .to_symbol_id = "child|in",
                                .location = SemanticLocation{.uri = "file:///workspace/child.sv",
                                                             .range = rangeAt(1, 2, 17)},
-                               .expression = "in"}};
+                               .expression = "in"},
+        SnapshotAssignmentEdge{.from_symbol_id = "child|in",
+                               .to_symbol_id = "top|a",
+                               .location = SemanticLocation{.uri = "file:///workspace/top.sv",
+                                                            .range = rangeAt(5, 31, 32)},
+                               .expression = "a"}});
 
     const SemanticLookupResult lookup{.generation = 9, .symbol = y, .unresolved = false};
 
@@ -756,15 +757,22 @@ TEST_CASE("DesignGraphProvider traces instance port edges when generated connect
                              {"top|y", DesignGraphSymbol{.identity = y}},
                              {"child|in", DesignGraphSymbol{.identity = child_in}},
                              {"child|out", DesignGraphSymbol{.identity = child_out}}};
-    context.symbol_ranges_by_uri["file:///workspace/top.sv"] = {
-        DesignGraphRangeSymbol{.range = a.location.range, .stable_id = "top|a"},
-        DesignGraphRangeSymbol{.range = y.location.range, .stable_id = "top|y"}};
-    context.assignment_edges_by_uri["file:///workspace/child.sv"] = {
+    setConeEdges(context, {
+        SnapshotAssignmentEdge{.from_symbol_id = "top|y",
+                               .to_symbol_id = "child|out",
+                               .location = SemanticLocation{.uri = "file:///workspace/top.sv",
+                                                            .range = rangeAt(6, 22, 31)},
+                               .expression = "y"},
         SnapshotAssignmentEdge{.from_symbol_id = "child|out",
                                .to_symbol_id = "child|in",
                                .location = SemanticLocation{.uri = "file:///workspace/child.sv",
                                                             .range = rangeAt(1, 2, 17)},
-                               .expression = "in"}};
+                               .expression = "in"},
+        SnapshotAssignmentEdge{.from_symbol_id = "child|in",
+                               .to_symbol_id = "top|a",
+                               .location = SemanticLocation{.uri = "file:///workspace/top.sv",
+                                                            .range = rangeAt(6, 12, 20)},
+                               .expression = "a"}});
     const SemanticLookupResult lookup{.generation = 9, .symbol = y, .unresolved = false};
 
     const auto trace = backwardCone(context, "file:///workspace/top.sv", lookup, 2000);
@@ -790,7 +798,7 @@ TEST_CASE("DesignGraphProvider truncates backward cone at the requested result c
                              {"symbol|b", DesignGraphSymbol{.identity = b}},
                              {"symbol|c", DesignGraphSymbol{.identity = c}},
                              {"symbol|out", DesignGraphSymbol{.identity = out}}};
-    context.assignment_edges_by_uri["file:///workspace/cone.sv"] = {
+    setConeEdges(context, {
         SnapshotAssignmentEdge{.from_symbol_id = "symbol|out",
                                .to_symbol_id = "symbol|a",
                                .location = SemanticLocation{.uri = "file:///workspace/cone.sv",
@@ -805,7 +813,7 @@ TEST_CASE("DesignGraphProvider truncates backward cone at the requested result c
                                .to_symbol_id = "symbol|c",
                                .location = SemanticLocation{.uri = "file:///workspace/cone.sv",
                                                             .range = rangeAt(7, 2, 15)},
-                               .expression = "c"}};
+                               .expression = "c"}});
     const SemanticLookupResult lookup{.generation = 9,
                                       .symbol = out,
                                       .unresolved = false};

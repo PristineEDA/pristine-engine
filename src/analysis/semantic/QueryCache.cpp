@@ -111,6 +111,10 @@ void QueryCache::resetStats() {
     implementation_edge_scanned_ = 0;
     semantic_token_scanned_occurrences_ = 0;
     selection_range_scanned_candidates_ = 0;
+    graph_binding_lookup_scanned_facts_ = 0;
+    cone_adjacency_scanned_edges_ = 0;
+    graph_scanned_global_symbols_ = 0;
+    cone_scanned_global_edges_ = 0;
     scanned_global_symbols_ = 0;
 }
 
@@ -159,6 +163,10 @@ QueryCache::Stats QueryCache::stats() const {
     result.implementation_edge_scanned = implementation_edge_scanned_;
     result.semantic_token_scanned_occurrences = semantic_token_scanned_occurrences_;
     result.selection_range_scanned_candidates = selection_range_scanned_candidates_;
+    result.graph_binding_lookup_scanned_facts = graph_binding_lookup_scanned_facts_;
+    result.cone_adjacency_scanned_edges = cone_adjacency_scanned_edges_;
+    result.graph_scanned_global_symbols = graph_scanned_global_symbols_;
+    result.cone_scanned_global_edges = cone_scanned_global_edges_;
     result.scanned_global_symbols = scanned_global_symbols_;
     result.diagnostics_entries = diagnostics_by_uri_.size();
     result.workspace_symbols_entries = workspace_symbols_by_key_.size();
@@ -208,6 +216,17 @@ void QueryCache::recordNavigationScan(size_t scanned_occurrences,
     implementation_edge_scanned_ += scanned_implementation_edges;
     semantic_token_scanned_occurrences_ += scanned_tokens;
     selection_range_scanned_candidates_ += scanned_selection_candidates;
+}
+
+void QueryCache::recordDesignGraphScan(size_t scanned_binding_facts,
+                                       size_t scanned_adjacency_edges,
+                                       size_t scanned_global_symbols,
+                                       size_t scanned_global_edges) {
+    graph_binding_lookup_scanned_facts_ += scanned_binding_facts;
+    cone_adjacency_scanned_edges_ += scanned_adjacency_edges;
+    graph_scanned_global_symbols_ += scanned_global_symbols;
+    cone_scanned_global_edges_ += scanned_global_edges;
+    scanned_global_symbols_ += scanned_global_symbols;
 }
 
 void QueryCache::recordCompletionResolveFactLookup(size_t count) {

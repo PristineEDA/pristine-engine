@@ -242,6 +242,22 @@ struct SnapshotAssignmentEdge {
     std::string expression;
 };
 
+// Design graph queries consume these precomputed maps rather than rebuilding
+// name, range, or assignment relationships while serving a request.
+struct SnapshotDesignGraphBindingIndex {
+    std::unordered_map<std::string, std::string> symbol_ids_by_uri_range;
+    std::unordered_map<std::string, std::string> symbol_ids_by_module_scope_name;
+    std::unordered_map<std::string, std::string> port_symbol_ids_by_module_port;
+    std::unordered_map<std::string, std::string> parameter_symbol_ids_by_module_parameter;
+    std::unordered_map<std::string, std::string> instance_ids_by_uri_range;
+};
+
+struct SnapshotConeAdjacencyIndex {
+    std::vector<SnapshotAssignmentEdge> edges;
+    std::unordered_map<std::string, std::vector<size_t>> edges_by_from_symbol_id;
+    std::unordered_map<std::string, std::vector<size_t>> edges_by_to_symbol_id;
+};
+
 struct SnapshotTypeReference {
     SemanticLocation reference;
     std::string type_name;
@@ -305,6 +321,8 @@ struct SnapshotData {
     std::unordered_map<std::string, SemanticModuleSignature> ast_module_signatures_by_name;
     std::vector<SnapshotAssignmentEdgeSeed> assignment_edge_seeds;
     std::unordered_map<std::string, std::vector<SnapshotAssignmentEdge>> assignment_edges_by_uri;
+    SnapshotDesignGraphBindingIndex design_graph_binding_index;
+    SnapshotConeAdjacencyIndex cone_adjacency_index;
     std::unordered_map<std::string, std::vector<SnapshotTypeReference>> type_references_by_uri;
     std::unordered_map<std::string, std::vector<IncludeDirective>> include_directives_by_uri;
     std::unordered_map<std::string, std::vector<SnapshotModuleInstance>> module_instances_by_uri;

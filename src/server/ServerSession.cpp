@@ -715,6 +715,10 @@ void appendQueryCacheTelemetry(jsonrpc::Json& result,
     result["implementationEdgeScanned"] = stats.implementation_edge_scanned;
     result["semanticTokenScannedOccurrences"] = stats.semantic_token_scanned_occurrences;
     result["selectionRangeScannedCandidates"] = stats.selection_range_scanned_candidates;
+    result["graphBindingLookupScannedFacts"] = stats.graph_binding_lookup_scanned_facts;
+    result["coneAdjacencyScannedEdges"] = stats.cone_adjacency_scanned_edges;
+    result["graphScannedGlobalSymbols"] = stats.graph_scanned_global_symbols;
+    result["coneScannedGlobalEdges"] = stats.cone_scanned_global_edges;
     result["scannedGlobalSymbols"] = stats.scanned_global_symbols;
     result["queryCacheEntries"] = stats.total_entries;
     result["queryCacheDiagnosticsEntries"] = stats.diagnostics_entries;

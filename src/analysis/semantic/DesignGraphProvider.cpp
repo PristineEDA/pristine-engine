@@ -66,43 +66,6 @@ const SchematicPort* findSchematicPortByIndex(const ModuleSchematic& schematic, 
     return &schematic.ports[static_cast<size_t>(index)];
 }
 
-const SchematicPort* findModulePortByConnection(const ModuleDefinition& module,
-                                                const SchematicConnection& connection) {
-    if (!connection.port_name.empty()) {
-        const auto found = std::find_if(module.port_details.begin(),
-                                        module.port_details.end(),
-                                        [&](const SchematicPort& port) {
-                                            return port.name == connection.port_name;
-                                        });
-        if (found != module.port_details.end()) {
-            return &*found;
-        }
-    }
-    if (connection.port_index >= 0 &&
-        static_cast<size_t>(connection.port_index) < module.port_details.size()) {
-        return &module.port_details[static_cast<size_t>(connection.port_index)];
-    }
-    return nullptr;
-}
-
-bool sameParseRange(const ParseRange& lhs, const ParseRange& rhs) {
-    return lhs.start_line == rhs.start_line && lhs.start_character == rhs.start_character &&
-           lhs.end_line == rhs.end_line && lhs.end_character == rhs.end_character;
-}
-
-bool rangeContainsRange(const ParseRange& outer, const ParseRange& inner) {
-    if (outer.start_line > inner.start_line || outer.end_line < inner.end_line) {
-        return false;
-    }
-    if (outer.start_line == inner.start_line && outer.start_character > inner.start_character) {
-        return false;
-    }
-    if (outer.end_line == inner.end_line && outer.end_character < inner.end_character) {
-        return false;
-    }
-    return true;
-}
-
 bool locationLess(const SemanticLocation& lhs, const SemanticLocation& rhs) {
     if (lhs.uri != rhs.uri) {
         return lhs.uri < rhs.uri;
@@ -117,182 +80,6 @@ bool locationLess(const SemanticLocation& lhs, const SemanticLocation& rhs) {
         return lhs.range.end_line < rhs.range.end_line;
     }
     return lhs.range.end_character < rhs.range.end_character;
-}
-
-bool isSimpleSystemVerilogIdentifier(std::string_view value) {
-    if (value.empty()) {
-        return false;
-    }
-    const auto is_start = [](unsigned char ch) {
-        return std::isalpha(ch) != 0 || ch == '_' || ch == '$';
-    };
-    const auto is_continue = [](unsigned char ch) {
-        return std::isalnum(ch) != 0 || ch == '_' || ch == '$';
-    };
-    if (!is_start(static_cast<unsigned char>(value.front()))) {
-        return false;
-    }
-    return std::all_of(value.begin() + 1, value.end(), [&](char ch) {
-        return is_continue(static_cast<unsigned char>(ch));
-    });
-}
-
-std::optional<std::string> symbolIdForRange(const DesignGraphContext& context,
-                                            std::string_view uri,
-                                            const ParseRange& range) {
-    const auto ranges_it = context.symbol_ranges_by_uri.find(std::string(uri));
-    if (ranges_it == context.symbol_ranges_by_uri.end()) {
-        return std::nullopt;
-    }
-    std::optional<DesignGraphRangeSymbol> best;
-    for (const auto& candidate : ranges_it->second) {
-        if (!rangeContainsRange(range, candidate.range)) {
-            continue;
-        }
-        if (!best.has_value() || locationLess(SemanticLocation{.uri = std::string(uri),
-                                                               .range = candidate.range},
-                                              SemanticLocation{.uri = std::string(uri),
-                                                               .range = best->range})) {
-            best = candidate;
-        }
-    }
-    if (!best.has_value()) {
-        return std::nullopt;
-    }
-    return best->stable_id;
-}
-
-std::optional<std::string> symbolIdForNameInRange(const DesignGraphContext& context,
-                                                  std::string_view uri,
-                                                  const ParseRange& scope_range,
-                                                  std::string_view name) {
-    if (name.empty()) {
-        return std::nullopt;
-    }
-    std::optional<std::string> best_id;
-    std::optional<SemanticLocation> best_location;
-    for (const auto& [stable_id, symbol] : context.symbols_by_id) {
-        const auto& identity = symbol.identity;
-        if (identity.name != name || identity.location.uri != uri ||
-            !rangeContainsRange(scope_range, identity.location.range)) {
-            continue;
-        }
-        if (!best_location.has_value() || locationLess(identity.location, *best_location) ||
-            (sameParseRange(identity.location.range, best_location->range) && stable_id < *best_id)) {
-            best_id = stable_id;
-            best_location = identity.location;
-        }
-    }
-    return best_id;
-}
-
-std::optional<std::string> symbolIdForNameInModule(const DesignGraphContext& context,
-                                                   std::string_view uri,
-                                                   const ModuleDefinition& module,
-                                                   const SchematicPort& port) {
-    if (auto id = symbolIdForRange(context, uri, port.selection_range)) {
-        return id;
-    }
-    const auto name = std::string_view(port.name);
-    if (name.empty()) {
-        return std::nullopt;
-    }
-    return symbolIdForNameInRange(context, uri, module.range, name);
-}
-
-std::optional<std::string> symbolIdForPortFromAssignments(const DesignGraphContext& context,
-                                                          std::string_view uri,
-                                                          std::string_view port_name,
-                                                          bool output_port) {
-    const auto edges_it = context.assignment_edges_by_uri.find(std::string(uri));
-    if (edges_it == context.assignment_edges_by_uri.end()) {
-        return std::nullopt;
-    }
-    for (const auto& edge : edges_it->second) {
-        const auto& stable_id = output_port ? edge.from_symbol_id : edge.to_symbol_id;
-        const auto symbol_it = context.symbols_by_id.find(stable_id);
-        if (symbol_it != context.symbols_by_id.end() &&
-            symbol_it->second.identity.name == port_name &&
-            symbol_it->second.identity.location.uri == uri) {
-            return stable_id;
-        }
-    }
-    return std::nullopt;
-}
-
-std::vector<SnapshotAssignmentEdge> coneEdgesForContext(const DesignGraphContext& context) {
-    std::vector<SnapshotAssignmentEdge> edges;
-    for (const auto& [_, document_edges] : context.assignment_edges_by_uri) {
-        edges.insert(edges.end(), document_edges.begin(), document_edges.end());
-    }
-
-    std::set<std::string> emitted;
-    for (const auto& [parent_name, parent_signature] : context.module_signatures_by_name) {
-        const auto parent_uri = parent_signature.uri;
-        if (parent_uri.empty()) {
-            continue;
-        }
-        for (const auto& cell : parent_signature.schematic.cells) {
-            const auto child_signature_it = context.module_signatures_by_name.find(cell.type);
-            if (child_signature_it == context.module_signatures_by_name.end()) {
-                continue;
-            }
-            const auto& child_signature = child_signature_it->second;
-            if (child_signature.uri.empty()) {
-                continue;
-            }
-            for (const auto& connection : cell.connections) {
-                const auto* child_port = findModulePortByConnection(child_signature.definition, connection);
-                if (child_port == nullptr) {
-                    continue;
-                }
-                auto parent_signal_id = symbolIdForRange(context, parent_uri, connection.range);
-                if (!parent_signal_id.has_value() &&
-                    isSimpleSystemVerilogIdentifier(connection.signal)) {
-                    parent_signal_id = symbolIdForNameInRange(context,
-                                                              parent_uri,
-                                                              parent_signature.definition.range,
-                                                              connection.signal);
-                }
-                auto child_port_id = symbolIdForPortFromAssignments(context,
-                                                                    child_signature.uri,
-                                                                    child_port->name,
-                                                                    child_port->direction == "output");
-                if (!child_port_id.has_value()) {
-                    child_port_id = symbolIdForNameInModule(context,
-                                                            child_signature.uri,
-                                                            child_signature.definition,
-                                                            *child_port);
-                }
-                if (!parent_signal_id.has_value() || !child_port_id.has_value()) {
-                    continue;
-                }
-
-                std::string from_symbol_id;
-                std::string to_symbol_id;
-                if (child_port->direction == "output") {
-                    from_symbol_id = *parent_signal_id;
-                    to_symbol_id = *child_port_id;
-                }
-                else {
-                    from_symbol_id = *child_port_id;
-                    to_symbol_id = *parent_signal_id;
-                }
-                const auto key = from_symbol_id + "\n" + to_symbol_id + "\n" + parent_name + "\n" +
-                                 cell.name + "\n" + child_port->name;
-                if (!emitted.insert(key).second) {
-                    continue;
-                }
-                edges.push_back(SnapshotAssignmentEdge{
-                    .from_symbol_id = std::move(from_symbol_id),
-                    .to_symbol_id = std::move(to_symbol_id),
-                    .location = SemanticLocation{.uri = parent_uri, .range = connection.range},
-                    .expression_location = SemanticLocation{.uri = parent_uri, .range = connection.range},
-                    .expression = connection.signal.empty() ? child_port->name : connection.signal});
-            }
-        }
-    }
-    return edges;
 }
 
 void appendEndpointByDirection(SemanticSchematicNet& net,
@@ -823,8 +610,7 @@ SemanticConeTrace backwardCone(const DesignGraphContext& context,
         return trace;
     }
 
-    const auto cone_edges = coneEdgesForContext(context);
-    if (cone_edges.empty()) {
+    if (context.cone_adjacency_index.edges.empty()) {
         trace.messages.push_back(
             "No AST assignment edges or instance port edges are indexed for the current snapshot.");
         return trace;
@@ -887,10 +673,13 @@ SemanticConeTrace backwardCone(const DesignGraphContext& context,
             break;
         }
 
-        for (const auto& edge : cone_edges) {
-            if (edge.from_symbol_id != current_id) {
-                continue;
-            }
+        const auto adjacency = context.cone_adjacency_index.edges_by_from_symbol_id.find(current_id);
+        if (adjacency == context.cone_adjacency_index.edges_by_from_symbol_id.end()) {
+            continue;
+        }
+        for (const auto edge_index : adjacency->second) {
+            ++trace.cone_adjacency_scanned_edges;
+            const auto& edge = context.cone_adjacency_index.edges[edge_index];
             if (reached_cap()) {
                 mark_truncated();
                 break;
