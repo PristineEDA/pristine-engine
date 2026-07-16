@@ -69,6 +69,22 @@ bool locationLess(const SemanticLocation& lhs, const SemanticLocation& rhs) {
     return lhs.range.end_character < rhs.range.end_character;
 }
 
+std::string directionLabel(SnapshotGraphPortDirection direction) {
+    switch (direction) {
+    case SnapshotGraphPortDirection::Input:
+        return "input";
+    case SnapshotGraphPortDirection::Output:
+        return "output";
+    case SnapshotGraphPortDirection::Inout:
+        return "inout";
+    case SnapshotGraphPortDirection::Ref:
+        return "ref";
+    case SnapshotGraphPortDirection::Unknown:
+        return "unknown";
+    }
+    return "unknown";
+}
+
 void appendEndpointByDirection(SemanticSchematicNet& net,
                                std::string direction,
                                SemanticSchematicEndpoint endpoint,
@@ -172,7 +188,7 @@ SchematicNetBuildResult buildSchematicNets(const ModuleSchematic& schematic,
                                             port_name + "'.");
                     continue;
                 }
-                direction = endpoint->second.direction;
+                direction = directionLabel(endpoint->second.direction);
             }
             else if (cell.kind == "module") {
                 result.partial = true;

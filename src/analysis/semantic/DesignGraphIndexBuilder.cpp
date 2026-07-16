@@ -92,6 +92,48 @@ void upsertEndpoint(SnapshotDesignGraphBindingIndex& index, SnapshotGraphEndpoin
     }
 }
 
+SnapshotGraphEndpointKind endpointKindFor(const SchematicPort& port) {
+    if (port.direction == "interface") return SnapshotGraphEndpointKind::InterfacePort;
+    if (port.direction == "modport") return SnapshotGraphEndpointKind::ModportPort;
+    return SnapshotGraphEndpointKind::Port;
+}
+
+SnapshotGraphPortDirection directionFor(const SchematicPort& port) {
+    if (port.direction == "input") return SnapshotGraphPortDirection::Input;
+    if (port.direction == "output") return SnapshotGraphPortDirection::Output;
+    if (port.direction == "inout") return SnapshotGraphPortDirection::Inout;
+    if (port.direction == "ref") return SnapshotGraphPortDirection::Ref;
+    return SnapshotGraphPortDirection::Unknown;
+}
+
+std::vector<std::string> sourceIdsForRange(const std::vector<const SnapshotIndexedReference*>& references,
+                                           const ParseRange& range) {
+    std::vector<std::string> ids;
+    for (const auto* reference : references) {
+        if (!reference->is_declaration && rangeContainsRange(range, reference->location.range) &&
+            !reference->stable_id.empty()) {
+            ids.push_back(reference->stable_id);
+        }
+    }
+    std::sort(ids.begin(), ids.end());
+    ids.erase(std::unique(ids.begin(), ids.end()), ids.end());
+    return ids;
+}
+
+void appendConnectionBinding(SnapshotDesignGraphBindingIndex& index,
+                             SnapshotGraphConnectionBindingFact binding) {
+    if (binding.instance_stable_id.empty() || binding.endpoint_stable_id.empty() ||
+        binding.location.uri.empty() || binding.source_symbol_ids.empty()) {
+        return;
+    }
+    std::sort(binding.source_symbol_ids.begin(), binding.source_symbol_ids.end());
+    binding.source_symbol_ids.erase(std::unique(binding.source_symbol_ids.begin(), binding.source_symbol_ids.end()),
+                                    binding.source_symbol_ids.end());
+    const auto key = uriRangeKey(binding.location.uri, binding.location.range);
+    index.connection_bindings_by_uri_range[key].push_back(index.connection_bindings.size());
+    index.connection_bindings.push_back(std::move(binding));
+}
+
 std::optional<std::string> endpointStableId(const SnapshotData& data,
                                             const SnapshotDesignGraphBindingIndex& bindings,
                                             const SemanticModuleSignature& signature,
@@ -117,7 +159,7 @@ std::optional<std::string> endpointStableId(const SnapshotData& data,
                : std::optional<std::string>(scoped->second);
 }
 
-void appendEdge(SnapshotConeAdjacencyIndex& index, SnapshotAssignmentEdge edge) {
+void appendEdge(SnapshotConeAdjacencyIndex& index, SnapshotConeAdjacencyEdge edge) {
     if (!edge.from_symbol_id.empty() && !edge.to_symbol_id.empty()) index.edges.push_back(std::move(edge));
 }
 
@@ -129,9 +171,13 @@ void buildDesignGraphIndexes(SnapshotData& data) {
     auto& bindings = data.design_graph_binding_index;
 
     std::vector<const SnapshotIndexedReference*> references;
+    std::unordered_map<std::string, std::vector<const SnapshotIndexedReference*>> references_by_uri;
     references.reserve(data.references.size());
     for (const auto& reference : data.references) {
-        if (!reference.stable_id.empty() && !reference.location.uri.empty()) references.push_back(&reference);
+        if (!reference.stable_id.empty() && !reference.location.uri.empty()) {
+            references.push_back(&reference);
+            references_by_uri[reference.location.uri].push_back(&reference);
+        }
     }
     std::sort(references.begin(), references.end(), [](const auto* lhs, const auto* rhs) {
         if (lhs->location.uri != rhs->location.uri || !sameRange(lhs->location.range, rhs->location.range)) {
@@ -169,8 +215,8 @@ void buildDesignGraphIndexes(SnapshotData& data) {
                            SnapshotGraphEndpointFact{.stable_id = *stable_id,
                                                      .module_name = module_name,
                                                      .name = port.name,
-                                                     .kind = port.direction == "interface" ? "interface" : "port",
-                                                     .direction = port.direction,
+                                                     .kind = endpointKindFor(port),
+                                                     .direction = directionFor(port),
                                                      .location = SemanticLocation{.uri = signature.uri,
                                                                                   .range = port.selection_range},
                                                      .generated_instance_id = {}});
@@ -183,8 +229,8 @@ void buildDesignGraphIndexes(SnapshotData& data) {
                            SnapshotGraphEndpointFact{.stable_id = stable_id->second,
                                                      .module_name = module_name,
                                                      .name = parameter.name,
-                                                     .kind = "parameter",
-                                                     .direction = "parameter",
+                                                     .kind = SnapshotGraphEndpointKind::Parameter,
+                                                     .direction = SnapshotGraphPortDirection::Unknown,
                                                      .location = SemanticLocation{.uri = signature.uri,
                                                                                   .range = parameter.selection_range},
                                                      .generated_instance_id = {}});
@@ -203,8 +249,8 @@ void buildDesignGraphIndexes(SnapshotData& data) {
                            SnapshotGraphEndpointFact{.stable_id = instance.instance_stable_id,
                                                      .module_name = instance.module_name,
                                                      .name = instance.instance_name,
-                                                     .kind = "instance",
-                                                     .direction = "instance",
+                                                     .kind = SnapshotGraphEndpointKind::Instance,
+                                                     .direction = SnapshotGraphPortDirection::Unknown,
                                                      .location = SemanticLocation{.uri = uri,
                                                                                   .range = instance.selection_range},
                                                      .generated_instance_id = instance.instance_stable_id});
@@ -213,9 +259,15 @@ void buildDesignGraphIndexes(SnapshotData& data) {
 
     auto& adjacency = data.cone_adjacency_index;
     for (const auto& [_, edges] : data.assignment_edges_by_uri) {
-        for (auto edge : edges) {
-            edge.kind = "assignment";
-            appendEdge(adjacency, std::move(edge));
+        for (const auto& edge : edges) {
+            appendEdge(adjacency,
+                       SnapshotConeAdjacencyEdge{.from_symbol_id = edge.from_symbol_id,
+                                                  .to_symbol_id = edge.to_symbol_id,
+                                                  .location = edge.location,
+                                                  .expression_location = edge.expression_location,
+                                                  .expression = edge.expression,
+                                                  .kind = SnapshotConeEdgeKind::Assignment,
+                                                  .generated_instance_id = {}});
         }
     }
 
@@ -234,42 +286,89 @@ void buildDesignGraphIndexes(SnapshotData& data) {
                 child == data.ast_module_signatures_by_name.end()) continue;
             const auto parent = data.ast_module_signatures_by_name.find(caller->second);
             if (parent == data.ast_module_signatures_by_name.end() || parent->second.uri.empty()) continue;
-            for (const auto& connection : instance.port_connections) {
-                const SnapshotGraphEndpointFact* child_endpoint = nullptr;
+            const auto endpointFor = [&](const SchematicConnection& connection,
+                                         const std::vector<SchematicPort>& details)
+                -> const SnapshotGraphEndpointFact* {
                 if (!connection.port_name.empty()) {
                     const auto found = bindings.endpoints_by_module_member.find(
                         moduleMemberKey(instance.module_name, connection.port_name));
-                    if (found != bindings.endpoints_by_module_member.end()) child_endpoint = &found->second;
+                    if (found != bindings.endpoints_by_module_member.end()) return &found->second;
                 }
-                if (!child_endpoint && connection.port_index >= 0 &&
-                    static_cast<size_t>(connection.port_index) < child->second.definition.port_details.size()) {
-                    const auto& port = child->second.definition.port_details[static_cast<size_t>(connection.port_index)];
+                if (connection.port_index >= 0 &&
+                    static_cast<size_t>(connection.port_index) < details.size()) {
                     const auto found = bindings.endpoints_by_module_member.find(
-                        moduleMemberKey(instance.module_name, port.name));
-                    if (found != bindings.endpoints_by_module_member.end()) child_endpoint = &found->second;
+                        moduleMemberKey(instance.module_name,
+                                        details[static_cast<size_t>(connection.port_index)].name));
+                    if (found != bindings.endpoints_by_module_member.end()) return &found->second;
                 }
-                if (!child_endpoint) continue;
-                std::optional<std::string> parent_id;
-                const auto exact = bindings.symbol_ids_by_uri_range.find(uriRangeKey(parent->second.uri, connection.range));
-                if (exact != bindings.symbol_ids_by_uri_range.end()) parent_id = exact->second;
-                if (!parent_id && simpleIdentifier(connection.signal)) {
+                return nullptr;
+            };
+            const auto sourceIdsForConnection = [&](const SchematicConnection& connection) {
+                static const std::vector<const SnapshotIndexedReference*> kNoReferences;
+                const auto references = references_by_uri.find(parent->second.uri);
+                auto source_ids = sourceIdsForRange(
+                    references == references_by_uri.end() ? kNoReferences : references->second, connection.range);
+                if (source_ids.empty() && simpleIdentifier(connection.signal)) {
                     const auto scoped = bindings.symbol_ids_by_module_scope_name.find(
                         scopeNameKey(parent->second.uri, parent->second.definition.range, connection.signal));
-                    if (scoped != bindings.symbol_ids_by_module_scope_name.end()) parent_id = scoped->second;
+                    if (scoped != bindings.symbol_ids_by_module_scope_name.end()) {
+                        source_ids.push_back(scoped->second);
+                    }
                 }
-                if (!parent_id) continue;
-                const bool output = child_endpoint->direction == "output";
-                appendEdge(adjacency,
-                           SnapshotAssignmentEdge{.from_symbol_id = output ? *parent_id : child_endpoint->stable_id,
-                                                  .to_symbol_id = output ? child_endpoint->stable_id : *parent_id,
-                                                  .location = SemanticLocation{.uri = parent->second.uri,
-                                                                               .range = connection.range},
-                                                  .expression_location = SemanticLocation{.uri = parent->second.uri,
-                                                                                          .range = connection.range},
-                                                  .expression = connection.signal.empty() ? child_endpoint->name : connection.signal,
-                                                  .kind = "instanceConnection",
-                                                  .generated_instance_id = instance.instance_stable_id});
-            }
+                std::sort(source_ids.begin(), source_ids.end());
+                source_ids.erase(std::unique(source_ids.begin(), source_ids.end()), source_ids.end());
+                return source_ids;
+            };
+            const auto appendConnections = [&](const std::vector<SchematicConnection>& connections,
+                                               const std::vector<SchematicPort>& details,
+                                               SnapshotConeEdgeKind kind) {
+                for (const auto& connection : connections) {
+                    const auto* child_endpoint = endpointFor(connection, details);
+                    if (!child_endpoint) continue;
+                    const auto source_ids = sourceIdsForConnection(connection);
+                    const auto location = SemanticLocation{.uri = parent->second.uri, .range = connection.range};
+                    appendConnectionBinding(bindings,
+                                            SnapshotGraphConnectionBindingFact{
+                                                .instance_stable_id = instance.instance_stable_id,
+                                                .endpoint_stable_id = child_endpoint->stable_id,
+                                                .location = location,
+                                                .kind = kind,
+                                                .source_symbol_ids = source_ids});
+                    for (const auto& source_id : source_ids) {
+                        if (kind == SnapshotConeEdgeKind::ParameterOverride) {
+                            appendEdge(adjacency,
+                                       SnapshotConeAdjacencyEdge{
+                                           .from_symbol_id = child_endpoint->stable_id,
+                                           .to_symbol_id = source_id,
+                                           .location = location,
+                                           .expression_location = location,
+                                           .expression = connection.signal.empty() ? child_endpoint->name : connection.signal,
+                                           .kind = kind,
+                                           .generated_instance_id = instance.instance_stable_id});
+                            continue;
+                        }
+                        const bool output = child_endpoint->direction == SnapshotGraphPortDirection::Output;
+                        const bool input_or_ref = child_endpoint->direction == SnapshotGraphPortDirection::Input ||
+                                                  child_endpoint->direction == SnapshotGraphPortDirection::Ref;
+                        if (!output && !input_or_ref) continue;
+                        appendEdge(adjacency,
+                                   SnapshotConeAdjacencyEdge{
+                                       .from_symbol_id = output ? source_id : child_endpoint->stable_id,
+                                       .to_symbol_id = output ? child_endpoint->stable_id : source_id,
+                                       .location = location,
+                                       .expression_location = location,
+                                       .expression = connection.signal.empty() ? child_endpoint->name : connection.signal,
+                                       .kind = kind,
+                                       .generated_instance_id = instance.instance_stable_id});
+                    }
+                }
+            };
+            appendConnections(instance.port_connections,
+                              child->second.definition.port_details,
+                              SnapshotConeEdgeKind::InstancePort);
+            appendConnections(instance.parameter_connections,
+                              child->second.definition.parameter_details,
+                              SnapshotConeEdgeKind::ParameterOverride);
         }
     }
 
@@ -280,7 +379,9 @@ void buildDesignGraphIndexes(SnapshotData& data) {
         if (!sameLocation(lhs.expression_location, rhs.expression_location)) {
             return locationLess(lhs.expression_location, rhs.expression_location);
         }
-        if (lhs.kind != rhs.kind) return lhs.kind < rhs.kind;
+        if (lhs.kind != rhs.kind) {
+            return static_cast<int>(lhs.kind) < static_cast<int>(rhs.kind);
+        }
         if (lhs.generated_instance_id != rhs.generated_instance_id) {
             return lhs.generated_instance_id < rhs.generated_instance_id;
         }
@@ -300,6 +401,34 @@ void buildDesignGraphIndexes(SnapshotData& data) {
         const auto& edge = adjacency.edges[index];
         adjacency.edges_by_from_symbol_id[edge.from_symbol_id].push_back(index);
         adjacency.edges_by_to_symbol_id[edge.to_symbol_id].push_back(index);
+    }
+
+    std::sort(bindings.connection_bindings.begin(), bindings.connection_bindings.end(), [](const auto& lhs,
+                                                                                           const auto& rhs) {
+        if (!sameLocation(lhs.location, rhs.location)) return locationLess(lhs.location, rhs.location);
+        if (lhs.kind != rhs.kind) return static_cast<int>(lhs.kind) < static_cast<int>(rhs.kind);
+        if (lhs.endpoint_stable_id != rhs.endpoint_stable_id) {
+            return lhs.endpoint_stable_id < rhs.endpoint_stable_id;
+        }
+        if (lhs.instance_stable_id != rhs.instance_stable_id) {
+            return lhs.instance_stable_id < rhs.instance_stable_id;
+        }
+        return lhs.source_symbol_ids < rhs.source_symbol_ids;
+    });
+    bindings.connection_bindings.erase(
+        std::unique(bindings.connection_bindings.begin(), bindings.connection_bindings.end(), [](const auto& lhs,
+                                                                                                  const auto& rhs) {
+            return lhs.instance_stable_id == rhs.instance_stable_id &&
+                   lhs.endpoint_stable_id == rhs.endpoint_stable_id &&
+                   sameLocation(lhs.location, rhs.location) && lhs.kind == rhs.kind &&
+                   lhs.source_symbol_ids == rhs.source_symbol_ids;
+        }),
+        bindings.connection_bindings.end());
+    bindings.connection_bindings_by_uri_range.clear();
+    for (size_t index = 0; index < bindings.connection_bindings.size(); ++index) {
+        const auto& binding = bindings.connection_bindings[index];
+        bindings.connection_bindings_by_uri_range[uriRangeKey(binding.location.uri, binding.location.range)]
+            .push_back(index);
     }
 }
 

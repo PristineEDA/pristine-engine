@@ -68,15 +68,15 @@ int main() {
         const auto document_text = [](int index, bool include_workspace_probe) {
             const auto name = std::string("sig_") + std::to_string(index);
             if (index == 0) {
-                return std::string("module unit_0(input logic in, output logic out);\n") +
+                return std::string("module unit_0 #(parameter int WIDTH = 1)(input logic in, output logic out);\n") +
                        "  assign out = in;\nendmodule\n";
             }
-            auto text = std::string("module unit_") + std::to_string(index) + ";\n" +
+            auto text = std::string("module unit_") + std::to_string(index) + " #(parameter int WIDTH = 4);\n" +
                         "  logic " + name + ";\n" +
                         "  assign " + name + " = " + name + ";\n";
             if (include_workspace_probe) {
                 text += "  logic connected;\n";
-                text += "  unit_0 u0(.in(" + name + "), .out(connected));\n";
+                text += "  unit_0 #(.WIDTH(WIDTH)) u0(.in(" + name + " & " + name + "), .out(connected));\n";
                 text += "  function automatic int add(input int lhs, input int rhs);\n";
                 text += "    return lhs + rhs;\n";
                 text += "  endfunction\n";

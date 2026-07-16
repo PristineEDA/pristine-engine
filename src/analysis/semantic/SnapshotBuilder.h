@@ -240,9 +240,11 @@ struct SnapshotAssignmentEdge {
     SemanticLocation location;
     SemanticLocation expression_location;
     std::string expression;
-    std::string kind = "assignment";
-    std::string generated_instance_id;
 };
+
+enum class SnapshotGraphEndpointKind { Port, Parameter, Instance, InterfacePort, ModportPort };
+enum class SnapshotGraphPortDirection { Input, Output, Inout, Ref, Unknown };
+enum class SnapshotConeEdgeKind { Assignment, InstancePort, ParameterOverride };
 
 // A graph endpoint retains the AST-resolved identity and direction used by
 // hierarchy, schematic, and cone queries. It is intentionally value-only so
@@ -251,9 +253,27 @@ struct SnapshotGraphEndpointFact {
     std::string stable_id;
     std::string module_name;
     std::string name;
-    std::string kind;
-    std::string direction;
+    SnapshotGraphEndpointKind kind = SnapshotGraphEndpointKind::Port;
+    SnapshotGraphPortDirection direction = SnapshotGraphPortDirection::Unknown;
     SemanticLocation location;
+    std::string generated_instance_id;
+};
+
+struct SnapshotGraphConnectionBindingFact {
+    std::string instance_stable_id;
+    std::string endpoint_stable_id;
+    SemanticLocation location;
+    SnapshotConeEdgeKind kind = SnapshotConeEdgeKind::InstancePort;
+    std::vector<std::string> source_symbol_ids;
+};
+
+struct SnapshotConeAdjacencyEdge {
+    std::string from_symbol_id;
+    std::string to_symbol_id;
+    SemanticLocation location;
+    SemanticLocation expression_location;
+    std::string expression;
+    SnapshotConeEdgeKind kind = SnapshotConeEdgeKind::Assignment;
     std::string generated_instance_id;
 };
 
@@ -267,10 +287,12 @@ struct SnapshotDesignGraphBindingIndex {
     std::unordered_map<std::string, std::string> instance_ids_by_uri_range;
     std::unordered_map<std::string, SnapshotGraphEndpointFact> endpoints_by_module_member;
     std::unordered_map<std::string, SnapshotGraphEndpointFact> endpoints_by_stable_id;
+    std::vector<SnapshotGraphConnectionBindingFact> connection_bindings;
+    std::unordered_map<std::string, std::vector<size_t>> connection_bindings_by_uri_range;
 };
 
 struct SnapshotConeAdjacencyIndex {
-    std::vector<SnapshotAssignmentEdge> edges;
+    std::vector<SnapshotConeAdjacencyEdge> edges;
     std::unordered_map<std::string, std::vector<size_t>> edges_by_from_symbol_id;
     std::unordered_map<std::string, std::vector<size_t>> edges_by_to_symbol_id;
 };

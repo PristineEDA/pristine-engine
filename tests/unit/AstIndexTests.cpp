@@ -48,6 +48,16 @@ auto buildReferenceCallDesign(std::string top_source =
     return SnapshotBuilder{}.build(std::move(input));
 }
 
+auto buildGraphSource(std::string source, std::uint64_t generation = 91) {
+    SnapshotBuildInput input{.generation = generation,
+                             .documents = {{"file:///workspace/top.sv",
+                                            SemanticEngineDocument{.uri = "file:///workspace/top.sv",
+                                                                   .text = std::move(source),
+                                                                   .version = 1,
+                                                                   .is_open = true}}}};
+    return SnapshotBuilder{}.build(std::move(input));
+}
+
 TEST_CASE("AstIndex filters, sorts, and maps workspace symbols",
           "[analysis][semantic][ast-index][workspace-symbol]") {
     const AstIndexContext context{
@@ -1889,18 +1899,22 @@ TEST_CASE("AstIndex builds direct graph bindings and cone adjacency from module 
     CHECK(view.design_graph_binding_index.port_symbol_ids_by_module_port.contains("child\x1f" "out"));
     const auto input_endpoint = view.design_graph_binding_index.endpoints_by_module_member.find("child\x1f" "in");
     REQUIRE(input_endpoint != view.design_graph_binding_index.endpoints_by_module_member.end());
-    CHECK(input_endpoint->second.kind == "port");
-    CHECK(input_endpoint->second.direction == "input");
+    CHECK(input_endpoint->second.kind == SnapshotGraphEndpointKind::Port);
+    CHECK(input_endpoint->second.direction == SnapshotGraphPortDirection::Input);
     const auto output_endpoint = view.design_graph_binding_index.endpoints_by_module_member.find("child\x1f" "out");
     REQUIRE(output_endpoint != view.design_graph_binding_index.endpoints_by_module_member.end());
-    CHECK(output_endpoint->second.direction == "output");
+    CHECK(output_endpoint->second.direction == SnapshotGraphPortDirection::Output);
     REQUIRE(view.cone_adjacency_index.edges.size() == 3);
     CHECK(std::count_if(view.cone_adjacency_index.edges.begin(),
                         view.cone_adjacency_index.edges.end(),
-                        [](const SnapshotAssignmentEdge& edge) { return edge.kind == "assignment"; }) == 1);
+                        [](const SnapshotConeAdjacencyEdge& edge) {
+                            return edge.kind == SnapshotConeEdgeKind::Assignment;
+                        }) == 1);
     CHECK(std::count_if(view.cone_adjacency_index.edges.begin(),
                         view.cone_adjacency_index.edges.end(),
-                        [](const SnapshotAssignmentEdge& edge) { return edge.kind == "instanceConnection"; }) == 2);
+                        [](const SnapshotConeAdjacencyEdge& edge) {
+                            return edge.kind == SnapshotConeEdgeKind::InstancePort;
+                        }) == 2);
     CHECK(view.cone_adjacency_index.edges_by_from_symbol_id.size() == 3);
     CHECK(view.cone_adjacency_index.edges_by_to_symbol_id.size() == 3);
 }
@@ -1916,7 +1930,7 @@ TEST_CASE("AstIndex binds assigned module ports to the resolved assignment ident
     REQUIRE(out != view.design_graph_binding_index.port_symbol_ids_by_module_port.end());
     CHECK(std::any_of(view.cone_adjacency_index.edges.begin(),
                       view.cone_adjacency_index.edges.end(),
-                      [&](const SnapshotAssignmentEdge& edge) { return edge.from_symbol_id == out->second; }));
+                      [&](const SnapshotConeAdjacencyEdge& edge) { return edge.from_symbol_id == out->second; }));
 }
 
 TEST_CASE("AstIndex stores generated instance bindings independently",
@@ -1938,8 +1952,9 @@ TEST_CASE("AstIndex stores generated instance bindings independently",
     CHECK(view.cone_adjacency_index.edges.size() == 3);
     CHECK(std::all_of(view.cone_adjacency_index.edges.begin(),
                       view.cone_adjacency_index.edges.end(),
-                      [](const SnapshotAssignmentEdge& edge) {
-                          return edge.kind == "assignment" || !edge.generated_instance_id.empty();
+                      [](const SnapshotConeAdjacencyEdge& edge) {
+                          return edge.kind == SnapshotConeEdgeKind::Assignment ||
+                                 !edge.generated_instance_id.empty();
                       }));
 }
 
@@ -1981,6 +1996,135 @@ TEST_CASE("AstIndex leaves unresolved graph connections out of cone adjacency",
     REQUIRE(output.data != nullptr);
     const auto& edges = output.data->cone_adjacency_index.edges;
     CHECK(edges.empty());
+}
+
+TEST_CASE("AstIndex indexes named parameter overrides as typed cone edges",
+          "[analysis][semantic][ast-index][design-graph-binding][parameter]") {
+    auto output = buildGraphSource(
+        "module child #(parameter int WIDTH = 1)(input logic in, output logic out);\n"
+        "  assign out = in;\nendmodule\n"
+        "module top; localparam int WIDTH = 4; logic a; logic y;\n"
+        "  child #(.WIDTH(WIDTH)) u_child(.in(a), .out(y));\nendmodule\n");
+    REQUIRE(output.data != nullptr);
+    const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
+
+    const auto binding = std::find_if(view.design_graph_binding_index.connection_bindings.begin(),
+                                      view.design_graph_binding_index.connection_bindings.end(),
+                                      [](const SnapshotGraphConnectionBindingFact& value) {
+                                          return value.kind == SnapshotConeEdgeKind::ParameterOverride;
+                                      });
+    REQUIRE(binding != view.design_graph_binding_index.connection_bindings.end());
+    CHECK(binding->source_symbol_ids.size() == 1);
+    CHECK(std::any_of(view.cone_adjacency_index.edges.begin(),
+                      view.cone_adjacency_index.edges.end(),
+                      [](const SnapshotConeAdjacencyEdge& edge) {
+                          return edge.kind == SnapshotConeEdgeKind::ParameterOverride;
+                      }));
+}
+
+TEST_CASE("AstIndex indexes every resolved source in a complex instance connection",
+          "[analysis][semantic][ast-index][design-graph-binding][connection]") {
+    auto output = buildGraphSource(
+        "module child(input logic in, output logic out); assign out = in; endmodule\n"
+        "module top; logic a; logic b; logic y;\n"
+        "  child u_child(.in(a & b), .out(y));\nendmodule\n");
+    REQUIRE(output.data != nullptr);
+    const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
+
+    const auto binding = std::find_if(view.design_graph_binding_index.connection_bindings.begin(),
+                                      view.design_graph_binding_index.connection_bindings.end(),
+                                      [](const SnapshotGraphConnectionBindingFact& value) {
+                                          return value.kind == SnapshotConeEdgeKind::InstancePort &&
+                                                 value.source_symbol_ids.size() == 2;
+                                      });
+    REQUIRE(binding != view.design_graph_binding_index.connection_bindings.end());
+    CHECK(binding->source_symbol_ids[0] < binding->source_symbol_ids[1]);
+}
+
+TEST_CASE("AstIndex maps positional instance ports through graph endpoint facts",
+          "[analysis][semantic][ast-index][design-graph-binding][positional]") {
+    auto output = buildGraphSource(
+        "module child(input logic in, output logic out); assign out = in; endmodule\n"
+        "module top; logic a; logic y; child u_child(a, y); endmodule\n");
+    REQUIRE(output.data != nullptr);
+    const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
+
+    const auto port_bindings = std::count_if(view.design_graph_binding_index.connection_bindings.begin(),
+                                             view.design_graph_binding_index.connection_bindings.end(),
+                                             [](const SnapshotGraphConnectionBindingFact& value) {
+                                                 return value.kind == SnapshotConeEdgeKind::InstancePort;
+                                             });
+    CHECK(port_bindings == 2);
+}
+
+TEST_CASE("AstIndex records interface endpoints without inventing cone direction",
+          "[analysis][semantic][ast-index][design-graph-binding][interface][no-fallback]") {
+    auto output = buildGraphSource(
+        "interface bus_if; logic data; endinterface\n"
+        "module child(bus_if bus); endmodule\n"
+        "module top; bus_if bus(); child u_child(.bus(bus)); endmodule\n");
+    REQUIRE(output.data != nullptr);
+    const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
+
+    const auto endpoint = view.design_graph_binding_index.endpoints_by_module_member.find("child\x1f" "bus");
+    REQUIRE(endpoint != view.design_graph_binding_index.endpoints_by_module_member.end());
+    CHECK(endpoint->second.kind == SnapshotGraphEndpointKind::InterfacePort);
+    CHECK(endpoint->second.direction == SnapshotGraphPortDirection::Unknown);
+    CHECK(std::none_of(view.cone_adjacency_index.edges.begin(),
+                       view.cone_adjacency_index.edges.end(),
+                       [&](const SnapshotConeAdjacencyEdge& edge) {
+                           return edge.from_symbol_id == endpoint->second.stable_id ||
+                                  edge.to_symbol_id == endpoint->second.stable_id;
+                       }));
+}
+
+TEST_CASE("AstIndex keeps generated connection bindings distinct",
+          "[analysis][semantic][ast-index][design-graph-binding][generated]") {
+    SnapshotBuildInput input{
+        .generation = 76,
+        .config = SemanticEngineConfig{.top_modules = {"top"}},
+        .documents = {{"file:///workspace/generated-bindings.sv",
+                       SemanticEngineDocument{.uri = "file:///workspace/generated-bindings.sv",
+                                              .text = "module child(input logic in, output logic out); assign out = in; endmodule\n"
+                                                      "module top; logic a; logic y0; logic y1; genvar i; generate\n"
+                                                      "  for (i = 0; i < 2; i = i + 1) begin : g\n"
+                                                      "    child u(.in(a), .out(i ? y1 : y0));\n  end\nendgenerate endmodule\n",
+                                              .is_open = true}}}};
+    auto output = SnapshotBuilder{}.build(std::move(input));
+    REQUIRE(output.data != nullptr);
+    const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
+
+    std::vector<std::string> generated_ids;
+    for (const auto& binding : view.design_graph_binding_index.connection_bindings) {
+        if (binding.kind == SnapshotConeEdgeKind::InstancePort) {
+            generated_ids.push_back(binding.instance_stable_id);
+        }
+    }
+    std::sort(generated_ids.begin(), generated_ids.end());
+    generated_ids.erase(std::unique(generated_ids.begin(), generated_ids.end()), generated_ids.end());
+    CHECK(generated_ids.size() >= 2);
+}
+
+TEST_CASE("AstIndex keeps connection binding ordering deterministic across equivalent builds",
+          "[analysis][semantic][ast-index][design-graph-binding][deterministic]") {
+    const auto build = [](std::uint64_t generation) {
+        return buildGraphSource(
+            "module child(input logic in, output logic out); assign out = in; endmodule\n"
+            "module top; logic a; logic b; logic y; child u(.in(a & b), .out(y)); endmodule\n",
+            generation);
+    };
+    auto first = build(77);
+    auto second = build(78);
+    REQUIRE(first.data != nullptr);
+    REQUIRE(second.data != nullptr);
+    const auto& lhs = first.data->design_graph_binding_index.connection_bindings;
+    const auto& rhs = second.data->design_graph_binding_index.connection_bindings;
+    REQUIRE(lhs.size() == rhs.size());
+    for (size_t index = 0; index < lhs.size(); ++index) {
+        CHECK(lhs[index].instance_stable_id == rhs[index].instance_stable_id);
+        CHECK(lhs[index].endpoint_stable_id == rhs[index].endpoint_stable_id);
+        CHECK(lhs[index].source_symbol_ids == rhs[index].source_symbol_ids);
+    }
 }
 
 } // namespace

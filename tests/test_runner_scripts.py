@@ -24,6 +24,16 @@ def load_script(name: str):
     return module
 
 
+def load_path(path: Path):
+    spec = importlib.util.spec_from_file_location(path.stem, path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"unable to load module: {path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[path.stem] = module
+    spec.loader.exec_module(module)
+    return module
+
+
 def initialize_git_repo(root: Path) -> None:
     subprocess.run(["git", "init"], cwd=root, check=True, stdout=subprocess.DEVNULL)
     (root / ".gitignore").write_text("build/\n", encoding="utf-8")
@@ -96,6 +106,57 @@ class GateContractTests(unittest.TestCase):
             errors = self.contract.validate_run_context(context, root, manifest_path=manifest)
 
         self.assertTrue(any("source fingerprint mismatch" in error for error in errors))
+
+
+class DifferentialNormalizationTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.differential = load_path(ROOT / "tests" / "differential" / "slang_server_differential.py")
+
+    def test_normalized_location_set_uses_relative_uri_and_utf16_range(self) -> None:
+        response = {
+            "result": [{
+                "uri": "file:///tmp/work/top.sv",
+                "range": {"start": {"line": 2, "character": 3}, "end": {"line": 2, "character": 8}},
+            }]
+        }
+        normalized = self.differential.normalize_response(
+            "definition", response, {"file:///tmp/work/top.sv": "top.sv"}
+        )
+        self.assertEqual(normalized, [{"uri": "top.sv", "range": {"start": [2, 3], "end": [2, 8]}}])
+
+    def test_normalized_workspace_edit_sorts_uris_and_edits(self) -> None:
+        response = {
+            "result": {
+                "changes": {
+                    "file:///tmp/work/b.sv": [{"range": {"start": {"line": 1, "character": 0}, "end": {"line": 1, "character": 1}}, "newText": "b"}],
+                    "file:///tmp/work/a.sv": [{"range": {"start": {"line": 0, "character": 2}, "end": {"line": 0, "character": 3}}, "newText": "a"}],
+                }
+            }
+        }
+        normalized = self.differential.normalize_response(
+            "rename", response, {"file:///tmp/work/a.sv": "a.sv", "file:///tmp/work/b.sv": "b.sv"}
+        )
+        self.assertEqual(list(normalized["changes"]), ["a.sv", "b.sv"])
+        self.assertEqual(normalized["changes"]["a.sv"][0]["newText"], "a")
+
+    def test_normalized_call_hierarchy_preserves_call_sites(self) -> None:
+        response = {
+            "result": [{
+                "from": {
+                    "name": "top",
+                    "uri": "file:///tmp/work/top.sv",
+                    "range": {"start": {"line": 0, "character": 0}, "end": {"line": 2, "character": 9}},
+                    "selectionRange": {"start": {"line": 0, "character": 7}, "end": {"line": 0, "character": 10}},
+                },
+                "fromRanges": [{"start": {"line": 1, "character": 2}, "end": {"line": 1, "character": 9}}],
+            }]
+        }
+        normalized = self.differential.normalize_response(
+            "callHierarchyIncoming", response, {"file:///tmp/work/top.sv": "top.sv"}
+        )
+        self.assertEqual(normalized[0]["name"], "top")
+        self.assertEqual(normalized[0]["fromRanges"], [{"start": [1, 2], "end": [1, 9]}])
 
 
 class FullTestStatusRunnerTests(unittest.TestCase):

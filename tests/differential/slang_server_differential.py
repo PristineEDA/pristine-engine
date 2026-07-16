@@ -24,7 +24,7 @@ class DifferentialCheck:
     include_declaration: bool = True
     optional: bool = False
     replacement: str = "renamed_probe"
-    compare: bool = False
+    comparator: str = "validateOnly"
 
 
 @dataclass(frozen=True)
@@ -705,7 +705,7 @@ FIXTURES: tuple[DifferentialFixture, ...] = (
                 position={"line": 0, "character": 7},
                 min_count=1,
                 optional=True,
-                compare=True,
+                comparator="locationSet",
             ),
             DifferentialCheck(
                 kind="documentHighlight",
@@ -713,7 +713,7 @@ FIXTURES: tuple[DifferentialFixture, ...] = (
                 position={"line": 3, "character": 8},
                 min_count=2,
                 optional=True,
-                compare=True,
+                comparator="highlightSet",
             ),
             DifferentialCheck(
                 kind="prepareRename",
@@ -721,7 +721,7 @@ FIXTURES: tuple[DifferentialFixture, ...] = (
                 position={"line": 3, "character": 8},
                 min_count=1,
                 optional=True,
-                compare=True,
+                comparator="prepareRenameRange",
             ),
             DifferentialCheck(
                 kind="rename",
@@ -729,7 +729,7 @@ FIXTURES: tuple[DifferentialFixture, ...] = (
                 position={"line": 3, "character": 8},
                 min_count=3,
                 optional=True,
-                compare=True,
+                comparator="workspaceEdit",
             ),
             DifferentialCheck(
                 kind="callHierarchyIncoming",
@@ -737,7 +737,7 @@ FIXTURES: tuple[DifferentialFixture, ...] = (
                 position={"line": 0, "character": 7},
                 required=("top",),
                 optional=True,
-                compare=True,
+                comparator="callHierarchyEdges",
             ),
             DifferentialCheck(
                 kind="callHierarchyOutgoing",
@@ -745,7 +745,7 @@ FIXTURES: tuple[DifferentialFixture, ...] = (
                 position={"line": 2, "character": 7},
                 required=("child",),
                 optional=True,
-                compare=True,
+                comparator="callHierarchyEdges",
             ),
         ),
     ),
@@ -754,6 +754,98 @@ FIXTURES: tuple[DifferentialFixture, ...] = (
 
 class UnsupportedCheck(Exception):
     pass
+
+
+def normalized_range(value: Any) -> Any:
+    if not isinstance(value, dict):
+        return None
+    start = value.get("start")
+    end = value.get("end")
+    if not isinstance(start, dict) or not isinstance(end, dict):
+        return None
+    if not all(isinstance(part.get("line"), int) and isinstance(part.get("character"), int)
+               for part in (start, end)):
+        return None
+    return {
+        "start": [start["line"], start["character"]],
+        "end": [end["line"], end["character"]],
+    }
+
+
+def normalized_uri(uri: Any, uri_to_relative: dict[str, str]) -> str:
+    if not isinstance(uri, str):
+        return ""
+    return uri_to_relative.get(uri, uri)
+
+
+def normalized_location(value: Any, uri_to_relative: dict[str, str]) -> Any:
+    if not isinstance(value, dict):
+        return None
+    uri = value.get("targetUri", value.get("uri"))
+    location_range = value.get("targetSelectionRange", value.get("targetRange", value.get("range")))
+    normalized = normalized_range(location_range)
+    if not normalized:
+        return None
+    return {"uri": normalized_uri(uri, uri_to_relative), "range": normalized}
+
+
+def normalize_response(kind: str, response: dict[str, Any] | None, uri_to_relative: dict[str, str]) -> Any:
+    if not isinstance(response, dict):
+        return None
+    result = response.get("result")
+    if kind in {"definition", "typeDefinition", "implementation", "references"}:
+        locations = [normalized_location(item, uri_to_relative) for item in response_items(result)]
+        return sorted((item for item in locations if item is not None), key=lambda item: json.dumps(item, sort_keys=True))
+    if kind == "documentHighlight":
+        highlights = []
+        for item in response_items(result):
+            item_range = normalized_range(item.get("range"))
+            if item_range:
+                highlights.append({"range": item_range, "kind": item.get("kind", 0)})
+        return sorted(highlights, key=lambda item: json.dumps(item, sort_keys=True))
+    if kind == "prepareRename":
+        if isinstance(result, dict) and "range" in result:
+            return normalized_range(result.get("range"))
+        return normalized_range(result)
+    if kind == "rename":
+        if not isinstance(result, dict):
+            return {"changes": {}}
+        changes: dict[str, list[dict[str, Any]]] = {}
+        raw_changes = result.get("changes")
+        if isinstance(raw_changes, dict):
+            for uri, edits in raw_changes.items():
+                normalized_edits = []
+                if isinstance(edits, list):
+                    for edit in edits:
+                        if not isinstance(edit, dict):
+                            continue
+                        edit_range = normalized_range(edit.get("range"))
+                        if edit_range:
+                            normalized_edits.append({"range": edit_range, "newText": edit.get("newText", "")})
+                changes[normalized_uri(uri, uri_to_relative)] = sorted(
+                    normalized_edits, key=lambda item: json.dumps(item, sort_keys=True)
+                )
+        return {"changes": dict(sorted(changes.items()))}
+    if kind in {"callHierarchyIncoming", "callHierarchyOutgoing"}:
+        direction = "from" if kind == "callHierarchyIncoming" else "to"
+        calls = []
+        for call in response_items(result):
+            item = call.get(direction)
+            if not isinstance(item, dict):
+                continue
+            call_ranges = [normalized_range(item_range) for item_range in call.get("fromRanges", [])]
+            calls.append({
+                "name": item.get("name", ""),
+                "uri": normalized_uri(item.get("uri"), uri_to_relative),
+                "range": normalized_range(item.get("range")),
+                "selectionRange": normalized_range(item.get("selectionRange")),
+                "fromRanges": sorted((item_range for item_range in call_ranges if item_range is not None),
+                                     key=lambda item_range: json.dumps(item_range, sort_keys=True)),
+            })
+        return sorted(calls, key=lambda item: json.dumps(item, sort_keys=True))
+    if kind in {"hover", "completion", "completionResolve", "signatureHelp"}:
+        return sorted(set(re.findall(r"[A-Za-z_$][A-Za-z0-9_$]*", json.dumps(result))))
+    return None
 
 
 def write_message(process: subprocess.Popen[bytes], message: dict[str, Any]) -> None:
@@ -802,6 +894,7 @@ class LspSession:
         self.messages: queue.Queue[dict[str, Any] | BaseException] = queue.Queue()
         self.notifications: list[dict[str, Any]] = []
         self.server_capabilities: dict[str, Any] = {}
+        self.last_response: dict[str, Any] | None = None
         self.reader = threading.Thread(target=self._read_loop, daemon=True)
         self.reader.start()
 
@@ -841,6 +934,7 @@ class LspSession:
             if item.get("id") == request_id:
                 if "error" in item and not allow_error:
                     raise AssertionError(f"{method} failed: {item['error']}")
+                self.last_response = item
                 return item
             self.notifications.append(item)
 
@@ -1185,7 +1279,9 @@ def check_backward_cone(session: LspSession, request_id: int, uri: str, position
     return len(nodes) if isinstance(nodes, list) else 0
 
 
-def run_fixture(server: pathlib.Path, root: pathlib.Path, fixture: DifferentialFixture) -> dict[str, Any]:
+def run_fixture(
+    server: pathlib.Path, root: pathlib.Path, fixture: DifferentialFixture
+) -> tuple[dict[str, Any], dict[str, Any]]:
     root_uri = root.resolve().as_uri()
     source_uris: dict[str, str] = {}
     for relative, text in fixture.sources.items():
@@ -1193,6 +1289,7 @@ def run_fixture(server: pathlib.Path, root: pathlib.Path, fixture: DifferentialF
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text, encoding="utf-8")
         source_uris[relative] = path.resolve().as_uri()
+    uri_to_relative = {uri: relative for relative, uri in source_uris.items()}
 
     session = LspSession(server)
     try:
@@ -1202,6 +1299,7 @@ def run_fixture(server: pathlib.Path, root: pathlib.Path, fixture: DifferentialF
         session.drain_notifications()
 
         observed: dict[str, Any] = {}
+        comparisons: dict[str, Any] = {}
         request_id = 10
         for check in fixture.checks:
             key = f"{check.kind}:{check.uri or check.query}:{request_id}"
@@ -1280,8 +1378,11 @@ def run_fixture(server: pathlib.Path, root: pathlib.Path, fixture: DifferentialF
                 if not check.optional:
                     raise
                 observed[key] = None
+                comparisons[key] = None
+            else:
+                comparisons[key] = normalize_response(check.kind, session.last_response, uri_to_relative)
             request_id += 1
-        return observed
+        return observed, comparisons
     finally:
         session.shutdown()
 
@@ -1307,17 +1408,19 @@ def validate_observed(server_name: str, fixture: DifferentialFixture, observed: 
 
 
 def compare_observed(fixture: DifferentialFixture,
-                     pristine_observed: dict[str, Any],
-                     slang_observed: dict[str, Any]) -> None:
+                     pristine_comparisons: dict[str, Any],
+                     slang_comparisons: dict[str, Any]) -> None:
     for check, pristine_value, slang_value in zip(
-        fixture.checks, pristine_observed.values(), slang_observed.values()
+        fixture.checks, pristine_comparisons.values(), slang_comparisons.values()
     ):
-        if not check.compare or pristine_value is None or slang_value is None:
+        if check.comparator == "validateOnly" or pristine_value is None or slang_value is None:
             continue
         if pristine_value != slang_value:
             raise AssertionError(
-                f"shared LSP mismatch for fixture '{fixture.name}' {check.kind}: "
-                f"pristine={pristine_value!r}, slang={slang_value!r}"
+                f"shared LSP mismatch for fixture '{fixture.name}' {check.kind} "
+                f"({check.comparator}):\npristine="
+                f"{json.dumps(pristine_value, sort_keys=True)}\nslang="
+                f"{json.dumps(slang_value, sort_keys=True)}"
             )
 
 
@@ -1342,11 +1445,11 @@ def main() -> int:
         for fixture in FIXTURES:
             pristine_root = base / "pristine" / fixture.name.replace(" ", "-")
             slang_root = base / "slang" / fixture.name.replace(" ", "-")
-            pristine_observed = run_fixture(pristine_engine, pristine_root, fixture)
-            slang_observed = run_fixture(slang_server, slang_root, fixture)
+            pristine_observed, pristine_comparisons = run_fixture(pristine_engine, pristine_root, fixture)
+            slang_observed, slang_comparisons = run_fixture(slang_server, slang_root, fixture)
             validate_observed("pristine-engine", fixture, pristine_observed)
             validate_observed("slang-server", fixture, slang_observed)
-            compare_observed(fixture, pristine_observed, slang_observed)
+            compare_observed(fixture, pristine_comparisons, slang_comparisons)
 
     print(f"Compared {len(FIXTURES)} rewritten fixture(s) against slang-server")
     return 0
