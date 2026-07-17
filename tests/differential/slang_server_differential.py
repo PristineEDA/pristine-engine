@@ -52,6 +52,17 @@ CHECK_CAPABILITIES: dict[str, str] = {
 }
 
 
+def supports_differential_check(capabilities: dict[str, Any], kind: str) -> bool:
+    capability = CHECK_CAPABILITIES.get(kind)
+    if capability is None:
+        return True
+
+    provider = capabilities.get(capability)
+    if kind == "prepareRename":
+        return isinstance(provider, dict) and provider.get("prepareProvider") is True
+    return provider not in (None, False)
+
+
 FIXTURES: tuple[DifferentialFixture, ...] = (
     DifferentialFixture(
         name="completion local signal prefix",
@@ -956,14 +967,21 @@ class LspSession:
             self.notifications.append(item)
 
     def initialize(self, root_uri: str) -> None:
-        response = self.request(1, "initialize", {"rootUri": root_uri, "capabilities": {}})
+        response = self.request(
+            1,
+            "initialize",
+            {
+                "rootUri": root_uri,
+                "capabilities": {"textDocument": {"rename": {"prepareSupport": True}}},
+            },
+        )
         result = response.get("result")
         capabilities = result.get("capabilities") if isinstance(result, dict) else None
         self.server_capabilities = capabilities if isinstance(capabilities, dict) else {}
         self.notify("initialized", {})
 
-    def supports_server_capability(self, name: str) -> bool:
-        return self.server_capabilities.get(name) not in (None, False)
+    def supports_check(self, kind: str) -> bool:
+        return supports_differential_check(self.server_capabilities, kind)
 
     def did_open(self, uri: str, text: str) -> None:
         self.notify(
@@ -1304,8 +1322,7 @@ def run_fixture(
         for check in fixture.checks:
             key = f"{check.kind}:{check.uri or check.query}:{request_id}"
             try:
-                capability = CHECK_CAPABILITIES.get(check.kind)
-                if capability and not session.supports_server_capability(capability):
+                if not session.supports_check(check.kind):
                     raise UnsupportedCheck(f"{check.kind} is not advertised by the server")
                 if check.kind == "completion":
                     assert check.uri is not None and check.position is not None

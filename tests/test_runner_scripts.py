@@ -158,6 +158,14 @@ class DifferentialNormalizationTests(unittest.TestCase):
         self.assertEqual(normalized[0]["name"], "top")
         self.assertEqual(normalized[0]["fromRanges"], [{"start": [1, 2], "end": [1, 9]}])
 
+    def test_prepare_rename_requires_explicit_prepare_provider(self) -> None:
+        boolean_rename = {"renameProvider": True}
+        prepared_rename = {"renameProvider": {"prepareProvider": True}}
+
+        self.assertTrue(self.differential.supports_differential_check(boolean_rename, "rename"))
+        self.assertFalse(self.differential.supports_differential_check(boolean_rename, "prepareRename"))
+        self.assertTrue(self.differential.supports_differential_check(prepared_rename, "prepareRename"))
+
 
 class FullTestStatusRunnerTests(unittest.TestCase):
     @classmethod
