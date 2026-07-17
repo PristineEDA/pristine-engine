@@ -158,6 +158,35 @@ class DifferentialNormalizationTests(unittest.TestCase):
         self.assertEqual(normalized[0]["name"], "top")
         self.assertEqual(normalized[0]["fromRanges"], [{"start": [1, 2], "end": [1, 9]}])
 
+    def test_normalized_highlights_ignore_optional_kind(self) -> None:
+        response = {
+            "result": [
+                {
+                    "range": {
+                        "start": {"line": 1, "character": 2},
+                        "end": {"line": 1, "character": 7},
+                    },
+                    "kind": 2,
+                },
+                {
+                    "range": {
+                        "start": {"line": 3, "character": 0},
+                        "end": {"line": 3, "character": 5},
+                    },
+                },
+            ]
+        }
+
+        normalized = self.differential.normalize_response("documentHighlight", response, {})
+
+        self.assertEqual(
+            normalized,
+            [
+                {"start": [1, 2], "end": [1, 7]},
+                {"start": [3, 0], "end": [3, 5]},
+            ],
+        )
+
     def test_prepare_rename_requires_explicit_prepare_provider(self) -> None:
         boolean_rename = {"renameProvider": True}
         prepared_rename = {"renameProvider": {"prepareProvider": True}}

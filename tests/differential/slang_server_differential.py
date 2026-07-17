@@ -812,7 +812,8 @@ def normalize_response(kind: str, response: dict[str, Any] | None, uri_to_relati
         for item in response_items(result):
             item_range = normalized_range(item.get("range"))
             if item_range:
-                highlights.append({"range": item_range, "kind": item.get("kind", 0)})
+                # DocumentHighlight.kind is optional; compare the shared location contract only.
+                highlights.append(item_range)
         return sorted(highlights, key=lambda item: json.dumps(item, sort_keys=True))
     if kind == "prepareRename":
         if isinstance(result, dict) and "range" in result:
