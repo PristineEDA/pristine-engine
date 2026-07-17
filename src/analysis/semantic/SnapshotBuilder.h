@@ -224,6 +224,24 @@ struct SnapshotModuleCallEdgeIndex {
     std::unordered_map<std::string, std::vector<SnapshotModuleCallHierarchyRange>> items_by_uri;
 };
 
+enum class SnapshotConeEdgeKind { Assignment, InstancePort, ParameterOverride, ControlDependency };
+enum class SnapshotConeSourceRole { Data, Control };
+enum class SnapshotConeSliceKind {
+    Whole,
+    ElementSelect,
+    RangeSelect,
+    Concatenation,
+    MemberAccess,
+    DynamicSelect,
+};
+
+struct SnapshotConeControlSourceSeed {
+    ParseRange range;
+    std::string expression;
+    SnapshotConeSliceKind slice_kind = SnapshotConeSliceKind::Whole;
+    std::vector<std::string> source_symbol_ids;
+};
+
 struct SnapshotAssignmentEdgeSeed {
     std::string uri;
     ParseRange scope_range;
@@ -232,6 +250,10 @@ struct SnapshotAssignmentEdgeSeed {
     ParseRange right_range;
     std::string left_expression;
     std::string right_expression;
+    SnapshotConeSliceKind data_slice_kind = SnapshotConeSliceKind::Whole;
+    std::vector<std::string> left_symbol_ids;
+    std::vector<std::string> data_symbol_ids;
+    std::vector<SnapshotConeControlSourceSeed> control_sources;
 };
 
 struct SnapshotAssignmentEdge {
@@ -240,11 +262,13 @@ struct SnapshotAssignmentEdge {
     SemanticLocation location;
     SemanticLocation expression_location;
     std::string expression;
+    SnapshotConeEdgeKind kind = SnapshotConeEdgeKind::Assignment;
+    SnapshotConeSourceRole source_role = SnapshotConeSourceRole::Data;
+    SnapshotConeSliceKind slice_kind = SnapshotConeSliceKind::Whole;
 };
 
 enum class SnapshotGraphEndpointKind { Port, Parameter, Instance, InterfacePort, ModportPort };
 enum class SnapshotGraphPortDirection { Input, Output, Inout, Ref, Unknown };
-enum class SnapshotConeEdgeKind { Assignment, InstancePort, ParameterOverride };
 
 // A graph endpoint retains the AST-resolved identity and direction used by
 // hierarchy, schematic, and cone queries. It is intentionally value-only so
@@ -274,6 +298,8 @@ struct SnapshotConeAdjacencyEdge {
     SemanticLocation expression_location;
     std::string expression;
     SnapshotConeEdgeKind kind = SnapshotConeEdgeKind::Assignment;
+    SnapshotConeSourceRole source_role = SnapshotConeSourceRole::Data;
+    SnapshotConeSliceKind slice_kind = SnapshotConeSliceKind::Whole;
     std::string generated_instance_id;
 };
 
@@ -289,6 +315,8 @@ struct SnapshotDesignGraphBindingIndex {
     std::unordered_map<std::string, SnapshotGraphEndpointFact> endpoints_by_stable_id;
     std::vector<SnapshotGraphConnectionBindingFact> connection_bindings;
     std::unordered_map<std::string, std::vector<size_t>> connection_bindings_by_uri_range;
+    size_t scoped_symbol_candidate_count = 0;
+    size_t connection_reference_candidate_count = 0;
 };
 
 struct SnapshotConeAdjacencyIndex {

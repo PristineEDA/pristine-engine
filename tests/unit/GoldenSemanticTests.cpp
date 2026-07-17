@@ -1052,6 +1052,33 @@ void runBackwardConeFixture(SemanticEngine& engine, const nlohmann::json& fixtur
             }));
         }
     }
+    if (expected.contains("edgeKinds")) {
+        for (const auto& expected_kind : expected.at("edgeKinds")) {
+            const auto kind = expected_kind.get<std::string>();
+            CAPTURE(kind);
+            CHECK(std::any_of(result.edges.begin(), result.edges.end(), [&](const SemanticConeEdge& edge) {
+                return edge.kind == kind;
+            }));
+        }
+    }
+    if (expected.contains("sourceRoles")) {
+        for (const auto& expected_role : expected.at("sourceRoles")) {
+            const auto role = expected_role.get<std::string>();
+            CAPTURE(role);
+            CHECK(std::any_of(result.edges.begin(), result.edges.end(), [&](const SemanticConeEdge& edge) {
+                return edge.source_role == role;
+            }));
+        }
+    }
+    if (expected.contains("sliceKinds")) {
+        for (const auto& expected_slice : expected.at("sliceKinds")) {
+            const auto slice = expected_slice.get<std::string>();
+            CAPTURE(slice);
+            CHECK(std::any_of(result.edges.begin(), result.edges.end(), [&](const SemanticConeEdge& edge) {
+                return edge.slice_kind == slice;
+            }));
+        }
+    }
 }
 
 void runCodeActionFixture(SemanticEngine& engine, const nlohmann::json& fixture) {

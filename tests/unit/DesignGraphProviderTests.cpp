@@ -648,6 +648,56 @@ TEST_CASE("DesignGraphProvider traces backward cone through continuous assignmen
     }));
 }
 
+TEST_CASE("DesignGraphProvider preserves typed control and slice metadata in cone responses",
+          "[analysis][semantic][design-graph-provider][cone][control][slice]") {
+    auto context = simpleDesignContext();
+    const auto select = symbol("symbol|select", "select", 1, 8, 14);
+    const auto data = symbol("symbol|data", "data", 2, 8, 12);
+    const auto out = symbol("symbol|out", "out", 3, 8, 11);
+    context.symbols_by_id = {{"symbol|select", DesignGraphSymbol{.identity = select}},
+                             {"symbol|data", DesignGraphSymbol{.identity = data}},
+                             {"symbol|out", DesignGraphSymbol{.identity = out}}};
+    context.binding_index.scoped_symbol_candidate_count = 3;
+    context.binding_index.connection_reference_candidate_count = 2;
+    setConeEdges(context,
+                 {SnapshotConeAdjacencyEdge{.from_symbol_id = "symbol|out",
+                                            .to_symbol_id = "symbol|select",
+                                            .location = SemanticLocation{.uri = "file:///workspace/cone.sv",
+                                                                         .range = rangeAt(4, 2, 24)},
+                                            .expression_location = SemanticLocation{.uri = "file:///workspace/cone.sv",
+                                                                                    .range = rangeAt(4, 6, 12)},
+                                            .expression = "select",
+                                            .kind = SnapshotConeEdgeKind::ControlDependency,
+                                            .source_role = SnapshotConeSourceRole::Control},
+                  SnapshotConeAdjacencyEdge{.from_symbol_id = "symbol|out",
+                                            .to_symbol_id = "symbol|data",
+                                            .location = SemanticLocation{.uri = "file:///workspace/cone.sv",
+                                                                         .range = rangeAt(4, 2, 24)},
+                                            .expression_location = SemanticLocation{.uri = "file:///workspace/cone.sv",
+                                                                                    .range = rangeAt(4, 15, 22)},
+                                            .expression = "data[3:0]",
+                                            .kind = SnapshotConeEdgeKind::Assignment,
+                                            .source_role = SnapshotConeSourceRole::Data,
+                                            .slice_kind = SnapshotConeSliceKind::RangeSelect}});
+
+    const auto trace = backwardCone(context,
+                                    "file:///workspace/cone.sv",
+                                    SemanticLookupResult{.generation = 9, .symbol = out},
+                                    2000);
+
+    REQUIRE_FALSE(trace.unresolved);
+    CHECK(trace.cone_control_edge_count == 1);
+    CHECK(trace.cone_slice_fact_count == 1);
+    CHECK(trace.graph_build_scoped_symbol_candidates == 3);
+    CHECK(trace.graph_build_connection_reference_candidates == 2);
+    CHECK(std::any_of(trace.edges.begin(), trace.edges.end(), [](const SemanticConeEdge& edge) {
+        return edge.kind == "controlDependency" && edge.source_role == "control";
+    }));
+    CHECK(std::any_of(trace.edges.begin(), trace.edges.end(), [](const SemanticConeEdge& edge) {
+        return edge.slice_kind == "rangeSelect" && edge.source_range.has_value();
+    }));
+}
+
 TEST_CASE("DesignGraphProvider traces backward cone through cross-module instance port edges",
           "[analysis][semantic][design-graph-provider][cone][instance][no-fallback]") {
     auto context = simpleDesignContext();

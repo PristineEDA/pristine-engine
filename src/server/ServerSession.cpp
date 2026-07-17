@@ -668,10 +668,15 @@ jsonrpc::Json toConeNodeJson(const analysis::SemanticConeNode& node) {
 }
 
 jsonrpc::Json toConeEdgeJson(const analysis::SemanticConeEdge& edge) {
-    return jsonrpc::Json{{"from", edge.from_symbol_id},
+    jsonrpc::Json result{{"from", edge.from_symbol_id},
                          {"to", edge.to_symbol_id},
                          {"range", toRangeJson(edge.location.range)},
                          {"expression", edge.expression}};
+    if (edge.kind != "assignment") result["kind"] = edge.kind;
+    if (edge.source_role != "data") result["sourceRole"] = edge.source_role;
+    if (edge.slice_kind != "whole") result["sliceKind"] = edge.slice_kind;
+    if (edge.source_range.has_value()) result["sourceRange"] = toRangeJson(*edge.source_range);
+    return result;
 }
 
 jsonrpc::Json toConeTraceJson(const analysis::SemanticConeTrace& trace) {
@@ -1425,6 +1430,11 @@ jsonrpc::Json ServerSession::handleBackwardCone(const jsonrpc::Json& params) {
         query_cache_stats = semantic_workspace_.engineQueryCacheStats();
     }
     auto result = toConeTraceJson(trace);
+    result["coneControlEdges"] = trace.cone_control_edge_count;
+    result["coneSliceFacts"] = trace.cone_slice_fact_count;
+    result["graphBuildScopedSymbolCandidates"] = trace.graph_build_scoped_symbol_candidates;
+    result["graphBuildConnectionReferenceCandidates"] =
+        trace.graph_build_connection_reference_candidates;
     appendQueryCacheTelemetry(result, query_cache_stats);
     appendBackgroundDiagnosticsTelemetry(result, background_diagnostics_worker_.get());
     return result;

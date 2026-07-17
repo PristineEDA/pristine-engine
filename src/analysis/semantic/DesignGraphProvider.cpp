@@ -85,6 +85,42 @@ std::string directionLabel(SnapshotGraphPortDirection direction) {
     return "unknown";
 }
 
+std::string coneEdgeKindLabel(SnapshotConeEdgeKind kind) {
+    switch (kind) {
+    case SnapshotConeEdgeKind::Assignment:
+        return "assignment";
+    case SnapshotConeEdgeKind::InstancePort:
+        return "instancePort";
+    case SnapshotConeEdgeKind::ParameterOverride:
+        return "parameterOverride";
+    case SnapshotConeEdgeKind::ControlDependency:
+        return "controlDependency";
+    }
+    return "assignment";
+}
+
+std::string coneSourceRoleLabel(SnapshotConeSourceRole role) {
+    return role == SnapshotConeSourceRole::Control ? "control" : "data";
+}
+
+std::string coneSliceKindLabel(SnapshotConeSliceKind kind) {
+    switch (kind) {
+    case SnapshotConeSliceKind::Whole:
+        return "whole";
+    case SnapshotConeSliceKind::ElementSelect:
+        return "elementSelect";
+    case SnapshotConeSliceKind::RangeSelect:
+        return "rangeSelect";
+    case SnapshotConeSliceKind::Concatenation:
+        return "concatenation";
+    case SnapshotConeSliceKind::MemberAccess:
+        return "memberAccess";
+    case SnapshotConeSliceKind::DynamicSelect:
+        return "dynamicSelect";
+    }
+    return "whole";
+}
+
 void appendEndpointByDirection(SemanticSchematicNet& net,
                                std::string direction,
                                SemanticSchematicEndpoint endpoint,
@@ -687,6 +723,9 @@ SemanticConeTrace backwardCone(const DesignGraphContext& context,
     };
 
     trace.root_symbol_id = lookup.symbol->stable_id;
+    trace.graph_build_scoped_symbol_candidates = context.binding_index.scoped_symbol_candidate_count;
+    trace.graph_build_connection_reference_candidates =
+        context.binding_index.connection_reference_candidate_count;
     append_node(lookup.symbol->stable_id);
 
     std::vector<std::string> pending{lookup.symbol->stable_id};
@@ -720,7 +759,10 @@ SemanticConeTrace backwardCone(const DesignGraphContext& context,
             const auto node_available = append_node(edge.to_symbol_id);
             const auto edge_key = edge.from_symbol_id + "\n" + edge.to_symbol_id + "\n" +
                                   std::to_string(edge.location.range.start_line) + ":" +
-                                  std::to_string(edge.location.range.start_character);
+                                  std::to_string(edge.location.range.start_character) + "\n" +
+                                  coneEdgeKindLabel(edge.kind) + "\n" +
+                                  coneSourceRoleLabel(edge.source_role) + "\n" +
+                                  coneSliceKindLabel(edge.slice_kind);
             if (node_available && emitted_edges.insert(edge_key).second) {
                 if (max_results > 0 && trace.edges.size() >= max_results) {
                     mark_truncated();
@@ -729,7 +771,17 @@ SemanticConeTrace backwardCone(const DesignGraphContext& context,
                 trace.edges.push_back(SemanticConeEdge{.from_symbol_id = edge.from_symbol_id,
                                                        .to_symbol_id = edge.to_symbol_id,
                                                        .location = edge.location,
-                                                       .expression = edge.expression});
+                                                       .expression = edge.expression,
+                                                       .kind = coneEdgeKindLabel(edge.kind),
+                                                       .source_role = coneSourceRoleLabel(edge.source_role),
+                                                       .slice_kind = coneSliceKindLabel(edge.slice_kind),
+                                                       .source_range = edge.expression_location.range});
+                if (edge.source_role == SnapshotConeSourceRole::Control) {
+                    ++trace.cone_control_edge_count;
+                }
+                if (edge.slice_kind != SnapshotConeSliceKind::Whole) {
+                    ++trace.cone_slice_fact_count;
+                }
             }
             if (node_available && !visited.contains(edge.to_symbol_id) && !reached_cap()) {
                 pending.push_back(edge.to_symbol_id);

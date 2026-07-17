@@ -1984,6 +1984,73 @@ TEST_CASE("AstIndex keeps cone adjacency deterministic across equivalent builds"
     }
 }
 
+TEST_CASE("AstIndex indexes if control dependencies for procedural assignments",
+          "[analysis][semantic][ast-index][cone][control][if]") {
+    auto output = buildGraphSource(
+        "module top(input logic select, input logic a, input logic b, output logic y);\n"
+        "  always_comb begin if (select) y = a; else y = b; end\nendmodule\n");
+    REQUIRE(output.data != nullptr);
+    const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
+    const auto control_edges = std::count_if(view.cone_adjacency_index.edges.begin(),
+                                             view.cone_adjacency_index.edges.end(),
+                                             [](const SnapshotConeAdjacencyEdge& edge) {
+                                                 return edge.kind == SnapshotConeEdgeKind::ControlDependency &&
+                                                        edge.source_role == SnapshotConeSourceRole::Control;
+                                             });
+    CHECK(control_edges >= 1);
+    CHECK(std::any_of(view.cone_adjacency_index.edges.begin(),
+                      view.cone_adjacency_index.edges.end(),
+                      [](const SnapshotConeAdjacencyEdge& edge) {
+                          return edge.kind == SnapshotConeEdgeKind::Assignment &&
+                                 edge.source_role == SnapshotConeSourceRole::Data;
+                      }));
+}
+
+TEST_CASE("AstIndex indexes case selectors as control dependencies",
+          "[analysis][semantic][ast-index][cone][control][case]") {
+    auto output = buildGraphSource(
+        "module top(input logic select, input logic a, input logic b, output logic y);\n"
+        "  always_comb begin case (select) 1'b0: y = a; default: y = b; endcase end\nendmodule\n");
+    REQUIRE(output.data != nullptr);
+    const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
+    CHECK(std::any_of(view.cone_adjacency_index.edges.begin(),
+                      view.cone_adjacency_index.edges.end(),
+                      [](const SnapshotConeAdjacencyEdge& edge) {
+                          return edge.kind == SnapshotConeEdgeKind::ControlDependency &&
+                                 edge.source_role == SnapshotConeSourceRole::Control;
+                      }));
+}
+
+TEST_CASE("AstIndex indexes conditional-expression controls without text lookup",
+          "[analysis][semantic][ast-index][cone][control][ternary]") {
+    auto output = buildGraphSource(
+        "module top(input logic select, input logic a, input logic b, output logic y);\n"
+        "  assign y = select ? a : b;\nendmodule\n");
+    REQUIRE(output.data != nullptr);
+    const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
+    CHECK(std::any_of(view.cone_adjacency_index.edges.begin(),
+                      view.cone_adjacency_index.edges.end(),
+                      [](const SnapshotConeAdjacencyEdge& edge) {
+                          return edge.kind == SnapshotConeEdgeKind::ControlDependency &&
+                                 edge.source_role == SnapshotConeSourceRole::Control;
+                      }));
+}
+
+TEST_CASE("AstIndex preserves concatenation and select slice kinds in cone facts",
+          "[analysis][semantic][ast-index][cone][slice]") {
+    auto output = buildGraphSource(
+        "module top(input logic a, input logic b, input logic [3:0] data, input logic [1:0] index, "
+        "output logic [5:0] y);\n"
+        "  assign y = {a, b, data[3:1], data[index]};\nendmodule\n");
+    REQUIRE(output.data != nullptr);
+    const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
+    CHECK(std::any_of(view.cone_adjacency_index.edges.begin(),
+                      view.cone_adjacency_index.edges.end(),
+                      [](const SnapshotConeAdjacencyEdge& edge) {
+                          return edge.slice_kind == SnapshotConeSliceKind::Concatenation;
+                      }));
+}
+
 TEST_CASE("AstIndex leaves unresolved graph connections out of cone adjacency",
           "[analysis][semantic][ast-index][cone][unresolved][no-fallback]") {
     SnapshotBuildInput input{

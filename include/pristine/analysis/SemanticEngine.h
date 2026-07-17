@@ -353,6 +353,10 @@ struct SemanticConeEdge {
     std::string to_symbol_id;
     SemanticLocation location;
     std::string expression;
+    std::string kind = "assignment";
+    std::string source_role = "data";
+    std::string slice_kind = "whole";
+    std::optional<ParseRange> source_range;
 };
 
 struct SemanticConeTrace {
@@ -363,6 +367,10 @@ struct SemanticConeTrace {
     std::vector<std::string> messages;
     size_t cone_adjacency_scanned_edges = 0;
     size_t cone_scanned_global_edges = 0;
+    size_t cone_control_edge_count = 0;
+    size_t cone_slice_fact_count = 0;
+    size_t graph_build_scoped_symbol_candidates = 0;
+    size_t graph_build_connection_reference_candidates = 0;
     bool unresolved = false;
     bool partial = false;
     bool truncated = false;

@@ -13,7 +13,11 @@
 #include "slang/ast/Symbol.h"
 #include "slang/ast/expressions/AssignmentExpressions.h"
 #include "slang/ast/expressions/CallExpression.h"
+#include "slang/ast/expressions/ConversionExpression.h"
+#include "slang/ast/expressions/MiscExpressions.h"
 #include "slang/ast/expressions/OperatorExpressions.h"
+#include "slang/ast/expressions/SelectExpressions.h"
+#include "slang/ast/statements/ConditionalStatements.h"
 #include "slang/ast/symbols/InstanceSymbols.h"
 #include "slang/ast/symbols/BlockSymbols.h"
 #include "slang/ast/symbols/MemberSymbols.h"
@@ -387,6 +391,69 @@ std::string expressionText(const SemanticEngineDocument* document,
     return {};
 }
 
+const slang::ast::Expression& unwrapImplicitConversions(const slang::ast::Expression& expression) {
+    const slang::ast::Expression* current = &expression;
+    while (current->kind == slang::ast::ExpressionKind::Conversion) {
+        const auto& conversion = current->as<slang::ast::ConversionExpression>();
+        if (!conversion.isImplicit()) break;
+        current = &conversion.operand();
+    }
+    return *current;
+}
+
+SnapshotConeSliceKind sliceKindForExpression(const slang::ast::Expression& expression) {
+    const auto& unwrapped = unwrapImplicitConversions(expression);
+    switch (unwrapped.kind) {
+    case slang::ast::ExpressionKind::ElementSelect: {
+        const auto& select = unwrapped.as<slang::ast::ElementSelectExpression>();
+        return select.selector().kind == slang::ast::ExpressionKind::IntegerLiteral
+                   ? SnapshotConeSliceKind::ElementSelect
+                   : SnapshotConeSliceKind::DynamicSelect;
+    }
+    case slang::ast::ExpressionKind::RangeSelect: {
+        const auto& select = unwrapped.as<slang::ast::RangeSelectExpression>();
+        return select.left().kind == slang::ast::ExpressionKind::IntegerLiteral &&
+                       select.right().kind == slang::ast::ExpressionKind::IntegerLiteral
+                   ? SnapshotConeSliceKind::RangeSelect
+                   : SnapshotConeSliceKind::DynamicSelect;
+    }
+    case slang::ast::ExpressionKind::Concatenation:
+        return SnapshotConeSliceKind::Concatenation;
+    case slang::ast::ExpressionKind::MemberAccess:
+        return SnapshotConeSliceKind::MemberAccess;
+    default:
+        return SnapshotConeSliceKind::Whole;
+    }
+}
+
+std::optional<SnapshotConeControlSourceSeed> controlSourceForExpression(
+    const SemanticEngineDocument* document,
+    const slang::SourceManager& source_manager,
+    const slang::ast::Expression& expression) {
+    const auto range = sourceRangeForSourceRange(source_manager, expression.sourceRange);
+    if (range.start_line < 0 || range.end_line < range.start_line) {
+        return std::nullopt;
+    }
+    return SnapshotConeControlSourceSeed{.range = range,
+                                         .expression = expressionText(document, source_manager, expression),
+                                         .slice_kind = sliceKindForExpression(expression),
+                                         .source_symbol_ids = {}};
+}
+
+bool sameControlSources(const std::vector<SnapshotConeControlSourceSeed>& lhs,
+                        const std::vector<SnapshotConeControlSourceSeed>& rhs) {
+    if (lhs.size() != rhs.size()) return false;
+    for (size_t index = 0; index < lhs.size(); ++index) {
+        if (!sameRange(lhs[index].range, rhs[index].range) ||
+            lhs[index].expression != rhs[index].expression ||
+            lhs[index].slice_kind != rhs[index].slice_kind ||
+            lhs[index].source_symbol_ids != rhs[index].source_symbol_ids) {
+            return false;
+        }
+    }
+    return true;
+}
+
 void appendAssignmentEdgeSeed(SnapshotData& data, SnapshotAssignmentEdgeSeed seed) {
     const auto duplicate = std::any_of(data.assignment_edge_seeds.begin(),
                                        data.assignment_edge_seeds.end(),
@@ -398,7 +465,12 @@ void appendAssignmentEdgeSeed(SnapshotData& data, SnapshotAssignmentEdgeSeed see
                                                   sameRange(existing.left_range, seed.left_range) &&
                                                   sameRange(existing.right_range, seed.right_range) &&
                                                   existing.left_expression == seed.left_expression &&
-                                                  existing.right_expression == seed.right_expression;
+                                                  existing.right_expression == seed.right_expression &&
+                                                  existing.data_slice_kind == seed.data_slice_kind &&
+                                                  existing.left_symbol_ids == seed.left_symbol_ids &&
+                                                  existing.data_symbol_ids == seed.data_symbol_ids &&
+                                                  sameControlSources(existing.control_sources,
+                                                                     seed.control_sources);
                                        });
     if (duplicate) {
         return;
@@ -2758,15 +2830,87 @@ void upsertMissingAstModuleSignatureSkeletonsFromDefinitions(
     }
 }
 
+void insertSymbol(SnapshotData& data,
+                  const slang::SourceManager& source_manager,
+                  const slang::ast::Symbol& symbol);
+
+std::vector<std::string> directSymbolIdsForExpression(SnapshotData& data,
+                                                       const slang::ast::Expression& expression) {
+    std::vector<std::string> ids;
+    const auto append_symbol = [&](const slang::ast::Symbol& symbol) {
+        if (const auto found = data.ids_by_symbol.find(&symbol); found != data.ids_by_symbol.end()) {
+            ids.push_back(found->second);
+        }
+    };
+    const auto collect = [&](const auto& self, const slang::ast::Expression& current) -> void {
+        switch (current.kind) {
+        case slang::ast::ExpressionKind::NamedValue:
+        case slang::ast::ExpressionKind::HierarchicalValue:
+            append_symbol(current.as<slang::ast::ValueExpressionBase>().symbol);
+            return;
+        case slang::ast::ExpressionKind::ElementSelect: {
+            const auto& select = current.as<slang::ast::ElementSelectExpression>();
+            self(self, select.value());
+            self(self, select.selector());
+            return;
+        }
+        case slang::ast::ExpressionKind::RangeSelect: {
+            const auto& select = current.as<slang::ast::RangeSelectExpression>();
+            self(self, select.value());
+            self(self, select.left());
+            self(self, select.right());
+            return;
+        }
+        case slang::ast::ExpressionKind::MemberAccess: {
+            const auto& member = current.as<slang::ast::MemberAccessExpression>();
+            append_symbol(member.member);
+            self(self, member.value());
+            return;
+        }
+        case slang::ast::ExpressionKind::Concatenation:
+            for (const auto* operand : current.as<slang::ast::ConcatenationExpression>().operands()) {
+                if (operand != nullptr) self(self, *operand);
+            }
+            return;
+        case slang::ast::ExpressionKind::BinaryOp: {
+            const auto& binary = current.as<slang::ast::BinaryExpression>();
+            self(self, binary.left());
+            self(self, binary.right());
+            return;
+        }
+        case slang::ast::ExpressionKind::ConditionalOp: {
+            const auto& conditional = current.as<slang::ast::ConditionalExpression>();
+            for (const auto& condition : conditional.conditions) self(self, *condition.expr);
+            self(self, conditional.left());
+            self(self, conditional.right());
+            return;
+        }
+        default:
+            current.visitSymbolReferences([&](const slang::ast::Expression&, const slang::ast::Symbol& symbol) {
+                append_symbol(symbol);
+            });
+            return;
+        }
+    };
+    collect(collect, expression);
+    std::sort(ids.begin(), ids.end());
+    ids.erase(std::unique(ids.begin(), ids.end()), ids.end());
+    return ids;
+}
+
 void upsertAstContinuousAssignment(SnapshotData& data,
                                    const slang::SourceManager& source_manager,
                                    const std::unordered_map<std::string, SemanticEngineDocument>& documents,
                                    const slang::ast::ContinuousAssignSymbol& assignment) {
-    const auto* parent_scope = assignment.getParentScope();
-    const auto* body = parent_scope != nullptr && parent_scope->asSymbol().kind ==
-                                                slang::ast::SymbolKind::InstanceBody
-                           ? &parent_scope->asSymbol().as<slang::ast::InstanceBodySymbol>()
-                           : nullptr;
+    const slang::ast::InstanceBodySymbol* body = nullptr;
+    for (const auto* parent_scope = assignment.getParentScope(); parent_scope != nullptr;) {
+        const auto& parent_symbol = parent_scope->asSymbol();
+        if (parent_symbol.kind == slang::ast::SymbolKind::InstanceBody) {
+            body = &parent_symbol.as<slang::ast::InstanceBodySymbol>();
+            break;
+        }
+        parent_scope = parent_symbol.getParentScope();
+    }
     if (body == nullptr) {
         return;
     }
@@ -2785,6 +2929,17 @@ void upsertAstContinuousAssignment(SnapshotData& data,
         return;
     }
     if (location.has_value()) {
+        std::vector<SnapshotConeControlSourceSeed> controls;
+        const auto& unwrapped_right = unwrapImplicitConversions(assignment_expression->right());
+        if (unwrapped_right.kind == slang::ast::ExpressionKind::ConditionalOp) {
+            const auto& conditional = unwrapped_right.as<slang::ast::ConditionalExpression>();
+            for (const auto& condition : conditional.conditions) {
+                if (auto source = controlSourceForExpression(document, source_manager, *condition.expr)) {
+                    source->source_symbol_ids = directSymbolIdsForExpression(data, *condition.expr);
+                    controls.push_back(std::move(*source));
+                }
+            }
+        }
         appendAssignmentEdgeSeed(data,
                                  SnapshotAssignmentEdgeSeed{
             .uri = location->uri,
@@ -2795,7 +2950,11 @@ void upsertAstContinuousAssignment(SnapshotData& data,
             .right_range = sourceRangeForSourceRange(source_manager,
                                                      assignment_expression->right().sourceRange),
             .left_expression = expressionText(document, source_manager, assignment_expression->left()),
-            .right_expression = expressionText(document, source_manager, assignment_expression->right())});
+            .right_expression = expressionText(document, source_manager, assignment_expression->right()),
+            .data_slice_kind = sliceKindForExpression(assignment_expression->right()),
+            .left_symbol_ids = directSymbolIdsForExpression(data, assignment_expression->left()),
+            .data_symbol_ids = directSymbolIdsForExpression(data, assignment_expression->right()),
+            .control_sources = std::move(controls)});
     }
 
     auto& schematic = signature_it->second.schematic;
@@ -2924,6 +3083,12 @@ void insertSymbol(SnapshotData& data,
                                   .value_display = std::move(value_display)});
     }
     data.ids_by_symbol.emplace(&symbol, stable_id);
+    if (symbol.kind == slang::ast::SymbolKind::Port) {
+        const auto& port = symbol.as<slang::ast::PortSymbol>();
+        if (port.internalSymbol != nullptr) {
+            data.ids_by_symbol.emplace(port.internalSymbol, stable_id);
+        }
+    }
     indexTypedMemberCompletions(data, source_manager, symbol, *location, stable_id);
 
     auto& completions = data.completions_by_uri[location->uri];
@@ -3611,7 +3776,10 @@ void collectSyntaxContinuousAssignmentsForDefinition(
                                              .left_range = left_range,
                                              .right_range = right_range,
                                              .left_expression = std::move(left_expression),
-                                             .right_expression = std::move(right_expression)});
+                                             .right_expression = std::move(right_expression),
+                                             .left_symbol_ids = {},
+                                             .data_symbol_ids = {},
+                                             .control_sources = {}});
             }
             self.visitDefault(node);
         });
@@ -4062,9 +4230,16 @@ void addDeclarationReferences(SnapshotData& data) {
 
 struct SemanticIndexVisitor
     : slang::ast::ASTVisitor<SemanticIndexVisitor, slang::ast::VisitFlags::AllGood> {
+    struct ActiveModuleScope {
+        std::string uri;
+        ParseRange range;
+    };
+
     SnapshotData& data;
     const slang::SourceManager& source_manager;
     const std::unordered_map<std::string, SemanticEngineDocument>& documents;
+    std::vector<ActiveModuleScope> module_scopes;
+    std::vector<SnapshotConeControlSourceSeed> control_sources;
 
     SemanticIndexVisitor(SnapshotData& data,
                          const slang::SourceManager& source_manager,
@@ -4083,6 +4258,96 @@ struct SemanticIndexVisitor
                parent_scope->asSymbol().kind == slang::ast::SymbolKind::ClassType;
     }
 
+    const SemanticEngineDocument* documentFor(const slang::ast::Expression& expression) const {
+        const auto location = locationForSourceRange(source_manager, expression.sourceRange);
+        if (!location.has_value()) return nullptr;
+        const auto document = documents.find(location->uri);
+        return document == documents.end() ? nullptr : &document->second;
+    }
+
+    std::vector<std::string> symbolIdsFor(const slang::ast::Expression& expression) {
+        std::vector<std::string> ids;
+        expression.visitSymbolReferences([&](const slang::ast::Expression&, const slang::ast::Symbol& symbol) {
+            if (const auto found = data.ids_by_symbol.find(&symbol); found != data.ids_by_symbol.end()) {
+                ids.push_back(found->second);
+            }
+        });
+        std::sort(ids.begin(), ids.end());
+        ids.erase(std::unique(ids.begin(), ids.end()), ids.end());
+        return ids;
+    }
+
+    void appendControlSource(const slang::ast::Expression& expression) {
+        if (auto source = controlSourceForExpression(documentFor(expression),
+                                                     source_manager,
+                                                     expression)) {
+            source->source_symbol_ids = symbolIdsFor(expression);
+            const auto duplicate = std::any_of(control_sources.begin(), control_sources.end(), [&](const auto& value) {
+                return sameRange(value.range, source->range) && value.expression == source->expression &&
+                       value.slice_kind == source->slice_kind;
+            });
+            if (!duplicate) control_sources.push_back(*source);
+        }
+    }
+
+    void appendAssignmentSeed(const slang::ast::AssignmentExpression& expression) {
+        if (module_scopes.empty()) return;
+        const auto location = locationForSourceRange(source_manager, expression.sourceRange);
+        if (!location.has_value()) return;
+        const auto& scope = module_scopes.back();
+        if (scope.uri != location->uri) return;
+        auto controls = control_sources;
+        const auto& unwrapped_right = unwrapImplicitConversions(expression.right());
+        if (unwrapped_right.kind == slang::ast::ExpressionKind::ConditionalOp) {
+            const auto& conditional = unwrapped_right.as<slang::ast::ConditionalExpression>();
+            for (const auto& condition : conditional.conditions) {
+                if (auto source = controlSourceForExpression(documentFor(*condition.expr),
+                                                              source_manager,
+                                                              *condition.expr)) {
+                    source->source_symbol_ids = symbolIdsFor(*condition.expr);
+                    controls.push_back(*source);
+                }
+            }
+        }
+        std::sort(controls.begin(), controls.end(), [](const auto& lhs, const auto& rhs) {
+            if (!sameRange(lhs.range, rhs.range)) {
+                return std::tie(lhs.range.start_line,
+                                lhs.range.start_character,
+                                lhs.range.end_line,
+                                lhs.range.end_character) <
+                       std::tie(rhs.range.start_line,
+                                rhs.range.start_character,
+                                rhs.range.end_line,
+                                rhs.range.end_character);
+            }
+            if (lhs.expression != rhs.expression) return lhs.expression < rhs.expression;
+            return static_cast<int>(lhs.slice_kind) < static_cast<int>(rhs.slice_kind);
+        });
+        controls.erase(std::unique(controls.begin(), controls.end(), [](const auto& lhs, const auto& rhs) {
+                           return sameRange(lhs.range, rhs.range) && lhs.expression == rhs.expression &&
+                                  lhs.slice_kind == rhs.slice_kind;
+                       }), controls.end());
+        appendAssignmentEdgeSeed(data,
+                                 SnapshotAssignmentEdgeSeed{
+                                     .uri = location->uri,
+                                     .scope_range = scope.range,
+                                     .assignment_range = location->range,
+                                     .left_range = sourceRangeForSourceRange(source_manager,
+                                                                            expression.left().sourceRange),
+                                     .right_range = sourceRangeForSourceRange(source_manager,
+                                                                             expression.right().sourceRange),
+                                     .left_expression = expressionText(documentFor(expression),
+                                                                       source_manager,
+                                                                       expression.left()),
+                                     .right_expression = expressionText(documentFor(expression),
+                                                                        source_manager,
+                                                                        expression.right()),
+                                     .data_slice_kind = sliceKindForExpression(expression.right()),
+                                     .left_symbol_ids = symbolIdsFor(expression.left()),
+                                     .data_symbol_ids = symbolIdsFor(expression.right()),
+                                     .control_sources = std::move(controls)});
+    }
+
     void handle(const slang::ast::GenerateBlockArraySymbol& symbol) {
         insertSymbol(data, source_manager, symbol);
         for (const auto* entry : symbol.entries) {
@@ -4092,6 +4357,40 @@ struct SemanticIndexVisitor
         }
     }
 
+    void handle(const slang::ast::InstanceBodySymbol& symbol) {
+        insertSymbol(data, source_manager, symbol);
+        upsertAstModuleSignature(data, source_manager, documents, symbol);
+        const auto signature = data.ast_module_signatures_by_name.find(std::string(symbol.getDefinition().name));
+        const bool has_scope = signature != data.ast_module_signatures_by_name.end() && !signature->second.uri.empty();
+        if (has_scope) {
+            module_scopes.push_back(ActiveModuleScope{.uri = signature->second.uri,
+                                                      .range = signature->second.definition.range});
+        }
+        this->visitDefault(symbol);
+        if (has_scope) module_scopes.pop_back();
+    }
+
+    void handle(const slang::ast::ConditionalStatement& statement) {
+        const auto previous_size = control_sources.size();
+        for (const auto& condition : statement.conditions) {
+            appendControlSource(*condition.expr);
+        }
+        this->visitDefault(statement);
+        control_sources.resize(previous_size);
+    }
+
+    void handle(const slang::ast::CaseStatement& statement) {
+        const auto previous_size = control_sources.size();
+        appendControlSource(statement.expr);
+        for (const auto& item : statement.items) {
+            for (const auto* expression : item.expressions) {
+                if (expression != nullptr) appendControlSource(*expression);
+            }
+        }
+        this->visitDefault(statement);
+        control_sources.resize(previous_size);
+    }
+
     template<typename T>
     void handle(const T& symbol)
         requires std::is_base_of_v<slang::ast::Symbol, T>
@@ -4099,9 +4398,6 @@ struct SemanticIndexVisitor
         insertSymbol(data, source_manager, symbol);
         if constexpr (std::is_same_v<T, slang::ast::InstanceSymbol>) {
             indexModuleInstanceBinding(data, source_manager, documents, symbol);
-        }
-        if constexpr (std::is_same_v<T, slang::ast::InstanceBodySymbol>) {
-            upsertAstModuleSignature(data, source_manager, documents, symbol);
         }
         if constexpr (std::is_same_v<T, slang::ast::ContinuousAssignSymbol>) {
             upsertAstContinuousAssignment(data, source_manager, documents, symbol);
@@ -4119,9 +4415,9 @@ struct SemanticIndexVisitor
         indexSymbolReferences(data, source_manager, expression);
         if constexpr (std::is_same_v<T, slang::ast::AssignmentExpression>) {
             expression.left().visitSymbolReferences(
-                [&](const slang::ast::Expression& reference_expression,
-                    const slang::ast::Symbol& symbol) {
-                    const auto id_it = data.ids_by_symbol.find(&symbol);
+            [&](const slang::ast::Expression& reference_expression,
+                const slang::ast::Symbol& symbol) {
+                const auto id_it = data.ids_by_symbol.find(&symbol);
                     const auto location = locationForSourceRange(source_manager,
                                                                  reference_expression.sourceRange);
                     if (id_it != data.ids_by_symbol.end() && location.has_value()) {
@@ -4138,64 +4434,147 @@ struct SemanticIndexVisitor
         }
         this->visitDefault(expression);
     }
+
+    void handle(const slang::ast::AssignmentExpression& expression) {
+        indexSymbolReferences(data, source_manager, expression);
+        expression.left().visitSymbolReferences(
+            [&](const slang::ast::Expression& reference_expression, const slang::ast::Symbol& symbol) {
+                const auto id_it = data.ids_by_symbol.find(&symbol);
+                const auto location = locationForSourceRange(source_manager, reference_expression.sourceRange);
+                if (id_it != data.ids_by_symbol.end() && location.has_value()) {
+                    insertReference(data,
+                                    id_it->second,
+                                    std::string(symbol.name),
+                                    *location,
+                                    SemanticReferenceRole::Write);
+                }
+            });
+        appendAssignmentSeed(expression);
+        this->visitDefault(expression);
+    }
 };
 
 std::optional<std::string> symbolIdAtReferenceRangeStart(const SnapshotData& data,
                                                          std::string_view uri,
                                                          const ParseRange& range) {
+    const auto occurrences = data.reference_occurrences_by_uri.find(std::string(uri));
+    if (occurrences == data.reference_occurrences_by_uri.end()) return std::nullopt;
+    const auto& indexes = occurrences->second.reference_indexes;
+    const auto upper = std::upper_bound(indexes.begin(),
+                                        indexes.end(),
+                                        std::pair{range.start_line, range.start_character},
+                                        [&](const auto& position, size_t index) {
+                                            const auto& candidate = data.references[index].location.range;
+                                            return positionLess(position.first,
+                                                                position.second,
+                                                                candidate.start_line,
+                                                                candidate.start_character);
+                                        });
     std::optional<std::string> best_id;
-    std::optional<ParseRange> best_range;
-    for (const auto& reference : data.references) {
-        if (reference.location.uri != uri ||
-            !containsPosition(reference.location.range, range.start_line, range.start_character)) {
-            continue;
-        }
-        if (!best_range.has_value() ||
-            (reference.location.range.start_line >= best_range->start_line &&
-             reference.location.range.start_character >= best_range->start_character)) {
+    for (auto it = upper; it != indexes.begin();) {
+        --it;
+        const auto& reference = data.references[*it];
+        if (containsPosition(reference.location.range, range.start_line, range.start_character)) {
             best_id = reference.stable_id;
-            best_range = reference.location.range;
+            break;
+        }
+        const auto prefix_index = static_cast<size_t>(std::distance(indexes.begin(), it));
+        if (prefix_index == 0 ||
+            rangeEndBeforePosition(occurrences->second.prefix_max_end_ranges[prefix_index - 1],
+                                   range.start_line,
+                                   range.start_character)) {
+            break;
         }
     }
     return best_id;
 }
 
-std::optional<std::string> symbolIdByNameInScope(const SnapshotData& data,
-                                                 std::string_view uri,
-                                                 const ParseRange& scope_range,
-                                                 std::string_view name) {
-    if (!isSimpleSystemVerilogIdentifier(name)) {
-        return std::nullopt;
-    }
-    std::optional<std::string> best_id;
-    std::optional<SemanticLocation> best_location;
-    for (const auto& [stable_id, indexed_symbol] : data.symbols_by_id) {
-        const auto& identity = indexed_symbol.identity;
-        if (identity.name != name || identity.location.uri != uri ||
-            !rangeContainsRange(scope_range, identity.location.range)) {
-            continue;
+std::vector<const SnapshotIndexedReference*> referencesWithinRange(const SnapshotData& data,
+                                                                    std::string_view uri,
+                                                                    const ParseRange& range) {
+    std::vector<const SnapshotIndexedReference*> result;
+    const auto occurrences = data.reference_occurrences_by_uri.find(std::string(uri));
+    if (occurrences == data.reference_occurrences_by_uri.end()) return result;
+    const auto& indexes = occurrences->second.reference_indexes;
+    const auto first = std::lower_bound(indexes.begin(),
+                                        indexes.end(),
+                                        range,
+                                        [&](size_t index, const ParseRange& candidate) {
+                                            const auto& current = data.references[index].location.range;
+                                            return positionLess(current.start_line,
+                                                                current.start_character,
+                                                                candidate.start_line,
+                                                                candidate.start_character);
+                                        });
+    for (auto it = first; it != indexes.end(); ++it) {
+        const auto& reference = data.references[*it];
+        if (positionLess(range.end_line,
+                         range.end_character,
+                         reference.location.range.start_line,
+                         reference.location.range.start_character)) {
+            break;
         }
-        if (!best_location.has_value() || locationLess(identity.location, *best_location) ||
-            (identity.location.range.start_line == best_location->range.start_line &&
-             identity.location.range.start_character == best_location->range.start_character &&
-             identity.location.range.end_line == best_location->range.end_line &&
-             identity.location.range.end_character == best_location->range.end_character &&
-             stable_id < *best_id)) {
-            best_id = stable_id;
-            best_location = identity.location;
+        if (!reference.is_declaration && rangeContainsRange(range, reference.location.range)) {
+            result.push_back(&reference);
         }
     }
-    return best_id;
+    return result;
 }
 
 void buildAssignmentEdges(SnapshotData& data) {
     data.assignment_edges_by_uri.clear();
     std::set<std::string> emitted_edges;
+    using ScopedSymbol = std::pair<std::string, const SnapshotIndexedSymbol*>;
+    std::unordered_map<std::string, std::vector<ScopedSymbol>> symbols_by_uri;
+    for (const auto& [stable_id, indexed] : data.symbols_by_id) {
+        if (!indexed.identity.location.uri.empty()) {
+            symbols_by_uri[indexed.identity.location.uri].emplace_back(stable_id, &indexed);
+        }
+    }
+    for (auto& [_, symbols] : symbols_by_uri) {
+        std::sort(symbols.begin(), symbols.end(), [](const auto& lhs, const auto& rhs) {
+            if (!sameRange(lhs.second->identity.location.range, rhs.second->identity.location.range)) {
+                return locationLess(lhs.second->identity.location, rhs.second->identity.location);
+            }
+            return lhs.first < rhs.first;
+        });
+    }
+    const auto resolve_local_symbol = [&](std::string_view uri,
+                                          const ParseRange& scope_range,
+                                          std::string_view name) -> std::optional<std::string> {
+        if (!isSimpleSystemVerilogIdentifier(name)) return std::nullopt;
+        const auto symbols = symbols_by_uri.find(std::string(uri));
+        if (symbols == symbols_by_uri.end()) return std::nullopt;
+        const auto first = std::lower_bound(symbols->second.begin(),
+                                            symbols->second.end(),
+                                            scope_range,
+                                            [](const ScopedSymbol& symbol, const ParseRange& range) {
+                                                return positionLess(symbol.second->identity.location.range.start_line,
+                                                                    symbol.second->identity.location.range.start_character,
+                                                                    range.start_line,
+                                                                    range.start_character);
+                                            });
+        for (auto it = first; it != symbols->second.end(); ++it) {
+            const auto& identity = it->second->identity;
+            if (positionLess(scope_range.end_line,
+                             scope_range.end_character,
+                             identity.location.range.start_line,
+                             identity.location.range.start_character)) {
+                break;
+            }
+            if (identity.name == name && rangeContainsRange(scope_range, identity.location.range)) {
+                return it->first;
+            }
+        }
+        return std::nullopt;
+    };
 
     for (const auto& seed : data.assignment_edge_seeds) {
-        auto left_id = symbolIdAtReferenceRangeStart(data, seed.uri, seed.left_range);
+        auto left_id = seed.left_symbol_ids.empty()
+                           ? symbolIdAtReferenceRangeStart(data, seed.uri, seed.left_range)
+                           : std::optional<std::string>{seed.left_symbol_ids.front()};
         if (!left_id.has_value()) {
-            left_id = symbolIdByNameInScope(data, seed.uri, seed.scope_range, seed.left_expression);
+            left_id = resolve_local_symbol(seed.uri, seed.scope_range, seed.left_expression);
         }
         if (!left_id.has_value()) {
             continue;
@@ -4206,55 +4585,78 @@ void buildAssignmentEdges(SnapshotData& data) {
                           seed.left_range,
                           SemanticReferenceRole::Write);
 
-        bool emitted_right_reference = false;
-        for (const auto& reference : data.references) {
-            if (reference.location.uri != seed.uri || reference.is_declaration ||
-                reference.stable_id == *left_id ||
-                !rangeContainsRange(seed.right_range, reference.location.range)) {
-                continue;
+        const auto append_sources = [&](const ParseRange& source_range,
+                                        std::string_view expression,
+                                        SnapshotConeEdgeKind kind,
+                                        SnapshotConeSourceRole role,
+                                        SnapshotConeSliceKind slice_kind,
+                                        const std::vector<std::string>& direct_symbol_ids) {
+            std::set<std::string> emitted_ids;
+            const auto append_source = [&](std::string_view source_id, SemanticLocation source_location) {
+                if (source_id.empty() || source_id == *left_id || !emitted_ids.insert(std::string(source_id)).second) {
+                    return;
+                }
+                const auto edge_key = seed.uri + "\n" + *left_id + "\n" + std::string(source_id) + "\n" +
+                                      std::to_string(seed.assignment_range.start_line) + ":" +
+                                      std::to_string(seed.assignment_range.start_character) + "\n" +
+                                      std::to_string(static_cast<int>(kind)) + "\n" +
+                                      std::to_string(static_cast<int>(role)) + "\n" +
+                                      std::to_string(source_location.range.start_line) + ":" +
+                                      std::to_string(source_location.range.start_character);
+                if (!emitted_edges.insert(edge_key).second) return;
+                data.assignment_edges_by_uri[seed.uri].push_back(SnapshotAssignmentEdge{
+                    .from_symbol_id = *left_id,
+                    .to_symbol_id = std::string(source_id),
+                    .location = SemanticLocation{.uri = seed.uri, .range = seed.assignment_range},
+                    .expression_location = std::move(source_location),
+                    .expression = std::string(expression),
+                    .kind = kind,
+                    .source_role = role,
+                    .slice_kind = slice_kind});
+            };
+            for (const auto* reference : referencesWithinRange(data, seed.uri, source_range)) {
+                append_source(reference->stable_id, reference->location);
             }
-
-            const auto edge_key = seed.uri + "\n" + *left_id + "\n" + reference.stable_id + "\n" +
-                                  std::to_string(seed.assignment_range.start_line) + ":" +
-                                  std::to_string(seed.assignment_range.start_character) + "\n" +
-                                  std::to_string(reference.location.range.start_line) + ":" +
-                                  std::to_string(reference.location.range.start_character);
-            if (!emitted_edges.insert(edge_key).second) {
-                continue;
+            for (const auto& source_id : direct_symbol_ids) {
+                append_source(source_id, SemanticLocation{.uri = seed.uri, .range = source_range});
             }
+        };
 
-            data.assignment_edges_by_uri[seed.uri].push_back(SnapshotAssignmentEdge{
-                .from_symbol_id = *left_id,
-                .to_symbol_id = reference.stable_id,
-                .location = SemanticLocation{.uri = seed.uri, .range = seed.assignment_range},
-                .expression_location = reference.location,
-                .expression = seed.right_expression});
-            emitted_right_reference = true;
+        append_sources(seed.right_range,
+                       seed.right_expression,
+                       SnapshotConeEdgeKind::Assignment,
+                       SnapshotConeSourceRole::Data,
+                       seed.data_slice_kind,
+                       seed.data_symbol_ids);
+        if (seed.data_symbol_ids.empty()) {
+            if (const auto right_id = resolve_local_symbol(seed.uri, seed.scope_range, seed.right_expression)) {
+                append_sources(seed.right_range,
+                               seed.right_expression,
+                               SnapshotConeEdgeKind::Assignment,
+                               SnapshotConeSourceRole::Data,
+                               seed.data_slice_kind,
+                               std::vector<std::string>{*right_id});
+            }
         }
-        if (!emitted_right_reference) {
-            const auto right_id = symbolIdByNameInScope(data,
-                                                        seed.uri,
-                                                        seed.scope_range,
-                                                        seed.right_expression);
-            const auto symbol_it = right_id.has_value() ? data.symbols_by_id.find(*right_id)
-                                                        : data.symbols_by_id.end();
-            if (!right_id.has_value() || *right_id == *left_id || symbol_it == data.symbols_by_id.end()) {
-                continue;
+        for (const auto& control : seed.control_sources) {
+            append_sources(control.range,
+                           control.expression,
+                           SnapshotConeEdgeKind::ControlDependency,
+                           SnapshotConeSourceRole::Control,
+                           control.slice_kind,
+                           control.source_symbol_ids);
+            if (control.source_symbol_ids.empty()) {
+                if (const auto control_id = resolve_local_symbol(seed.uri,
+                                                                 seed.scope_range,
+                                                                 control.expression)) {
+                    append_sources(control.range,
+                                   control.expression,
+                                   SnapshotConeEdgeKind::ControlDependency,
+                                   SnapshotConeSourceRole::Control,
+                                   control.slice_kind,
+                                   std::vector<std::string>{*control_id});
+                }
             }
-            const auto edge_key = seed.uri + "\n" + *left_id + "\n" + *right_id + "\n" +
-                                  std::to_string(seed.assignment_range.start_line) + ":" +
-                                  std::to_string(seed.assignment_range.start_character) + "\n" +
-                                  std::to_string(symbol_it->second.identity.location.range.start_line) + ":" +
-                                  std::to_string(symbol_it->second.identity.location.range.start_character);
-            if (!emitted_edges.insert(edge_key).second) {
-                continue;
-            }
-            data.assignment_edges_by_uri[seed.uri].push_back(SnapshotAssignmentEdge{
-                .from_symbol_id = *left_id,
-                .to_symbol_id = *right_id,
-                .location = SemanticLocation{.uri = seed.uri, .range = seed.assignment_range},
-                .expression_location = symbol_it->second.identity.location,
-                .expression = seed.right_expression});
         }
     }
 
@@ -5179,6 +5581,10 @@ void buildAstIndexes(SnapshotData& data,
     {
         PRISTINE_DEBUG_TRACE_SCOPE_SIMPLE("astIndex.buildModuleCallEdgeIndex");
         buildModuleCallEdgeIndex(data);
+    }
+    {
+        PRISTINE_DEBUG_TRACE_SCOPE_SIMPLE("astIndex.sortReferenceOccurrenceIndexes");
+        sortSnapshotIndexes(data);
     }
     {
         PRISTINE_DEBUG_TRACE_SCOPE_SIMPLE("astIndex.buildAssignmentEdges");

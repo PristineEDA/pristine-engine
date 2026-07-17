@@ -41,14 +41,14 @@ bool rangeContainsRange(const ParseRange& outer, const ParseRange& inner) {
     return inner.end_line != outer.end_line || inner.end_character <= outer.end_character;
 }
 
-bool simpleIdentifier(std::string_view value) {
-    if (value.empty()) return false;
-    const auto start = [](unsigned char ch) { return std::isalpha(ch) != 0 || ch == '_' || ch == '$'; };
-    const auto next = [](unsigned char ch) { return std::isalnum(ch) != 0 || ch == '_' || ch == '$'; };
-    return start(static_cast<unsigned char>(value.front())) &&
-           std::all_of(value.begin() + 1, value.end(), [&](char ch) {
-               return next(static_cast<unsigned char>(ch));
-           });
+bool rangeStartLess(const ParseRange& lhs, const ParseRange& rhs) {
+    if (lhs.start_line != rhs.start_line) return lhs.start_line < rhs.start_line;
+    return lhs.start_character < rhs.start_character;
+}
+
+bool rangeStartsAfter(const ParseRange& lhs, const ParseRange& rhs) {
+    if (lhs.start_line != rhs.end_line) return lhs.start_line > rhs.end_line;
+    return lhs.start_character > rhs.end_character;
 }
 
 std::string rangeKey(const ParseRange& range) {
@@ -107,9 +107,19 @@ SnapshotGraphPortDirection directionFor(const SchematicPort& port) {
 }
 
 std::vector<std::string> sourceIdsForRange(const std::vector<const SnapshotIndexedReference*>& references,
-                                           const ParseRange& range) {
+                                           const ParseRange& range,
+                                           size_t& candidate_count) {
     std::vector<std::string> ids;
-    for (const auto* reference : references) {
+    const auto first = std::lower_bound(references.begin(),
+                                        references.end(),
+                                        range,
+                                        [](const auto* reference, const ParseRange& candidate) {
+                                            return rangeStartLess(reference->location.range, candidate);
+                                        });
+    for (auto it = first; it != references.end(); ++it) {
+        const auto* reference = *it;
+        if (rangeStartsAfter(reference->location.range, range)) break;
+        ++candidate_count;
         if (!reference->is_declaration && rangeContainsRange(range, reference->location.range) &&
             !reference->stable_id.empty()) {
             ids.push_back(reference->stable_id);
@@ -170,40 +180,66 @@ void buildDesignGraphIndexes(SnapshotData& data) {
     data.cone_adjacency_index = {};
     auto& bindings = data.design_graph_binding_index;
 
-    std::vector<const SnapshotIndexedReference*> references;
     std::unordered_map<std::string, std::vector<const SnapshotIndexedReference*>> references_by_uri;
-    references.reserve(data.references.size());
     for (const auto& reference : data.references) {
         if (!reference.stable_id.empty() && !reference.location.uri.empty()) {
-            references.push_back(&reference);
             references_by_uri[reference.location.uri].push_back(&reference);
+            upsertBinding(bindings.symbol_ids_by_uri_range,
+                          uriRangeKey(reference.location.uri, reference.location.range),
+                          reference.stable_id);
         }
     }
-    std::sort(references.begin(), references.end(), [](const auto* lhs, const auto* rhs) {
-        if (lhs->location.uri != rhs->location.uri || !sameRange(lhs->location.range, rhs->location.range)) {
-            return locationLess(lhs->location, rhs->location);
+    for (auto& [_, references] : references_by_uri) {
+        std::sort(references.begin(), references.end(), [](const auto* lhs, const auto* rhs) {
+            if (!sameRange(lhs->location.range, rhs->location.range)) {
+                return locationLess(lhs->location, rhs->location);
+            }
+            if (lhs->is_declaration != rhs->is_declaration) return lhs->is_declaration;
+            return lhs->stable_id < rhs->stable_id;
+        });
+    }
+
+    using ScopedSymbol = std::pair<std::string, const SnapshotIndexedSymbol*>;
+    std::unordered_map<std::string, std::vector<ScopedSymbol>> symbols_by_uri;
+    for (const auto& [stable_id, indexed] : data.symbols_by_id) {
+        if (!indexed.identity.location.uri.empty()) {
+            symbols_by_uri[indexed.identity.location.uri].emplace_back(stable_id, &indexed);
         }
-        if (lhs->is_declaration != rhs->is_declaration) return lhs->is_declaration;
-        return lhs->stable_id < rhs->stable_id;
-    });
-    for (const auto* reference : references) {
-        upsertBinding(bindings.symbol_ids_by_uri_range,
-                      uriRangeKey(reference->location.uri, reference->location.range),
-                      reference->stable_id);
+    }
+    for (auto& [_, symbols] : symbols_by_uri) {
+        std::sort(symbols.begin(), symbols.end(), [](const auto& lhs, const auto& rhs) {
+            if (!sameRange(lhs.second->identity.location.range, rhs.second->identity.location.range)) {
+                return locationLess(lhs.second->identity.location, rhs.second->identity.location);
+            }
+            return lhs.first < rhs.first;
+        });
     }
 
     for (const auto& [module_name, signature] : data.ast_module_signatures_by_name) {
         if (signature.uri.empty()) continue;
-        for (const auto& [stable_id, indexed] : data.symbols_by_id) {
-            const auto& identity = indexed.identity;
-            if (identity.name.empty() || identity.location.uri != signature.uri ||
-                !rangeContainsRange(signature.definition.range, identity.location.range)) continue;
+        const auto symbols = symbols_by_uri.find(signature.uri);
+        if (symbols != symbols_by_uri.end()) {
+            const auto first = std::lower_bound(symbols->second.begin(),
+                                                symbols->second.end(),
+                                                signature.definition.range,
+                                                [](const ScopedSymbol& symbol, const ParseRange& range) {
+                                                    return rangeStartLess(symbol.second->identity.location.range,
+                                                                          range);
+                                                });
+            for (auto it = first; it != symbols->second.end(); ++it) {
+                const auto& [stable_id, indexed] = *it;
+                const auto& identity = indexed->identity;
+                if (rangeStartsAfter(identity.location.range, signature.definition.range)) break;
+                ++bindings.scoped_symbol_candidate_count;
+                if (identity.name.empty() ||
+                    !rangeContainsRange(signature.definition.range, identity.location.range)) continue;
             upsertBinding(bindings.symbol_ids_by_module_scope_name,
                           scopeNameKey(signature.uri, signature.definition.range, identity.name), stable_id);
             if (identity.kind.find("Parameter") != std::string::npos ||
                 identity.kind.find("Param") != std::string::npos) {
                 upsertBinding(bindings.parameter_symbol_ids_by_module_parameter,
                               moduleMemberKey(module_name, identity.name), stable_id);
+            }
             }
         }
         for (const auto& port : signature.definition.port_details) {
@@ -266,7 +302,9 @@ void buildDesignGraphIndexes(SnapshotData& data) {
                                                   .location = edge.location,
                                                   .expression_location = edge.expression_location,
                                                   .expression = edge.expression,
-                                                  .kind = SnapshotConeEdgeKind::Assignment,
+                                                  .kind = edge.kind,
+                                                  .source_role = edge.source_role,
+                                                  .slice_kind = edge.slice_kind,
                                                   .generated_instance_id = {}});
         }
     }
@@ -306,15 +344,11 @@ void buildDesignGraphIndexes(SnapshotData& data) {
             const auto sourceIdsForConnection = [&](const SchematicConnection& connection) {
                 static const std::vector<const SnapshotIndexedReference*> kNoReferences;
                 const auto references = references_by_uri.find(parent->second.uri);
-                auto source_ids = sourceIdsForRange(
-                    references == references_by_uri.end() ? kNoReferences : references->second, connection.range);
-                if (source_ids.empty() && simpleIdentifier(connection.signal)) {
-                    const auto scoped = bindings.symbol_ids_by_module_scope_name.find(
-                        scopeNameKey(parent->second.uri, parent->second.definition.range, connection.signal));
-                    if (scoped != bindings.symbol_ids_by_module_scope_name.end()) {
-                        source_ids.push_back(scoped->second);
-                    }
-                }
+                auto source_ids = sourceIdsForRange(references == references_by_uri.end()
+                                                        ? kNoReferences
+                                                        : references->second,
+                                                    connection.range,
+                                                    bindings.connection_reference_candidate_count);
                 std::sort(source_ids.begin(), source_ids.end());
                 source_ids.erase(std::unique(source_ids.begin(), source_ids.end()), source_ids.end());
                 return source_ids;
@@ -344,6 +378,8 @@ void buildDesignGraphIndexes(SnapshotData& data) {
                                            .expression_location = location,
                                            .expression = connection.signal.empty() ? child_endpoint->name : connection.signal,
                                            .kind = kind,
+                                           .source_role = SnapshotConeSourceRole::Data,
+                                           .slice_kind = SnapshotConeSliceKind::Whole,
                                            .generated_instance_id = instance.instance_stable_id});
                             continue;
                         }
@@ -359,6 +395,8 @@ void buildDesignGraphIndexes(SnapshotData& data) {
                                        .expression_location = location,
                                        .expression = connection.signal.empty() ? child_endpoint->name : connection.signal,
                                        .kind = kind,
+                                       .source_role = SnapshotConeSourceRole::Data,
+                                       .slice_kind = SnapshotConeSliceKind::Whole,
                                        .generated_instance_id = instance.instance_stable_id});
                     }
                 }
@@ -382,6 +420,12 @@ void buildDesignGraphIndexes(SnapshotData& data) {
         if (lhs.kind != rhs.kind) {
             return static_cast<int>(lhs.kind) < static_cast<int>(rhs.kind);
         }
+        if (lhs.source_role != rhs.source_role) {
+            return static_cast<int>(lhs.source_role) < static_cast<int>(rhs.source_role);
+        }
+        if (lhs.slice_kind != rhs.slice_kind) {
+            return static_cast<int>(lhs.slice_kind) < static_cast<int>(rhs.slice_kind);
+        }
         if (lhs.generated_instance_id != rhs.generated_instance_id) {
             return lhs.generated_instance_id < rhs.generated_instance_id;
         }
@@ -394,6 +438,8 @@ void buildDesignGraphIndexes(SnapshotData& data) {
                                      sameLocation(lhs.location, rhs.location) &&
                                      sameLocation(lhs.expression_location, rhs.expression_location) &&
                                      lhs.kind == rhs.kind &&
+                                     lhs.source_role == rhs.source_role &&
+                                     lhs.slice_kind == rhs.slice_kind &&
                                      lhs.generated_instance_id == rhs.generated_instance_id &&
                                      lhs.expression == rhs.expression;
                           }), adjacency.edges.end());

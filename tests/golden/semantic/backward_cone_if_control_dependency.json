@@ -1,0 +1,16 @@
+{
+  "name": "backward cone includes if control dependencies",
+  "config": { "topModules": ["top"] },
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/cone-if-control.sv",
+      "text": "module top(input logic select, input logic a, input logic b, output logic y);\n  always_comb begin if (select) y = a; else y = b; end\nendmodule\n"
+    }
+  ],
+  "request": { "kind": "backwardCone", "uri": "file:///golden/semantic/cone-if-control.sv", "line": 1, "character": 32 },
+  "expected": {
+    "nodes": ["y", "select", "a", "b"],
+    "edgeKinds": ["assignment", "controlDependency"],
+    "sourceRoles": ["data", "control"]
+  }
+}

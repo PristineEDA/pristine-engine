@@ -317,6 +317,12 @@ int main() {
                   << "\"moduleHierarchyRootCount\":" << hierarchy.roots.size() << ","
                   << "\"schematicModuleCount\":" << schematic.modules.size() << ","
                   << "\"backwardConeNodeCount\":" << cone.nodes.size() << ","
+                  << "\"coneControlEdgeCount\":" << cone.cone_control_edge_count << ","
+                  << "\"coneSliceFactCount\":" << cone.cone_slice_fact_count << ","
+                  << "\"graphBuildScopedSymbolCandidates\":"
+                  << cone.graph_build_scoped_symbol_candidates << ","
+                  << "\"graphBuildConnectionReferenceCandidates\":"
+                  << cone.graph_build_connection_reference_candidates << ","
                   << "\"codeActionCount\":" << code_actions.actions.size() << ","
                   << "\"signatureUnresolved\":" << (signature.unresolved ? "true" : "false") << ","
                   << "\"unresolved\":" << (references.unresolved || hover.unresolved || rename.unresolved ||
