@@ -1398,31 +1398,42 @@ def run_fixture(
                 observed[key] = None
                 comparisons[key] = None
             else:
-                comparisons[key] = normalize_response(check.kind, session.last_response, uri_to_relative)
+                if check.optional and not satisfies_check_constraints(check, observed[key]):
+                    # Optional extensions are only comparable when both servers
+                    # produce the fixture's minimum portable result.
+                    comparisons[key] = None
+                else:
+                    comparisons[key] = normalize_response(check.kind, session.last_response, uri_to_relative)
             request_id += 1
         return observed, comparisons
     finally:
         session.shutdown()
 
 
+def satisfies_check_constraints(check: DifferentialCheck, value: Any) -> bool:
+    if value is None:
+        return False
+    if check.required and not set(check.required).issubset(value):
+        return False
+    return check.min_count is None or value >= check.min_count
+
+
 def validate_observed(server_name: str, fixture: DifferentialFixture, observed: dict[str, Any]) -> None:
     for check, value in zip(fixture.checks, observed.values()):
         if value is None:
             continue
+        if satisfies_check_constraints(check, value):
+            continue
+        if check.optional:
+            continue
         if check.required:
-            missing = set(check.required).difference(value)
-            if missing:
-                if check.optional:
-                    continue
-                raise AssertionError(
-                    f"{server_name} fixture '{fixture.name}' missing {check.kind} entries: {sorted(missing)}"
-                )
-        if check.min_count is not None and value < check.min_count:
-            if check.optional:
-                continue
-                raise AssertionError(
-                    f"{server_name} fixture '{fixture.name}' {check.kind} count {value} < {check.min_count}"
-                )
+            missing = sorted(set(check.required).difference(value))
+            raise AssertionError(
+                f"{server_name} fixture '{fixture.name}' missing {check.kind} entries: {missing}"
+            )
+        raise AssertionError(
+            f"{server_name} fixture '{fixture.name}' {check.kind} count {value} < {check.min_count}"
+        )
 
 
 def compare_observed(fixture: DifferentialFixture,

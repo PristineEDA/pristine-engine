@@ -38,12 +38,19 @@ public:
         return payload;
     }
 
-    void write(std::string_view payload) override { outputs_.emplace_back(payload); }
+    void write(std::string_view payload) override {
+        std::lock_guard lock(outputs_mutex_);
+        outputs_.emplace_back(payload);
+    }
 
-    const std::vector<std::string>& outputs() const { return outputs_; }
+    std::vector<std::string> outputs() const {
+        std::lock_guard lock(outputs_mutex_);
+        return outputs_;
+    }
 
 private:
     std::deque<std::string> inputs_;
+    mutable std::mutex outputs_mutex_;
     std::vector<std::string> outputs_;
 };
 

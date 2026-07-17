@@ -195,6 +195,19 @@ class DifferentialNormalizationTests(unittest.TestCase):
         self.assertFalse(self.differential.supports_differential_check(boolean_rename, "prepareRename"))
         self.assertTrue(self.differential.supports_differential_check(prepared_rename, "prepareRename"))
 
+    def test_optional_check_requires_portable_result_before_comparison(self) -> None:
+        call_hierarchy = self.differential.DifferentialCheck(
+            kind="callHierarchyIncoming", required=("top",), optional=True
+        )
+        references = self.differential.DifferentialCheck(
+            kind="references", min_count=2, optional=True
+        )
+
+        self.assertFalse(self.differential.satisfies_check_constraints(call_hierarchy, set()))
+        self.assertTrue(self.differential.satisfies_check_constraints(call_hierarchy, {"top"}))
+        self.assertFalse(self.differential.satisfies_check_constraints(references, 1))
+        self.assertTrue(self.differential.satisfies_check_constraints(references, 2))
+
 
 class FullTestStatusRunnerTests(unittest.TestCase):
     @classmethod
