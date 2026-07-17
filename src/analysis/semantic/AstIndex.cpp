@@ -800,66 +800,6 @@ std::optional<ParseRange> instanceStatementRange(std::string_view text,
     return std::nullopt;
 }
 
-bool isIdentifierContinue(char value) {
-    const auto ch = static_cast<unsigned char>(value);
-    return std::isalnum(ch) != 0 || value == '_' || value == '$';
-}
-
-std::optional<std::string> interfaceModportForInstanceRange(std::string_view text,
-                                                            const ParseRange& instance_range,
-                                                            std::string_view interface_name) {
-    if (instance_range.start_line != instance_range.end_line || interface_name.empty()) {
-        return std::nullopt;
-    }
-
-    int current_line = 0;
-    size_t line_start = 0;
-    for (size_t offset = 0; offset <= text.size(); ++offset) {
-        if (offset != text.size() && text[offset] != '\n') {
-            continue;
-        }
-        if (current_line == instance_range.start_line) {
-            const auto line_end = offset > line_start && text[offset - 1] == '\r' ? offset - 1 : offset;
-            const auto line = text.substr(line_start, line_end - line_start);
-            if (instance_range.start_character < 0 || instance_range.end_character < instance_range.start_character ||
-                static_cast<size_t>(instance_range.end_character) > line.size()) {
-                return std::nullopt;
-            }
-            const auto bounded = line.substr(static_cast<size_t>(instance_range.start_character),
-                                             static_cast<size_t>(instance_range.end_character -
-                                                                 instance_range.start_character));
-            const auto interface_start = bounded.find(interface_name);
-            if (interface_start == std::string_view::npos) {
-                return std::nullopt;
-            }
-            auto cursor = interface_start + interface_name.size();
-            while (cursor < bounded.size() &&
-                   std::isspace(static_cast<unsigned char>(bounded[cursor])) != 0) {
-                ++cursor;
-            }
-            if (cursor >= bounded.size() || bounded[cursor] != '.') {
-                return std::nullopt;
-            }
-            ++cursor;
-            while (cursor < bounded.size() &&
-                   std::isspace(static_cast<unsigned char>(bounded[cursor])) != 0) {
-                ++cursor;
-            }
-            const auto modport_start = cursor;
-            while (cursor < bounded.size() && isIdentifierContinue(bounded[cursor])) {
-                ++cursor;
-            }
-            if (cursor == modport_start) {
-                return std::nullopt;
-            }
-            return std::string(bounded.substr(modport_start, cursor - modport_start));
-        }
-        ++current_line;
-        line_start = offset + 1;
-    }
-    return std::nullopt;
-}
-
 std::string symbolKindName(slang::ast::SymbolKind kind) {
     return std::string(slang::ast::toString(kind));
 }
@@ -3594,14 +3534,6 @@ void indexModuleInstanceBinding(SnapshotData& data,
         if (auto module_range = identifierRangeByName(document->text, cell->range, cell->type)) {
             module_selection_range = *module_range;
         }
-        if (instance.isInterface()) {
-            if (const auto modport = interfaceModportForInstanceRange(document->text,
-                                                                      cell->range,
-                                                                      cell->type)) {
-                type_display += ".";
-                type_display += *modport;
-            }
-        }
     }
 
     auto& instances = data.module_instances_by_uri[instance_location->uri];
@@ -4710,81 +4642,254 @@ void appendTypeReference(SnapshotData& data,
                                                .definitions = std::move(definitions)});
 }
 
-std::vector<SemanticLocation> modportDefinitionLocationsForInterface(
+std::string interfaceModportKey(std::string_view interface_definition_stable_id,
+                                std::string_view modport_name) {
+    return std::string(interface_definition_stable_id) + "\x1f" + std::string(modport_name);
+}
+
+SnapshotGraphPortDirection graphDirectionFor(slang::ast::ArgumentDirection direction) {
+    switch (direction) {
+        case slang::ast::ArgumentDirection::In:
+            return SnapshotGraphPortDirection::Input;
+        case slang::ast::ArgumentDirection::Out:
+            return SnapshotGraphPortDirection::Output;
+        case slang::ast::ArgumentDirection::InOut:
+            return SnapshotGraphPortDirection::Inout;
+        case slang::ast::ArgumentDirection::Ref:
+            return SnapshotGraphPortDirection::Ref;
+    }
+    return SnapshotGraphPortDirection::Unknown;
+}
+
+struct InterfacePortSyntaxLocations {
+    SemanticLocation interface_type_location;
+    SemanticLocation modport_location;
+    std::string modport_name;
+};
+
+std::string interfacePortSyntaxKey(const SemanticLocation& port_location) {
+    return port_location.uri + "\x1f" + rangeKey(port_location.range);
+}
+
+std::unordered_map<std::string, InterfacePortSyntaxLocations> collectInterfacePortSyntaxLocations(
     const SnapshotData& data,
-    std::string_view interface_name,
-    const SemanticLocation& interface_location,
-    std::string_view modport_name) {
-    std::vector<SemanticLocation> locations;
-    const auto stable_scope = std::string("|") + std::string(interface_name) + "." +
-                              std::string(modport_name) + "|Modport|";
-    for (const auto& [stable_id, indexed_symbol] : data.symbols_by_id) {
-        const auto& identity = indexed_symbol.identity;
-        if (identity.kind != "Modport" || identity.name != modport_name ||
-            identity.location.uri != interface_location.uri) {
+    const slang::SourceManager& source_manager) {
+    std::unordered_map<std::string, InterfacePortSyntaxLocations> locations;
+    for (const auto& tree : data.syntax_trees) {
+        if (tree == nullptr) {
             continue;
         }
-        if (stable_id.find(stable_scope) != std::string::npos) {
-            locations.push_back(identity.location);
-        }
+        auto visitor = slang::syntax::makeSyntaxVisitor(
+            [&](auto& self, const slang::syntax::ImplicitAnsiPortSyntax& node) {
+                if (node.header == nullptr || node.declarator == nullptr ||
+                    node.header->kind != slang::syntax::SyntaxKind::InterfacePortHeader) {
+                    self.visitDefault(node);
+                    return;
+                }
+                const auto& header = node.header->as<slang::syntax::InterfacePortHeaderSyntax>();
+                const auto port_location = locationForSyntaxToken(source_manager, node.declarator->name);
+                const auto interface_location = locationForSyntaxToken(source_manager, header.nameOrKeyword);
+                if (!port_location.has_value() || !interface_location.has_value()) {
+                    self.visitDefault(node);
+                    return;
+                }
+                InterfacePortSyntaxLocations fact{.interface_type_location = *interface_location,
+                                                   .modport_location = {},
+                                                   .modport_name = {}};
+                if (header.modport != nullptr) {
+                    fact.modport_location =
+                        locationForSyntaxToken(source_manager, header.modport->member).value_or(SemanticLocation{});
+                    fact.modport_name = std::string(header.modport->member.valueText());
+                }
+                locations.insert_or_assign(interfacePortSyntaxKey(*port_location), std::move(fact));
+                self.visitDefault(node);
+            });
+        tree->root().visit(visitor);
     }
-    std::sort(locations.begin(), locations.end(), locationLess);
-    locations.erase(std::unique(locations.begin(), locations.end(), sameLocation), locations.end());
     return locations;
 }
 
-bool addInterfacePortTypeReferences(SnapshotData& data,
-                                    const slang::SourceManager& source_manager,
-                                    const std::unordered_map<std::string, SemanticEngineDocument>& documents,
-                                    const slang::ast::InterfacePortSymbol& port) {
-    const auto port_location = declarationLocationForSymbol(source_manager, port);
-    if (!port_location.has_value()) {
-        return false;
-    }
-    const auto document_it = documents.find(port_location->uri);
-    if (document_it == documents.end()) {
-        return false;
-    }
-    const auto type_range = ParseRange{.start_line = port_location->range.start_line,
-                                       .start_character = 0,
-                                       .end_line = port_location->range.start_line,
-                                       .end_character = port_location->range.start_character};
+void buildInterfaceModportBindingIndex(SnapshotData& data,
+                                       const slang::SourceManager& source_manager) {
+    data.interface_modport_binding_index = {};
+    auto& index = data.interface_modport_binding_index;
+    const auto syntax_locations = collectInterfacePortSyntaxLocations(data, source_manager);
 
-    bool inserted = false;
-    if (port.interfaceDef != nullptr) {
-        if (auto narrowed_range = identifierRangeByName(document_it->second.text,
-                                                        type_range,
-                                                        port.interfaceDef->name)) {
-            auto interface_reference = SemanticLocation{.uri = port_location->uri,
-                                                        .range = *narrowed_range};
-            if (const auto interface_definition =
-                    declarationLocationForSymbol(source_manager, *port.interfaceDef)) {
-                appendTypeReference(data,
-                                    std::move(interface_reference),
-                                    std::string(port.interfaceDef->name),
-                                    {*interface_definition});
-                inserted = true;
+    std::vector<const SnapshotIndexedSymbol*> symbols;
+    symbols.reserve(data.symbols_by_id.size());
+    for (const auto& [_, indexed] : data.symbols_by_id) {
+        if (indexed.symbol != nullptr) {
+            symbols.push_back(&indexed);
+        }
+    }
+    std::sort(symbols.begin(), symbols.end(), [](const auto* lhs, const auto* rhs) {
+        return lhs->identity.stable_id < rhs->identity.stable_id;
+    });
 
-                if (!port.modport.empty()) {
-                    if (auto modport_range = identifierRangeByName(document_it->second.text,
-                                                                   type_range,
-                                                                   port.modport)) {
-                        auto modport_definitions = modportDefinitionLocationsForInterface(data,
-                                                                                         port.interfaceDef->name,
-                                                                                         *interface_definition,
-                                                                                         port.modport);
-                        if (!modport_definitions.empty()) {
-                            appendTypeReference(data,
-                                                SemanticLocation{.uri = port_location->uri,
-                                                                 .range = *modport_range},
-                                                std::string(port.modport),
-                                                std::move(modport_definitions));
-                            inserted = true;
-                        }
-                    }
+    for (const auto* indexed : symbols) {
+        if (indexed->symbol->kind != slang::ast::SymbolKind::Modport) {
+            continue;
+        }
+        const auto& modport = indexed->symbol->as<slang::ast::ModportSymbol>();
+        const auto* parent_scope = modport.getParentScope();
+        if (parent_scope == nullptr || parent_scope->asSymbol().kind != slang::ast::SymbolKind::InstanceBody) {
+            continue;
+        }
+        const auto& body = parent_scope->asSymbol().as<slang::ast::InstanceBodySymbol>();
+        if (body.parentInstance == nullptr) {
+            continue;
+        }
+        const auto definition_id = data.ids_by_symbol.find(&body.parentInstance->getDefinition());
+        if (definition_id == data.ids_by_symbol.end()) {
+            continue;
+        }
+        const auto fact = SnapshotInterfaceModportDefinitionFact{
+            .stable_id = indexed->identity.stable_id,
+            .interface_definition_stable_id = definition_id->second,
+            .name = indexed->identity.name,
+            .location = indexed->identity.location};
+        const auto name_key = interfaceModportKey(fact.interface_definition_stable_id, fact.name);
+        const auto existing = index.modport_ids_by_interface_definition_name.find(name_key);
+        if (existing == index.modport_ids_by_interface_definition_name.end() || fact.stable_id < existing->second) {
+            index.modport_ids_by_interface_definition_name.insert_or_assign(name_key, fact.stable_id);
+        }
+        index.modports_by_stable_id.insert_or_assign(fact.stable_id, fact);
+
+        auto& members = index.members_by_modport_stable_id[fact.stable_id];
+        for (const auto& symbol : modport.members()) {
+            if (symbol.kind != slang::ast::SymbolKind::ModportPort) {
+                continue;
+            }
+            const auto member_id = data.ids_by_symbol.find(&symbol);
+            if (member_id == data.ids_by_symbol.end()) {
+                continue;
+            }
+            const auto& member = symbol.as<slang::ast::ModportPortSymbol>();
+            std::string internal_symbol_id;
+            if (member.internalSymbol != nullptr) {
+                if (const auto internal = data.ids_by_symbol.find(member.internalSymbol);
+                    internal != data.ids_by_symbol.end()) {
+                    internal_symbol_id = internal->second;
+                }
+            }
+            members.push_back(SnapshotInterfaceModportMemberFact{
+                .stable_id = member_id->second,
+                .interface_definition_stable_id = fact.interface_definition_stable_id,
+                .modport_stable_id = fact.stable_id,
+                .name = std::string(member.name),
+                .direction = graphDirectionFor(member.direction),
+                .internal_symbol_stable_id = std::move(internal_symbol_id),
+                .location = declarationLocationForSymbol(source_manager, member).value_or(indexed->identity.location)});
+        }
+    }
+
+    for (auto& [_, members] : index.members_by_modport_stable_id) {
+        std::sort(members.begin(), members.end(), [](const auto& lhs, const auto& rhs) {
+            if (!sameLocation(lhs.location, rhs.location)) {
+                return locationLess(lhs.location, rhs.location);
+            }
+            return lhs.stable_id < rhs.stable_id;
+        });
+        members.erase(std::unique(members.begin(), members.end(), [](const auto& lhs, const auto& rhs) {
+                          return lhs.stable_id == rhs.stable_id;
+                      }),
+                      members.end());
+        index.member_count += members.size();
+    }
+
+    for (const auto* indexed : symbols) {
+        if (indexed->symbol->kind != slang::ast::SymbolKind::InterfacePort) {
+            continue;
+        }
+        const auto& port = indexed->symbol->as<slang::ast::InterfacePortSymbol>();
+        auto fact = SnapshotInterfacePortBindingFact{.port_stable_id = indexed->identity.stable_id,
+                                                     .interface_definition_stable_id = {},
+                                                     .modport_stable_id = {},
+                                                     .connected_interface_instance_stable_id = {},
+                                                     .connected_modport_stable_id = {},
+                                                     .interface_type_location = {},
+                                                     .modport_location = {},
+                                                     .connection_location = {},
+                                                     .interface_definition_location = {},
+                                                     .modport_definition_location = {},
+                                                     .resolved = false};
+        if (port.interfaceDef != nullptr) {
+            if (const auto definition = data.ids_by_symbol.find(port.interfaceDef);
+                definition != data.ids_by_symbol.end()) {
+                fact.interface_definition_stable_id = definition->second;
+                if (const auto definition_symbol = data.symbols_by_id.find(definition->second);
+                    definition_symbol != data.symbols_by_id.end()) {
+                    fact.interface_definition_location = definition_symbol->second.identity.location;
                 }
             }
         }
+        std::string modport_name(port.modport);
+        if (const auto locations = syntax_locations.find(interfacePortSyntaxKey(indexed->identity.location));
+            locations != syntax_locations.end()) {
+            fact.interface_type_location = locations->second.interface_type_location;
+            fact.modport_location = locations->second.modport_location;
+            if (!locations->second.modport_name.empty()) {
+                modport_name = locations->second.modport_name;
+            }
+        }
+        if (!fact.interface_definition_stable_id.empty() && !modport_name.empty()) {
+            const auto modport = index.modport_ids_by_interface_definition_name.find(
+                interfaceModportKey(fact.interface_definition_stable_id, modport_name));
+            if (modport != index.modport_ids_by_interface_definition_name.end()) {
+                fact.modport_stable_id = modport->second;
+                fact.modport_definition_location = index.modports_by_stable_id.at(modport->second).location;
+            }
+        }
+        const auto [connection, expression] = port.getConnectionAndExpr();
+        if (connection.first != nullptr) {
+            if (const auto connected = data.ids_by_symbol.find(connection.first); connected != data.ids_by_symbol.end()) {
+                fact.connected_interface_instance_stable_id = connected->second;
+            }
+        }
+        if (connection.second != nullptr) {
+            if (const auto connected = data.ids_by_symbol.find(connection.second); connected != data.ids_by_symbol.end()) {
+                fact.connected_modport_stable_id = connected->second;
+            }
+        }
+        if (expression != nullptr) {
+            fact.connection_location =
+                locationForSourceRange(source_manager, expression->sourceRange).value_or(SemanticLocation{});
+        }
+        fact.resolved = !fact.interface_definition_stable_id.empty() &&
+                        (modport_name.empty() || !fact.modport_stable_id.empty());
+        if (fact.resolved) {
+            ++index.resolved_port_binding_count;
+        }
+        index.ports_by_stable_id.insert_or_assign(fact.port_stable_id, std::move(fact));
+    }
+}
+
+bool addInterfacePortTypeReferences(SnapshotData& data,
+                                    const slang::ast::InterfacePortSymbol& port) {
+    const auto port_id = data.ids_by_symbol.find(&port);
+    if (port_id == data.ids_by_symbol.end()) {
+        return false;
+    }
+    const auto binding = data.interface_modport_binding_index.ports_by_stable_id.find(port_id->second);
+    if (binding == data.interface_modport_binding_index.ports_by_stable_id.end() || !binding->second.resolved) {
+        return false;
+    }
+    const auto& fact = binding->second;
+    bool inserted = false;
+    if (!fact.interface_type_location.uri.empty() && !fact.interface_definition_location.uri.empty()) {
+        appendTypeReference(data,
+                            fact.interface_type_location,
+                            std::string(port.interfaceDef == nullptr ? "interface" : port.interfaceDef->name),
+                            {fact.interface_definition_location});
+        inserted = true;
+    }
+    if (!port.modport.empty() && !fact.modport_location.uri.empty() &&
+        !fact.modport_definition_location.uri.empty()) {
+        appendTypeReference(data,
+                            fact.modport_location,
+                            std::string(port.modport),
+                            {fact.modport_definition_location});
+        inserted = true;
     }
     return inserted;
 }
@@ -4794,10 +4899,7 @@ void addTypeReferenceForSymbol(SnapshotData& data,
                                const std::unordered_map<std::string, SemanticEngineDocument>& documents,
                                const slang::ast::Symbol& symbol) {
     if (symbol.kind == slang::ast::SymbolKind::InterfacePort &&
-        addInterfacePortTypeReferences(data,
-                                       source_manager,
-                                       documents,
-                                       symbol.as<slang::ast::InterfacePortSymbol>())) {
+        addInterfacePortTypeReferences(data, symbol.as<slang::ast::InterfacePortSymbol>())) {
         return;
     }
 
@@ -5591,6 +5693,10 @@ void buildAstIndexes(SnapshotData& data,
         buildAssignmentEdges(data);
     }
     {
+        PRISTINE_DEBUG_TRACE_SCOPE_SIMPLE("astIndex.buildInterfaceModportBindingIndex");
+        buildInterfaceModportBindingIndex(data, *data.source_manager);
+    }
+    {
         PRISTINE_DEBUG_TRACE_SCOPE_SIMPLE("astIndex.buildTypeReferences");
         buildTypeReferences(data, documents);
     }
@@ -5895,6 +6001,7 @@ AstIndexView buildAstIndexView(const SnapshotData* data, std::uint64_t generatio
     }
     view.design_graph_binding_index = data->design_graph_binding_index;
     view.cone_adjacency_index = data->cone_adjacency_index;
+    view.interface_modport_binding_index = data->interface_modport_binding_index;
     view.assignment_edges_by_uri = data->assignment_edges_by_uri;
     view.type_references_by_uri = data->type_references_by_uri;
     view.module_call_edge_index = data->module_call_edge_index;

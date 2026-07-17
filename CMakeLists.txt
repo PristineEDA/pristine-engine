@@ -256,6 +256,12 @@ add_library(
   src/workspace/WorkspaceManager.cpp
   "${PRISTINE_VERSION_SOURCE}")
 
+# AstIndex is the serial AST fact-construction boundary. Its value-type
+# indexes exceed MSVC's default COFF section limit in Debug builds.
+if(MSVC)
+  set_source_files_properties(src/analysis/semantic/AstIndex.cpp PROPERTIES COMPILE_OPTIONS "/bigobj")
+endif()
+
 target_include_directories(
   pristine_core PUBLIC "${PROJECT_SOURCE_DIR}/include" "${PRISTINE_GENERATED_INCLUDE_DIR}")
 target_link_libraries(

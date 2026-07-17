@@ -28,7 +28,9 @@ void populateEndpointFacts(DesignGraphContext& context) {
                                                   .direction = port.direction == "output" ? SnapshotGraphPortDirection::Output : port.direction == "input" ? SnapshotGraphPortDirection::Input : SnapshotGraphPortDirection::Unknown,
                                                   .location = SemanticLocation{.uri = signature.uri,
                                                                                .range = port.selection_range},
-                                                  .generated_instance_id = {}};
+                                                  .generated_instance_id = {},
+                                                  .interface_definition_stable_id = {},
+                                                  .modport_stable_id = {}};
             context.binding_index.endpoints_by_module_member.insert_or_assign(key, fact);
             context.binding_index.endpoints_by_stable_id.insert_or_assign(stable_id, std::move(fact));
         }

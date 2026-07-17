@@ -281,6 +281,51 @@ struct SnapshotGraphEndpointFact {
     SnapshotGraphPortDirection direction = SnapshotGraphPortDirection::Unknown;
     SemanticLocation location;
     std::string generated_instance_id;
+    std::string interface_definition_stable_id;
+    std::string modport_stable_id;
+};
+
+// Interface and modport bindings are captured while the slang AST is alive so
+// providers never need to reconstruct them from source text or symbol names.
+struct SnapshotInterfaceModportDefinitionFact {
+    std::string stable_id;
+    std::string interface_definition_stable_id;
+    std::string name;
+    SemanticLocation location;
+};
+
+struct SnapshotInterfaceModportMemberFact {
+    std::string stable_id;
+    std::string interface_definition_stable_id;
+    std::string modport_stable_id;
+    std::string name;
+    SnapshotGraphPortDirection direction = SnapshotGraphPortDirection::Unknown;
+    std::string internal_symbol_stable_id;
+    SemanticLocation location;
+};
+
+struct SnapshotInterfacePortBindingFact {
+    std::string port_stable_id;
+    std::string interface_definition_stable_id;
+    std::string modport_stable_id;
+    std::string connected_interface_instance_stable_id;
+    std::string connected_modport_stable_id;
+    SemanticLocation interface_type_location;
+    SemanticLocation modport_location;
+    SemanticLocation connection_location;
+    SemanticLocation interface_definition_location;
+    SemanticLocation modport_definition_location;
+    bool resolved = false;
+};
+
+struct SnapshotInterfaceModportBindingIndex {
+    std::unordered_map<std::string, SnapshotInterfaceModportDefinitionFact> modports_by_stable_id;
+    std::unordered_map<std::string, std::string> modport_ids_by_interface_definition_name;
+    std::unordered_map<std::string, std::vector<SnapshotInterfaceModportMemberFact>>
+        members_by_modport_stable_id;
+    std::unordered_map<std::string, SnapshotInterfacePortBindingFact> ports_by_stable_id;
+    size_t member_count = 0;
+    size_t resolved_port_binding_count = 0;
 };
 
 struct SnapshotGraphConnectionBindingFact {
@@ -390,6 +435,7 @@ struct SnapshotData {
     std::unordered_map<std::string, std::vector<SnapshotAssignmentEdge>> assignment_edges_by_uri;
     SnapshotDesignGraphBindingIndex design_graph_binding_index;
     SnapshotConeAdjacencyIndex cone_adjacency_index;
+    SnapshotInterfaceModportBindingIndex interface_modport_binding_index;
     std::unordered_map<std::string, std::vector<SnapshotTypeReference>> type_references_by_uri;
     std::unordered_map<std::string, std::vector<IncludeDirective>> include_directives_by_uri;
     std::unordered_map<std::string, std::vector<SnapshotModuleInstance>> module_instances_by_uri;

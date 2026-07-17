@@ -171,6 +171,26 @@ TEST_CASE("AffectedDependencyGraph traverses callable type dependencies",
     CHECK(graph.stats().callable_type_edges == 1);
 }
 
+TEST_CASE("AffectedDependencyGraph tracks interface modport dependencies deterministically",
+          "[analysis][semantic][affected][interface][modport]") {
+    AffectedDependencyGraph graph;
+    graph.addSemanticDependency(AffectedDependencyEdgeKind::InterfaceModport,
+                                "file:///workspace/bus_if.sv",
+                                "file:///workspace/consumer.sv");
+    graph.addSemanticDependency(AffectedDependencyEdgeKind::ModuleInstance,
+                                "file:///workspace/consumer.sv",
+                                "file:///workspace/top.sv");
+
+    CHECK(graph.dependentUris("file:///workspace/bus_if.sv",
+                              AffectedDependencyEdgeKind::InterfaceModport) ==
+          std::vector<std::string>{"file:///workspace/consumer.sv"});
+    CHECK(graph.affectedDocumentUris("file:///workspace/bus_if.sv") ==
+          std::vector<std::string>{"file:///workspace/bus_if.sv",
+                                   "file:///workspace/consumer.sv",
+                                   "file:///workspace/top.sv"});
+    CHECK(graph.stats().interface_modport_edges == 1);
+}
+
 TEST_CASE("AffectedDependencyGraph tracks macro include dependencies separately",
           "[analysis][semantic][affected][macro]") {
     AffectedDependencyGraph graph;

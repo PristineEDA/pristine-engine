@@ -547,6 +547,18 @@ SnapshotBuildOutput SnapshotBuilder::build(SnapshotBuildInput input) const {
                         }
                     }
                 }
+
+                for (const auto& [_, binding] : data->interface_modport_binding_index.ports_by_stable_id) {
+                    if (!binding.resolved || binding.interface_definition_location.uri.empty() ||
+                        binding.interface_type_location.uri.empty() ||
+                        binding.interface_definition_location.uri == binding.interface_type_location.uri) {
+                        continue;
+                    }
+                    output.affected_dependencies.addSemanticDependency(
+                        AffectedDependencyEdgeKind::InterfaceModport,
+                        binding.interface_definition_location.uri,
+                        binding.interface_type_location.uri);
+                }
             }
 
             {

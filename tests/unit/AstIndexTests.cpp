@@ -1140,6 +1140,70 @@ TEST_CASE("AstIndex resolves interface modport type references from interface po
     CHECK(modport_locations.front().range.end_character == 16);
 }
 
+TEST_CASE("AstIndex builds deterministic interface modport member bindings",
+          "[analysis][semantic][ast-index][interface][modport][binding][direction]") {
+    SnapshotBuildInput input{.generation = 39,
+                             .documents = {{"file:///workspace/if-binding.sv",
+                                            SemanticEngineDocument{
+                                                .uri = "file:///workspace/if-binding.sv",
+                                                .text = "interface bus_if;\n"
+                                                        "  logic ready;\n"
+                                                        "  logic valid;\n"
+                                                        "  modport master(input ready, output valid);\n"
+                                                        "endinterface\n"
+                                                        "module top(bus_if.master bus);\n"
+                                                        "endmodule\n",
+                                                .version = 1,
+                                                .is_open = true}}}};
+
+    auto output = SnapshotBuilder{}.build(std::move(input));
+    REQUIRE(output.data != nullptr);
+
+    const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
+    REQUIRE(view.interface_modport_binding_index.modports_by_stable_id.size() == 1);
+    REQUIRE(view.interface_modport_binding_index.ports_by_stable_id.size() == 1);
+    CHECK(view.interface_modport_binding_index.member_count == 2);
+    CHECK(view.interface_modport_binding_index.resolved_port_binding_count == 1);
+
+    const auto& port = view.interface_modport_binding_index.ports_by_stable_id.begin()->second;
+    REQUIRE(port.resolved);
+    REQUIRE_FALSE(port.modport_stable_id.empty());
+    CHECK(port.interface_type_location.range.start_line == 5);
+    CHECK(port.interface_type_location.range.start_character == 11);
+    CHECK(port.modport_location.range.start_line == 5);
+    CHECK(port.modport_location.range.start_character == 18);
+
+    const auto& members = view.interface_modport_binding_index.members_by_modport_stable_id.at(port.modport_stable_id);
+    REQUIRE(members.size() == 2);
+    CHECK(members[0].name == "ready");
+    CHECK(members[0].direction == SnapshotGraphPortDirection::Input);
+    CHECK(members[1].name == "valid");
+    CHECK(members[1].direction == SnapshotGraphPortDirection::Output);
+}
+
+TEST_CASE("AstIndex rejects unresolved interface modports without a type-definition fallback",
+          "[analysis][semantic][ast-index][type-definition][interface][modport][no-fallback]") {
+    SnapshotBuildInput input{.generation = 39,
+                             .documents = {{"file:///workspace/if-unresolved.sv",
+                                            SemanticEngineDocument{
+                                                .uri = "file:///workspace/if-unresolved.sv",
+                                                .text = "interface bus_if;\n"
+                                                        "  modport master;\n"
+                                                        "endinterface\n"
+                                                        "module top(bus_if.unknown bus);\n"
+                                                        "endmodule\n",
+                                                .version = 1,
+                                                .is_open = true}}}};
+
+    auto output = SnapshotBuilder{}.build(std::move(input));
+    REQUIRE(output.data != nullptr);
+
+    const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
+    REQUIRE(view.interface_modport_binding_index.ports_by_stable_id.size() == 1);
+    CHECK_FALSE(view.interface_modport_binding_index.ports_by_stable_id.begin()->second.resolved);
+    CHECK(typeDefinitionLocationsAt(view, "file:///workspace/if-unresolved.sv", 3, 18).empty());
+}
+
 TEST_CASE("AstIndex derives function and task signature calls from slang AST",
           "[analysis][semantic][ast-index][signature][function][task][no-fallback]") {
     SnapshotBuildInput input{.generation = 39,
@@ -1703,6 +1767,25 @@ TEST_CASE("AstIndex records cross-file callable type invalidation edges",
           std::vector<std::string>{"file:///workspace/top.sv"});
 }
 
+TEST_CASE("AstIndex records cross-file interface modport invalidation edges",
+          "[analysis][semantic][ast-index][interface][modport][affected]") {
+    SnapshotBuildInput input{
+        .generation = 76,
+        .documents = {
+            {"file:///workspace/bus_if.sv",
+             SemanticEngineDocument{.uri = "file:///workspace/bus_if.sv",
+                                    .text = "interface bus_if; logic ready; modport master(input ready); endinterface\n"}},
+            {"file:///workspace/top.sv",
+             SemanticEngineDocument{.uri = "file:///workspace/top.sv",
+                                    .text = "module top(bus_if.master bus); endmodule\n",
+                                    .is_open = true}}}};
+    auto output = SnapshotBuilder{}.build(std::move(input));
+    REQUIRE(output.data != nullptr);
+    CHECK(output.affected_dependencies.dependentUris(
+              "file:///workspace/bus_if.sv", AffectedDependencyEdgeKind::InterfaceModport) ==
+          std::vector<std::string>{"file:///workspace/top.sv"});
+}
+
 TEST_CASE("AstIndex orders nested callable invocations by source range deterministically",
           "[analysis][semantic][ast-index][callable][nested][deterministic]") {
     SnapshotBuildInput input{.generation = 77,
@@ -2143,6 +2226,48 @@ TEST_CASE("AstIndex records interface endpoints without inventing cone direction
                            return edge.from_symbol_id == endpoint->second.stable_id ||
                                   edge.to_symbol_id == endpoint->second.stable_id;
                        }));
+}
+
+TEST_CASE("AstIndex connects resolved modport members with indexed directions",
+          "[analysis][semantic][ast-index][design-graph-binding][interface][modport][cone]") {
+    auto output = buildGraphSource(
+        "interface bus_if;\n"
+        "  logic ready;\n"
+        "  logic valid;\n"
+        "  modport master(input ready, output valid);\n"
+        "endinterface\n"
+        "module child(bus_if.master bus); endmodule\n"
+        "module top; bus_if bus(); child u_child(.bus(bus.master)); endmodule\n");
+    REQUIRE(output.data != nullptr);
+    const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
+
+    const auto endpoint = view.design_graph_binding_index.endpoints_by_module_member.find("child\x1f" "bus");
+    REQUIRE(endpoint != view.design_graph_binding_index.endpoints_by_module_member.end());
+    REQUIRE_FALSE(endpoint->second.modport_stable_id.empty());
+    const auto port_binding = view.interface_modport_binding_index.ports_by_stable_id.find(endpoint->second.stable_id);
+    REQUIRE(port_binding != view.interface_modport_binding_index.ports_by_stable_id.end());
+    REQUIRE(port_binding->second.resolved);
+    REQUIRE_FALSE(port_binding->second.connected_modport_stable_id.empty());
+
+    const auto& child_members = view.interface_modport_binding_index.members_by_modport_stable_id.at(
+        port_binding->second.modport_stable_id);
+    const auto& parent_members = view.interface_modport_binding_index.members_by_modport_stable_id.at(
+        port_binding->second.connected_modport_stable_id);
+    const auto child_ready = std::find_if(child_members.begin(), child_members.end(), [](const auto& member) {
+        return member.name == "ready";
+    });
+    const auto parent_ready = std::find_if(parent_members.begin(), parent_members.end(), [](const auto& member) {
+        return member.name == "ready";
+    });
+    REQUIRE(child_ready != child_members.end());
+    REQUIRE(parent_ready != parent_members.end());
+    CHECK(std::any_of(view.cone_adjacency_index.edges.begin(),
+                      view.cone_adjacency_index.edges.end(),
+                      [&](const SnapshotConeAdjacencyEdge& edge) {
+                          return edge.from_symbol_id == child_ready->stable_id &&
+                                 edge.to_symbol_id == parent_ready->stable_id &&
+                                 edge.kind == SnapshotConeEdgeKind::InstancePort;
+                      }));
 }
 
 TEST_CASE("AstIndex keeps generated connection bindings distinct",

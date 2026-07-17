@@ -1,0 +1,19 @@
+{
+  "name": "type definition rejects an unresolved interface modport without a fallback",
+  "sources": [
+    {
+      "uri": "file:///golden/semantic/type-if-modport-unresolved.sv",
+      "text": "interface bus_if;\n  modport master;\nendinterface\nmodule top(bus_if.unknown bus);\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "typeDefinition",
+    "uri": "file:///golden/semantic/type-if-modport-unresolved.sv",
+    "line": 3,
+    "character": 18
+  },
+  "expected": {
+    "unresolved": true,
+    "count": 0
+  }
+}

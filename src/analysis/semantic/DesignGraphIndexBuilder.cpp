@@ -245,6 +245,15 @@ void buildDesignGraphIndexes(SnapshotData& data) {
         for (const auto& port : signature.definition.port_details) {
             const auto stable_id = endpointStableId(data, bindings, signature, port);
             if (!stable_id.has_value()) continue;
+            const auto interface_binding = data.interface_modport_binding_index.ports_by_stable_id.find(*stable_id);
+            const auto interface_definition_id =
+                interface_binding == data.interface_modport_binding_index.ports_by_stable_id.end()
+                    ? std::string{}
+                    : interface_binding->second.interface_definition_stable_id;
+            const auto modport_id =
+                interface_binding == data.interface_modport_binding_index.ports_by_stable_id.end()
+                    ? std::string{}
+                    : interface_binding->second.modport_stable_id;
             upsertBinding(bindings.port_symbol_ids_by_module_port,
                           moduleMemberKey(module_name, port.name), *stable_id);
             upsertEndpoint(bindings,
@@ -255,7 +264,9 @@ void buildDesignGraphIndexes(SnapshotData& data) {
                                                      .direction = directionFor(port),
                                                      .location = SemanticLocation{.uri = signature.uri,
                                                                                   .range = port.selection_range},
-                                                     .generated_instance_id = {}});
+                                                     .generated_instance_id = {},
+                                                     .interface_definition_stable_id = interface_definition_id,
+                                                     .modport_stable_id = modport_id});
         }
         for (const auto& parameter : signature.definition.parameter_details) {
             const auto stable_id = bindings.parameter_symbol_ids_by_module_parameter.find(
@@ -269,7 +280,9 @@ void buildDesignGraphIndexes(SnapshotData& data) {
                                                      .direction = SnapshotGraphPortDirection::Unknown,
                                                      .location = SemanticLocation{.uri = signature.uri,
                                                                                   .range = parameter.selection_range},
-                                                     .generated_instance_id = {}});
+                                                     .generated_instance_id = {},
+                                                     .interface_definition_stable_id = {},
+                                                     .modport_stable_id = {}});
         }
     }
 
@@ -289,7 +302,9 @@ void buildDesignGraphIndexes(SnapshotData& data) {
                                                      .direction = SnapshotGraphPortDirection::Unknown,
                                                      .location = SemanticLocation{.uri = uri,
                                                                                   .range = instance.selection_range},
-                                                     .generated_instance_id = instance.instance_stable_id});
+                                                     .generated_instance_id = instance.instance_stable_id,
+                                                     .interface_definition_stable_id = {},
+                                                     .modport_stable_id = {}});
         }
     }
 
@@ -359,8 +374,64 @@ void buildDesignGraphIndexes(SnapshotData& data) {
                 for (const auto& connection : connections) {
                     const auto* child_endpoint = endpointFor(connection, details);
                     if (!child_endpoint) continue;
-                    const auto source_ids = sourceIdsForConnection(connection);
                     const auto location = SemanticLocation{.uri = parent->second.uri, .range = connection.range};
+                    if (kind == SnapshotConeEdgeKind::InstancePort &&
+                        child_endpoint->kind == SnapshotGraphEndpointKind::InterfacePort) {
+                        const auto port_binding = data.interface_modport_binding_index.ports_by_stable_id.find(
+                            child_endpoint->stable_id);
+                        if (port_binding == data.interface_modport_binding_index.ports_by_stable_id.end() ||
+                            !port_binding->second.resolved ||
+                            port_binding->second.modport_stable_id.empty() ||
+                            port_binding->second.connected_modport_stable_id.empty()) {
+                            continue;
+                        }
+                        const auto child_members =
+                            data.interface_modport_binding_index.members_by_modport_stable_id.find(
+                                port_binding->second.modport_stable_id);
+                        const auto parent_members =
+                            data.interface_modport_binding_index.members_by_modport_stable_id.find(
+                                port_binding->second.connected_modport_stable_id);
+                        if (child_members == data.interface_modport_binding_index.members_by_modport_stable_id.end() ||
+                            parent_members == data.interface_modport_binding_index.members_by_modport_stable_id.end()) {
+                            continue;
+                        }
+                        for (const auto& child_member : child_members->second) {
+                            const auto parent_member = std::find_if(parent_members->second.begin(),
+                                                                    parent_members->second.end(),
+                                                                    [&](const auto& candidate) {
+                                                                        return candidate.name == child_member.name;
+                                                                    });
+                            if (parent_member == parent_members->second.end()) {
+                                continue;
+                            }
+                            const auto append_member_edge = [&](std::string from, std::string to) {
+                                appendEdge(adjacency,
+                                           SnapshotConeAdjacencyEdge{
+                                               .from_symbol_id = std::move(from),
+                                               .to_symbol_id = std::move(to),
+                                               .location = location,
+                                               .expression_location = location,
+                                               .expression = child_member.name,
+                                               .kind = SnapshotConeEdgeKind::InstancePort,
+                                               .source_role = SnapshotConeSourceRole::Data,
+                                               .slice_kind = SnapshotConeSliceKind::Whole,
+                                               .generated_instance_id = instance.instance_stable_id});
+                            };
+                            if (child_member.direction == SnapshotGraphPortDirection::Input) {
+                                append_member_edge(child_member.stable_id, parent_member->stable_id);
+                            }
+                            else if (child_member.direction == SnapshotGraphPortDirection::Output) {
+                                append_member_edge(parent_member->stable_id, child_member.stable_id);
+                            }
+                            else if (child_member.direction == SnapshotGraphPortDirection::Inout ||
+                                     child_member.direction == SnapshotGraphPortDirection::Ref) {
+                                append_member_edge(child_member.stable_id, parent_member->stable_id);
+                                append_member_edge(parent_member->stable_id, child_member.stable_id);
+                            }
+                        }
+                        continue;
+                    }
+                    const auto source_ids = sourceIdsForConnection(connection);
                     appendConnectionBinding(bindings,
                                             SnapshotGraphConnectionBindingFact{
                                                 .instance_stable_id = instance.instance_stable_id,

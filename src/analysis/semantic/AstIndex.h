@@ -38,6 +38,7 @@ struct AstIndexView {
     std::vector<DesignGraphModuleEntry> design_graph_module_entries;
     SnapshotDesignGraphBindingIndex design_graph_binding_index;
     SnapshotConeAdjacencyIndex cone_adjacency_index;
+    SnapshotInterfaceModportBindingIndex interface_modport_binding_index;
     std::unordered_map<std::string, std::vector<SnapshotAssignmentEdge>> assignment_edges_by_uri;
     std::unordered_map<std::string, std::vector<SnapshotTypeReference>> type_references_by_uri;
     std::unordered_map<std::string, std::vector<SnapshotMemberCompletion>> member_completions_by_uri;
