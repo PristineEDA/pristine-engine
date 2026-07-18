@@ -226,6 +226,7 @@ struct SnapshotModuleCallEdgeIndex {
 
 enum class SnapshotConeEdgeKind { Assignment, InstancePort, ParameterOverride, ControlDependency };
 enum class SnapshotConeSourceRole { Data, Control };
+enum class SnapshotConeControlOrigin { None, ConditionalStatement, CaseStatement, TernaryCondition };
 enum class SnapshotConeSliceKind {
     Whole,
     ElementSelect,
@@ -235,11 +236,21 @@ enum class SnapshotConeSliceKind {
     DynamicSelect,
 };
 
+struct SnapshotConeDataSourceSeed {
+    ParseRange range;
+    std::string expression;
+    SnapshotConeSliceKind slice_kind = SnapshotConeSliceKind::Whole;
+    std::vector<std::string> source_symbol_ids;
+    bool unresolved = false;
+};
+
 struct SnapshotConeControlSourceSeed {
     ParseRange range;
     std::string expression;
     SnapshotConeSliceKind slice_kind = SnapshotConeSliceKind::Whole;
     std::vector<std::string> source_symbol_ids;
+    SnapshotConeControlOrigin origin = SnapshotConeControlOrigin::None;
+    bool unresolved = false;
 };
 
 struct SnapshotAssignmentEdgeSeed {
@@ -250,9 +261,8 @@ struct SnapshotAssignmentEdgeSeed {
     ParseRange right_range;
     std::string left_expression;
     std::string right_expression;
-    SnapshotConeSliceKind data_slice_kind = SnapshotConeSliceKind::Whole;
     std::vector<std::string> left_symbol_ids;
-    std::vector<std::string> data_symbol_ids;
+    std::vector<SnapshotConeDataSourceSeed> data_sources;
     std::vector<SnapshotConeControlSourceSeed> control_sources;
 };
 
@@ -265,6 +275,7 @@ struct SnapshotAssignmentEdge {
     SnapshotConeEdgeKind kind = SnapshotConeEdgeKind::Assignment;
     SnapshotConeSourceRole source_role = SnapshotConeSourceRole::Data;
     SnapshotConeSliceKind slice_kind = SnapshotConeSliceKind::Whole;
+    SnapshotConeControlOrigin control_origin = SnapshotConeControlOrigin::None;
 };
 
 enum class SnapshotGraphEndpointKind { Port, Parameter, Instance, InterfacePort, ModportPort };
@@ -345,7 +356,17 @@ struct SnapshotConeAdjacencyEdge {
     SnapshotConeEdgeKind kind = SnapshotConeEdgeKind::Assignment;
     SnapshotConeSourceRole source_role = SnapshotConeSourceRole::Data;
     SnapshotConeSliceKind slice_kind = SnapshotConeSliceKind::Whole;
+    SnapshotConeControlOrigin control_origin = SnapshotConeControlOrigin::None;
     std::string generated_instance_id;
+};
+
+struct SnapshotConeUnresolvedSourceFact {
+    std::string from_symbol_id;
+    SemanticLocation location;
+    SemanticLocation expression_location;
+    std::string expression;
+    SnapshotConeSourceRole source_role = SnapshotConeSourceRole::Data;
+    SnapshotConeControlOrigin control_origin = SnapshotConeControlOrigin::None;
 };
 
 // Design graph queries consume these precomputed maps rather than rebuilding
@@ -368,6 +389,8 @@ struct SnapshotConeAdjacencyIndex {
     std::vector<SnapshotConeAdjacencyEdge> edges;
     std::unordered_map<std::string, std::vector<size_t>> edges_by_from_symbol_id;
     std::unordered_map<std::string, std::vector<size_t>> edges_by_to_symbol_id;
+    std::unordered_map<std::string, std::vector<SnapshotConeUnresolvedSourceFact>>
+        unresolved_sources_by_from_symbol_id;
 };
 
 struct SnapshotTypeReference {
@@ -433,6 +456,7 @@ struct SnapshotData {
     std::unordered_map<std::string, SemanticModuleSignature> ast_module_signatures_by_name;
     std::vector<SnapshotAssignmentEdgeSeed> assignment_edge_seeds;
     std::unordered_map<std::string, std::vector<SnapshotAssignmentEdge>> assignment_edges_by_uri;
+    std::vector<SnapshotConeUnresolvedSourceFact> unresolved_cone_sources;
     SnapshotDesignGraphBindingIndex design_graph_binding_index;
     SnapshotConeAdjacencyIndex cone_adjacency_index;
     SnapshotInterfaceModportBindingIndex interface_modport_binding_index;

@@ -320,7 +320,13 @@ void buildDesignGraphIndexes(SnapshotData& data) {
                                                   .kind = edge.kind,
                                                   .source_role = edge.source_role,
                                                   .slice_kind = edge.slice_kind,
+                                                  .control_origin = edge.control_origin,
                                                   .generated_instance_id = {}});
+        }
+    }
+    for (const auto& source : data.unresolved_cone_sources) {
+        if (!source.from_symbol_id.empty()) {
+            adjacency.unresolved_sources_by_from_symbol_id[source.from_symbol_id].push_back(source);
         }
     }
 

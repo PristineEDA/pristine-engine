@@ -83,6 +83,9 @@ int main() {
                 text += "  localparam int sum = add(1, 2);\n";
                 text += "`define TWICE(x) ((x) + (x))\n";
                 text += "  localparam int doubled = `TWICE(3);\n";
+                text += "  logic mux_select;\n";
+                text += "  logic muxed;\n";
+                text += "  assign muxed = mux_select ? connected : " + name + ";\n";
             }
             text += "endmodule\n";
             return text;
@@ -201,6 +204,10 @@ int main() {
         const auto cone = engine.backwardConeAt(target_uri, 3, 10);
         const auto end_cone = Clock::now();
         const auto cone_warm = engine.backwardConeAt(target_uri, 3, 10);
+        const auto start_ternary_cone = Clock::now();
+        const auto ternary_cone = engine.backwardConeAt(target_uri, 13, 10);
+        const auto end_ternary_cone = Clock::now();
+        const auto ternary_cone_warm = engine.backwardConeAt(target_uri, 13, 10);
 
         const auto start_code_action = Clock::now();
         const auto code_actions = engine.codeActionsAt(
@@ -231,7 +238,10 @@ int main() {
                                      call_prepare.unresolved || call_prepare.items.empty() ||
                                      call_outgoing.unresolved || cache_stats.call_hierarchy_scanned_modules != 0 ||
                                      hierarchy_warm.unresolved || schematic_warm.unresolved || cone_warm.unresolved ||
+                                     ternary_cone.unresolved || ternary_cone_warm.unresolved ||
                                      cone.nodes.size() < 2 || cache_stats.cone_adjacency_scanned_edges == 0 ||
+                                     ternary_cone.cone_control_edge_count == 0 ||
+                                     ternary_cone.cone_ternary_control_edge_count == 0 ||
                                      cache_stats.graph_scanned_global_symbols != 0 ||
                                      cache_stats.cone_scanned_global_edges != 0;
 
@@ -269,6 +279,8 @@ int main() {
                   << elapsedMicros(start_call_hierarchy, end_call_hierarchy) << ","
                   << "\"schematicMicros\":" << elapsedMicros(start_schematic, end_schematic) << ","
                   << "\"backwardConeMicros\":" << elapsedMicros(start_cone, end_cone) << ","
+                  << "\"ternaryBackwardConeMicros\":"
+                  << elapsedMicros(start_ternary_cone, end_ternary_cone) << ","
                   << "\"codeActionMicros\":" << elapsedMicros(start_code_action, end_code_action) << ","
                   ;
         writeQueryCacheStats(cache_stats);
@@ -318,6 +330,11 @@ int main() {
                   << "\"schematicModuleCount\":" << schematic.modules.size() << ","
                   << "\"backwardConeNodeCount\":" << cone.nodes.size() << ","
                   << "\"coneControlEdgeCount\":" << cone.cone_control_edge_count << ","
+                  << "\"ternaryBackwardConeNodeCount\":" << ternary_cone.nodes.size() << ","
+                  << "\"ternaryConeControlEdgeCount\":"
+                  << ternary_cone.cone_control_edge_count << ","
+                  << "\"ternaryConeTernaryControlEdgeCount\":"
+                  << ternary_cone.cone_ternary_control_edge_count << ","
                   << "\"coneSliceFactCount\":" << cone.cone_slice_fact_count << ","
                   << "\"graphBuildScopedSymbolCandidates\":"
                   << cone.graph_build_scoped_symbol_candidates << ","

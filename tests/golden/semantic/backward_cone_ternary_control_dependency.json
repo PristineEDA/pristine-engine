@@ -1,5 +1,5 @@
 {
-  "name": "backward cone keeps conditional expression data dependencies deterministic",
+  "name": "backward cone separates ternary selector control from branch data",
   "config": { "topModules": ["top"] },
   "sources": [
     {
@@ -10,8 +10,12 @@
   "request": { "kind": "backwardCone", "uri": "file:///golden/semantic/cone-ternary-control.sv", "line": 1, "character": 9 },
   "expected": {
     "nodes": ["y", "select", "a", "b"],
-    "edgeKinds": ["assignment"],
-    "sourceRoles": ["data"],
+    "edgeKinds": ["assignment", "controlDependency"],
+    "sourceRoles": ["data", "control"],
+    "controlOrigins": ["ternary"],
+    "absentDataExpressions": ["select"],
+    "controlEdgeCount": 1,
+    "ternaryControlEdgeCount": 1,
     "sliceKinds": ["whole"]
   }
 }

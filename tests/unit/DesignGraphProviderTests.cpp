@@ -670,7 +670,8 @@ TEST_CASE("DesignGraphProvider preserves typed control and slice metadata in con
                                                                                     .range = rangeAt(4, 6, 12)},
                                             .expression = "select",
                                             .kind = SnapshotConeEdgeKind::ControlDependency,
-                                            .source_role = SnapshotConeSourceRole::Control},
+                                            .source_role = SnapshotConeSourceRole::Control,
+                                            .control_origin = SnapshotConeControlOrigin::TernaryCondition},
                   SnapshotConeAdjacencyEdge{.from_symbol_id = "symbol|out",
                                             .to_symbol_id = "symbol|data",
                                             .location = SemanticLocation{.uri = "file:///workspace/cone.sv",
@@ -689,15 +690,227 @@ TEST_CASE("DesignGraphProvider preserves typed control and slice metadata in con
 
     REQUIRE_FALSE(trace.unresolved);
     CHECK(trace.cone_control_edge_count == 1);
+    CHECK(trace.cone_ternary_control_edge_count == 1);
     CHECK(trace.cone_slice_fact_count == 1);
     CHECK(trace.graph_build_scoped_symbol_candidates == 3);
     CHECK(trace.graph_build_connection_reference_candidates == 2);
     CHECK(std::any_of(trace.edges.begin(), trace.edges.end(), [](const SemanticConeEdge& edge) {
-        return edge.kind == "controlDependency" && edge.source_role == "control";
+        return edge.kind == "controlDependency" && edge.source_role == "control" &&
+               edge.control_origin == "ternary";
     }));
     CHECK(std::any_of(trace.edges.begin(), trace.edges.end(), [](const SemanticConeEdge& edge) {
         return edge.slice_kind == "rangeSelect" && edge.source_range.has_value();
     }));
+}
+
+TEST_CASE("DesignGraphProvider reports unresolved ternary control facts without a fallback",
+          "[analysis][semantic][design-graph-provider][cone][ternary][unresolved][no-fallback]") {
+    auto context = simpleDesignContext();
+    const auto out = symbol("symbol|out", "out", 4, 8, 11);
+    context.symbols_by_id = {{"symbol|out", DesignGraphSymbol{.identity = out}}};
+    context.cone_adjacency_index.unresolved_sources_by_from_symbol_id["symbol|out"] = {
+        SnapshotConeUnresolvedSourceFact{
+            .from_symbol_id = "symbol|out",
+            .location = SemanticLocation{.uri = "file:///workspace/cone.sv", .range = rangeAt(4, 2, 20)},
+            .expression_location =
+                SemanticLocation{.uri = "file:///workspace/cone.sv", .range = rangeAt(4, 10, 17)},
+            .expression = "unknown_select",
+            .source_role = SnapshotConeSourceRole::Control,
+            .control_origin = SnapshotConeControlOrigin::TernaryCondition}};
+
+    const auto trace = backwardCone(context,
+                                    "file:///workspace/cone.sv",
+                                    SemanticLookupResult{.generation = 9, .symbol = out},
+                                    2000);
+
+    REQUIRE_FALSE(trace.unresolved);
+    CHECK(trace.partial);
+    CHECK(trace.edges.empty());
+    CHECK(trace.cone_unresolved_source_fact_count == 1);
+    CHECK(trace.cone_scanned_global_edges == 0);
+    CHECK(std::any_of(trace.messages.begin(), trace.messages.end(), [](const std::string& message) {
+        return message.find("ternary control") != std::string::npos &&
+               message.find("unknown_select") != std::string::npos;
+    }));
+}
+
+TEST_CASE("DesignGraphProvider retains distinct ternary control and branch-data edges",
+          "[analysis][semantic][design-graph-provider][cone][ternary][roles]") {
+    auto context = simpleDesignContext();
+    const auto select = symbol("symbol|select", "select", 1, 8, 14);
+    const auto out = symbol("symbol|out", "out", 3, 8, 11);
+    context.symbols_by_id = {{"symbol|select", DesignGraphSymbol{.identity = select}},
+                             {"symbol|out", DesignGraphSymbol{.identity = out}}};
+    setConeEdges(context,
+                 {SnapshotConeAdjacencyEdge{.from_symbol_id = "symbol|out",
+                                            .to_symbol_id = "symbol|select",
+                                            .location = SemanticLocation{.uri = "file:///workspace/cone.sv",
+                                                                         .range = rangeAt(4, 2, 24)},
+                                            .expression = "select",
+                                            .kind = SnapshotConeEdgeKind::ControlDependency,
+                                            .source_role = SnapshotConeSourceRole::Control,
+                                            .control_origin = SnapshotConeControlOrigin::TernaryCondition},
+                  SnapshotConeAdjacencyEdge{.from_symbol_id = "symbol|out",
+                                            .to_symbol_id = "symbol|select",
+                                            .location = SemanticLocation{.uri = "file:///workspace/cone.sv",
+                                                                         .range = rangeAt(4, 15, 21)},
+                                            .expression = "select",
+                                            .kind = SnapshotConeEdgeKind::Assignment,
+                                            .source_role = SnapshotConeSourceRole::Data}});
+
+    const auto trace = backwardCone(context,
+                                    "file:///workspace/cone.sv",
+                                    SemanticLookupResult{.generation = 9, .symbol = out},
+                                    2000);
+
+    CHECK(trace.cone_ternary_control_edge_count == 1);
+    CHECK(std::count_if(trace.edges.begin(), trace.edges.end(), [](const SemanticConeEdge& edge) {
+              return edge.to_symbol_id == "symbol|select" && edge.source_role == "control" &&
+                     edge.control_origin == "ternary";
+          }) == 1);
+    CHECK(std::count_if(trace.edges.begin(), trace.edges.end(), [](const SemanticConeEdge& edge) {
+              return edge.to_symbol_id == "symbol|select" && edge.source_role == "data";
+          }) == 1);
+}
+
+TEST_CASE("DesignGraphProvider reports unresolved ternary branch facts without inventing an edge",
+          "[analysis][semantic][design-graph-provider][cone][ternary][unresolved][data]") {
+    auto context = simpleDesignContext();
+    const auto out = symbol("symbol|out", "out", 4, 8, 11);
+    context.symbols_by_id = {{"symbol|out", DesignGraphSymbol{.identity = out}}};
+    context.cone_adjacency_index.unresolved_sources_by_from_symbol_id["symbol|out"] = {
+        SnapshotConeUnresolvedSourceFact{
+            .from_symbol_id = "symbol|out",
+            .location = SemanticLocation{.uri = "file:///workspace/cone.sv", .range = rangeAt(4, 2, 20)},
+            .expression_location =
+                SemanticLocation{.uri = "file:///workspace/cone.sv", .range = rangeAt(4, 12, 18)},
+            .expression = "bad_branch",
+            .source_role = SnapshotConeSourceRole::Data}};
+
+    const auto trace = backwardCone(context,
+                                    "file:///workspace/cone.sv",
+                                    SemanticLookupResult{.generation = 9, .symbol = out},
+                                    2000);
+
+    CHECK(trace.partial);
+    CHECK(trace.edges.empty());
+    CHECK(trace.cone_unresolved_source_fact_count == 1);
+    CHECK(trace.cone_scanned_global_edges == 0);
+}
+
+TEST_CASE("DesignGraphProvider does not count statement controls as ternary controls",
+          "[analysis][semantic][design-graph-provider][cone][ternary][origin]") {
+    auto context = simpleDesignContext();
+    const auto enable = symbol("symbol|enable", "enable", 1, 8, 14);
+    const auto select = symbol("symbol|select", "select", 2, 8, 14);
+    const auto out = symbol("symbol|out", "out", 3, 8, 11);
+    context.symbols_by_id = {{"symbol|enable", DesignGraphSymbol{.identity = enable}},
+                             {"symbol|select", DesignGraphSymbol{.identity = select}},
+                             {"symbol|out", DesignGraphSymbol{.identity = out}}};
+    setConeEdges(context,
+                 {SnapshotConeAdjacencyEdge{.from_symbol_id = "symbol|out",
+                                            .to_symbol_id = "symbol|enable",
+                                            .location = SemanticLocation{.uri = "file:///workspace/cone.sv",
+                                                                         .range = rangeAt(4, 2, 24)},
+                                            .expression = "enable",
+                                            .kind = SnapshotConeEdgeKind::ControlDependency,
+                                            .source_role = SnapshotConeSourceRole::Control,
+                                            .control_origin = SnapshotConeControlOrigin::ConditionalStatement},
+                  SnapshotConeAdjacencyEdge{.from_symbol_id = "symbol|out",
+                                            .to_symbol_id = "symbol|select",
+                                            .location = SemanticLocation{.uri = "file:///workspace/cone.sv",
+                                                                         .range = rangeAt(4, 10, 16)},
+                                            .expression = "select",
+                                            .kind = SnapshotConeEdgeKind::ControlDependency,
+                                            .source_role = SnapshotConeSourceRole::Control,
+                                            .control_origin = SnapshotConeControlOrigin::TernaryCondition}});
+
+    const auto trace = backwardCone(context,
+                                    "file:///workspace/cone.sv",
+                                    SemanticLookupResult{.generation = 9, .symbol = out},
+                                    2000);
+
+    CHECK(trace.cone_control_edge_count == 2);
+    CHECK(trace.cone_ternary_control_edge_count == 1);
+}
+
+TEST_CASE("DesignGraphProvider applies result caps while scanning local ternary adjacency",
+          "[analysis][semantic][design-graph-provider][cone][ternary][cap]") {
+    auto context = simpleDesignContext();
+    const auto select = symbol("symbol|select", "select", 1, 8, 14);
+    const auto left = symbol("symbol|left", "left", 2, 8, 12);
+    const auto right = symbol("symbol|right", "right", 3, 8, 13);
+    const auto out = symbol("symbol|out", "out", 4, 8, 11);
+    context.symbols_by_id = {{"symbol|select", DesignGraphSymbol{.identity = select}},
+                             {"symbol|left", DesignGraphSymbol{.identity = left}},
+                             {"symbol|right", DesignGraphSymbol{.identity = right}},
+                             {"symbol|out", DesignGraphSymbol{.identity = out}}};
+    setConeEdges(context,
+                 {SnapshotConeAdjacencyEdge{.from_symbol_id = "symbol|out",
+                                            .to_symbol_id = "symbol|select",
+                                            .location = SemanticLocation{.uri = "file:///workspace/cone.sv",
+                                                                         .range = rangeAt(5, 2, 24)},
+                                            .expression = "select",
+                                            .kind = SnapshotConeEdgeKind::ControlDependency,
+                                            .source_role = SnapshotConeSourceRole::Control,
+                                            .control_origin = SnapshotConeControlOrigin::TernaryCondition},
+                  SnapshotConeAdjacencyEdge{.from_symbol_id = "symbol|out",
+                                            .to_symbol_id = "symbol|left",
+                                            .location = SemanticLocation{.uri = "file:///workspace/cone.sv",
+                                                                         .range = rangeAt(5, 15, 19)},
+                                            .expression = "left"},
+                  SnapshotConeAdjacencyEdge{.from_symbol_id = "symbol|out",
+                                            .to_symbol_id = "symbol|right",
+                                            .location = SemanticLocation{.uri = "file:///workspace/cone.sv",
+                                                                         .range = rangeAt(5, 22, 27)},
+                                            .expression = "right"}});
+
+    const auto trace = backwardCone(context,
+                                    "file:///workspace/cone.sv",
+                                    SemanticLookupResult{.generation = 9, .symbol = out},
+                                    2);
+
+    CHECK(trace.truncated);
+    CHECK(trace.partial);
+    CHECK(trace.edges.size() <= 2);
+    CHECK(trace.cone_adjacency_scanned_edges > 0);
+    CHECK(trace.cone_scanned_global_edges == 0);
+}
+
+TEST_CASE("DesignGraphProvider emits ternary cone edges in deterministic order",
+          "[analysis][semantic][design-graph-provider][cone][ternary][deterministic]") {
+    auto context = simpleDesignContext();
+    const auto a = symbol("symbol|a", "a", 1, 8, 9);
+    const auto select = symbol("symbol|select", "select", 2, 8, 14);
+    const auto out = symbol("symbol|out", "out", 3, 8, 11);
+    context.symbols_by_id = {{"symbol|a", DesignGraphSymbol{.identity = a}},
+                             {"symbol|select", DesignGraphSymbol{.identity = select}},
+                             {"symbol|out", DesignGraphSymbol{.identity = out}}};
+    setConeEdges(context,
+                 {SnapshotConeAdjacencyEdge{.from_symbol_id = "symbol|out",
+                                            .to_symbol_id = "symbol|select",
+                                            .location = SemanticLocation{.uri = "file:///workspace/cone.sv",
+                                                                         .range = rangeAt(5, 12, 18)},
+                                            .expression = "select",
+                                            .kind = SnapshotConeEdgeKind::ControlDependency,
+                                            .source_role = SnapshotConeSourceRole::Control,
+                                            .control_origin = SnapshotConeControlOrigin::TernaryCondition},
+                  SnapshotConeAdjacencyEdge{.from_symbol_id = "symbol|out",
+                                            .to_symbol_id = "symbol|a",
+                                            .location = SemanticLocation{.uri = "file:///workspace/cone.sv",
+                                                                         .range = rangeAt(5, 20, 21)},
+                                            .expression = "a"}});
+
+    const auto lookup = SemanticLookupResult{.generation = 9, .symbol = out};
+    const auto first = backwardCone(context, "file:///workspace/cone.sv", lookup, 2000);
+    const auto second = backwardCone(context, "file:///workspace/cone.sv", lookup, 2000);
+
+    REQUIRE(first.edges.size() == second.edges.size());
+    for (size_t index = 0; index < first.edges.size(); ++index) {
+        CHECK(first.edges[index].to_symbol_id == second.edges[index].to_symbol_id);
+        CHECK(first.edges[index].source_role == second.edges[index].source_role);
+        CHECK(first.edges[index].control_origin == second.edges[index].control_origin);
+    }
 }
 
 TEST_CASE("DesignGraphProvider traces backward cone through cross-module instance port edges",

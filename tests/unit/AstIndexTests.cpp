@@ -968,7 +968,10 @@ TEST_CASE("AstIndex derives primitive and assignment schematic cells from slang 
 
     const auto edges_it = view.assignment_edges_by_uri.find("file:///workspace/top.sv");
     REQUIRE(edges_it != view.assignment_edges_by_uri.end());
-    const auto edgeTargetNames = [&](std::string_view expected) {
+    const auto edgeTargetNames = [&](std::string_view expected,
+                                     SnapshotConeEdgeKind kind,
+                                     SnapshotConeSourceRole role,
+                                     std::string_view expression) {
         return std::any_of(edges_it->second.begin(),
                            edges_it->second.end(),
                            [&](const SnapshotAssignmentEdge& edge) {
@@ -977,14 +980,26 @@ TEST_CASE("AstIndex derives primitive and assignment schematic cells from slang 
                                return from_it != view.design_graph_symbols_by_id.end() &&
                                       to_it != view.design_graph_symbols_by_id.end() &&
                                       from_it->second.identity.name == "y" &&
-                                      to_it->second.identity.name == expected &&
-                                      edge.expression == "sel ? n1 : (a | b)";
+                                      to_it->second.identity.name == expected && edge.kind == kind &&
+                                      edge.source_role == role && edge.expression == expression;
                            });
     };
-    CHECK(edgeTargetNames("sel"));
-    CHECK(edgeTargetNames("n1"));
-    CHECK(edgeTargetNames("a"));
-    CHECK(edgeTargetNames("b"));
+    CHECK(edgeTargetNames("sel",
+                          SnapshotConeEdgeKind::ControlDependency,
+                          SnapshotConeSourceRole::Control,
+                          "sel"));
+    CHECK(edgeTargetNames("n1",
+                          SnapshotConeEdgeKind::Assignment,
+                          SnapshotConeSourceRole::Data,
+                          "n1"));
+    CHECK(edgeTargetNames("a",
+                          SnapshotConeEdgeKind::Assignment,
+                          SnapshotConeSourceRole::Data,
+                          "a | b"));
+    CHECK(edgeTargetNames("b",
+                          SnapshotConeEdgeKind::Assignment,
+                          SnapshotConeSourceRole::Data,
+                          "a | b"));
 }
 
 TEST_CASE("AstIndex derives declared type references from slang AST",
@@ -2114,9 +2129,292 @@ TEST_CASE("AstIndex indexes conditional-expression controls without text lookup"
     CHECK(std::any_of(view.cone_adjacency_index.edges.begin(),
                       view.cone_adjacency_index.edges.end(),
                       [](const SnapshotConeAdjacencyEdge& edge) {
-                          return edge.kind == SnapshotConeEdgeKind::ControlDependency &&
-                                 edge.source_role == SnapshotConeSourceRole::Control;
+                          return edge.expression == "select" &&
+                                 edge.kind == SnapshotConeEdgeKind::ControlDependency &&
+                                 edge.source_role == SnapshotConeSourceRole::Control &&
+                                 edge.control_origin == SnapshotConeControlOrigin::TernaryCondition;
                       }));
+    CHECK(std::count_if(view.cone_adjacency_index.edges.begin(),
+                        view.cone_adjacency_index.edges.end(),
+                        [](const SnapshotConeAdjacencyEdge& edge) {
+                            return edge.expression == "select" &&
+                                   edge.source_role == SnapshotConeSourceRole::Data;
+                        }) == 0);
+    CHECK(std::count_if(view.cone_adjacency_index.edges.begin(),
+                        view.cone_adjacency_index.edges.end(),
+                        [](const SnapshotConeAdjacencyEdge& edge) {
+                            return edge.kind == SnapshotConeEdgeKind::Assignment &&
+                                   edge.source_role == SnapshotConeSourceRole::Data &&
+                                   (edge.expression == "a" || edge.expression == "b");
+                        }) == 2);
+}
+
+TEST_CASE("AstIndex indexes nested ternary selectors separately from branch data",
+          "[analysis][semantic][ast-index][cone][control][ternary][nested]") {
+    auto output = buildGraphSource(
+        "module top(input logic first, input logic second, input logic a, input logic b, input logic c, "
+        "output logic y);\n"
+        "  assign y = first ? a : second ? b : c;\nendmodule\n");
+    REQUIRE(output.data != nullptr);
+    const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
+
+    const auto ternary_controls = std::count_if(view.cone_adjacency_index.edges.begin(),
+                                                view.cone_adjacency_index.edges.end(),
+                                                [](const SnapshotConeAdjacencyEdge& edge) {
+                                                    return edge.control_origin ==
+                                                               SnapshotConeControlOrigin::TernaryCondition &&
+                                                           edge.source_role == SnapshotConeSourceRole::Control;
+                                                });
+    CHECK(ternary_controls == 2);
+    CHECK(std::count_if(view.cone_adjacency_index.edges.begin(),
+                        view.cone_adjacency_index.edges.end(),
+                        [](const SnapshotConeAdjacencyEdge& edge) {
+                            return edge.source_role == SnapshotConeSourceRole::Data &&
+                                   (edge.expression == "first" || edge.expression == "second");
+                        }) == 0);
+    CHECK(std::count_if(view.cone_adjacency_index.edges.begin(),
+                        view.cone_adjacency_index.edges.end(),
+                        [](const SnapshotConeAdjacencyEdge& edge) {
+                            return edge.source_role == SnapshotConeSourceRole::Data &&
+                                   (edge.expression == "a" || edge.expression == "b" || edge.expression == "c");
+                        }) == 3);
+}
+
+TEST_CASE("AstIndex finds ternary controls nested inside binary expressions",
+          "[analysis][semantic][ast-index][cone][control][ternary][binary]") {
+    auto output = buildGraphSource(
+        "module top(input logic select, input logic a, input logic b, input logic c, output logic y);\n"
+        "  assign y = (select ? a : b) ^ c;\nendmodule\n");
+    REQUIRE(output.data != nullptr);
+    const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
+
+    CHECK(std::any_of(view.cone_adjacency_index.edges.begin(),
+                      view.cone_adjacency_index.edges.end(),
+                      [](const SnapshotConeAdjacencyEdge& edge) {
+                          return edge.expression == "select" &&
+                                 edge.control_origin == SnapshotConeControlOrigin::TernaryCondition;
+                      }));
+    CHECK(std::count_if(view.cone_adjacency_index.edges.begin(),
+                        view.cone_adjacency_index.edges.end(),
+                        [](const SnapshotConeAdjacencyEdge& edge) {
+                            return edge.source_role == SnapshotConeSourceRole::Data &&
+                                   (edge.expression == "a" || edge.expression == "b" || edge.expression == "c");
+                        }) == 3);
+}
+
+TEST_CASE("AstIndex preserves concatenation slices around ternary branches",
+          "[analysis][semantic][ast-index][cone][control][ternary][concatenation]") {
+    auto output = buildGraphSource(
+        "module top(input logic select, input logic a, input logic b, input logic c, output logic [1:0] y);\n"
+        "  assign y = {select ? a : b, c};\nendmodule\n");
+    REQUIRE(output.data != nullptr);
+    const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
+
+    CHECK(std::any_of(view.cone_adjacency_index.edges.begin(),
+                      view.cone_adjacency_index.edges.end(),
+                      [](const SnapshotConeAdjacencyEdge& edge) {
+                          return edge.expression == "select" &&
+                                 edge.control_origin == SnapshotConeControlOrigin::TernaryCondition;
+                      }));
+    CHECK(std::count_if(view.cone_adjacency_index.edges.begin(),
+                        view.cone_adjacency_index.edges.end(),
+                        [](const SnapshotConeAdjacencyEdge& edge) {
+                            return edge.source_role == SnapshotConeSourceRole::Data &&
+                                   edge.slice_kind == SnapshotConeSliceKind::Concatenation;
+                        }) == 3);
+}
+
+TEST_CASE("AstIndex preserves static and dynamic select facts in ternary branches",
+          "[analysis][semantic][ast-index][cone][control][ternary][slice]") {
+    auto output = buildGraphSource(
+        "module top(input logic select, input logic [3:0] data, input logic [1:0] index, output logic [2:0] y);\n"
+        "  assign y = select ? data[3:1] : data[index];\nendmodule\n");
+    REQUIRE(output.data != nullptr);
+    const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
+
+    CHECK(std::any_of(view.cone_adjacency_index.edges.begin(),
+                      view.cone_adjacency_index.edges.end(),
+                      [](const SnapshotConeAdjacencyEdge& edge) {
+                          return edge.slice_kind == SnapshotConeSliceKind::RangeSelect;
+                      }));
+    CHECK(std::any_of(view.cone_adjacency_index.edges.begin(),
+                      view.cone_adjacency_index.edges.end(),
+                      [](const SnapshotConeAdjacencyEdge& edge) {
+                          return edge.slice_kind == SnapshotConeSliceKind::DynamicSelect;
+                      }));
+    CHECK(std::none_of(view.cone_adjacency_index.edges.begin(),
+                       view.cone_adjacency_index.edges.end(),
+                       [](const SnapshotConeAdjacencyEdge& edge) {
+                           return edge.expression == "select" &&
+                                  edge.source_role == SnapshotConeSourceRole::Data;
+                       }));
+}
+
+TEST_CASE("AstIndex indexes procedural ternary controls through the shared collector",
+          "[analysis][semantic][ast-index][cone][control][ternary][procedural]") {
+    auto output = buildGraphSource(
+        "module top(input logic select, input logic a, input logic b, output logic y);\n"
+        "  always_comb y = select ? a : b;\nendmodule\n");
+    REQUIRE(output.data != nullptr);
+    const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
+
+    CHECK(std::any_of(view.cone_adjacency_index.edges.begin(),
+                      view.cone_adjacency_index.edges.end(),
+                      [](const SnapshotConeAdjacencyEdge& edge) {
+                          return edge.expression == "select" &&
+                                 edge.kind == SnapshotConeEdgeKind::ControlDependency &&
+                                 edge.control_origin == SnapshotConeControlOrigin::TernaryCondition;
+                      }));
+    CHECK(std::count_if(view.cone_adjacency_index.edges.begin(),
+                        view.cone_adjacency_index.edges.end(),
+                        [](const SnapshotConeAdjacencyEdge& edge) {
+                            return edge.source_role == SnapshotConeSourceRole::Data &&
+                                   (edge.expression == "a" || edge.expression == "b");
+                        }) == 2);
+}
+
+TEST_CASE("AstIndex keeps literal ternary branches out of unresolved cone facts",
+          "[analysis][semantic][ast-index][cone][control][ternary][literal]") {
+    auto output = buildGraphSource(
+        "module top(input logic select, input logic a, output logic y);\n"
+        "  assign y = select ? a : 1'b0;\nendmodule\n");
+    REQUIRE(output.data != nullptr);
+    const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
+
+    CHECK(view.cone_adjacency_index.unresolved_sources_by_from_symbol_id.empty());
+    CHECK(std::any_of(view.cone_adjacency_index.edges.begin(),
+                      view.cone_adjacency_index.edges.end(),
+                      [](const SnapshotConeAdjacencyEdge& edge) {
+                          return edge.expression == "a" && edge.source_role == SnapshotConeSourceRole::Data;
+                      }));
+}
+
+TEST_CASE("AstIndex distinguishes statement and ternary control origins",
+          "[analysis][semantic][ast-index][cone][control][ternary][statement]") {
+    auto output = buildGraphSource(
+        "module top(input logic enable, input logic select, input logic a, input logic b, output logic y);\n"
+        "  always_comb if (enable) y = select ? a : b;\nendmodule\n");
+    REQUIRE(output.data != nullptr);
+    const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
+
+    CHECK(std::any_of(view.cone_adjacency_index.edges.begin(),
+                      view.cone_adjacency_index.edges.end(),
+                      [](const SnapshotConeAdjacencyEdge& edge) {
+                          return edge.expression == "enable" &&
+                                 edge.control_origin == SnapshotConeControlOrigin::ConditionalStatement;
+                      }));
+    CHECK(std::any_of(view.cone_adjacency_index.edges.begin(),
+                      view.cone_adjacency_index.edges.end(),
+                      [](const SnapshotConeAdjacencyEdge& edge) {
+                          return edge.expression == "select" &&
+                                 edge.control_origin == SnapshotConeControlOrigin::TernaryCondition;
+                      }));
+}
+
+TEST_CASE("AstIndex keeps a ternary selector as data only when a branch reads it",
+          "[analysis][semantic][ast-index][cone][control][ternary][selector-branch]") {
+    auto output = buildGraphSource(
+        "module top(input logic select, input logic a, output logic y);\n"
+        "  assign y = select ? select : a;\nendmodule\n");
+    REQUIRE(output.data != nullptr);
+    const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
+
+    CHECK(std::count_if(view.cone_adjacency_index.edges.begin(),
+                        view.cone_adjacency_index.edges.end(),
+                        [](const SnapshotConeAdjacencyEdge& edge) {
+                            return edge.expression == "select" &&
+                                   edge.source_role == SnapshotConeSourceRole::Control &&
+                                   edge.control_origin == SnapshotConeControlOrigin::TernaryCondition;
+                        }) == 1);
+    CHECK(std::count_if(view.cone_adjacency_index.edges.begin(),
+                        view.cone_adjacency_index.edges.end(),
+                        [](const SnapshotConeAdjacencyEdge& edge) {
+                            return edge.expression == "select" &&
+                                   edge.source_role == SnapshotConeSourceRole::Data;
+                        }) == 1);
+}
+
+TEST_CASE("AstIndex keeps nested ternary control ranges distinct",
+          "[analysis][semantic][ast-index][cone][control][ternary][ranges]") {
+    auto output = buildGraphSource(
+        "module top(input logic first, input logic second, input logic a, input logic b, input logic c, "
+        "output logic y);\n"
+        "  assign y = first ? (second ? a : b) : c;\nendmodule\n");
+    REQUIRE(output.data != nullptr);
+    const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
+
+    std::vector<ParseRange> ranges;
+    for (const auto& edge : view.cone_adjacency_index.edges) {
+        if (edge.source_role == SnapshotConeSourceRole::Control &&
+            edge.control_origin == SnapshotConeControlOrigin::TernaryCondition) {
+            ranges.push_back(edge.expression_location.range);
+        }
+    }
+    REQUIRE(ranges.size() == 2);
+    CHECK(ranges[0].start_character != ranges[1].start_character);
+}
+
+TEST_CASE("AstIndex shares ternary source collection with nonblocking assignments",
+          "[analysis][semantic][ast-index][cone][control][ternary][nonblocking]") {
+    auto output = buildGraphSource(
+        "module top(input logic clk, input logic select, input logic a, input logic b, output logic y);\n"
+        "  always_ff @(posedge clk) y <= select ? a : b;\nendmodule\n");
+    REQUIRE(output.data != nullptr);
+    const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
+
+    CHECK(std::any_of(view.cone_adjacency_index.edges.begin(),
+                      view.cone_adjacency_index.edges.end(),
+                      [](const SnapshotConeAdjacencyEdge& edge) {
+                          return edge.expression == "select" &&
+                                 edge.source_role == SnapshotConeSourceRole::Control &&
+                                 edge.control_origin == SnapshotConeControlOrigin::TernaryCondition;
+                      }));
+    CHECK(std::count_if(view.cone_adjacency_index.edges.begin(),
+                        view.cone_adjacency_index.edges.end(),
+                        [](const SnapshotConeAdjacencyEdge& edge) {
+                            return edge.source_role == SnapshotConeSourceRole::Data &&
+                                   (edge.expression == "a" || edge.expression == "b");
+                        }) == 2);
+}
+
+TEST_CASE("AstIndex classifies a binary ternary condition as control only",
+          "[analysis][semantic][ast-index][cone][control][ternary][binary-condition]") {
+    auto output = buildGraphSource(
+        "module top(input logic left, input logic right, input logic a, input logic b, output logic y);\n"
+        "  assign y = (left && right) ? a : b;\nendmodule\n");
+    REQUIRE(output.data != nullptr);
+    const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
+
+    CHECK(std::any_of(view.cone_adjacency_index.edges.begin(),
+                      view.cone_adjacency_index.edges.end(),
+                      [](const SnapshotConeAdjacencyEdge& edge) {
+                          return edge.source_role == SnapshotConeSourceRole::Control &&
+                                 edge.control_origin == SnapshotConeControlOrigin::TernaryCondition;
+                      }));
+    CHECK(std::none_of(view.cone_adjacency_index.edges.begin(),
+                       view.cone_adjacency_index.edges.end(),
+                       [](const SnapshotConeAdjacencyEdge& edge) {
+                           return edge.source_role == SnapshotConeSourceRole::Data &&
+                                  (edge.expression.find("left") != std::string::npos ||
+                                   edge.expression.find("right") != std::string::npos);
+                       }));
+}
+
+TEST_CASE("AstIndex keeps literal nested ternary branches resolved",
+          "[analysis][semantic][ast-index][cone][control][ternary][nested-literal]") {
+    auto output = buildGraphSource(
+        "module top(input logic first, input logic second, input logic a, output logic y);\n"
+        "  assign y = first ? 1'b0 : (second ? a : 1'b1);\nendmodule\n");
+    REQUIRE(output.data != nullptr);
+    const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
+
+    CHECK(view.cone_adjacency_index.unresolved_sources_by_from_symbol_id.empty());
+    CHECK(std::count_if(view.cone_adjacency_index.edges.begin(),
+                        view.cone_adjacency_index.edges.end(),
+                        [](const SnapshotConeAdjacencyEdge& edge) {
+                            return edge.source_role == SnapshotConeSourceRole::Control &&
+                                   edge.control_origin == SnapshotConeControlOrigin::TernaryCondition;
+                        }) == 2);
 }
 
 TEST_CASE("AstIndex preserves concatenation and select slice kinds in cone facts",

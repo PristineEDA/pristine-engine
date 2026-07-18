@@ -1034,6 +1034,15 @@ void runBackwardConeFixture(SemanticEngine& engine, const nlohmann::json& fixtur
     if (expected.contains("edgeCount")) {
         CHECK(result.edges.size() == expected.at("edgeCount").get<size_t>());
     }
+    if (expected.contains("controlEdgeCount")) {
+        CHECK(result.cone_control_edge_count == expected.at("controlEdgeCount").get<size_t>());
+    }
+    if (expected.contains("ternaryControlEdgeCount")) {
+        CHECK(result.cone_ternary_control_edge_count == expected.at("ternaryControlEdgeCount").get<size_t>());
+    }
+    if (expected.contains("unresolvedSourceFactCount")) {
+        CHECK(result.cone_unresolved_source_fact_count == expected.at("unresolvedSourceFactCount").get<size_t>());
+    }
     if (expected.contains("nodes")) {
         for (const auto& expected_node : expected.at("nodes")) {
             const auto node = expected_node.get<std::string>();
@@ -1052,6 +1061,15 @@ void runBackwardConeFixture(SemanticEngine& engine, const nlohmann::json& fixtur
             }));
         }
     }
+    if (expected.contains("absentDataExpressions")) {
+        for (const auto& expected_expression : expected.at("absentDataExpressions")) {
+            const auto expression = expected_expression.get<std::string>();
+            CAPTURE(expression);
+            CHECK(std::none_of(result.edges.begin(), result.edges.end(), [&](const SemanticConeEdge& edge) {
+                return edge.source_role == "data" && edge.expression == expression;
+            }));
+        }
+    }
     if (expected.contains("edgeKinds")) {
         for (const auto& expected_kind : expected.at("edgeKinds")) {
             const auto kind = expected_kind.get<std::string>();
@@ -1067,6 +1085,15 @@ void runBackwardConeFixture(SemanticEngine& engine, const nlohmann::json& fixtur
             CAPTURE(role);
             CHECK(std::any_of(result.edges.begin(), result.edges.end(), [&](const SemanticConeEdge& edge) {
                 return edge.source_role == role;
+            }));
+        }
+    }
+    if (expected.contains("controlOrigins")) {
+        for (const auto& expected_origin : expected.at("controlOrigins")) {
+            const auto origin = expected_origin.get<std::string>();
+            CAPTURE(origin);
+            CHECK(std::any_of(result.edges.begin(), result.edges.end(), [&](const SemanticConeEdge& edge) {
+                return edge.control_origin == origin;
             }));
         }
     }

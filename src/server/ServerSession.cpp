@@ -675,6 +675,7 @@ jsonrpc::Json toConeEdgeJson(const analysis::SemanticConeEdge& edge) {
     if (edge.kind != "assignment") result["kind"] = edge.kind;
     if (edge.source_role != "data") result["sourceRole"] = edge.source_role;
     if (edge.slice_kind != "whole") result["sliceKind"] = edge.slice_kind;
+    if (!edge.control_origin.empty()) result["controlOrigin"] = edge.control_origin;
     if (edge.source_range.has_value()) result["sourceRange"] = toRangeJson(*edge.source_range);
     return result;
 }
@@ -1431,7 +1432,13 @@ jsonrpc::Json ServerSession::handleBackwardCone(const jsonrpc::Json& params) {
     }
     auto result = toConeTraceJson(trace);
     result["coneControlEdges"] = trace.cone_control_edge_count;
+    if (trace.cone_ternary_control_edge_count > 0) {
+        result["coneTernaryControlEdges"] = trace.cone_ternary_control_edge_count;
+    }
     result["coneSliceFacts"] = trace.cone_slice_fact_count;
+    if (trace.cone_unresolved_source_fact_count > 0) {
+        result["coneUnresolvedSourceFacts"] = trace.cone_unresolved_source_fact_count;
+    }
     result["graphBuildScopedSymbolCandidates"] = trace.graph_build_scoped_symbol_candidates;
     result["graphBuildConnectionReferenceCandidates"] =
         trace.graph_build_connection_reference_candidates;

@@ -1531,12 +1531,13 @@ TEST_CASE("ServerSession returns hover for declaration symbols", "[server][hover
     ScriptedTransport transport{
         R"({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}})",
         R"({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///workspace/hover.sv","languageId":"systemverilog","version":1,"text":"module top;\n  logic ready;\nendmodule\n"}}})",
-        R"({"jsonrpc":"2.0","id":2,"method":"textDocument/hover","params":{"textDocument":{"uri":"file:///workspace/hover.sv"},"position":{"line":1,"character":8}}})"};
+        R"({"jsonrpc":"2.0","id":2,"method":"textDocument/hover","params":{"textDocument":{"uri":"file:///workspace/hover.sv"},"position":{"line":1,"character":8}}})",
+        R"({"jsonrpc":"2.0","id":3,"method":"shutdown","params":{}})"};
 
     const int exit_code = rpc_server.run(transport);
 
     CHECK(exit_code == 0);
-    REQUIRE(transport.outputs().size() == 3);
+    REQUIRE(transport.outputs().size() == 4);
 
     const auto hover_response = parseOutput(transport, 2);
     CHECK(hover_response.at("id") == 2);

@@ -103,6 +103,20 @@ std::string coneSourceRoleLabel(SnapshotConeSourceRole role) {
     return role == SnapshotConeSourceRole::Control ? "control" : "data";
 }
 
+std::string coneControlOriginLabel(SnapshotConeControlOrigin origin) {
+    switch (origin) {
+    case SnapshotConeControlOrigin::None:
+        return {};
+    case SnapshotConeControlOrigin::ConditionalStatement:
+        return "if";
+    case SnapshotConeControlOrigin::CaseStatement:
+        return "case";
+    case SnapshotConeControlOrigin::TernaryCondition:
+        return "ternary";
+    }
+    return {};
+}
+
 std::string coneSliceKindLabel(SnapshotConeSliceKind kind) {
     switch (kind) {
     case SnapshotConeSliceKind::Whole:
@@ -678,7 +692,8 @@ SemanticConeTrace backwardCone(const DesignGraphContext& context,
         return trace;
     }
 
-    if (context.cone_adjacency_index.edges.empty()) {
+    if (context.cone_adjacency_index.edges.empty() &&
+        context.cone_adjacency_index.unresolved_sources_by_from_symbol_id.empty()) {
         trace.messages.push_back(
             "No AST assignment edges or instance port edges are indexed for the current snapshot.");
         return trace;
@@ -744,6 +759,20 @@ SemanticConeTrace backwardCone(const DesignGraphContext& context,
             break;
         }
 
+        const auto unresolved_sources =
+            context.cone_adjacency_index.unresolved_sources_by_from_symbol_id.find(current_id);
+        if (unresolved_sources != context.cone_adjacency_index.unresolved_sources_by_from_symbol_id.end()) {
+            for (const auto& source : unresolved_sources->second) {
+                trace.partial = true;
+                ++trace.cone_unresolved_source_fact_count;
+                const auto origin = coneControlOriginLabel(source.control_origin);
+                appendUniqueMessage(trace.messages,
+                                    "Unresolved " +
+                                        (origin.empty() ? std::string("cone") : origin + " control") +
+                                        " source '" + source.expression + "'.");
+            }
+        }
+
         const auto adjacency = context.cone_adjacency_index.edges_by_from_symbol_id.find(current_id);
         if (adjacency == context.cone_adjacency_index.edges_by_from_symbol_id.end()) {
             continue;
@@ -762,6 +791,7 @@ SemanticConeTrace backwardCone(const DesignGraphContext& context,
                                   std::to_string(edge.location.range.start_character) + "\n" +
                                   coneEdgeKindLabel(edge.kind) + "\n" +
                                   coneSourceRoleLabel(edge.source_role) + "\n" +
+                                  coneControlOriginLabel(edge.control_origin) + "\n" +
                                   coneSliceKindLabel(edge.slice_kind);
             if (node_available && emitted_edges.insert(edge_key).second) {
                 if (max_results > 0 && trace.edges.size() >= max_results) {
@@ -775,9 +805,13 @@ SemanticConeTrace backwardCone(const DesignGraphContext& context,
                                                        .kind = coneEdgeKindLabel(edge.kind),
                                                        .source_role = coneSourceRoleLabel(edge.source_role),
                                                        .slice_kind = coneSliceKindLabel(edge.slice_kind),
+                                                       .control_origin = coneControlOriginLabel(edge.control_origin),
                                                        .source_range = edge.expression_location.range});
                 if (edge.source_role == SnapshotConeSourceRole::Control) {
                     ++trace.cone_control_edge_count;
+                    if (edge.control_origin == SnapshotConeControlOrigin::TernaryCondition) {
+                        ++trace.cone_ternary_control_edge_count;
+                    }
                 }
                 if (edge.slice_kind != SnapshotConeSliceKind::Whole) {
                     ++trace.cone_slice_fact_count;
