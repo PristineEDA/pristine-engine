@@ -58,6 +58,26 @@ auto buildGraphSource(std::string source, std::uint64_t generation = 91) {
     return SnapshotBuilder{}.build(std::move(input));
 }
 
+const SnapshotConeAdjacencyEdge* coneDataEdge(const SnapshotConeAdjacencyIndex& index,
+                                              std::string_view expression) {
+    const auto it = std::find_if(index.edges.begin(), index.edges.end(), [&](const auto& candidate) {
+        return candidate.expression == expression && candidate.source_role == SnapshotConeSourceRole::Data;
+    });
+    return it == index.edges.end() ? nullptr : &*it;
+}
+
+bool graphHasDataSlicePrecision(std::string source, SnapshotConeSlicePrecision precision) {
+    auto output = buildGraphSource(std::move(source));
+    if (output.data == nullptr) return false;
+    const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
+    return std::any_of(view.cone_adjacency_index.edges.begin(),
+                       view.cone_adjacency_index.edges.end(),
+                       [&](const SnapshotConeAdjacencyEdge& edge) {
+                           return edge.source_role == SnapshotConeSourceRole::Data &&
+                                  edge.source_slice.precision == precision;
+                       });
+}
+
 TEST_CASE("AstIndex filters, sorts, and maps workspace symbols",
           "[analysis][semantic][ast-index][workspace-symbol]") {
     const AstIndexContext context{
@@ -921,6 +941,13 @@ TEST_CASE("AstIndex exposes generated-only instance connection facts for backwar
                           return connection.port_name == "out" && connection.signal == "y";
                       }));
 
+    REQUIRE(output.data->assignment_edge_seeds.size() == 1);
+    CHECK(output.data->assignment_edge_seeds.front().left_expression == "out");
+    CHECK(output.data->assignment_edge_seeds.front().left_symbol_names == std::vector<std::string>{"out"});
+    REQUIRE(output.data->assignment_edge_seeds.front().data_sources.size() == 1);
+    CHECK(output.data->assignment_edge_seeds.front().data_sources.front().source_symbol_names ==
+          std::vector<std::string>{"in"});
+
     const auto edge_it = view.assignment_edges_by_uri.find("file:///workspace/generated-cone.sv");
     REQUIRE(edge_it != view.assignment_edges_by_uri.end());
     CHECK(std::any_of(edge_it->second.begin(), edge_it->second.end(), [&](const SnapshotAssignmentEdge& edge) {
@@ -1173,7 +1200,6 @@ TEST_CASE("AstIndex builds deterministic interface modport member bindings",
 
     auto output = SnapshotBuilder{}.build(std::move(input));
     REQUIRE(output.data != nullptr);
-
     const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
     REQUIRE(view.interface_modport_binding_index.modports_by_stable_id.size() == 1);
     REQUIRE(view.interface_modport_binding_index.ports_by_stable_id.size() == 1);
@@ -2248,6 +2274,304 @@ TEST_CASE("AstIndex preserves static and dynamic select facts in ternary branche
                            return edge.expression == "select" &&
                                   edge.source_role == SnapshotConeSourceRole::Data;
                        }));
+}
+
+TEST_CASE("AstIndex records exact source and sink slices for static cone selects",
+          "[analysis][semantic][ast-index][cone][slice][exact]") {
+    auto output = buildGraphSource(
+        "module top(input logic [7:0] data, output logic [3:0] y);\n"
+        "  assign y[3:0] = data[7:4];\nendmodule\n");
+    REQUIRE(output.data != nullptr);
+    const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
+
+    const auto edge = std::find_if(view.cone_adjacency_index.edges.begin(),
+                                   view.cone_adjacency_index.edges.end(),
+                                   [](const SnapshotConeAdjacencyEdge& candidate) {
+                                       return candidate.expression == "data[7:4]" &&
+                                              candidate.source_role == SnapshotConeSourceRole::Data;
+                                   });
+    REQUIRE(edge != view.cone_adjacency_index.edges.end());
+    CHECK(edge->source_slice.precision == SnapshotConeSlicePrecision::Exact);
+    CHECK(edge->source_slice.msb == 7);
+    CHECK(edge->source_slice.lsb == 4);
+    CHECK(edge->sink_slice.precision == SnapshotConeSlicePrecision::Exact);
+    CHECK(edge->sink_slice.msb == 3);
+    CHECK(edge->sink_slice.lsb == 0);
+}
+
+TEST_CASE("AstIndex maps concatenation operands onto exact descending sink slices",
+          "[analysis][semantic][ast-index][cone][slice][concatenation][exact]") {
+    auto output = buildGraphSource(
+        "module top(input logic [3:0] upper, input logic [3:0] lower, output logic [7:0] y);\n"
+        "  assign y[7:0] = {upper[3:0], lower[3:0]};\nendmodule\n");
+    REQUIRE(output.data != nullptr);
+    const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
+
+    const auto exact_sink_for = [&](std::string_view expression) {
+        const auto edge = std::find_if(view.cone_adjacency_index.edges.begin(),
+                                       view.cone_adjacency_index.edges.end(),
+                                       [&](const SnapshotConeAdjacencyEdge& candidate) {
+                                           return candidate.expression == expression &&
+                                                  candidate.source_role == SnapshotConeSourceRole::Data;
+                                       });
+        REQUIRE(edge != view.cone_adjacency_index.edges.end());
+        CHECK(edge->slice_kind == SnapshotConeSliceKind::Concatenation);
+        CHECK(edge->source_slice.precision == SnapshotConeSlicePrecision::Exact);
+        CHECK(edge->sink_slice.precision == SnapshotConeSlicePrecision::Exact);
+        return edge->sink_slice;
+    };
+
+    const auto upper_sink = exact_sink_for("upper[3:0]");
+    CHECK(upper_sink.msb == 7);
+    CHECK(upper_sink.lsb == 4);
+    const auto lower_sink = exact_sink_for("lower[3:0]");
+    CHECK(lower_sink.msb == 3);
+    CHECK(lower_sink.lsb == 0);
+}
+
+TEST_CASE("AstIndex maps concatenation operands onto exact ascending sink slices",
+          "[analysis][semantic][ast-index][cone][slice][concatenation][ascending]") {
+    auto output = buildGraphSource(
+        "module top(input logic [3:0] upper, input logic [3:0] lower, output logic [0:7] y);\n"
+        "  assign y[0:7] = {upper[3:0], lower[3:0]};\nendmodule\n");
+    REQUIRE(output.data != nullptr);
+    const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
+
+    const auto* upper = coneDataEdge(view.cone_adjacency_index, "upper[3:0]");
+    const auto* lower = coneDataEdge(view.cone_adjacency_index, "lower[3:0]");
+    REQUIRE(upper != nullptr);
+    REQUIRE(lower != nullptr);
+    CHECK(upper->sink_slice.precision == SnapshotConeSlicePrecision::Exact);
+    CHECK(upper->sink_slice.msb == 0);
+    CHECK(upper->sink_slice.lsb == 3);
+    CHECK(lower->sink_slice.precision == SnapshotConeSlicePrecision::Exact);
+    CHECK(lower->sink_slice.msb == 4);
+    CHECK(lower->sink_slice.lsb == 7);
+}
+
+TEST_CASE("AstIndex maps nested concatenation operands onto exact sink slices",
+          "[analysis][semantic][ast-index][cone][slice][concatenation][nested]") {
+    auto output = buildGraphSource(
+        "module top(input logic [1:0] a, input logic [1:0] b, input logic [3:0] c, output logic [7:0] y);\n"
+        "  assign y[7:0] = {{a[1:0], b[1:0]}, c[3:0]};\nendmodule\n");
+    REQUIRE(output.data != nullptr);
+    const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
+
+    const auto* a = coneDataEdge(view.cone_adjacency_index, "a[1:0]");
+    const auto* b = coneDataEdge(view.cone_adjacency_index, "b[1:0]");
+    const auto* c = coneDataEdge(view.cone_adjacency_index, "c[3:0]");
+    REQUIRE(a != nullptr);
+    REQUIRE(b != nullptr);
+    REQUIRE(c != nullptr);
+    CHECK(a->sink_slice.msb == 7);
+    CHECK(a->sink_slice.lsb == 6);
+    CHECK(b->sink_slice.msb == 5);
+    CHECK(b->sink_slice.lsb == 4);
+    CHECK(c->sink_slice.msb == 3);
+    CHECK(c->sink_slice.lsb == 0);
+}
+
+TEST_CASE("AstIndex shares exact concatenation sink mapping with procedural assignments",
+          "[analysis][semantic][ast-index][cone][slice][concatenation][procedural]") {
+    auto output = buildGraphSource(
+        "module top(input logic [3:0] upper, input logic [3:0] lower, output logic [7:0] y);\n"
+        "  always_comb y[7:0] = {upper[3:0], lower[3:0]};\nendmodule\n");
+    REQUIRE(output.data != nullptr);
+    const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
+
+    const auto* upper = coneDataEdge(view.cone_adjacency_index, "upper[3:0]");
+    const auto* lower = coneDataEdge(view.cone_adjacency_index, "lower[3:0]");
+    REQUIRE(upper != nullptr);
+    REQUIRE(lower != nullptr);
+    CHECK(upper->sink_slice.msb == 7);
+    CHECK(upper->sink_slice.lsb == 4);
+    CHECK(lower->sink_slice.msb == 3);
+    CHECK(lower->sink_slice.lsb == 0);
+}
+
+TEST_CASE("AstIndex preserves exact static indexed part-select facts",
+          "[analysis][semantic][ast-index][cone][slice][indexed-part-select]") {
+    auto output = buildGraphSource(
+        "module top(input logic [7:0] data, output logic [2:0] y);\n"
+        "  assign y[2:0] = data[2 +: 3];\nendmodule\n");
+    REQUIRE(output.data != nullptr);
+    const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
+
+    const auto edge = std::find_if(view.cone_adjacency_index.edges.begin(),
+                                   view.cone_adjacency_index.edges.end(),
+                                   [](const auto& candidate) {
+                                       return candidate.source_role == SnapshotConeSourceRole::Data &&
+                                              candidate.slice_kind == SnapshotConeSliceKind::RangeSelect;
+                                   });
+    REQUIRE(edge != view.cone_adjacency_index.edges.end());
+    CHECK(edge->source_slice.precision == SnapshotConeSlicePrecision::Exact);
+    CHECK(edge->source_slice.msb.has_value());
+    CHECK(edge->source_slice.lsb.has_value());
+    CHECK(edge->sink_slice.precision == SnapshotConeSlicePrecision::Exact);
+}
+
+TEST_CASE("AstIndex keeps binary cone sources aggregate instead of fabricating slices",
+          "[analysis][semantic][ast-index][cone][slice][aggregate]") {
+    auto output = buildGraphSource(
+        "module top(input logic [3:0] a, input logic [3:0] b, output logic [3:0] y);\n"
+        "  assign y[3:0] = a[3:0] ^ b[3:0];\nendmodule\n");
+    REQUIRE(output.data != nullptr);
+    const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
+
+    const auto edge = std::find_if(view.cone_adjacency_index.edges.begin(),
+                                   view.cone_adjacency_index.edges.end(),
+                                   [](const auto& candidate) {
+                                       return candidate.source_role == SnapshotConeSourceRole::Data &&
+                                              candidate.expression == "a[3:0] ^ b[3:0]";
+                                   });
+    REQUIRE(edge != view.cone_adjacency_index.edges.end());
+    CHECK(edge->source_slice.precision == SnapshotConeSlicePrecision::Aggregate);
+    CHECK(edge->sink_slice.precision == SnapshotConeSlicePrecision::Exact);
+}
+
+TEST_CASE("AstIndex exposes a dynamic-select control without an exact source slice",
+          "[analysis][semantic][ast-index][cone][slice][dynamic-control]") {
+    auto output = buildGraphSource(
+        "module top(input logic [7:0] data, input logic [2:0] index, output logic y);\n"
+        "  assign y = data[index];\nendmodule\n");
+    REQUIRE(output.data != nullptr);
+    const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
+
+    const auto* data = coneDataEdge(view.cone_adjacency_index, "data[index]");
+    REQUIRE(data != nullptr);
+    CHECK(data->source_slice.precision == SnapshotConeSlicePrecision::Dynamic);
+    CHECK(std::any_of(view.cone_adjacency_index.edges.begin(),
+                      view.cone_adjacency_index.edges.end(),
+                      [](const auto& edge) {
+                          return edge.kind == SnapshotConeEdgeKind::ControlDependency &&
+                                 edge.control_origin == SnapshotConeControlOrigin::DynamicSelect &&
+                                 edge.source_role == SnapshotConeSourceRole::Control;
+                      }));
+}
+
+TEST_CASE("AstIndex treats a low static element select as exact",
+          "[analysis][semantic][ast-index][cone][slice][element][low]") {
+    CHECK(graphHasDataSlicePrecision(
+        "module top(input logic [7:0] data, output logic y); assign y = data[0]; endmodule\n",
+        SnapshotConeSlicePrecision::Exact));
+}
+
+TEST_CASE("AstIndex treats a high static element select as exact",
+          "[analysis][semantic][ast-index][cone][slice][element][high]") {
+    CHECK(graphHasDataSlicePrecision(
+        "module top(input logic [7:0] data, output logic y); assign y = data[7]; endmodule\n",
+        SnapshotConeSlicePrecision::Exact));
+}
+
+TEST_CASE("AstIndex treats descending static part selects as exact",
+          "[analysis][semantic][ast-index][cone][slice][range][descending]") {
+    CHECK(graphHasDataSlicePrecision(
+        "module top(input logic [7:0] data, output logic [3:0] y); assign y[3:0] = data[6:3]; endmodule\n",
+        SnapshotConeSlicePrecision::Exact));
+}
+
+TEST_CASE("AstIndex treats ascending static part selects as exact",
+          "[analysis][semantic][ast-index][cone][slice][range][ascending]") {
+    CHECK(graphHasDataSlicePrecision(
+        "module top(input logic [0:7] data, output logic [0:3] y); assign y[0:3] = data[1:4]; endmodule\n",
+        SnapshotConeSlicePrecision::Exact));
+}
+
+TEST_CASE("AstIndex treats static indexed plus part selects as exact",
+          "[analysis][semantic][ast-index][cone][slice][range][indexed-plus]") {
+    CHECK(graphHasDataSlicePrecision(
+        "module top(input logic [7:0] data, output logic [2:0] y); assign y[2:0] = data[2 +: 3]; endmodule\n",
+        SnapshotConeSlicePrecision::Exact));
+}
+
+TEST_CASE("AstIndex treats static indexed minus part selects as exact",
+          "[analysis][semantic][ast-index][cone][slice][range][indexed-minus]") {
+    CHECK(graphHasDataSlicePrecision(
+        "module top(input logic [7:0] data, output logic [2:0] y); assign y[2:0] = data[5 -: 3]; endmodule\n",
+        SnapshotConeSlicePrecision::Exact));
+}
+
+TEST_CASE("AstIndex marks dynamic element selects dynamic",
+          "[analysis][semantic][ast-index][cone][slice][element][dynamic]") {
+    CHECK(graphHasDataSlicePrecision(
+        "module top(input logic [7:0] data, input logic [2:0] index, output logic y); assign y = data[index]; endmodule\n",
+        SnapshotConeSlicePrecision::Dynamic));
+}
+
+TEST_CASE("AstIndex marks dynamic range selects dynamic",
+          "[analysis][semantic][ast-index][cone][slice][range][dynamic]") {
+    CHECK(graphHasDataSlicePrecision(
+        "module top(input logic [7:0] data, input logic [2:0] index, output logic [2:0] y); assign y[2:0] = data[index +: 3]; endmodule\n",
+        SnapshotConeSlicePrecision::Dynamic));
+}
+
+TEST_CASE("AstIndex keeps concatenated part-select operands exact",
+          "[analysis][semantic][ast-index][cone][slice][concatenation][parts]") {
+    CHECK(graphHasDataSlicePrecision(
+        "module top(input logic [3:0] a, input logic [3:0] b, output logic [7:0] y); assign y[7:0] = {a[3:0], b[3:0]}; endmodule\n",
+        SnapshotConeSlicePrecision::Exact));
+}
+
+TEST_CASE("AstIndex keeps concatenated element-select operands exact",
+          "[analysis][semantic][ast-index][cone][slice][concatenation][elements]") {
+    CHECK(graphHasDataSlicePrecision(
+        "module top(input logic [3:0] a, input logic [3:0] b, output logic [1:0] y); assign y[1:0] = {a[1], b[2]}; endmodule\n",
+        SnapshotConeSlicePrecision::Exact));
+}
+
+TEST_CASE("AstIndex keeps nested concatenation operands exact",
+          "[analysis][semantic][ast-index][cone][slice][concatenation][nested-precision]") {
+    CHECK(graphHasDataSlicePrecision(
+        "module top(input logic [1:0] a, input logic [1:0] b, input logic [3:0] c, output logic [7:0] y); assign y[7:0] = {{a[1:0], b[1:0]}, c[3:0]}; endmodule\n",
+        SnapshotConeSlicePrecision::Exact));
+}
+
+TEST_CASE("AstIndex keeps static ternary branch slices exact",
+          "[analysis][semantic][ast-index][cone][slice][ternary][static]") {
+    CHECK(graphHasDataSlicePrecision(
+        "module top(input logic select, input logic [3:0] a, input logic [3:0] b, output logic [3:0] y); assign y[3:0] = select ? a[3:0] : b[3:0]; endmodule\n",
+        SnapshotConeSlicePrecision::Exact));
+}
+
+TEST_CASE("AstIndex keeps dynamic ternary branch slices dynamic",
+          "[analysis][semantic][ast-index][cone][slice][ternary][dynamic]") {
+    CHECK(graphHasDataSlicePrecision(
+        "module top(input logic select, input logic [7:0] data, input logic [2:0] index, output logic y); assign y = select ? data[index] : data[0]; endmodule\n",
+        SnapshotConeSlicePrecision::Dynamic));
+}
+
+TEST_CASE("AstIndex labels binary expression sources aggregate",
+          "[analysis][semantic][ast-index][cone][slice][binary][aggregate]") {
+    CHECK(graphHasDataSlicePrecision(
+        "module top(input logic [3:0] a, input logic [3:0] b, output logic [3:0] y); assign y[3:0] = a[3:0] ^ b[3:0]; endmodule\n",
+        SnapshotConeSlicePrecision::Aggregate));
+}
+
+TEST_CASE("AstIndex preserves exact slices in procedural concatenations",
+          "[analysis][semantic][ast-index][cone][slice][procedural][concatenation]") {
+    CHECK(graphHasDataSlicePrecision(
+        "module top(input logic [3:0] upper, input logic [3:0] lower, output logic [7:0] y); always_comb y[7:0] = {upper[3:0], lower[3:0]}; endmodule\n",
+        SnapshotConeSlicePrecision::Exact));
+}
+
+TEST_CASE("AstIndex records dynamic select precision without claiming an exact slice",
+          "[analysis][semantic][ast-index][cone][slice][dynamic]") {
+    auto output = buildGraphSource(
+        "module top(input logic [7:0] data, input logic [2:0] index, output logic y);\n"
+        "  assign y = data[index];\nendmodule\n");
+    REQUIRE(output.data != nullptr);
+    const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
+
+    const auto edge = std::find_if(view.cone_adjacency_index.edges.begin(),
+                                   view.cone_adjacency_index.edges.end(),
+                                   [](const SnapshotConeAdjacencyEdge& candidate) {
+                                       return candidate.expression == "data[index]" &&
+                                              candidate.source_role == SnapshotConeSourceRole::Data;
+                                   });
+    REQUIRE(edge != view.cone_adjacency_index.edges.end());
+    CHECK(edge->source_slice.precision == SnapshotConeSlicePrecision::Dynamic);
+    CHECK_FALSE(edge->source_slice.msb.has_value());
+    CHECK_FALSE(edge->source_slice.lsb.has_value());
 }
 
 TEST_CASE("AstIndex indexes procedural ternary controls through the shared collector",

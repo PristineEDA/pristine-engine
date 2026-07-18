@@ -348,6 +348,12 @@ struct SemanticConeNode {
     std::optional<std::int64_t> bit_width;
 };
 
+struct SemanticConeSlice {
+    std::string precision = "whole";
+    std::optional<std::int64_t> msb;
+    std::optional<std::int64_t> lsb;
+};
+
 struct SemanticConeEdge {
     std::string from_symbol_id;
     std::string to_symbol_id;
@@ -358,6 +364,8 @@ struct SemanticConeEdge {
     std::string slice_kind = "whole";
     std::string control_origin;
     std::optional<ParseRange> source_range;
+    std::optional<SemanticConeSlice> source_slice;
+    std::optional<SemanticConeSlice> sink_slice;
 };
 
 struct SemanticConeTrace {
@@ -371,6 +379,9 @@ struct SemanticConeTrace {
     size_t cone_control_edge_count = 0;
     size_t cone_ternary_control_edge_count = 0;
     size_t cone_slice_fact_count = 0;
+    size_t cone_exact_slice_edge_count = 0;
+    size_t cone_dynamic_slice_fact_count = 0;
+    size_t cone_static_slice_match_count = 0;
     size_t cone_unresolved_source_fact_count = 0;
     size_t graph_build_scoped_symbol_candidates = 0;
     size_t graph_build_connection_reference_candidates = 0;

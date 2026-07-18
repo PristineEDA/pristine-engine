@@ -27,6 +27,14 @@ namespace {
 
 constexpr size_t kMaxSemanticLocations = 2000;
 
+bool rangeContainsPosition(const ParseRange& range, int line, int character) {
+    const auto starts_before_or_at = range.start_line < line ||
+                                     (range.start_line == line && range.start_character <= character);
+    const auto ends_after_or_at = range.end_line > line ||
+                                 (range.end_line == line && range.end_character >= character);
+    return starts_before_or_at && ends_after_or_at;
+}
+
 void hashCombine(std::uint64_t& seed, std::uint64_t value) {
     seed ^= value + 0x9e3779b97f4a7c15ULL + (seed << 6U) + (seed >> 2U);
 }
@@ -1476,7 +1484,17 @@ SemanticConeTrace SemanticEngine::backwardConeAt(std::string_view uri,
     const auto* data = snapshotData();
     const auto ast_index = semantic::buildAstIndexView(data, current_snapshot.generation);
     auto context = designGraphContextFor(data, current_snapshot, config_, ast_index);
-    trace = semantic::backwardCone(context, document_uri, lookup, kMaxSemanticLocations);
+    std::optional<semantic::SnapshotConeSliceFact> root_slice;
+    if (const auto roots = context.cone_adjacency_index.root_selections_by_uri.find(document_uri);
+        roots != context.cone_adjacency_index.root_selections_by_uri.end()) {
+        for (const auto& root : roots->second) {
+            if (root.symbol_id == lookup.symbol->stable_id && rangeContainsPosition(root.range, line, character)) {
+                root_slice = root.slice;
+                break;
+            }
+        }
+    }
+    trace = semantic::backwardCone(context, document_uri, lookup, kMaxSemanticLocations, root_slice);
     return finish(std::move(trace));
 }
 

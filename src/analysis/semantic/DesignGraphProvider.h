@@ -65,6 +65,7 @@ struct DesignGraphContext {
 [[nodiscard]] SemanticConeTrace backwardCone(const DesignGraphContext& context,
                                              std::string_view document_uri,
                                              const SemanticLookupResult& lookup,
-                                             size_t max_results);
+                                             size_t max_results,
+                                             std::optional<SnapshotConeSliceFact> root_slice = std::nullopt);
 
 } // namespace pristine::analysis::semantic

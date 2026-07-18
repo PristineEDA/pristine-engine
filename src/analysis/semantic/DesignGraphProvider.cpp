@@ -113,6 +113,8 @@ std::string coneControlOriginLabel(SnapshotConeControlOrigin origin) {
         return "case";
     case SnapshotConeControlOrigin::TernaryCondition:
         return "ternary";
+    case SnapshotConeControlOrigin::DynamicSelect:
+        return "dynamicSelect";
     }
     return {};
 }
@@ -133,6 +135,49 @@ std::string coneSliceKindLabel(SnapshotConeSliceKind kind) {
         return "dynamicSelect";
     }
     return "whole";
+}
+
+std::string coneSlicePrecisionLabel(SnapshotConeSlicePrecision precision) {
+    switch (precision) {
+    case SnapshotConeSlicePrecision::Whole:
+        return "whole";
+    case SnapshotConeSlicePrecision::Exact:
+        return "exact";
+    case SnapshotConeSlicePrecision::Aggregate:
+        return "aggregate";
+    case SnapshotConeSlicePrecision::Dynamic:
+        return "dynamic";
+    case SnapshotConeSlicePrecision::Unresolved:
+        return "unresolved";
+    }
+    return "unresolved";
+}
+
+std::optional<SemanticConeSlice> coneSlice(const SnapshotConeSliceFact& fact) {
+    if (fact.precision == SnapshotConeSlicePrecision::Whole) {
+        return std::nullopt;
+    }
+    return SemanticConeSlice{.precision = coneSlicePrecisionLabel(fact.precision),
+                             .msb = fact.msb,
+                             .lsb = fact.lsb};
+}
+
+std::string coneSliceKey(const SnapshotConeSliceFact& fact) {
+    return coneSlicePrecisionLabel(fact.precision) + ":" +
+           (fact.msb ? std::to_string(*fact.msb) : std::string{}) + ":" +
+           (fact.lsb ? std::to_string(*fact.lsb) : std::string{});
+}
+
+bool exactSlicesIntersect(const SnapshotConeSliceFact& lhs, const SnapshotConeSliceFact& rhs) {
+    if (lhs.precision != SnapshotConeSlicePrecision::Exact ||
+        rhs.precision != SnapshotConeSlicePrecision::Exact || !lhs.msb || !lhs.lsb || !rhs.msb || !rhs.lsb) {
+        return true;
+    }
+    const auto lhs_low = std::min(*lhs.msb, *lhs.lsb);
+    const auto lhs_high = std::max(*lhs.msb, *lhs.lsb);
+    const auto rhs_low = std::min(*rhs.msb, *rhs.lsb);
+    const auto rhs_high = std::max(*rhs.msb, *rhs.lsb);
+    return lhs_low <= rhs_high && rhs_low <= lhs_high;
 }
 
 void appendEndpointByDirection(SemanticSchematicNet& net,
@@ -674,7 +719,8 @@ SemanticCallHierarchyCallsResult outgoingCalls(const DesignGraphContext& context
 SemanticConeTrace backwardCone(const DesignGraphContext& context,
                                std::string_view document_uri,
                                const SemanticLookupResult& lookup,
-                               size_t max_results) {
+                               size_t max_results,
+                               std::optional<SnapshotConeSliceFact> root_slice) {
     (void)document_uri;
     SemanticConeTrace trace;
     trace.generation = lookup.generation;
@@ -742,6 +788,11 @@ SemanticConeTrace backwardCone(const DesignGraphContext& context,
     trace.graph_build_connection_reference_candidates =
         context.binding_index.connection_reference_candidate_count;
     append_node(lookup.symbol->stable_id);
+    if (root_slice.has_value() && root_slice->precision == SnapshotConeSlicePrecision::Dynamic) {
+        trace.partial = true;
+        appendUniqueMessage(trace.messages,
+                            "Backward cone root uses a dynamic select; bit precision is partial.");
+    }
 
     std::vector<std::string> pending{lookup.symbol->stable_id};
     std::set<std::string> visited;
@@ -784,6 +835,23 @@ SemanticConeTrace backwardCone(const DesignGraphContext& context,
                 mark_truncated();
                 break;
             }
+            if (current_id == *trace.root_symbol_id && root_slice.has_value() &&
+                root_slice->precision == SnapshotConeSlicePrecision::Exact &&
+                edge.sink_slice.precision == SnapshotConeSlicePrecision::Exact) {
+                if (!exactSlicesIntersect(*root_slice, edge.sink_slice)) {
+                    continue;
+                }
+                ++trace.cone_static_slice_match_count;
+            }
+            else if (current_id == *trace.root_symbol_id && root_slice.has_value() &&
+                     root_slice->precision == SnapshotConeSlicePrecision::Exact &&
+                     (edge.sink_slice.precision == SnapshotConeSlicePrecision::Aggregate ||
+                      edge.sink_slice.precision == SnapshotConeSlicePrecision::Dynamic ||
+                      edge.sink_slice.precision == SnapshotConeSlicePrecision::Unresolved)) {
+                trace.partial = true;
+                appendUniqueMessage(trace.messages,
+                                    "Backward cone root cannot prove a static slice match for one dependency.");
+            }
 
             const auto node_available = append_node(edge.to_symbol_id);
             const auto edge_key = edge.from_symbol_id + "\n" + edge.to_symbol_id + "\n" +
@@ -792,7 +860,9 @@ SemanticConeTrace backwardCone(const DesignGraphContext& context,
                                   coneEdgeKindLabel(edge.kind) + "\n" +
                                   coneSourceRoleLabel(edge.source_role) + "\n" +
                                   coneControlOriginLabel(edge.control_origin) + "\n" +
-                                  coneSliceKindLabel(edge.slice_kind);
+                                  coneSliceKindLabel(edge.slice_kind) + "\n" +
+                                  coneSliceKey(edge.source_slice) + "\n" +
+                                  coneSliceKey(edge.sink_slice);
             if (node_available && emitted_edges.insert(edge_key).second) {
                 if (max_results > 0 && trace.edges.size() >= max_results) {
                     mark_truncated();
@@ -806,7 +876,9 @@ SemanticConeTrace backwardCone(const DesignGraphContext& context,
                                                        .source_role = coneSourceRoleLabel(edge.source_role),
                                                        .slice_kind = coneSliceKindLabel(edge.slice_kind),
                                                        .control_origin = coneControlOriginLabel(edge.control_origin),
-                                                       .source_range = edge.expression_location.range});
+                                                       .source_range = edge.expression_location.range,
+                                                       .source_slice = coneSlice(edge.source_slice),
+                                                       .sink_slice = coneSlice(edge.sink_slice)});
                 if (edge.source_role == SnapshotConeSourceRole::Control) {
                     ++trace.cone_control_edge_count;
                     if (edge.control_origin == SnapshotConeControlOrigin::TernaryCondition) {
@@ -815,6 +887,17 @@ SemanticConeTrace backwardCone(const DesignGraphContext& context,
                 }
                 if (edge.slice_kind != SnapshotConeSliceKind::Whole) {
                     ++trace.cone_slice_fact_count;
+                }
+                if (edge.source_slice.precision == SnapshotConeSlicePrecision::Exact ||
+                    edge.sink_slice.precision == SnapshotConeSlicePrecision::Exact) {
+                    ++trace.cone_exact_slice_edge_count;
+                }
+                if (edge.source_slice.precision == SnapshotConeSlicePrecision::Dynamic ||
+                    edge.sink_slice.precision == SnapshotConeSlicePrecision::Dynamic) {
+                    ++trace.cone_dynamic_slice_fact_count;
+                    trace.partial = true;
+                    appendUniqueMessage(trace.messages,
+                                        "Backward cone includes a dynamic select; bit precision is partial.");
                 }
             }
             if (node_available && !visited.contains(edge.to_symbol_id) && !reached_cap()) {

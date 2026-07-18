@@ -2057,6 +2057,63 @@ TEST_CASE("SemanticEngine traces backward cone through AstIndex identifiers with
     CHECK(cone.edges.front().location.range.start_line == 3);
 }
 
+TEST_CASE("SemanticEngine filters backward cone roots by an exact selected slice",
+          "[analysis][semantic-engine][design][cone][slice][no-fallback]") {
+    SemanticEngine engine;
+    engine.configure(SemanticEngineConfig{.top_modules = {"top"}});
+    engine.updateDocument("file:///workspace/cone-slices.sv",
+                          "module top;\n"
+                          "  logic [7:0] lo;\n"
+                          "  logic [7:0] hi;\n"
+                          "  logic [7:0] y;\n"
+                          "  assign y[3:0] = lo[3:0];\n"
+                          "  assign y[7:4] = hi[7:4];\n"
+                          "endmodule\n",
+                          SemanticEngineDocumentState{.version = 1, .is_open = true});
+
+    const auto cone = engine.backwardConeAt("file:///workspace/cone-slices.sv", 4, 9);
+
+    REQUIRE_FALSE(cone.unresolved);
+    CHECK(cone.cone_static_slice_match_count == 1);
+    CHECK(std::any_of(cone.nodes.begin(), cone.nodes.end(), [](const SemanticConeNode& node) {
+        return node.name == "lo";
+    }));
+    CHECK_FALSE(std::any_of(cone.nodes.begin(), cone.nodes.end(), [](const SemanticConeNode& node) {
+        return node.name == "hi";
+    }));
+    CHECK(std::all_of(cone.edges.begin(), cone.edges.end(), [](const SemanticConeEdge& edge) {
+        return edge.expression != "hi[7:4]";
+    }));
+}
+
+TEST_CASE("SemanticEngine merges concat sink slices before selecting a backward cone root",
+          "[analysis][semantic-engine][design][cone][slice][concatenation][no-fallback]") {
+    SemanticEngine engine;
+    engine.configure(SemanticEngineConfig{.top_modules = {"top"}});
+    engine.updateDocument("file:///workspace/cone-concat-root.sv",
+                          "module top;\n"
+                          "  logic [3:0] upper;\n"
+                          "  logic [3:0] lower;\n"
+                          "  logic [7:0] y;\n"
+                          "  assign y[7:0] = {upper[3:0], lower[3:0]};\n"
+                          "endmodule\n",
+                          SemanticEngineDocumentState{.version = 1, .is_open = true});
+
+    const auto cone = engine.backwardConeAt("file:///workspace/cone-concat-root.sv", 4, 9);
+
+    REQUIRE_FALSE(cone.unresolved);
+    CHECK(cone.cone_static_slice_match_count == 2);
+    CHECK(std::any_of(cone.nodes.begin(), cone.nodes.end(), [](const SemanticConeNode& node) {
+        return node.name == "upper";
+    }));
+    CHECK(std::any_of(cone.nodes.begin(), cone.nodes.end(), [](const SemanticConeNode& node) {
+        return node.name == "lower";
+    }));
+    CHECK(std::count_if(cone.edges.begin(), cone.edges.end(), [](const SemanticConeEdge& edge) {
+              return edge.slice_kind == "concatenation";
+          }) == 2);
+}
+
 TEST_CASE("SemanticEngine traces backward cone through parameterized width assignments",
           "[analysis][semantic-engine][design][cone][parameterized][no-fallback]") {
     SemanticEngine engine;

@@ -1106,6 +1106,47 @@ void runBackwardConeFixture(SemanticEngine& engine, const nlohmann::json& fixtur
             }));
         }
     }
+    if (expected.contains("sourceSlices")) {
+        for (const auto& expected_slice : expected.at("sourceSlices")) {
+            const auto precision = expected_slice.at("precision").get<std::string>();
+            const auto msb = expected_slice.contains("msb")
+                                 ? std::optional<std::int64_t>{expected_slice.at("msb").get<std::int64_t>()}
+                                 : std::nullopt;
+            const auto lsb = expected_slice.contains("lsb")
+                                 ? std::optional<std::int64_t>{expected_slice.at("lsb").get<std::int64_t>()}
+                                 : std::nullopt;
+            CAPTURE(precision, msb, lsb);
+            CHECK(std::any_of(result.edges.begin(), result.edges.end(), [&](const SemanticConeEdge& edge) {
+                return edge.source_slice.has_value() && edge.source_slice->precision == precision &&
+                       edge.source_slice->msb == msb && edge.source_slice->lsb == lsb;
+            }));
+        }
+    }
+    if (expected.contains("sinkSlices")) {
+        for (const auto& expected_slice : expected.at("sinkSlices")) {
+            const auto precision = expected_slice.at("precision").get<std::string>();
+            const auto msb = expected_slice.contains("msb")
+                                 ? std::optional<std::int64_t>{expected_slice.at("msb").get<std::int64_t>()}
+                                 : std::nullopt;
+            const auto lsb = expected_slice.contains("lsb")
+                                 ? std::optional<std::int64_t>{expected_slice.at("lsb").get<std::int64_t>()}
+                                 : std::nullopt;
+            CAPTURE(precision, msb, lsb);
+            CHECK(std::any_of(result.edges.begin(), result.edges.end(), [&](const SemanticConeEdge& edge) {
+                return edge.sink_slice.has_value() && edge.sink_slice->precision == precision &&
+                       edge.sink_slice->msb == msb && edge.sink_slice->lsb == lsb;
+            }));
+        }
+    }
+    if (expected.contains("exactSliceEdgeCount")) {
+        CHECK(result.cone_exact_slice_edge_count == expected.at("exactSliceEdgeCount").get<size_t>());
+    }
+    if (expected.contains("dynamicSliceFactCount")) {
+        CHECK(result.cone_dynamic_slice_fact_count == expected.at("dynamicSliceFactCount").get<size_t>());
+    }
+    if (expected.contains("staticSliceMatchCount")) {
+        CHECK(result.cone_static_slice_match_count == expected.at("staticSliceMatchCount").get<size_t>());
+    }
 }
 
 void runCodeActionFixture(SemanticEngine& engine, const nlohmann::json& fixture) {

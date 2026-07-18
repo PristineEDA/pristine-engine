@@ -49,6 +49,19 @@ struct SnapshotReferenceOccurrenceIndex {
     std::vector<ParseRange> prefix_max_end_ranges;
 };
 
+// Graph construction consumes these URI-local, deterministically ordered views
+// instead of reconstructing them from the global symbol/reference stores.
+struct SnapshotUriSymbolRangeFact {
+    std::string stable_id;
+    ParseRange range;
+};
+
+struct SnapshotUriReferenceRangeFact {
+    std::string stable_id;
+    ParseRange range;
+    bool is_declaration = false;
+};
+
 // Navigation queries use their own value-type occurrence view so providers do
 // not need to reach back into SnapshotData::references or AST-owned symbols.
 struct SnapshotNavigationOccurrence {
@@ -226,7 +239,13 @@ struct SnapshotModuleCallEdgeIndex {
 
 enum class SnapshotConeEdgeKind { Assignment, InstancePort, ParameterOverride, ControlDependency };
 enum class SnapshotConeSourceRole { Data, Control };
-enum class SnapshotConeControlOrigin { None, ConditionalStatement, CaseStatement, TernaryCondition };
+enum class SnapshotConeControlOrigin {
+    None,
+    ConditionalStatement,
+    CaseStatement,
+    TernaryCondition,
+    DynamicSelect,
+};
 enum class SnapshotConeSliceKind {
     Whole,
     ElementSelect,
@@ -236,11 +255,26 @@ enum class SnapshotConeSliceKind {
     DynamicSelect,
 };
 
+// A slice fact describes the precision of a signal dependency without making
+// providers reconstruct selections from source text. Exact ranges preserve the
+// declared SystemVerilog indices; aggregate and dynamic facts deliberately
+// remain partial instead of claiming a bit-precise relation.
+enum class SnapshotConeSlicePrecision { Whole, Exact, Aggregate, Dynamic, Unresolved };
+
+struct SnapshotConeSliceFact {
+    SnapshotConeSlicePrecision precision = SnapshotConeSlicePrecision::Whole;
+    std::optional<std::int64_t> msb;
+    std::optional<std::int64_t> lsb;
+};
+
 struct SnapshotConeDataSourceSeed {
     ParseRange range;
     std::string expression;
     SnapshotConeSliceKind slice_kind = SnapshotConeSliceKind::Whole;
+    SnapshotConeSliceFact source_slice;
+    SnapshotConeSliceFact sink_slice;
     std::vector<std::string> source_symbol_ids;
+    std::vector<std::string> source_symbol_names;
     bool unresolved = false;
 };
 
@@ -248,7 +282,9 @@ struct SnapshotConeControlSourceSeed {
     ParseRange range;
     std::string expression;
     SnapshotConeSliceKind slice_kind = SnapshotConeSliceKind::Whole;
+    SnapshotConeSliceFact source_slice;
     std::vector<std::string> source_symbol_ids;
+    std::vector<std::string> source_symbol_names;
     SnapshotConeControlOrigin origin = SnapshotConeControlOrigin::None;
     bool unresolved = false;
 };
@@ -262,6 +298,8 @@ struct SnapshotAssignmentEdgeSeed {
     std::string left_expression;
     std::string right_expression;
     std::vector<std::string> left_symbol_ids;
+    std::vector<std::string> left_symbol_names;
+    SnapshotConeSliceFact sink_slice;
     std::vector<SnapshotConeDataSourceSeed> data_sources;
     std::vector<SnapshotConeControlSourceSeed> control_sources;
 };
@@ -270,12 +308,15 @@ struct SnapshotAssignmentEdge {
     std::string from_symbol_id;
     std::string to_symbol_id;
     SemanticLocation location;
+    SemanticLocation target_location;
     SemanticLocation expression_location;
     std::string expression;
     SnapshotConeEdgeKind kind = SnapshotConeEdgeKind::Assignment;
     SnapshotConeSourceRole source_role = SnapshotConeSourceRole::Data;
     SnapshotConeSliceKind slice_kind = SnapshotConeSliceKind::Whole;
     SnapshotConeControlOrigin control_origin = SnapshotConeControlOrigin::None;
+    SnapshotConeSliceFact source_slice;
+    SnapshotConeSliceFact sink_slice;
 };
 
 enum class SnapshotGraphEndpointKind { Port, Parameter, Instance, InterfacePort, ModportPort };
@@ -351,12 +392,15 @@ struct SnapshotConeAdjacencyEdge {
     std::string from_symbol_id;
     std::string to_symbol_id;
     SemanticLocation location;
+    SemanticLocation target_location;
     SemanticLocation expression_location;
     std::string expression;
     SnapshotConeEdgeKind kind = SnapshotConeEdgeKind::Assignment;
     SnapshotConeSourceRole source_role = SnapshotConeSourceRole::Data;
     SnapshotConeSliceKind slice_kind = SnapshotConeSliceKind::Whole;
     SnapshotConeControlOrigin control_origin = SnapshotConeControlOrigin::None;
+    SnapshotConeSliceFact source_slice;
+    SnapshotConeSliceFact sink_slice;
     std::string generated_instance_id;
 };
 
@@ -367,6 +411,12 @@ struct SnapshotConeUnresolvedSourceFact {
     std::string expression;
     SnapshotConeSourceRole source_role = SnapshotConeSourceRole::Data;
     SnapshotConeControlOrigin control_origin = SnapshotConeControlOrigin::None;
+};
+
+struct SnapshotConeRootSelectionFact {
+    std::string symbol_id;
+    ParseRange range;
+    SnapshotConeSliceFact slice;
 };
 
 // Design graph queries consume these precomputed maps rather than rebuilding
@@ -389,6 +439,7 @@ struct SnapshotConeAdjacencyIndex {
     std::vector<SnapshotConeAdjacencyEdge> edges;
     std::unordered_map<std::string, std::vector<size_t>> edges_by_from_symbol_id;
     std::unordered_map<std::string, std::vector<size_t>> edges_by_to_symbol_id;
+    std::unordered_map<std::string, std::vector<SnapshotConeRootSelectionFact>> root_selections_by_uri;
     std::unordered_map<std::string, std::vector<SnapshotConeUnresolvedSourceFact>>
         unresolved_sources_by_from_symbol_id;
 };
@@ -422,6 +473,8 @@ struct SnapshotData {
     std::unordered_map<std::string, std::vector<size_t>> references_by_symbol;
     std::unordered_map<std::string, std::vector<std::string>> reference_aliases_by_id;
     std::unordered_map<std::string, SnapshotReferenceOccurrenceIndex> reference_occurrences_by_uri;
+    std::unordered_map<std::string, std::vector<SnapshotUriSymbolRangeFact>> graph_symbols_by_uri;
+    std::unordered_map<std::string, std::vector<SnapshotUriReferenceRangeFact>> graph_references_by_uri;
     std::unordered_map<std::string, SnapshotNavigationOccurrenceIndex> navigation_occurrences_by_uri;
     std::unordered_map<std::string, std::vector<SnapshotNavigationOccurrence>>
         navigation_occurrences_by_symbol;

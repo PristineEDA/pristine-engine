@@ -667,6 +667,13 @@ jsonrpc::Json toConeNodeJson(const analysis::SemanticConeNode& node) {
     return result;
 }
 
+jsonrpc::Json toConeSliceJson(const analysis::SemanticConeSlice& slice) {
+    jsonrpc::Json result{{"precision", slice.precision}};
+    if (slice.msb.has_value()) result["msb"] = *slice.msb;
+    if (slice.lsb.has_value()) result["lsb"] = *slice.lsb;
+    return result;
+}
+
 jsonrpc::Json toConeEdgeJson(const analysis::SemanticConeEdge& edge) {
     jsonrpc::Json result{{"from", edge.from_symbol_id},
                          {"to", edge.to_symbol_id},
@@ -677,6 +684,8 @@ jsonrpc::Json toConeEdgeJson(const analysis::SemanticConeEdge& edge) {
     if (edge.slice_kind != "whole") result["sliceKind"] = edge.slice_kind;
     if (!edge.control_origin.empty()) result["controlOrigin"] = edge.control_origin;
     if (edge.source_range.has_value()) result["sourceRange"] = toRangeJson(*edge.source_range);
+    if (edge.source_slice.has_value()) result["sourceSlice"] = toConeSliceJson(*edge.source_slice);
+    if (edge.sink_slice.has_value()) result["sinkSlice"] = toConeSliceJson(*edge.sink_slice);
     return result;
 }
 
@@ -1436,6 +1445,15 @@ jsonrpc::Json ServerSession::handleBackwardCone(const jsonrpc::Json& params) {
         result["coneTernaryControlEdges"] = trace.cone_ternary_control_edge_count;
     }
     result["coneSliceFacts"] = trace.cone_slice_fact_count;
+    if (trace.cone_exact_slice_edge_count > 0) {
+        result["coneExactSliceEdges"] = trace.cone_exact_slice_edge_count;
+    }
+    if (trace.cone_dynamic_slice_fact_count > 0) {
+        result["coneDynamicSliceFacts"] = trace.cone_dynamic_slice_fact_count;
+    }
+    if (trace.cone_static_slice_match_count > 0) {
+        result["coneStaticSliceMatches"] = trace.cone_static_slice_match_count;
+    }
     if (trace.cone_unresolved_source_fact_count > 0) {
         result["coneUnresolvedSourceFacts"] = trace.cone_unresolved_source_fact_count;
     }
