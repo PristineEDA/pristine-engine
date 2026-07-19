@@ -6,6 +6,7 @@
 #include "pristine/analysis/SourceUtil.h"
 
 #include "slang/ast/ASTVisitor.h"
+#include "slang/ast/ASTContext.h"
 #include "slang/ast/Compilation.h"
 #include "slang/ast/Expression.h"
 #include "slang/ast/Scope.h"
@@ -1256,6 +1257,372 @@ std::vector<SchematicConnection> parameterOverrideConnectionsForAstInstance(
                   return lhs.port_name < rhs.port_name;
               });
     return connections;
+}
+
+SnapshotConeSliceFact declaredSliceForEndpoint(const slang::ast::Symbol& symbol);
+void collectResolvedConnectionSourceParts(
+    SnapshotData& data,
+    const slang::SourceManager& source_manager,
+    const slang::ast::Expression& expression,
+    const SnapshotConeSliceFact& endpoint_slice,
+    std::vector<SnapshotGraphConnectionBindingFact::SourcePart>& parts);
+void normalizeConnectionSourceParts(std::vector<SnapshotGraphConnectionBindingFact::SourcePart>& parts);
+
+void appendResolvedConnectionSliceFact(
+    SnapshotData& data,
+    const slang::SourceManager& source_manager,
+    std::string instance_stable_id,
+    std::string endpoint_stable_id,
+    std::string endpoint_name,
+    int endpoint_index,
+    SnapshotConeEdgeKind kind,
+    const SnapshotConeSliceFact& declared_slice,
+    const slang::ast::Expression& expression) {
+    if (instance_stable_id.empty() || (endpoint_stable_id.empty() && endpoint_name.empty())) {
+        return;
+    }
+    const auto location = locationForSourceRange(source_manager, expression.sourceRange);
+    if (!location.has_value()) {
+        return;
+    }
+    SnapshotResolvedConnectionSliceFact fact{.instance_stable_id = std::move(instance_stable_id),
+                                             .endpoint_stable_id = std::move(endpoint_stable_id),
+                                             .endpoint_name = std::move(endpoint_name),
+                                             .endpoint_index = endpoint_index,
+                                             .location = *location,
+                                             .kind = kind,
+                                             .source_parts = {},
+                                             .unresolved = false};
+    // The endpoint's declared range is captured from the resolved port or
+    // parameter symbol. The expression collector then narrows individual
+    // concat/select sources without using SchematicConnection::signal.
+    if (!fact.endpoint_stable_id.empty()) {
+        data.endpoint_declared_slices_by_id.insert_or_assign(fact.endpoint_stable_id, declared_slice);
+    }
+    collectResolvedConnectionSourceParts(data,
+                                         source_manager,
+                                         expression,
+                                         declared_slice,
+                                         fact.source_parts);
+    fact.unresolved = std::any_of(fact.source_parts.begin(),
+                                  fact.source_parts.end(),
+                                  [](const auto& part) { return part.unresolved; });
+    data.resolved_connection_slices_by_instance_id[fact.instance_stable_id].push_back(std::move(fact));
+}
+
+void collectResolvedPortConnectionSlices(SnapshotData& data,
+                                         const slang::SourceManager& source_manager,
+                                         const slang::ast::InstanceSymbol& instance,
+                                         std::string_view instance_stable_id) {
+    size_t index = 0;
+    for (const auto* connection : instance.getPortConnections()) {
+        if (connection == nullptr) {
+            ++index;
+            continue;
+        }
+        const auto endpoint = data.ids_by_symbol.find(&connection->port);
+        const auto* expression = connection->getExpression();
+        if (endpoint != data.ids_by_symbol.end() && expression != nullptr) {
+            appendResolvedConnectionSliceFact(data,
+                                              source_manager,
+                                              std::string(instance_stable_id),
+                                              endpoint->second,
+                                              std::string(connection->port.name),
+                                              static_cast<int>(index),
+                                              SnapshotConeEdgeKind::InstancePort,
+                                              declaredSliceForEndpoint(connection->port),
+                                              *expression);
+        }
+        ++index;
+    }
+}
+
+void collectResolvedParameterOverrideSlices(SnapshotData& data,
+                                            const slang::SourceManager& source_manager,
+                                            const slang::ast::InstanceSymbol& instance,
+                                            std::string_view instance_stable_id) {
+    const auto* parent_scope = instance.getParentScope();
+    const auto instance_location = declarationLocationForSymbol(source_manager, instance);
+    const slang::syntax::ParameterValueAssignmentSyntax* parameter_syntax = nullptr;
+    if (instance_location.has_value()) {
+        const auto pending = data.parameter_override_syntax_by_instance_key.find(
+            instance_location->uri + "\x1f" + rangeKey(instance_location->range));
+        if (pending != data.parameter_override_syntax_by_instance_key.end()) {
+            parameter_syntax = pending->second.syntax;
+        }
+    }
+    if (parameter_syntax == nullptr) {
+        const auto pending = std::find_if(data.parameter_override_syntax_by_instance_key.begin(),
+                                          data.parameter_override_syntax_by_instance_key.end(),
+                                          [&](const auto& entry) {
+                                              return entry.second.module_name == instance.getDefinition().name &&
+                                                     entry.second.instance_name == instance.name;
+                                          });
+        if (pending != data.parameter_override_syntax_by_instance_key.end()) {
+            parameter_syntax = pending->second.syntax;
+        }
+    }
+    if (parameter_syntax == nullptr && instance_location.has_value()) {
+        for (const auto& tree : data.syntax_trees) {
+            if (!tree || parameter_syntax != nullptr) {
+                continue;
+            }
+            auto visitor = slang::syntax::makeSyntaxVisitor(
+                [&](auto& self, const slang::syntax::HierarchyInstantiationSyntax& node) {
+                    if (parameter_syntax != nullptr || node.parameters == nullptr ||
+                        node.type.valueText() != instance.getDefinition().name) {
+                        self.visitDefault(node);
+                        return;
+                    }
+                    for (const auto* candidate : node.instances) {
+                        if (candidate == nullptr || candidate->decl == nullptr ||
+                            candidate->decl->name.valueText() != instance.name) {
+                            continue;
+                        }
+                        const auto location = locationForSyntaxToken(source_manager, candidate->decl->name);
+                        if (location.has_value() && location->uri == instance_location->uri &&
+                            sameRange(location->range, instance_location->range)) {
+                            parameter_syntax = node.parameters;
+                            break;
+                        }
+                    }
+                    self.visitDefault(node);
+                });
+            tree->root().visit(visitor);
+        }
+    }
+    if (parameter_syntax == nullptr) {
+        const slang::syntax::SyntaxNode* hierarchy_syntax = instance.getSyntax();
+        while (hierarchy_syntax != nullptr &&
+               hierarchy_syntax->kind != slang::syntax::SyntaxKind::HierarchyInstantiation) {
+            hierarchy_syntax = hierarchy_syntax->parent;
+        }
+        if (hierarchy_syntax != nullptr) {
+            parameter_syntax = hierarchy_syntax->as<slang::syntax::HierarchyInstantiationSyntax>().parameters;
+        }
+    }
+    if (parameter_syntax == nullptr || parent_scope == nullptr) {
+        return;
+    }
+
+    slang::ast::ASTContext context(*parent_scope,
+                                   slang::ast::LookupLocation::before(instance),
+                                   slang::ast::ASTFlags::NonProcedural |
+                                       slang::ast::ASTFlags::NoReference);
+    context.setInstance(instance);
+    const auto bind_assignment = [&](const slang::syntax::ExpressionSyntax& syntax,
+                                     std::string endpoint_name,
+                                     size_t endpoint_index) {
+        const auto& expression = slang::ast::Expression::bindRValue(
+            parent_scope->getCompilation().getErrorType(),
+            syntax,
+            {},
+            context,
+            slang::ast::ASTFlags::AllowDataType);
+        appendResolvedConnectionSliceFact(data,
+                                          source_manager,
+                                          std::string(instance_stable_id),
+                                          {},
+                                          std::move(endpoint_name),
+                                          static_cast<int>(endpoint_index),
+                                          SnapshotConeEdgeKind::ParameterOverride,
+                                          SnapshotConeSliceFact{},
+                                          expression);
+    };
+
+    bool ordered = true;
+    if (!parameter_syntax->parameters.empty()) {
+        ordered = parameter_syntax->parameters[0]->kind ==
+                  slang::syntax::SyntaxKind::OrderedParamAssignment;
+    }
+    if (ordered) {
+        for (size_t parameter_index = 0; parameter_index < parameter_syntax->parameters.size();
+             ++parameter_index) {
+            const auto* assignment = parameter_syntax->parameters[parameter_index];
+            if (assignment == nullptr || assignment->kind != slang::syntax::SyntaxKind::OrderedParamAssignment) {
+                return;
+            }
+            const auto& expression = assignment->as<slang::syntax::OrderedParamAssignmentSyntax>().expr;
+            bind_assignment(*expression, {}, parameter_index);
+        }
+        return;
+    }
+
+    for (const auto* assignment : parameter_syntax->parameters) {
+        if (assignment == nullptr || assignment->kind != slang::syntax::SyntaxKind::NamedParamAssignment) {
+            continue;
+        }
+        const auto& named = assignment->as<slang::syntax::NamedParamAssignmentSyntax>();
+        if (named.expr == nullptr) {
+            continue;
+        }
+        bind_assignment(*named.expr, std::string(named.name.valueText()), 0);
+    }
+}
+
+struct ResolvedConnectionSliceVisitor
+    : slang::ast::ASTVisitor<ResolvedConnectionSliceVisitor, slang::ast::VisitFlags::AllGood> {
+    SnapshotData& data;
+    const slang::SourceManager& source_manager;
+
+    ResolvedConnectionSliceVisitor(SnapshotData& data, const slang::SourceManager& source_manager) :
+        data(data), source_manager(source_manager) {}
+
+    void handle(const slang::ast::InstanceSymbol& instance) {
+        const auto location = declarationLocationForSymbol(source_manager, instance);
+        if (location.has_value()) {
+            const auto instance_id = instanceStableId(source_manager, instance, *location);
+            collectResolvedPortConnectionSlices(data, source_manager, instance, instance_id);
+            collectResolvedParameterOverrideSlices(data, source_manager, instance, instance_id);
+        }
+        this->visitDefault(instance);
+    }
+
+    template<typename T>
+    void handle(const T& symbol)
+        requires std::is_base_of_v<slang::ast::Symbol, T>
+    {
+        this->visitDefault(symbol);
+    }
+
+    template<typename T>
+    void handle(const T& expression)
+        requires std::is_base_of_v<slang::ast::Expression, T>
+    {
+        this->visitDefault(expression);
+    }
+};
+
+void buildSyntaxParameterOverrideSliceFacts(SnapshotData& data,
+                                            const slang::SourceManager& source_manager) {
+    for (const auto& [_, pending] : data.parameter_override_syntax_by_instance_key) {
+        if (pending.syntax == nullptr || pending.uri.empty() || pending.module_name.empty() ||
+            pending.instance_name.empty()) {
+            continue;
+        }
+        const auto instances = data.module_instances_by_uri.find(pending.uri);
+        if (instances == data.module_instances_by_uri.end()) {
+            continue;
+        }
+        const auto instance = std::find_if(instances->second.begin(), instances->second.end(), [&](const auto& value) {
+            return value.module_name == pending.module_name && value.instance_name == pending.instance_name &&
+                   (sameRange(value.selection_range, pending.instance_range) ||
+                    rangesOverlapOrTouch(value.selection_range, pending.instance_range));
+        });
+        if (instance == instances->second.end() || instance->instance_stable_id.empty()) {
+            continue;
+        }
+
+        const auto references = data.graph_references_by_uri.find(pending.uri);
+        const auto append_assignment = [&](const slang::syntax::ExpressionSyntax& syntax,
+                                           std::string endpoint_name,
+                                           int endpoint_index) {
+            const auto location = locationForSourceRange(source_manager, syntax.sourceRange());
+            if (!location.has_value()) {
+                return;
+            }
+            const auto duplicate = std::any_of(
+                data.resolved_connection_slices_by_instance_id[instance->instance_stable_id].begin(),
+                data.resolved_connection_slices_by_instance_id[instance->instance_stable_id].end(),
+                [&](const auto& fact) {
+                    return fact.kind == SnapshotConeEdgeKind::ParameterOverride &&
+                           fact.endpoint_name == endpoint_name && fact.endpoint_index == endpoint_index &&
+                           sameLocation(fact.location, *location);
+                });
+            if (duplicate) {
+                return;
+            }
+
+            SnapshotResolvedConnectionSliceFact fact{
+                .instance_stable_id = instance->instance_stable_id,
+                .endpoint_stable_id = {},
+                .endpoint_name = std::move(endpoint_name),
+                .endpoint_index = endpoint_index,
+                .location = *location,
+                .kind = SnapshotConeEdgeKind::ParameterOverride,
+                .source_parts = {},
+                .unresolved = false};
+            if (references != data.graph_references_by_uri.end()) {
+                const auto first = std::lower_bound(references->second.begin(),
+                                                    references->second.end(),
+                                                    location->range,
+                                                    [](const SnapshotUriReferenceRangeFact& reference,
+                                                       const ParseRange& range) {
+                                                        return rangeStartLess(reference.range, range);
+                                                    });
+                for (auto it = first; it != references->second.end(); ++it) {
+                    if (rangeStartsAfter(it->range, location->range)) {
+                        break;
+                    }
+                    if (it->is_declaration || !rangeContainsRange(location->range, it->range) ||
+                        it->stable_id.empty()) {
+                        continue;
+                    }
+                    fact.source_parts.push_back(SnapshotGraphConnectionBindingFact::SourcePart{
+                        .source_symbol_id = it->stable_id,
+                        .source_location = SemanticLocation{.uri = pending.uri, .range = it->range},
+                        .source_slice = {},
+                        .endpoint_slice = {},
+                        .slice_kind = SnapshotConeSliceKind::Whole,
+                        .source_role = SnapshotConeSourceRole::Data,
+                        .control_origin = SnapshotConeControlOrigin::None,
+                        .unresolved = false});
+                }
+            }
+            normalizeConnectionSourceParts(fact.source_parts);
+            data.resolved_connection_slices_by_instance_id[instance->instance_stable_id].push_back(
+                std::move(fact));
+        };
+
+        bool ordered = true;
+        if (!pending.syntax->parameters.empty()) {
+            ordered = pending.syntax->parameters[0]->kind == slang::syntax::SyntaxKind::OrderedParamAssignment;
+        }
+        for (size_t index = 0; index < pending.syntax->parameters.size(); ++index) {
+            const auto* assignment = pending.syntax->parameters[index];
+            if (assignment == nullptr) {
+                continue;
+            }
+            if (ordered && assignment->kind == slang::syntax::SyntaxKind::OrderedParamAssignment) {
+                append_assignment(*assignment->as<slang::syntax::OrderedParamAssignmentSyntax>().expr,
+                                  {},
+                                  static_cast<int>(index));
+            }
+            else if (!ordered && assignment->kind == slang::syntax::SyntaxKind::NamedParamAssignment) {
+                const auto& named = assignment->as<slang::syntax::NamedParamAssignmentSyntax>();
+                if (named.expr != nullptr) {
+                    append_assignment(*named.expr, std::string(named.name.valueText()), -1);
+                }
+            }
+        }
+    }
+}
+
+void buildResolvedConnectionSliceFacts(SnapshotData& data, const slang::SourceManager& source_manager) {
+    data.resolved_connection_slices_by_instance_id.clear();
+    data.endpoint_declared_slices_by_id.clear();
+    ResolvedConnectionSliceVisitor visitor(data, source_manager);
+    data.compilation->getRoot().visit(visitor);
+    buildSyntaxParameterOverrideSliceFacts(data, source_manager);
+    for (auto& [_, facts] : data.resolved_connection_slices_by_instance_id) {
+        std::sort(facts.begin(), facts.end(), [](const auto& lhs, const auto& rhs) {
+            return std::tie(lhs.endpoint_stable_id,
+                            lhs.endpoint_index,
+                            lhs.location.uri,
+                            lhs.location.range.start_line,
+                            lhs.location.range.start_character,
+                            lhs.kind,
+                            lhs.unresolved) <
+                   std::tie(rhs.endpoint_stable_id,
+                            rhs.endpoint_index,
+                            rhs.location.uri,
+                            rhs.location.range.start_line,
+                            rhs.location.range.start_character,
+                            rhs.kind,
+                            rhs.unresolved);
+        });
+    }
+    data.parameter_override_syntax_by_instance_key.clear();
 }
 
 std::string typeDisplayForSymbol(const slang::ast::Symbol& symbol) {
@@ -3022,6 +3389,273 @@ std::vector<std::string> dataSymbolIdsForExpression(SnapshotData& data,
     return ids;
 }
 
+const slang::ast::Type* endpointTypeForSymbol(const slang::ast::Symbol& symbol) {
+    if (const auto* declared_type = symbol.getDeclaredType()) {
+        return &declared_type->getType();
+    }
+    if (symbol.kind == slang::ast::SymbolKind::Port) {
+        return &symbol.as<slang::ast::PortSymbol>().getType();
+    }
+    if (symbol.kind == slang::ast::SymbolKind::MultiPort) {
+        return &symbol.as<slang::ast::MultiPortSymbol>().getType();
+    }
+    return nullptr;
+}
+
+SnapshotConeSliceFact declaredSliceForEndpoint(const slang::ast::Symbol& symbol) {
+    const auto* type = endpointTypeForSymbol(symbol);
+    if (type == nullptr) {
+        return {};
+    }
+    if (type->hasFixedRange()) {
+        const auto range = type->getFixedRange();
+        return SnapshotConeSliceFact{.precision = SnapshotConeSlicePrecision::Exact,
+                                     .msb = range.left,
+                                     .lsb = range.right};
+    }
+    return type->getBitWidth() == 0
+               ? SnapshotConeSliceFact{.precision = SnapshotConeSlicePrecision::Aggregate,
+                                       .msb = {},
+                                       .lsb = {}}
+               : SnapshotConeSliceFact{};
+}
+
+SnapshotConeSliceFact connectionEndpointSlice(const SnapshotConeSliceFact& declared_slice,
+                                              const slang::ast::Expression& expression) {
+    if (declared_slice.precision != SnapshotConeSlicePrecision::Exact || !declared_slice.msb ||
+        !declared_slice.lsb) {
+        return declared_slice;
+    }
+    const auto width = staticBitWidth(expression);
+    const auto endpoint_width = std::llabs(*declared_slice.msb - *declared_slice.lsb) + 1;
+    if (!width || *width > endpoint_width) {
+        return SnapshotConeSliceFact{.precision = SnapshotConeSlicePrecision::Aggregate,
+                                     .msb = {},
+                                     .lsb = {}};
+    }
+    if (*width == endpoint_width) {
+        return declared_slice;
+    }
+
+    const auto step = *declared_slice.msb >= *declared_slice.lsb ? std::int64_t{1} : std::int64_t{-1};
+    const auto lsb = *declared_slice.lsb;
+    return SnapshotConeSliceFact{.precision = SnapshotConeSlicePrecision::Exact,
+                                 .msb = lsb + step * (*width - 1),
+                                 .lsb = lsb};
+}
+
+bool connectionExpressionIsLiteral(const slang::ast::Expression& expression) {
+    const auto& unwrapped = unwrapImplicitConversions(expression);
+    return unwrapped.kind == slang::ast::ExpressionKind::IntegerLiteral ||
+           unwrapped.kind == slang::ast::ExpressionKind::StringLiteral ||
+           unwrapped.kind == slang::ast::ExpressionKind::UnbasedUnsizedIntegerLiteral;
+}
+
+void normalizeConnectionSourceParts(std::vector<SnapshotGraphConnectionBindingFact::SourcePart>& parts) {
+    std::sort(parts.begin(), parts.end(), [](const auto& lhs, const auto& rhs) {
+        return std::tie(lhs.source_symbol_id,
+                        lhs.source_location.uri,
+                        lhs.source_location.range.start_line,
+                        lhs.source_location.range.start_character,
+                        lhs.source_location.range.end_line,
+                        lhs.source_location.range.end_character,
+                        lhs.source_role,
+                        lhs.control_origin,
+                        lhs.slice_kind,
+                        lhs.source_slice.precision,
+                        lhs.source_slice.msb,
+                        lhs.source_slice.lsb,
+                        lhs.endpoint_slice.precision,
+                        lhs.endpoint_slice.msb,
+                        lhs.endpoint_slice.lsb,
+                        lhs.unresolved) <
+               std::tie(rhs.source_symbol_id,
+                        rhs.source_location.uri,
+                        rhs.source_location.range.start_line,
+                        rhs.source_location.range.start_character,
+                        rhs.source_location.range.end_line,
+                        rhs.source_location.range.end_character,
+                        rhs.source_role,
+                        rhs.control_origin,
+                        rhs.slice_kind,
+                        rhs.source_slice.precision,
+                        rhs.source_slice.msb,
+                        rhs.source_slice.lsb,
+                        rhs.endpoint_slice.precision,
+                        rhs.endpoint_slice.msb,
+                        rhs.endpoint_slice.lsb,
+                        rhs.unresolved);
+    });
+    parts.erase(std::unique(parts.begin(), parts.end(), [](const auto& lhs, const auto& rhs) {
+                    return lhs.source_symbol_id == rhs.source_symbol_id &&
+                           sameLocation(lhs.source_location, rhs.source_location) &&
+                           lhs.source_role == rhs.source_role &&
+                           lhs.control_origin == rhs.control_origin && lhs.slice_kind == rhs.slice_kind &&
+                           sameSliceFact(lhs.source_slice, rhs.source_slice) &&
+                           sameSliceFact(lhs.endpoint_slice, rhs.endpoint_slice) &&
+                           lhs.unresolved == rhs.unresolved;
+                }),
+                parts.end());
+}
+
+void collectResolvedConnectionSourceParts(
+    SnapshotData& data,
+    const slang::SourceManager& source_manager,
+    const slang::ast::Expression& expression,
+    const SnapshotConeSliceFact& endpoint_slice,
+    std::vector<SnapshotGraphConnectionBindingFact::SourcePart>& parts) {
+    const auto append_ids = [&](const slang::ast::Expression& current,
+                                SnapshotConeSourceRole source_role,
+                                SnapshotConeControlOrigin control_origin,
+                                SnapshotConeSliceKind slice_kind,
+                                const SnapshotConeSliceFact& source_slice,
+                                const SnapshotConeSliceFact& current_endpoint_slice) {
+        const auto location = locationForSourceRange(source_manager, current.sourceRange);
+        if (!location.has_value()) {
+            return;
+        }
+        auto ids = dataSymbolIdsForExpression(data, current);
+        if (ids.empty()) {
+            const auto references = data.graph_references_by_uri.find(location->uri);
+            if (references != data.graph_references_by_uri.end()) {
+                const auto first = std::lower_bound(references->second.begin(),
+                                                    references->second.end(),
+                                                    location->range,
+                                                    [](const SnapshotUriReferenceRangeFact& reference,
+                                                       const ParseRange& range) {
+                                                        return rangeStartLess(reference.range, range);
+                                                    });
+                for (auto it = first; it != references->second.end(); ++it) {
+                    if (rangeStartsAfter(it->range, location->range)) {
+                        break;
+                    }
+                    if (!it->is_declaration && rangeContainsRange(location->range, it->range) &&
+                        !it->stable_id.empty()) {
+                        ids.push_back(it->stable_id);
+                    }
+                }
+                std::sort(ids.begin(), ids.end());
+                ids.erase(std::unique(ids.begin(), ids.end()), ids.end());
+            }
+        }
+        for (const auto& id : ids) {
+            parts.push_back(SnapshotGraphConnectionBindingFact::SourcePart{
+                .source_symbol_id = id,
+                .source_location = *location,
+                .source_slice = source_slice,
+                .endpoint_slice = current_endpoint_slice,
+                .slice_kind = slice_kind,
+                .source_role = source_role,
+                .control_origin = control_origin,
+                .unresolved = false});
+        }
+        if (ids.empty() && !connectionExpressionIsLiteral(current) &&
+            unwrapImplicitConversions(current).kind == slang::ast::ExpressionKind::Invalid) {
+            parts.push_back(SnapshotGraphConnectionBindingFact::SourcePart{
+                .source_symbol_id = {},
+                .source_location = *location,
+                .source_slice = source_slice,
+                .endpoint_slice = current_endpoint_slice,
+                .slice_kind = slice_kind,
+                .source_role = source_role,
+                .control_origin = control_origin,
+                .unresolved = true});
+        }
+    };
+
+    const auto collect = [&](const auto& self,
+                             const slang::ast::Expression& current,
+                             const SnapshotConeSliceFact& current_endpoint_slice,
+                             std::optional<SnapshotConeSliceKind> inherited_slice_kind) -> void {
+        const auto& unwrapped = unwrapImplicitConversions(current);
+        if (unwrapped.kind == slang::ast::ExpressionKind::ConditionalOp) {
+            const auto& conditional = unwrapped.as<slang::ast::ConditionalExpression>();
+            for (const auto& condition : conditional.conditions) {
+                append_ids(*condition.expr,
+                           SnapshotConeSourceRole::Control,
+                           SnapshotConeControlOrigin::TernaryCondition,
+                           sliceKindForExpression(*condition.expr),
+                           sliceFactForExpression(*condition.expr),
+                           current_endpoint_slice);
+            }
+            self(self, conditional.left(), current_endpoint_slice, inherited_slice_kind);
+            self(self, conditional.right(), current_endpoint_slice, inherited_slice_kind);
+            return;
+        }
+        if (unwrapped.kind == slang::ast::ExpressionKind::Concatenation) {
+            std::int64_t offset = 0;
+            for (const auto* operand : unwrapped.as<slang::ast::ConcatenationExpression>().operands()) {
+                if (operand == nullptr) {
+                    continue;
+                }
+                self(self,
+                     *operand,
+                     concatOperandSinkSlice(current_endpoint_slice, offset, *operand),
+                     SnapshotConeSliceKind::Concatenation);
+                if (const auto width = staticBitWidth(*operand)) {
+                    offset += *width;
+                }
+            }
+            return;
+        }
+        if (unwrapped.kind == slang::ast::ExpressionKind::ElementSelect) {
+            const auto& select = unwrapped.as<slang::ast::ElementSelectExpression>();
+            const auto source_slice = sliceFactForExpression(unwrapped);
+            if (!staticIntegerValue(select.selector()).has_value()) {
+                append_ids(select.selector(),
+                           SnapshotConeSourceRole::Control,
+                           SnapshotConeControlOrigin::DynamicSelect,
+                           SnapshotConeSliceKind::DynamicSelect,
+                           sliceFactForExpression(select.selector()),
+                           current_endpoint_slice);
+            }
+            append_ids(select.value(),
+                       SnapshotConeSourceRole::Data,
+                       SnapshotConeControlOrigin::None,
+                       inherited_slice_kind.value_or(sliceKindForExpression(unwrapped)),
+                       source_slice,
+                       current_endpoint_slice);
+            return;
+        }
+        if (unwrapped.kind == slang::ast::ExpressionKind::RangeSelect) {
+            const auto& select = unwrapped.as<slang::ast::RangeSelectExpression>();
+            const auto source_slice = sliceFactForExpression(unwrapped);
+            if (!staticIntegerValue(select.left()).has_value()) {
+                append_ids(select.left(),
+                           SnapshotConeSourceRole::Control,
+                           SnapshotConeControlOrigin::DynamicSelect,
+                           SnapshotConeSliceKind::DynamicSelect,
+                           sliceFactForExpression(select.left()),
+                           current_endpoint_slice);
+            }
+            if (!staticIntegerValue(select.right()).has_value()) {
+                append_ids(select.right(),
+                           SnapshotConeSourceRole::Control,
+                           SnapshotConeControlOrigin::DynamicSelect,
+                           SnapshotConeSliceKind::DynamicSelect,
+                           sliceFactForExpression(select.right()),
+                           current_endpoint_slice);
+            }
+            append_ids(select.value(),
+                       SnapshotConeSourceRole::Data,
+                       SnapshotConeControlOrigin::None,
+                       inherited_slice_kind.value_or(sliceKindForExpression(unwrapped)),
+                       source_slice,
+                       current_endpoint_slice);
+            return;
+        }
+        append_ids(current,
+                   SnapshotConeSourceRole::Data,
+                   SnapshotConeControlOrigin::None,
+                   inherited_slice_kind.value_or(sliceKindForExpression(unwrapped)),
+                   sliceFactForExpression(unwrapped),
+                   current_endpoint_slice);
+    };
+
+    collect(collect, expression, connectionEndpointSlice(endpoint_slice, expression), std::nullopt);
+    normalizeConnectionSourceParts(parts);
+}
+
 // Generated scopes can expose an AST symbol that has no source-backed stable
 // identity. Preserve its AST name in the build input so lowering can resolve it
 // through the already-indexed URI/scope view without reading source text.
@@ -4237,6 +4871,16 @@ void collectSyntaxModuleCandidates(SnapshotData& data,
                                                                           instance->decl->name);
                     if (!instance_location.has_value()) {
                         continue;
+                    }
+                    if (node.parameters != nullptr) {
+                        data.parameter_override_syntax_by_instance_key.insert_or_assign(
+                            instance_location->uri + "\x1f" + rangeKey(instance_location->range),
+                            SnapshotParameterOverrideSyntaxFact{.syntax = node.parameters,
+                                                               .uri = instance_location->uri,
+                                                               .module_name = module_name,
+                                                               .instance_name = std::string(
+                                                                   instance->decl->name.valueText()),
+                                                               .instance_range = instance_location->range});
                     }
                     const auto statement_location = locationForSourceRange(source_manager,
                                                                            node.sourceRange());
@@ -6279,6 +6923,10 @@ void buildAstIndexes(SnapshotData& data,
     {
         PRISTINE_DEBUG_TRACE_SCOPE_SIMPLE("astIndex.sortSnapshotIndexes");
         sortSnapshotIndexes(data);
+    }
+    {
+        PRISTINE_DEBUG_TRACE_SCOPE_SIMPLE("astIndex.buildResolvedConnectionSliceFacts");
+        buildResolvedConnectionSliceFacts(data, *data.source_manager);
     }
     {
         PRISTINE_DEBUG_TRACE_SCOPE_SIMPLE("astIndex.buildDesignGraphIndexes");

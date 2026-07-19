@@ -1457,6 +1457,19 @@ jsonrpc::Json ServerSession::handleBackwardCone(const jsonrpc::Json& params) {
     if (trace.cone_unresolved_source_fact_count > 0) {
         result["coneUnresolvedSourceFacts"] = trace.cone_unresolved_source_fact_count;
     }
+    if (trace.cone_connection_slice_adjacency_scanned_edges > 0) {
+        result["coneConnectionSliceAdjacencyScannedEdges"] =
+            trace.cone_connection_slice_adjacency_scanned_edges;
+    }
+    if (trace.cone_exact_connection_edge_count > 0) {
+        result["coneExactConnectionEdges"] = trace.cone_exact_connection_edge_count;
+    }
+    if (trace.cone_dynamic_connection_fact_count > 0) {
+        result["coneDynamicConnectionFacts"] = trace.cone_dynamic_connection_fact_count;
+    }
+    if (trace.cone_unresolved_connection_fact_count > 0) {
+        result["coneUnresolvedConnectionFacts"] = trace.cone_unresolved_connection_fact_count;
+    }
     result["graphBuildScopedSymbolCandidates"] = trace.graph_build_scoped_symbol_candidates;
     result["graphBuildConnectionReferenceCandidates"] =
         trace.graph_build_connection_reference_candidates;

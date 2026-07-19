@@ -2114,6 +2114,64 @@ TEST_CASE("SemanticEngine merges concat sink slices before selecting a backward 
           }) == 2);
 }
 
+TEST_CASE("SemanticEngine traces exact cross-module connection slices without global scans",
+          "[analysis][semantic-engine][design][cone][connection][slice][exact]") {
+    SemanticEngine engine;
+    engine.configure(SemanticEngineConfig{.top_modules = {"top"}});
+    engine.updateDocument("file:///workspace/connection-exact.sv",
+                          "module child(input logic [3:0] in, output logic [3:0] out);\n"
+                          "  assign out = in;\n"
+                          "endmodule\n"
+                          "module top;\n"
+                          "  logic [7:0] source;\n"
+                          "  logic [3:0] result;\n"
+                          "  child u(.in(source[7:4]), .out(result));\n"
+                          "endmodule\n",
+                          SemanticEngineDocumentState{.version = 1, .is_open = true});
+
+    const auto cone = engine.backwardConeAt("file:///workspace/connection-exact.sv", 5, 14);
+    const auto stats = engine.queryCacheStats();
+
+    REQUIRE_FALSE(cone.unresolved);
+    CHECK(cone.cone_connection_slice_adjacency_scanned_edges > 0);
+    CHECK(cone.cone_exact_connection_edge_count > 0);
+    CHECK(std::any_of(cone.edges.begin(), cone.edges.end(), [](const SemanticConeEdge& edge) {
+        return edge.kind == "instancePort" && edge.source_slice.has_value() &&
+               edge.source_slice->precision == "exact" && edge.source_slice->msb == 7 &&
+               edge.source_slice->lsb == 4;
+    }));
+    CHECK(stats.graph_scanned_global_symbols == 0);
+    CHECK(stats.cone_scanned_global_edges == 0);
+}
+
+TEST_CASE("SemanticEngine marks dynamic cross-module connections partial without a fallback",
+          "[analysis][semantic-engine][design][cone][connection][slice][dynamic]") {
+    SemanticEngine engine;
+    engine.configure(SemanticEngineConfig{.top_modules = {"top"}});
+    engine.updateDocument("file:///workspace/connection-dynamic.sv",
+                          "module child(input logic in, output logic out);\n"
+                          "  assign out = in;\n"
+                          "endmodule\n"
+                          "module top;\n"
+                          "  logic [7:0] source;\n"
+                          "  logic [2:0] index;\n"
+                          "  logic result;\n"
+                          "  child u(.in(source[index]), .out(result));\n"
+                          "endmodule\n",
+                          SemanticEngineDocumentState{.version = 1, .is_open = true});
+
+    const auto cone = engine.backwardConeAt("file:///workspace/connection-dynamic.sv", 6, 8);
+
+    REQUIRE_FALSE(cone.unresolved);
+    CHECK(cone.partial);
+    CHECK(cone.cone_connection_slice_adjacency_scanned_edges > 0);
+    CHECK(cone.cone_dynamic_connection_fact_count > 0);
+    CHECK(std::any_of(cone.edges.begin(), cone.edges.end(), [](const SemanticConeEdge& edge) {
+        return edge.kind == "instancePort" && edge.source_slice.has_value() &&
+               edge.source_slice->precision == "dynamic";
+    }));
+}
+
 TEST_CASE("SemanticEngine traces backward cone through parameterized width assignments",
           "[analysis][semantic-engine][design][cone][parameterized][no-fallback]") {
     SemanticEngine engine;

@@ -2780,6 +2780,18 @@ TEST_CASE("AstIndex indexes named parameter overrides as typed cone edges",
     REQUIRE(output.data != nullptr);
     const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
 
+    const auto resolved = std::find_if(output.data->resolved_connection_slices_by_instance_id.begin(),
+                                       output.data->resolved_connection_slices_by_instance_id.end(),
+                                       [](const auto& entry) {
+                                           return std::any_of(entry.second.begin(),
+                                                              entry.second.end(),
+                                                              [](const auto& fact) {
+                                                                  return fact.kind ==
+                                                                         SnapshotConeEdgeKind::ParameterOverride;
+                                                              });
+                                       });
+    REQUIRE(resolved != output.data->resolved_connection_slices_by_instance_id.end());
+
     const auto binding = std::find_if(view.design_graph_binding_index.connection_bindings.begin(),
                                       view.design_graph_binding_index.connection_bindings.end(),
                                       [](const SnapshotGraphConnectionBindingFact& value) {

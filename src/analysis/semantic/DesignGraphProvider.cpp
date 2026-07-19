@@ -723,6 +723,10 @@ SemanticConeTrace backwardCone(const DesignGraphContext& context,
                                std::optional<SnapshotConeSliceFact> root_slice) {
     (void)document_uri;
     SemanticConeTrace trace;
+    const auto is_connection_edge = [](SnapshotConeEdgeKind kind) {
+        return kind == SnapshotConeEdgeKind::InstancePort ||
+               kind == SnapshotConeEdgeKind::ParameterOverride;
+    };
     trace.generation = lookup.generation;
     trace.messages = lookup.messages;
     trace.unresolved = lookup.unresolved;
@@ -816,6 +820,9 @@ SemanticConeTrace backwardCone(const DesignGraphContext& context,
             for (const auto& source : unresolved_sources->second) {
                 trace.partial = true;
                 ++trace.cone_unresolved_source_fact_count;
+                if (is_connection_edge(source.kind)) {
+                    ++trace.cone_unresolved_connection_fact_count;
+                }
                 const auto origin = coneControlOriginLabel(source.control_origin);
                 appendUniqueMessage(trace.messages,
                                     "Unresolved " +
@@ -831,6 +838,9 @@ SemanticConeTrace backwardCone(const DesignGraphContext& context,
         for (const auto edge_index : adjacency->second) {
             ++trace.cone_adjacency_scanned_edges;
             const auto& edge = context.cone_adjacency_index.edges[edge_index];
+            if (is_connection_edge(edge.kind)) {
+                ++trace.cone_connection_slice_adjacency_scanned_edges;
+            }
             if (reached_cap()) {
                 mark_truncated();
                 break;
@@ -891,10 +901,16 @@ SemanticConeTrace backwardCone(const DesignGraphContext& context,
                 if (edge.source_slice.precision == SnapshotConeSlicePrecision::Exact ||
                     edge.sink_slice.precision == SnapshotConeSlicePrecision::Exact) {
                     ++trace.cone_exact_slice_edge_count;
+                    if (is_connection_edge(edge.kind)) {
+                        ++trace.cone_exact_connection_edge_count;
+                    }
                 }
                 if (edge.source_slice.precision == SnapshotConeSlicePrecision::Dynamic ||
                     edge.sink_slice.precision == SnapshotConeSlicePrecision::Dynamic) {
                     ++trace.cone_dynamic_slice_fact_count;
+                    if (is_connection_edge(edge.kind)) {
+                        ++trace.cone_dynamic_connection_fact_count;
+                    }
                     trace.partial = true;
                     appendUniqueMessage(trace.messages,
                                         "Backward cone includes a dynamic select; bit precision is partial.");

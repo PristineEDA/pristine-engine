@@ -22,6 +22,7 @@ class Symbol;
 
 namespace slang::syntax {
 class SyntaxTree;
+struct ParameterValueAssignmentSyntax;
 }
 
 namespace pristine::analysis::semantic {
@@ -335,6 +336,7 @@ struct SnapshotGraphEndpointFact {
     std::string generated_instance_id;
     std::string interface_definition_stable_id;
     std::string modport_stable_id;
+    SnapshotConeSliceFact declared_slice;
 };
 
 // Interface and modport bindings are captured while the slang AST is alive so
@@ -386,6 +388,32 @@ struct SnapshotGraphConnectionBindingFact {
     SemanticLocation location;
     SnapshotConeEdgeKind kind = SnapshotConeEdgeKind::InstancePort;
     std::vector<std::string> source_symbol_ids;
+    struct SourcePart {
+        std::string source_symbol_id;
+        SemanticLocation source_location;
+        SnapshotConeSliceFact source_slice;
+        SnapshotConeSliceFact endpoint_slice;
+        SnapshotConeSliceKind slice_kind = SnapshotConeSliceKind::Whole;
+        SnapshotConeSourceRole source_role = SnapshotConeSourceRole::Data;
+        SnapshotConeControlOrigin control_origin = SnapshotConeControlOrigin::None;
+        bool unresolved = false;
+    };
+    std::vector<SourcePart> source_parts;
+    bool unresolved = false;
+};
+
+// Resolved connection slices are produced while the slang AST and the parent
+// scope are alive. DesignGraphIndexBuilder only consumes this value-type view;
+// it must never recover signal semantics from schematic strings or source text.
+struct SnapshotResolvedConnectionSliceFact {
+    std::string instance_stable_id;
+    std::string endpoint_stable_id;
+    std::string endpoint_name;
+    int endpoint_index = -1;
+    SemanticLocation location;
+    SnapshotConeEdgeKind kind = SnapshotConeEdgeKind::InstancePort;
+    std::vector<SnapshotGraphConnectionBindingFact::SourcePart> source_parts;
+    bool unresolved = false;
 };
 
 struct SnapshotConeAdjacencyEdge {
@@ -409,6 +437,7 @@ struct SnapshotConeUnresolvedSourceFact {
     SemanticLocation location;
     SemanticLocation expression_location;
     std::string expression;
+    SnapshotConeEdgeKind kind = SnapshotConeEdgeKind::Assignment;
     SnapshotConeSourceRole source_role = SnapshotConeSourceRole::Data;
     SnapshotConeControlOrigin control_origin = SnapshotConeControlOrigin::None;
 };
@@ -454,6 +483,17 @@ struct SemanticModuleSignature {
     ModuleDefinition definition;
     ModuleSchematic schematic;
     std::string uri;
+};
+
+// This is build-only syntax ownership used to bind parameter override
+// expressions in the caller scope. It is cleared after AstIndex lowers the
+// expressions into resolved value facts and is never exposed to providers.
+struct SnapshotParameterOverrideSyntaxFact {
+    const slang::syntax::ParameterValueAssignmentSyntax* syntax = nullptr;
+    std::string uri;
+    std::string module_name;
+    std::string instance_name;
+    ParseRange instance_range;
 };
 
 struct SnapshotData {
@@ -510,12 +550,17 @@ struct SnapshotData {
     std::vector<SnapshotAssignmentEdgeSeed> assignment_edge_seeds;
     std::unordered_map<std::string, std::vector<SnapshotAssignmentEdge>> assignment_edges_by_uri;
     std::vector<SnapshotConeUnresolvedSourceFact> unresolved_cone_sources;
+    std::unordered_map<std::string, std::vector<SnapshotResolvedConnectionSliceFact>>
+        resolved_connection_slices_by_instance_id;
+    std::unordered_map<std::string, SnapshotConeSliceFact> endpoint_declared_slices_by_id;
     SnapshotDesignGraphBindingIndex design_graph_binding_index;
     SnapshotConeAdjacencyIndex cone_adjacency_index;
     SnapshotInterfaceModportBindingIndex interface_modport_binding_index;
     std::unordered_map<std::string, std::vector<SnapshotTypeReference>> type_references_by_uri;
     std::unordered_map<std::string, std::vector<IncludeDirective>> include_directives_by_uri;
     std::unordered_map<std::string, std::vector<SnapshotModuleInstance>> module_instances_by_uri;
+    std::unordered_map<std::string, SnapshotParameterOverrideSyntaxFact>
+        parameter_override_syntax_by_instance_key;
     std::unordered_map<std::string, std::vector<CallableInvocationFact>> callable_invocations_by_uri;
     std::unordered_map<std::string, std::vector<MacroInvocationFact>> macro_invocations_by_uri;
     std::unordered_map<std::string, std::vector<SignatureInlaySymbol>> inlay_symbols_by_uri;
