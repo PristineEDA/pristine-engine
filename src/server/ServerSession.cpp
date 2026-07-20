@@ -1464,6 +1464,10 @@ jsonrpc::Json ServerSession::handleBackwardCone(const jsonrpc::Json& params) {
     if (trace.cone_exact_connection_edge_count > 0) {
         result["coneExactConnectionEdges"] = trace.cone_exact_connection_edge_count;
     }
+    if (trace.cone_parameter_override_exact_mapping_count > 0) {
+        result["coneParameterOverrideExactMappings"] =
+            trace.cone_parameter_override_exact_mapping_count;
+    }
     if (trace.cone_dynamic_connection_fact_count > 0) {
         result["coneDynamicConnectionFacts"] = trace.cone_dynamic_connection_fact_count;
     }

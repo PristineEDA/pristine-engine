@@ -332,27 +332,6 @@ void buildDesignGraphIndexes(SnapshotData& data) {
             }
             for (const auto& connection : resolved_connections->second) {
                 auto child_endpoint = bindings.endpoints_by_stable_id.find(connection.endpoint_stable_id);
-                if (child_endpoint == bindings.endpoints_by_stable_id.end() &&
-                    !connection.endpoint_name.empty()) {
-                    const auto by_name = bindings.endpoints_by_module_member.find(
-                        moduleMemberKey(instance.module_name, connection.endpoint_name));
-                    if (by_name != bindings.endpoints_by_module_member.end()) {
-                        child_endpoint = bindings.endpoints_by_stable_id.find(by_name->second.stable_id);
-                    }
-                }
-                if (child_endpoint == bindings.endpoints_by_stable_id.end() &&
-                    connection.kind == SnapshotConeEdgeKind::ParameterOverride &&
-                    connection.endpoint_index >= 0 &&
-                    static_cast<size_t>(connection.endpoint_index) <
-                        child->second.definition.parameter_details.size()) {
-                    const auto& detail = child->second.definition.parameter_details[
-                        static_cast<size_t>(connection.endpoint_index)];
-                    const auto by_index = bindings.endpoints_by_module_member.find(
-                        moduleMemberKey(instance.module_name, detail.name));
-                    if (by_index != bindings.endpoints_by_module_member.end()) {
-                        child_endpoint = bindings.endpoints_by_stable_id.find(by_index->second.stable_id);
-                    }
-                }
                 if (child_endpoint == bindings.endpoints_by_stable_id.end()) {
                     continue;
                 }

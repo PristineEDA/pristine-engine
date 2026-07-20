@@ -385,6 +385,7 @@ struct SemanticConeTrace {
     size_t cone_unresolved_source_fact_count = 0;
     size_t cone_connection_slice_adjacency_scanned_edges = 0;
     size_t cone_exact_connection_edge_count = 0;
+    size_t cone_parameter_override_exact_mapping_count = 0;
     size_t cone_dynamic_connection_fact_count = 0;
     size_t cone_unresolved_connection_fact_count = 0;
     size_t graph_build_scoped_symbol_candidates = 0;

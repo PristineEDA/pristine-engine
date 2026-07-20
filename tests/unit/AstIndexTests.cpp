@@ -4,6 +4,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
+#include <tuple>
 
 namespace pristine::analysis::semantic {
 namespace {
@@ -76,6 +77,31 @@ bool graphHasDataSlicePrecision(std::string source, SnapshotConeSlicePrecision p
                            return edge.source_role == SnapshotConeSourceRole::Data &&
                                   edge.source_slice.precision == precision;
                        });
+}
+
+std::vector<const SnapshotResolvedConnectionSliceFact*> parameterOverrideFacts(const SnapshotData& data) {
+    std::vector<const SnapshotResolvedConnectionSliceFact*> facts;
+    for (const auto& [_, values] : data.resolved_connection_slices_by_instance_id) {
+        for (const auto& value : values) {
+            if (value.kind == SnapshotConeEdgeKind::ParameterOverride) facts.push_back(&value);
+        }
+    }
+    std::sort(facts.begin(), facts.end(), [](const auto* left, const auto* right) {
+        return std::tie(left->instance_stable_id, left->endpoint_index, left->endpoint_stable_id) <
+               std::tie(right->instance_stable_id, right->endpoint_index, right->endpoint_stable_id);
+    });
+    return facts;
+}
+
+bool hasIndexedParameterEndpoints(const std::vector<const SnapshotResolvedConnectionSliceFact*>& facts) {
+    return std::all_of(facts.begin(), facts.end(), [](const auto* fact) {
+        return !fact->instance_stable_id.empty() && !fact->endpoint_stable_id.empty() &&
+               fact->endpoint_index >= 0;
+    });
+}
+
+bool hasDirectParameterEndpoints(const std::vector<const SnapshotResolvedConnectionSliceFact*>& facts) {
+    return hasIndexedParameterEndpoints(facts);
 }
 
 TEST_CASE("AstIndex filters, sorts, and maps workspace symbols",
@@ -2778,6 +2804,8 @@ TEST_CASE("AstIndex indexes named parameter overrides as typed cone edges",
         "module top; localparam int WIDTH = 4; logic a; logic y;\n"
         "  child #(.WIDTH(WIDTH)) u_child(.in(a), .out(y));\nendmodule\n");
     REQUIRE(output.data != nullptr);
+    CHECK(output.data->parameter_override_syntax_facts.empty());
+    CHECK(output.data->instance_symbols_by_stable_id.empty());
     const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
 
     const auto resolved = std::find_if(output.data->resolved_connection_slices_by_instance_id.begin(),
@@ -2791,6 +2819,16 @@ TEST_CASE("AstIndex indexes named parameter overrides as typed cone edges",
                                                               });
                                        });
     REQUIRE(resolved != output.data->resolved_connection_slices_by_instance_id.end());
+    const auto parameter_fact = std::find_if(resolved->second.begin(),
+                                              resolved->second.end(),
+                                              [](const auto& fact) {
+                                                  return fact.kind ==
+                                                         SnapshotConeEdgeKind::ParameterOverride;
+                                              });
+    REQUIRE(parameter_fact != resolved->second.end());
+    CHECK_FALSE(parameter_fact->endpoint_stable_id.empty());
+    REQUIRE(parameter_fact->source_parts.size() == 1);
+    CHECK_FALSE(parameter_fact->source_parts.front().source_symbol_id.empty());
 
     const auto binding = std::find_if(view.design_graph_binding_index.connection_bindings.begin(),
                                       view.design_graph_binding_index.connection_bindings.end(),
@@ -2804,6 +2842,349 @@ TEST_CASE("AstIndex indexes named parameter overrides as typed cone edges",
                       [](const SnapshotConeAdjacencyEdge& edge) {
                           return edge.kind == SnapshotConeEdgeKind::ParameterOverride;
                       }));
+}
+
+TEST_CASE("AstIndex indexes ordered parameter overrides with direct endpoint identities",
+          "[analysis][semantic][ast-index][design-graph-binding][parameter][ordered]") {
+    auto output = buildGraphSource(
+        "module child #(parameter int WIDTH = 1, parameter int DEPTH = 2)(); endmodule\n"
+        "module top; localparam int W = 4; localparam int D = 8; child #(W, D) u_child(); endmodule\n");
+    REQUIRE(output.data != nullptr);
+    const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
+
+    std::vector<const SnapshotResolvedConnectionSliceFact*> facts;
+    for (const auto& [_, values] : output.data->resolved_connection_slices_by_instance_id) {
+        for (const auto& fact : values) {
+            if (fact.kind == SnapshotConeEdgeKind::ParameterOverride) facts.push_back(&fact);
+        }
+    }
+    REQUIRE(facts.size() == 2);
+    CHECK(facts[0]->endpoint_stable_id != facts[1]->endpoint_stable_id);
+    CHECK(std::all_of(facts.begin(), facts.end(), [](const auto* fact) {
+        return !fact->endpoint_stable_id.empty() && fact->source_parts.size() == 1 &&
+               !fact->source_parts.front().source_symbol_id.empty();
+    }));
+    CHECK(std::count_if(view.design_graph_binding_index.connection_bindings.begin(),
+                        view.design_graph_binding_index.connection_bindings.end(),
+                        [](const auto& binding) {
+                            return binding.kind == SnapshotConeEdgeKind::ParameterOverride;
+                        }) == 2);
+}
+
+TEST_CASE("AstIndex keeps parameter override identities isolated across repeated instances",
+          "[analysis][semantic][ast-index][design-graph-binding][parameter][instance]") {
+    auto output = buildGraphSource(
+        "module child #(parameter int WIDTH = 1)(); endmodule\n"
+        "module top; localparam int A = 2; localparam int B = 3;\n"
+        "  child #(.WIDTH(A)) first(); child #(.WIDTH(B)) second();\nendmodule\n");
+    REQUIRE(output.data != nullptr);
+
+    std::vector<const SnapshotResolvedConnectionSliceFact*> facts;
+    for (const auto& [_, values] : output.data->resolved_connection_slices_by_instance_id) {
+        for (const auto& fact : values) {
+            if (fact.kind == SnapshotConeEdgeKind::ParameterOverride) facts.push_back(&fact);
+        }
+    }
+    REQUIRE(facts.size() == 2);
+    CHECK(facts[0]->instance_stable_id != facts[1]->instance_stable_id);
+    REQUIRE(facts[0]->source_parts.size() == 1);
+    REQUIRE(facts[1]->source_parts.size() == 1);
+    CHECK(facts[0]->source_parts.front().source_symbol_id !=
+          facts[1]->source_parts.front().source_symbol_id);
+}
+
+TEST_CASE("AstIndex keeps same-name child parameters bound to their definition identity",
+          "[analysis][semantic][ast-index][design-graph-binding][parameter][definition]") {
+    auto output = buildGraphSource(
+        "module left #(parameter int WIDTH = 1)(); endmodule\n"
+        "module right #(parameter int WIDTH = 1)(); endmodule\n"
+        "module top; localparam int W = 4; left #(.WIDTH(W)) u_left(); right #(.WIDTH(W)) u_right(); endmodule\n");
+    REQUIRE(output.data != nullptr);
+    const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
+
+    std::vector<std::string> endpoint_ids;
+    for (const auto& binding : view.design_graph_binding_index.connection_bindings) {
+        if (binding.kind == SnapshotConeEdgeKind::ParameterOverride) {
+            endpoint_ids.push_back(binding.endpoint_stable_id);
+        }
+    }
+    REQUIRE(endpoint_ids.size() == 2);
+    CHECK(endpoint_ids[0] != endpoint_ids[1]);
+}
+
+TEST_CASE("AstIndex retains unresolved parameter override sources without global recovery",
+          "[analysis][semantic][ast-index][design-graph-binding][parameter][unresolved][no-fallback]") {
+    auto output = buildGraphSource(
+        "module child #(parameter int WIDTH = 1)(); endmodule\n"
+        "module top; child #(.WIDTH(missing_width)) u_child(); endmodule\n");
+    REQUIRE(output.data != nullptr);
+    const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
+
+    const auto binding = std::find_if(view.design_graph_binding_index.connection_bindings.begin(),
+                                      view.design_graph_binding_index.connection_bindings.end(),
+                                      [](const auto& value) {
+                                          return value.kind == SnapshotConeEdgeKind::ParameterOverride;
+                                      });
+    REQUIRE(binding != view.design_graph_binding_index.connection_bindings.end());
+    CHECK(binding->unresolved);
+    CHECK(std::none_of(view.cone_adjacency_index.edges.begin(),
+                       view.cone_adjacency_index.edges.end(),
+                       [](const auto& edge) {
+                           return edge.kind == SnapshotConeEdgeKind::ParameterOverride;
+                       }));
+}
+
+TEST_CASE("AstIndex lowers named literal parameter overrides without syntax recovery",
+          "[analysis][semantic][ast-index][design-graph-binding][parameter][literal][named]") {
+    auto output = buildGraphSource(
+        "module child #(parameter int WIDTH = 1)(); endmodule\n"
+        "module top; child #(.WIDTH(8)) u_child(); endmodule\n");
+    REQUIRE(output.data != nullptr);
+    const auto facts = parameterOverrideFacts(*output.data);
+    REQUIRE(facts.size() == 1);
+    CHECK(hasDirectParameterEndpoints(facts));
+    CHECK_FALSE(facts.front()->unresolved);
+    CHECK(facts.front()->source_parts.empty());
+}
+
+TEST_CASE("AstIndex lowers positional literal parameter overrides without syntax recovery",
+          "[analysis][semantic][ast-index][design-graph-binding][parameter][literal][positional]") {
+    auto output = buildGraphSource(
+        "module child #(parameter int WIDTH = 1)(); endmodule\n"
+        "module top; child #(8) u_child(); endmodule\n");
+    REQUIRE(output.data != nullptr);
+    const auto facts = parameterOverrideFacts(*output.data);
+    REQUIRE(facts.size() == 1);
+    CHECK(hasDirectParameterEndpoints(facts));
+    CHECK_FALSE(facts.front()->unresolved);
+    CHECK(facts.front()->source_parts.empty());
+}
+
+TEST_CASE("AstIndex retains parent parameter identity in a named override",
+          "[analysis][semantic][ast-index][design-graph-binding][parameter][parent]") {
+    auto output = buildGraphSource(
+        "module child #(parameter int WIDTH = 1)(); endmodule\n"
+        "module top #(parameter int WIDTH = 8); child #(.WIDTH(WIDTH)) u_child(); endmodule\n");
+    REQUIRE(output.data != nullptr);
+    const auto facts = parameterOverrideFacts(*output.data);
+    REQUIRE(facts.size() == 1);
+    CHECK(hasDirectParameterEndpoints(facts));
+    REQUIRE(facts.front()->source_parts.size() == 1);
+    CHECK_FALSE(facts.front()->source_parts.front().source_symbol_id.empty());
+}
+
+TEST_CASE("AstIndex retains each source in an arithmetic parameter override",
+          "[analysis][semantic][ast-index][design-graph-binding][parameter][arithmetic]") {
+    auto output = buildGraphSource(
+        "module child #(parameter int WIDTH = 1)(); endmodule\n"
+        "module top; localparam int A = 2; localparam int B = 3; child #(.WIDTH(A + B)) u_child(); endmodule\n");
+    REQUIRE(output.data != nullptr);
+    const auto facts = parameterOverrideFacts(*output.data);
+    REQUIRE(facts.size() == 1);
+    CHECK(hasDirectParameterEndpoints(facts));
+    CHECK(facts.front()->source_parts.size() == 2);
+}
+
+TEST_CASE("AstIndex retains static bit-select parameter override slices",
+          "[analysis][semantic][ast-index][design-graph-binding][parameter][bit-select]") {
+    auto output = buildGraphSource(
+        "module child #(parameter logic BIT = 1'b0)(); endmodule\n"
+        "module top(input logic [3:0] data); child #(.BIT(data[2])) u_child(); endmodule\n");
+    REQUIRE(output.data != nullptr);
+    const auto facts = parameterOverrideFacts(*output.data);
+    REQUIRE(facts.size() == 1);
+    CHECK(hasDirectParameterEndpoints(facts));
+    REQUIRE(facts.front()->source_parts.size() == 1);
+    CHECK(facts.front()->source_parts.front().source_slice.precision == SnapshotConeSlicePrecision::Exact);
+}
+
+TEST_CASE("AstIndex retains static part-select parameter override slices",
+          "[analysis][semantic][ast-index][design-graph-binding][parameter][part-select]") {
+    auto output = buildGraphSource(
+        "module child #(parameter logic [1:0] PART = 2'b00)(); endmodule\n"
+        "module top(input logic [3:0] data); child #(.PART(data[3:2])) u_child(); endmodule\n");
+    REQUIRE(output.data != nullptr);
+    const auto facts = parameterOverrideFacts(*output.data);
+    REQUIRE(facts.size() == 1);
+    CHECK(hasDirectParameterEndpoints(facts));
+    REQUIRE(facts.front()->source_parts.size() == 1);
+    CHECK(facts.front()->source_parts.front().source_slice.precision == SnapshotConeSlicePrecision::Exact);
+}
+
+TEST_CASE("AstIndex marks dynamic parameter override selects without an exact slice",
+          "[analysis][semantic][ast-index][design-graph-binding][parameter][dynamic-select][no-fallback]") {
+    auto output = buildGraphSource(
+        "module child #(parameter logic BIT = 1'b0)(); endmodule\n"
+        "module top; logic [3:0] data; logic [1:0] index; child #(.BIT(data[index])) u_child(); endmodule\n");
+    REQUIRE(output.data != nullptr);
+    const auto facts = parameterOverrideFacts(*output.data);
+    REQUIRE(facts.size() == 1);
+    CHECK(hasDirectParameterEndpoints(facts));
+    CHECK(std::any_of(facts.front()->source_parts.begin(),
+                      facts.front()->source_parts.end(),
+                      [](const auto& part) {
+                          return part.source_slice.precision == SnapshotConeSlicePrecision::Dynamic;
+                      }));
+}
+
+TEST_CASE("AstIndex keeps every source part in a parameter override concatenation",
+          "[analysis][semantic][ast-index][design-graph-binding][parameter][concat]") {
+    auto output = buildGraphSource(
+        "module child #(parameter logic [1:0] PAIR = 2'b00)(); endmodule\n"
+        "module top; localparam logic A = 1'b0; localparam logic B = 1'b1; child #(.PAIR({A, B})) u_child(); endmodule\n");
+    REQUIRE(output.data != nullptr);
+    const auto facts = parameterOverrideFacts(*output.data);
+    REQUIRE(facts.size() == 1);
+    CHECK(hasDirectParameterEndpoints(facts));
+    CHECK(facts.front()->source_parts.size() == 2);
+}
+
+TEST_CASE("AstIndex keeps nested parameter override concatenation sources deterministic",
+          "[analysis][semantic][ast-index][design-graph-binding][parameter][nested-concat]") {
+    auto output = buildGraphSource(
+        "module child #(parameter logic [3:0] WORD = 4'b0000)(); endmodule\n"
+        "module top; localparam logic A = 1'b0; localparam logic B = 1'b1; localparam logic [1:0] C = 2'b10; child #(.WORD({{A, B}, C})) u_child(); endmodule\n");
+    REQUIRE(output.data != nullptr);
+    const auto facts = parameterOverrideFacts(*output.data);
+    REQUIRE(facts.size() == 1);
+    CHECK(hasDirectParameterEndpoints(facts));
+    CHECK(facts.front()->source_parts.size() == 3);
+}
+
+TEST_CASE("AstIndex preserves child parameter declaration order for reverse named overrides",
+          "[analysis][semantic][ast-index][design-graph-binding][parameter][named-order]") {
+    auto output = buildGraphSource(
+        "module child #(parameter int WIDTH = 1, parameter int DEPTH = 2)(); endmodule\n"
+        "module top; localparam int W = 4; localparam int D = 8; child #(.DEPTH(D), .WIDTH(W)) u_child(); endmodule\n");
+    REQUIRE(output.data != nullptr);
+    const auto facts = parameterOverrideFacts(*output.data);
+    REQUIRE(facts.size() == 2);
+    CHECK(hasDirectParameterEndpoints(facts));
+    CHECK(facts[0]->endpoint_index == 0);
+    CHECK(facts[1]->endpoint_index == 1);
+}
+
+TEST_CASE("AstIndex indexes only explicitly supplied parameter overrides",
+          "[analysis][semantic][ast-index][design-graph-binding][parameter][default]") {
+    auto output = buildGraphSource(
+        "module child #(parameter int WIDTH = 1, parameter int DEPTH = 2)(); endmodule\n"
+        "module top; localparam int W = 4; child #(.WIDTH(W)) u_child(); endmodule\n");
+    REQUIRE(output.data != nullptr);
+    const auto facts = parameterOverrideFacts(*output.data);
+    REQUIRE(facts.size() == 1);
+    CHECK(hasDirectParameterEndpoints(facts));
+    CHECK(facts.front()->endpoint_index == 0);
+}
+
+TEST_CASE("AstIndex keeps parameter overrides separate from named port bindings",
+          "[analysis][semantic][ast-index][design-graph-binding][parameter][named-port]") {
+    auto output = buildGraphSource(
+        "module child #(parameter int WIDTH = 1)(input logic in, output logic out); assign out = in; endmodule\n"
+        "module top; localparam int W = 4; logic a; logic y; child #(.WIDTH(W)) u_child(.in(a), .out(y)); endmodule\n");
+    REQUIRE(output.data != nullptr);
+    const auto facts = parameterOverrideFacts(*output.data);
+    REQUIRE(facts.size() == 1);
+    CHECK(hasDirectParameterEndpoints(facts));
+    const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
+    CHECK(std::count_if(view.design_graph_binding_index.connection_bindings.begin(),
+                        view.design_graph_binding_index.connection_bindings.end(),
+                        [](const auto& value) { return value.kind == SnapshotConeEdgeKind::InstancePort; }) == 2);
+}
+
+TEST_CASE("AstIndex keeps parameter overrides separate from positional port bindings",
+          "[analysis][semantic][ast-index][design-graph-binding][parameter][positional-port]") {
+    auto output = buildGraphSource(
+        "module child #(parameter int WIDTH = 1)(input logic in, output logic out); assign out = in; endmodule\n"
+        "module top; localparam int W = 4; logic a; logic y; child #(W) u_child(a, y); endmodule\n");
+    REQUIRE(output.data != nullptr);
+    const auto facts = parameterOverrideFacts(*output.data);
+    REQUIRE(facts.size() == 1);
+    CHECK(hasDirectParameterEndpoints(facts));
+    const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
+    CHECK(std::count_if(view.design_graph_binding_index.connection_bindings.begin(),
+                        view.design_graph_binding_index.connection_bindings.end(),
+                        [](const auto& value) { return value.kind == SnapshotConeEdgeKind::InstancePort; }) == 2);
+}
+
+TEST_CASE("AstIndex retains direct parameter endpoints for descending packed values",
+          "[analysis][semantic][ast-index][design-graph-binding][parameter][descending-range]") {
+    auto output = buildGraphSource(
+        "module child #(parameter logic [3:0] VALUE = 4'b0000)(); endmodule\n"
+        "module top(input logic [3:0] value); child #(.VALUE(value)) u_child(); endmodule\n");
+    REQUIRE(output.data != nullptr);
+    const auto facts = parameterOverrideFacts(*output.data);
+    REQUIRE(facts.size() == 1);
+    CHECK(hasDirectParameterEndpoints(facts));
+    REQUIRE(facts.front()->source_parts.size() == 1);
+    CHECK(facts.front()->source_parts.front().source_slice.precision == SnapshotConeSlicePrecision::Whole);
+}
+
+TEST_CASE("AstIndex retains direct parameter endpoints for ascending packed values",
+          "[analysis][semantic][ast-index][design-graph-binding][parameter][ascending-range]") {
+    auto output = buildGraphSource(
+        "module child #(parameter logic [0:3] VALUE = 4'b0000)(); endmodule\n"
+        "module top(input logic [0:3] value); child #(.VALUE(value)) u_child(); endmodule\n");
+    REQUIRE(output.data != nullptr);
+    const auto facts = parameterOverrideFacts(*output.data);
+    REQUIRE(facts.size() == 1);
+    CHECK(hasDirectParameterEndpoints(facts));
+    REQUIRE(facts.front()->source_parts.size() == 1);
+    CHECK(facts.front()->source_parts.front().source_slice.precision == SnapshotConeSlicePrecision::Whole);
+}
+
+TEST_CASE("AstIndex tracks parameter overrides for distinct instances in one declaration",
+          "[analysis][semantic][ast-index][design-graph-binding][parameter][multi-instance]") {
+    auto output = buildGraphSource(
+        "module child #(parameter int WIDTH = 1)(); endmodule\n"
+        "module top; localparam int A = 2; localparam int B = 3; child #(.WIDTH(A)) left(), right(); endmodule\n");
+    REQUIRE(output.data != nullptr);
+    const auto facts = parameterOverrideFacts(*output.data);
+    REQUIRE(facts.size() == 2);
+    CHECK(hasDirectParameterEndpoints(facts));
+    CHECK(facts[0]->instance_stable_id != facts[1]->instance_stable_id);
+}
+
+TEST_CASE("AstIndex clears parameter syntax and AST scratch views before provider queries",
+          "[analysis][semantic][ast-index][design-graph-binding][parameter][scratch-state]") {
+    auto output = buildGraphSource(
+        "module child #(parameter int WIDTH = 1)(); endmodule\n"
+        "module top; localparam int W = 4; child #(.WIDTH(W)) u_child(); endmodule\n");
+    REQUIRE(output.data != nullptr);
+    CHECK(output.data->parameter_override_syntax_facts.empty());
+    CHECK(output.data->instance_symbols_by_stable_id.empty());
+    CHECK_FALSE(parameterOverrideFacts(*output.data).empty());
+}
+
+TEST_CASE("AstIndex gives matching parameter syntax locations a stable direct endpoint",
+          "[analysis][semantic][ast-index][design-graph-binding][parameter][location]") {
+    auto output = buildGraphSource(
+        "module child #(parameter int WIDTH = 1)(); endmodule\n"
+        "module top; localparam int W = 4;\n  child #(.WIDTH(W)) u_child();\nendmodule\n");
+    REQUIRE(output.data != nullptr);
+    const auto facts = parameterOverrideFacts(*output.data);
+    REQUIRE(facts.size() == 1);
+    CHECK(hasDirectParameterEndpoints(facts));
+    CHECK(facts.front()->location.uri == "file:///workspace/top.sv");
+    CHECK(facts.front()->location.range.start_line == 2);
+}
+
+TEST_CASE("AstIndex preserves parameter override endpoint identities across document order",
+          "[analysis][semantic][ast-index][design-graph-binding][parameter][deterministic]") {
+    auto first = buildGraphSource(
+        "module child #(parameter int WIDTH = 1)(); endmodule\n"
+        "module top; localparam int W = 4; child #(.WIDTH(W)) u_child(); endmodule\n",
+        92);
+    auto second = buildGraphSource(
+        "module child #(parameter int WIDTH = 1)(); endmodule\n"
+        "module top; localparam int W = 4; child #(.WIDTH(W)) u_child(); endmodule\n",
+        93);
+    REQUIRE(first.data != nullptr);
+    REQUIRE(second.data != nullptr);
+    const auto first_facts = parameterOverrideFacts(*first.data);
+    const auto second_facts = parameterOverrideFacts(*second.data);
+    REQUIRE(first_facts.size() == 1);
+    REQUIRE(second_facts.size() == 1);
+    CHECK(first_facts.front()->endpoint_stable_id == second_facts.front()->endpoint_stable_id);
 }
 
 TEST_CASE("AstIndex indexes every resolved source in a complex instance connection",

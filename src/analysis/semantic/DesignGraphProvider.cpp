@@ -903,6 +903,9 @@ SemanticConeTrace backwardCone(const DesignGraphContext& context,
                     ++trace.cone_exact_slice_edge_count;
                     if (is_connection_edge(edge.kind)) {
                         ++trace.cone_exact_connection_edge_count;
+                        if (edge.kind == SnapshotConeEdgeKind::ParameterOverride) {
+                            ++trace.cone_parameter_override_exact_mapping_count;
+                        }
                     }
                 }
                 if (edge.source_slice.precision == SnapshotConeSlicePrecision::Dynamic ||

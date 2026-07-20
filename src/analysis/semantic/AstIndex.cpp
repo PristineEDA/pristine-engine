@@ -40,6 +40,7 @@
 #include "slang/text/SourceManager.h"
 
 #include <algorithm>
+#include <charconv>
 #include <chrono>
 #include <cctype>
 #include <cstdlib>
@@ -1265,10 +1266,17 @@ void collectResolvedConnectionSourceParts(
     const slang::SourceManager& source_manager,
     const slang::ast::Expression& expression,
     const SnapshotConeSliceFact& endpoint_slice,
+    std::vector<SnapshotGraphConnectionBindingFact::SourcePart>& parts,
+    std::optional<SemanticLocation> source_location_override = std::nullopt);
+void collectSyntaxConnectionSourceParts(
+    SnapshotData& data,
+    const slang::SourceManager& source_manager,
+    const slang::syntax::ExpressionSyntax& syntax,
+    const SnapshotConeSliceFact& endpoint_slice,
     std::vector<SnapshotGraphConnectionBindingFact::SourcePart>& parts);
 void normalizeConnectionSourceParts(std::vector<SnapshotGraphConnectionBindingFact::SourcePart>& parts);
 
-void appendResolvedConnectionSliceFact(
+bool appendResolvedConnectionSliceFact(
     SnapshotData& data,
     const slang::SourceManager& source_manager,
     std::string instance_stable_id,
@@ -1277,13 +1285,18 @@ void appendResolvedConnectionSliceFact(
     int endpoint_index,
     SnapshotConeEdgeKind kind,
     const SnapshotConeSliceFact& declared_slice,
-    const slang::ast::Expression& expression) {
+    const slang::ast::Expression& expression,
+    std::optional<slang::SourceRange> source_range_override = std::nullopt,
+    const slang::syntax::ExpressionSyntax* source_syntax = nullptr) {
     if (instance_stable_id.empty() || (endpoint_stable_id.empty() && endpoint_name.empty())) {
-        return;
+        return false;
     }
-    const auto location = locationForSourceRange(source_manager, expression.sourceRange);
+    auto location = locationForSourceRange(source_manager, expression.sourceRange);
+    if (!location.has_value() && source_range_override.has_value()) {
+        location = locationForSourceRange(source_manager, *source_range_override);
+    }
     if (!location.has_value()) {
-        return;
+        return false;
     }
     SnapshotResolvedConnectionSliceFact fact{.instance_stable_id = std::move(instance_stable_id),
                                              .endpoint_stable_id = std::move(endpoint_stable_id),
@@ -1299,15 +1312,31 @@ void appendResolvedConnectionSliceFact(
     if (!fact.endpoint_stable_id.empty()) {
         data.endpoint_declared_slices_by_id.insert_or_assign(fact.endpoint_stable_id, declared_slice);
     }
-    collectResolvedConnectionSourceParts(data,
-                                         source_manager,
-                                         expression,
-                                         declared_slice,
-                                         fact.source_parts);
+    std::optional<SemanticLocation> source_location_override;
+    if (source_range_override.has_value()) {
+        source_location_override = locationForSourceRange(source_manager, *source_range_override);
+    }
+    if (source_syntax != nullptr &&
+        unwrapImplicitConversions(expression).kind == slang::ast::ExpressionKind::Invalid) {
+        collectSyntaxConnectionSourceParts(data,
+                                            source_manager,
+                                            *source_syntax,
+                                            declared_slice,
+                                            fact.source_parts);
+    }
+    else {
+        collectResolvedConnectionSourceParts(data,
+                                             source_manager,
+                                             expression,
+                                             declared_slice,
+                                             fact.source_parts,
+                                             std::move(source_location_override));
+    }
     fact.unresolved = std::any_of(fact.source_parts.begin(),
                                   fact.source_parts.end(),
                                   [](const auto& part) { return part.unresolved; });
     data.resolved_connection_slices_by_instance_id[fact.instance_stable_id].push_back(std::move(fact));
+    return true;
 }
 
 void collectResolvedPortConnectionSlices(SnapshotData& data,
@@ -1337,118 +1366,124 @@ void collectResolvedPortConnectionSlices(SnapshotData& data,
     }
 }
 
+std::optional<std::string> symbolIdForDefinitionParameter(
+    const SnapshotData& data,
+    const slang::SourceManager& source_manager,
+    const slang::ast::DefinitionSymbol::ParameterDecl& parameter) {
+    if (!parameter.hasSyntax) {
+        return std::nullopt;
+    }
+
+    const auto declaration_range = parameter.isTypeParam ? parameter.typeDecl->sourceRange()
+                                                          : parameter.valueDecl->sourceRange();
+    const auto location = locationForSourceRange(source_manager, declaration_range);
+    if (!location.has_value()) {
+        return std::nullopt;
+    }
+    const auto symbols = data.graph_symbols_by_uri.find(location->uri);
+    if (symbols == data.graph_symbols_by_uri.end()) {
+        return std::nullopt;
+    }
+    const auto first = std::lower_bound(
+        symbols->second.begin(),
+        symbols->second.end(),
+        location->range,
+        [](const SnapshotUriSymbolRangeFact& candidate, const ParseRange& range) {
+            if (candidate.range.start_line != range.start_line) {
+                return candidate.range.start_line < range.start_line;
+            }
+            return candidate.range.start_character < range.start_character;
+        });
+    for (auto it = first; it != symbols->second.end(); ++it) {
+        if (rangeStartsAfter(it->range, location->range)) break;
+        if (!rangeContainsRange(location->range, it->range)) continue;
+        const auto indexed = data.symbols_by_id.find(it->stable_id);
+        if (indexed == data.symbols_by_id.end()) continue;
+        if (indexed->second.identity.kind.find("Parameter") == std::string::npos &&
+            indexed->second.identity.kind.find("Param") == std::string::npos) {
+            continue;
+        }
+        return it->stable_id;
+    }
+    return std::nullopt;
+}
+
 void collectResolvedParameterOverrideSlices(SnapshotData& data,
                                             const slang::SourceManager& source_manager,
                                             const slang::ast::InstanceSymbol& instance,
-                                            std::string_view instance_stable_id) {
+                                            std::string_view instance_stable_id,
+                                            const slang::syntax::ParameterValueAssignmentSyntax&
+                                                parameter_syntax) {
     const auto* parent_scope = instance.getParentScope();
-    const auto instance_location = declarationLocationForSymbol(source_manager, instance);
-    const slang::syntax::ParameterValueAssignmentSyntax* parameter_syntax = nullptr;
-    if (instance_location.has_value()) {
-        const auto pending = data.parameter_override_syntax_by_instance_key.find(
-            instance_location->uri + "\x1f" + rangeKey(instance_location->range));
-        if (pending != data.parameter_override_syntax_by_instance_key.end()) {
-            parameter_syntax = pending->second.syntax;
-        }
-    }
-    if (parameter_syntax == nullptr) {
-        const auto pending = std::find_if(data.parameter_override_syntax_by_instance_key.begin(),
-                                          data.parameter_override_syntax_by_instance_key.end(),
-                                          [&](const auto& entry) {
-                                              return entry.second.module_name == instance.getDefinition().name &&
-                                                     entry.second.instance_name == instance.name;
-                                          });
-        if (pending != data.parameter_override_syntax_by_instance_key.end()) {
-            parameter_syntax = pending->second.syntax;
-        }
-    }
-    if (parameter_syntax == nullptr && instance_location.has_value()) {
-        for (const auto& tree : data.syntax_trees) {
-            if (!tree || parameter_syntax != nullptr) {
-                continue;
-            }
-            auto visitor = slang::syntax::makeSyntaxVisitor(
-                [&](auto& self, const slang::syntax::HierarchyInstantiationSyntax& node) {
-                    if (parameter_syntax != nullptr || node.parameters == nullptr ||
-                        node.type.valueText() != instance.getDefinition().name) {
-                        self.visitDefault(node);
-                        return;
-                    }
-                    for (const auto* candidate : node.instances) {
-                        if (candidate == nullptr || candidate->decl == nullptr ||
-                            candidate->decl->name.valueText() != instance.name) {
-                            continue;
-                        }
-                        const auto location = locationForSyntaxToken(source_manager, candidate->decl->name);
-                        if (location.has_value() && location->uri == instance_location->uri &&
-                            sameRange(location->range, instance_location->range)) {
-                            parameter_syntax = node.parameters;
-                            break;
-                        }
-                    }
-                    self.visitDefault(node);
-                });
-            tree->root().visit(visitor);
-        }
-    }
-    if (parameter_syntax == nullptr) {
-        const slang::syntax::SyntaxNode* hierarchy_syntax = instance.getSyntax();
-        while (hierarchy_syntax != nullptr &&
-               hierarchy_syntax->kind != slang::syntax::SyntaxKind::HierarchyInstantiation) {
-            hierarchy_syntax = hierarchy_syntax->parent;
-        }
-        if (hierarchy_syntax != nullptr) {
-            parameter_syntax = hierarchy_syntax->as<slang::syntax::HierarchyInstantiationSyntax>().parameters;
-        }
-    }
-    if (parameter_syntax == nullptr || parent_scope == nullptr) {
+    if (parent_scope == nullptr) {
         return;
+    }
+    const auto parameters = instance.body.getParameters();
+    const auto definition_parameters = instance.getDefinition().parameters;
+    data.parameter_override_available_endpoint_count += parameters.size();
+    std::unordered_map<std::string_view, std::pair<const slang::ast::ParameterSymbolBase*, size_t>>
+        parameters_by_name;
+    for (size_t index = 0; index < parameters.size(); ++index) {
+        if (parameters[index] != nullptr) {
+            parameters_by_name.try_emplace(parameters[index]->symbol.name, parameters[index], index);
+        }
     }
 
     slang::ast::ASTContext context(*parent_scope,
-                                   slang::ast::LookupLocation::before(instance),
-                                   slang::ast::ASTFlags::NonProcedural |
-                                       slang::ast::ASTFlags::NoReference);
-    context.setInstance(instance);
+                                   slang::ast::LookupLocation::after(instance),
+                                   slang::ast::ASTFlags::NonProcedural);
     const auto bind_assignment = [&](const slang::syntax::ExpressionSyntax& syntax,
-                                     std::string endpoint_name,
+                                     const slang::ast::ParameterSymbolBase& parameter,
                                      size_t endpoint_index) {
+        ++data.parameter_override_matched_endpoint_count;
         const auto& expression = slang::ast::Expression::bindRValue(
             parent_scope->getCompilation().getErrorType(),
             syntax,
             {},
             context,
             slang::ast::ASTFlags::AllowDataType);
-        appendResolvedConnectionSliceFact(data,
-                                          source_manager,
-                                          std::string(instance_stable_id),
-                                          {},
-                                          std::move(endpoint_name),
-                                          static_cast<int>(endpoint_index),
-                                          SnapshotConeEdgeKind::ParameterOverride,
-                                          SnapshotConeSliceFact{},
-                                          expression);
+        std::string endpoint_stable_id;
+        if (endpoint_index < definition_parameters.size()) {
+            if (const auto definition_id = symbolIdForDefinitionParameter(
+                    data, source_manager, definition_parameters[endpoint_index]);
+                definition_id.has_value()) {
+                endpoint_stable_id = *definition_id;
+            }
+        }
+        if (appendResolvedConnectionSliceFact(data,
+                                              source_manager,
+                                              std::string(instance_stable_id),
+                                              std::move(endpoint_stable_id),
+                                              std::string(parameter.symbol.name),
+                                              static_cast<int>(endpoint_index),
+                                              SnapshotConeEdgeKind::ParameterOverride,
+                                              declaredSliceForEndpoint(parameter.symbol),
+                                              expression,
+                                              syntax.sourceRange(),
+                                              &syntax)) {
+            ++data.parameter_override_resolved_fact_count;
+        }
     };
 
     bool ordered = true;
-    if (!parameter_syntax->parameters.empty()) {
-        ordered = parameter_syntax->parameters[0]->kind ==
+    if (!parameter_syntax.parameters.empty()) {
+        ordered = parameter_syntax.parameters[0]->kind ==
                   slang::syntax::SyntaxKind::OrderedParamAssignment;
     }
     if (ordered) {
-        for (size_t parameter_index = 0; parameter_index < parameter_syntax->parameters.size();
-             ++parameter_index) {
-            const auto* assignment = parameter_syntax->parameters[parameter_index];
+        const auto count = std::min(parameter_syntax.parameters.size(), parameters.size());
+        for (size_t parameter_index = 0; parameter_index < count; ++parameter_index) {
+            const auto* assignment = parameter_syntax.parameters[parameter_index];
             if (assignment == nullptr || assignment->kind != slang::syntax::SyntaxKind::OrderedParamAssignment) {
                 return;
             }
             const auto& expression = assignment->as<slang::syntax::OrderedParamAssignmentSyntax>().expr;
-            bind_assignment(*expression, {}, parameter_index);
+            bind_assignment(*expression, *parameters[parameter_index], parameter_index);
         }
         return;
     }
 
-    for (const auto* assignment : parameter_syntax->parameters) {
+    for (const auto* assignment : parameter_syntax.parameters) {
         if (assignment == nullptr || assignment->kind != slang::syntax::SyntaxKind::NamedParamAssignment) {
             continue;
         }
@@ -1456,24 +1491,108 @@ void collectResolvedParameterOverrideSlices(SnapshotData& data,
         if (named.expr == nullptr) {
             continue;
         }
-        bind_assignment(*named.expr, std::string(named.name.valueText()), 0);
+        const auto parameter = parameters_by_name.find(named.name.valueText());
+        if (parameter == parameters_by_name.end()) {
+            continue;
+        }
+        bind_assignment(*named.expr, *parameter->second.first, parameter->second.second);
     }
 }
+
+void collectSyntaxBoundParameterOverrideSlices(SnapshotData& data,
+                                                const slang::SourceManager& source_manager) {
+    for (const auto& pending : data.parameter_override_syntax_facts) {
+        if (pending.syntax == nullptr || pending.uri.empty() || pending.module_name.empty() ||
+            pending.instance_name.empty()) {
+            continue;
+        }
+        const auto instances = data.module_instances_by_uri.find(pending.uri);
+        if (instances == data.module_instances_by_uri.end()) {
+            ++data.parameter_override_syntax_binding_miss_count;
+            continue;
+        }
+        bool matched_instance = false;
+        for (const auto& instance : instances->second) {
+            if (instance.instance_stable_id.empty() || instance.module_name != pending.module_name ||
+                instance.instance_name != pending.instance_name ||
+                !(sameRange(instance.selection_range, pending.instance_range) ||
+                  rangesOverlapOrTouch(instance.selection_range, pending.instance_range))) {
+                continue;
+            }
+            matched_instance = true;
+            const auto ast_instance = data.instance_symbols_by_stable_id.find(instance.instance_stable_id);
+            if (ast_instance == data.instance_symbols_by_stable_id.end() || ast_instance->second == nullptr) {
+                ++data.parameter_override_syntax_binding_miss_count;
+                continue;
+            }
+            ++data.parameter_override_syntax_binding_count;
+            collectResolvedParameterOverrideSlices(data,
+                                                   source_manager,
+                                                   *ast_instance->second,
+                                                   instance.instance_stable_id,
+                                                   *pending.syntax);
+        }
+        if (!matched_instance) {
+            ++data.parameter_override_syntax_binding_miss_count;
+        }
+    }
+}
+
+class ConnectionSliceIndexer {
+public:
+    ConnectionSliceIndexer(SnapshotData& data, const slang::SourceManager& source_manager) :
+        data_(data), source_manager_(source_manager) {}
+
+    void collectForInstance(const slang::ast::InstanceSymbol& instance,
+                            std::string_view instance_stable_id) {
+        data_.instance_symbols_by_stable_id.insert_or_assign(std::string(instance_stable_id), &instance);
+        collectResolvedPortConnectionSlices(data_, source_manager_, instance, instance_stable_id);
+    }
+
+    void finalize() {
+        for (auto& [_, facts] : data_.resolved_connection_slices_by_instance_id) {
+            std::sort(facts.begin(), facts.end(), [](const auto& lhs, const auto& rhs) {
+                return std::tie(lhs.endpoint_stable_id,
+                                lhs.endpoint_index,
+                                lhs.location.uri,
+                                lhs.location.range.start_line,
+                                lhs.location.range.start_character,
+                                lhs.kind,
+                                lhs.unresolved) <
+                       std::tie(rhs.endpoint_stable_id,
+                                rhs.endpoint_index,
+                                rhs.location.uri,
+                                rhs.location.range.start_line,
+                                rhs.location.range.start_character,
+                                rhs.kind,
+                                rhs.unresolved);
+            });
+        }
+        data_.parameter_override_syntax_facts.clear();
+        data_.instance_symbols_by_stable_id.clear();
+    }
+
+private:
+    SnapshotData& data_;
+    const slang::SourceManager& source_manager_;
+};
 
 struct ResolvedConnectionSliceVisitor
     : slang::ast::ASTVisitor<ResolvedConnectionSliceVisitor, slang::ast::VisitFlags::AllGood> {
     SnapshotData& data;
     const slang::SourceManager& source_manager;
+    ConnectionSliceIndexer& indexer;
 
-    ResolvedConnectionSliceVisitor(SnapshotData& data, const slang::SourceManager& source_manager) :
-        data(data), source_manager(source_manager) {}
+    ResolvedConnectionSliceVisitor(SnapshotData& data,
+                                   const slang::SourceManager& source_manager,
+                                   ConnectionSliceIndexer& indexer) :
+        data(data), source_manager(source_manager), indexer(indexer) {}
 
     void handle(const slang::ast::InstanceSymbol& instance) {
         const auto location = declarationLocationForSymbol(source_manager, instance);
         if (location.has_value()) {
             const auto instance_id = instanceStableId(source_manager, instance, *location);
-            collectResolvedPortConnectionSlices(data, source_manager, instance, instance_id);
-            collectResolvedParameterOverrideSlices(data, source_manager, instance, instance_id);
+            indexer.collectForInstance(instance, instance_id);
         }
         this->visitDefault(instance);
     }
@@ -1493,136 +1612,19 @@ struct ResolvedConnectionSliceVisitor
     }
 };
 
-void buildSyntaxParameterOverrideSliceFacts(SnapshotData& data,
-                                            const slang::SourceManager& source_manager) {
-    for (const auto& [_, pending] : data.parameter_override_syntax_by_instance_key) {
-        if (pending.syntax == nullptr || pending.uri.empty() || pending.module_name.empty() ||
-            pending.instance_name.empty()) {
-            continue;
-        }
-        const auto instances = data.module_instances_by_uri.find(pending.uri);
-        if (instances == data.module_instances_by_uri.end()) {
-            continue;
-        }
-        const auto instance = std::find_if(instances->second.begin(), instances->second.end(), [&](const auto& value) {
-            return value.module_name == pending.module_name && value.instance_name == pending.instance_name &&
-                   (sameRange(value.selection_range, pending.instance_range) ||
-                    rangesOverlapOrTouch(value.selection_range, pending.instance_range));
-        });
-        if (instance == instances->second.end() || instance->instance_stable_id.empty()) {
-            continue;
-        }
-
-        const auto references = data.graph_references_by_uri.find(pending.uri);
-        const auto append_assignment = [&](const slang::syntax::ExpressionSyntax& syntax,
-                                           std::string endpoint_name,
-                                           int endpoint_index) {
-            const auto location = locationForSourceRange(source_manager, syntax.sourceRange());
-            if (!location.has_value()) {
-                return;
-            }
-            const auto duplicate = std::any_of(
-                data.resolved_connection_slices_by_instance_id[instance->instance_stable_id].begin(),
-                data.resolved_connection_slices_by_instance_id[instance->instance_stable_id].end(),
-                [&](const auto& fact) {
-                    return fact.kind == SnapshotConeEdgeKind::ParameterOverride &&
-                           fact.endpoint_name == endpoint_name && fact.endpoint_index == endpoint_index &&
-                           sameLocation(fact.location, *location);
-                });
-            if (duplicate) {
-                return;
-            }
-
-            SnapshotResolvedConnectionSliceFact fact{
-                .instance_stable_id = instance->instance_stable_id,
-                .endpoint_stable_id = {},
-                .endpoint_name = std::move(endpoint_name),
-                .endpoint_index = endpoint_index,
-                .location = *location,
-                .kind = SnapshotConeEdgeKind::ParameterOverride,
-                .source_parts = {},
-                .unresolved = false};
-            if (references != data.graph_references_by_uri.end()) {
-                const auto first = std::lower_bound(references->second.begin(),
-                                                    references->second.end(),
-                                                    location->range,
-                                                    [](const SnapshotUriReferenceRangeFact& reference,
-                                                       const ParseRange& range) {
-                                                        return rangeStartLess(reference.range, range);
-                                                    });
-                for (auto it = first; it != references->second.end(); ++it) {
-                    if (rangeStartsAfter(it->range, location->range)) {
-                        break;
-                    }
-                    if (it->is_declaration || !rangeContainsRange(location->range, it->range) ||
-                        it->stable_id.empty()) {
-                        continue;
-                    }
-                    fact.source_parts.push_back(SnapshotGraphConnectionBindingFact::SourcePart{
-                        .source_symbol_id = it->stable_id,
-                        .source_location = SemanticLocation{.uri = pending.uri, .range = it->range},
-                        .source_slice = {},
-                        .endpoint_slice = {},
-                        .slice_kind = SnapshotConeSliceKind::Whole,
-                        .source_role = SnapshotConeSourceRole::Data,
-                        .control_origin = SnapshotConeControlOrigin::None,
-                        .unresolved = false});
-                }
-            }
-            normalizeConnectionSourceParts(fact.source_parts);
-            data.resolved_connection_slices_by_instance_id[instance->instance_stable_id].push_back(
-                std::move(fact));
-        };
-
-        bool ordered = true;
-        if (!pending.syntax->parameters.empty()) {
-            ordered = pending.syntax->parameters[0]->kind == slang::syntax::SyntaxKind::OrderedParamAssignment;
-        }
-        for (size_t index = 0; index < pending.syntax->parameters.size(); ++index) {
-            const auto* assignment = pending.syntax->parameters[index];
-            if (assignment == nullptr) {
-                continue;
-            }
-            if (ordered && assignment->kind == slang::syntax::SyntaxKind::OrderedParamAssignment) {
-                append_assignment(*assignment->as<slang::syntax::OrderedParamAssignmentSyntax>().expr,
-                                  {},
-                                  static_cast<int>(index));
-            }
-            else if (!ordered && assignment->kind == slang::syntax::SyntaxKind::NamedParamAssignment) {
-                const auto& named = assignment->as<slang::syntax::NamedParamAssignmentSyntax>();
-                if (named.expr != nullptr) {
-                    append_assignment(*named.expr, std::string(named.name.valueText()), -1);
-                }
-            }
-        }
-    }
-}
-
 void buildResolvedConnectionSliceFacts(SnapshotData& data, const slang::SourceManager& source_manager) {
     data.resolved_connection_slices_by_instance_id.clear();
     data.endpoint_declared_slices_by_id.clear();
-    ResolvedConnectionSliceVisitor visitor(data, source_manager);
+    data.parameter_override_syntax_binding_count = 0;
+    data.parameter_override_syntax_binding_miss_count = 0;
+    data.parameter_override_available_endpoint_count = 0;
+    data.parameter_override_matched_endpoint_count = 0;
+    data.parameter_override_resolved_fact_count = 0;
+    ConnectionSliceIndexer indexer(data, source_manager);
+    ResolvedConnectionSliceVisitor visitor(data, source_manager, indexer);
     data.compilation->getRoot().visit(visitor);
-    buildSyntaxParameterOverrideSliceFacts(data, source_manager);
-    for (auto& [_, facts] : data.resolved_connection_slices_by_instance_id) {
-        std::sort(facts.begin(), facts.end(), [](const auto& lhs, const auto& rhs) {
-            return std::tie(lhs.endpoint_stable_id,
-                            lhs.endpoint_index,
-                            lhs.location.uri,
-                            lhs.location.range.start_line,
-                            lhs.location.range.start_character,
-                            lhs.kind,
-                            lhs.unresolved) <
-                   std::tie(rhs.endpoint_stable_id,
-                            rhs.endpoint_index,
-                            rhs.location.uri,
-                            rhs.location.range.start_line,
-                            rhs.location.range.start_character,
-                            rhs.kind,
-                            rhs.unresolved);
-        });
-    }
-    data.parameter_override_syntax_by_instance_key.clear();
+    collectSyntaxBoundParameterOverrideSlices(data, source_manager);
+    indexer.finalize();
 }
 
 std::string typeDisplayForSymbol(const slang::ast::Symbol& symbol) {
@@ -3503,14 +3505,18 @@ void collectResolvedConnectionSourceParts(
     const slang::SourceManager& source_manager,
     const slang::ast::Expression& expression,
     const SnapshotConeSliceFact& endpoint_slice,
-    std::vector<SnapshotGraphConnectionBindingFact::SourcePart>& parts) {
+    std::vector<SnapshotGraphConnectionBindingFact::SourcePart>& parts,
+    std::optional<SemanticLocation> source_location_override) {
     const auto append_ids = [&](const slang::ast::Expression& current,
                                 SnapshotConeSourceRole source_role,
                                 SnapshotConeControlOrigin control_origin,
                                 SnapshotConeSliceKind slice_kind,
                                 const SnapshotConeSliceFact& source_slice,
                                 const SnapshotConeSliceFact& current_endpoint_slice) {
-        const auto location = locationForSourceRange(source_manager, current.sourceRange);
+        auto location = locationForSourceRange(source_manager, current.sourceRange);
+        if (!location.has_value() && source_location_override.has_value()) {
+            location = source_location_override;
+        }
         if (!location.has_value()) {
             return;
         }
@@ -3653,6 +3659,272 @@ void collectResolvedConnectionSourceParts(
     };
 
     collect(collect, expression, connectionEndpointSlice(endpoint_slice, expression), std::nullopt);
+    normalizeConnectionSourceParts(parts);
+}
+
+std::optional<std::int64_t> staticSyntaxIntegerValue(const slang::syntax::ExpressionSyntax& syntax) {
+    if (syntax.kind == slang::syntax::SyntaxKind::ParenthesizedExpression) {
+        return staticSyntaxIntegerValue(
+            *syntax.as<slang::syntax::ParenthesizedExpressionSyntax>().expression);
+    }
+    if (syntax.kind != slang::syntax::SyntaxKind::IntegerLiteralExpression) {
+        return std::nullopt;
+    }
+    const auto value = syntax.as<slang::syntax::LiteralExpressionSyntax>().literal.valueText();
+    std::int64_t result = 0;
+    const auto parsed = std::from_chars(value.data(), value.data() + value.size(), result);
+    if (parsed.ec != std::errc{} || parsed.ptr != value.data() + value.size()) {
+        return std::nullopt;
+    }
+    return result;
+}
+
+bool syntaxExpressionIsLiteral(const slang::syntax::ExpressionSyntax& syntax) {
+    return syntax.kind == slang::syntax::SyntaxKind::IntegerLiteralExpression ||
+           syntax.kind == slang::syntax::SyntaxKind::IntegerVectorExpression ||
+           syntax.kind == slang::syntax::SyntaxKind::UnbasedUnsizedLiteralExpression ||
+           syntax.kind == slang::syntax::SyntaxKind::StringLiteralExpression;
+}
+
+SnapshotConeSliceFact nonExactSyntaxSlice(SnapshotConeSlicePrecision precision) {
+    return SnapshotConeSliceFact{.precision = precision, .msb = {}, .lsb = {}};
+}
+
+SnapshotConeSliceFact sliceFactForSyntaxSelector(const slang::syntax::SelectorSyntax& selector) {
+    if (selector.kind == slang::syntax::SyntaxKind::BitSelect) {
+        const auto& bit = selector.as<slang::syntax::BitSelectSyntax>();
+        if (const auto index = staticSyntaxIntegerValue(*bit.expr)) {
+            return SnapshotConeSliceFact{.precision = SnapshotConeSlicePrecision::Exact,
+                                         .msb = *index,
+                                         .lsb = *index};
+        }
+        return nonExactSyntaxSlice(SnapshotConeSlicePrecision::Dynamic);
+    }
+    if (!slang::syntax::RangeSelectSyntax::isKind(selector.kind)) {
+        return nonExactSyntaxSlice(SnapshotConeSlicePrecision::Unresolved);
+    }
+    const auto& range = selector.as<slang::syntax::RangeSelectSyntax>();
+    const auto left = staticSyntaxIntegerValue(*range.left);
+    const auto right = staticSyntaxIntegerValue(*range.right);
+    if (!left || !right) {
+        return nonExactSyntaxSlice(SnapshotConeSlicePrecision::Dynamic);
+    }
+    if (selector.kind == slang::syntax::SyntaxKind::AscendingRangeSelect) {
+        return SnapshotConeSliceFact{.precision = SnapshotConeSlicePrecision::Exact,
+                                     .msb = *left + *right - 1,
+                                     .lsb = *left};
+    }
+    if (selector.kind == slang::syntax::SyntaxKind::DescendingRangeSelect) {
+        return SnapshotConeSliceFact{.precision = SnapshotConeSlicePrecision::Exact,
+                                     .msb = *left,
+                                     .lsb = *left - *right + 1};
+    }
+    return SnapshotConeSliceFact{.precision = SnapshotConeSlicePrecision::Exact,
+                                 .msb = *left,
+                                 .lsb = *right};
+}
+
+SnapshotConeSliceKind sliceKindForSyntaxSelector(const slang::syntax::SelectorSyntax& selector) {
+    const auto slice = sliceFactForSyntaxSelector(selector);
+    if (slice.precision == SnapshotConeSlicePrecision::Dynamic ||
+        slice.precision == SnapshotConeSlicePrecision::Unresolved) {
+        return SnapshotConeSliceKind::DynamicSelect;
+    }
+    return selector.kind == slang::syntax::SyntaxKind::BitSelect
+               ? SnapshotConeSliceKind::ElementSelect
+               : SnapshotConeSliceKind::RangeSelect;
+}
+
+void collectSyntaxConnectionSourceParts(
+    SnapshotData& data,
+    const slang::SourceManager& source_manager,
+    const slang::syntax::ExpressionSyntax& syntax,
+    const SnapshotConeSliceFact& endpoint_slice,
+    std::vector<SnapshotGraphConnectionBindingFact::SourcePart>& parts) {
+    const auto append_ids = [&](const slang::syntax::ExpressionSyntax& current,
+                                SnapshotConeSourceRole source_role,
+                                SnapshotConeControlOrigin control_origin,
+                                SnapshotConeSliceKind slice_kind,
+                                const SnapshotConeSliceFact& source_slice,
+                                const SnapshotConeSliceFact& current_endpoint_slice,
+                                std::optional<SemanticLocation> location_override = std::nullopt) {
+        auto location = location_override;
+        if (!location.has_value()) {
+            location = locationForSourceRange(source_manager, current.sourceRange());
+        }
+        if (!location.has_value()) {
+            return;
+        }
+
+        std::vector<std::string> ids;
+        const auto references = data.graph_references_by_uri.find(location->uri);
+        if (references != data.graph_references_by_uri.end()) {
+            const auto first = std::lower_bound(references->second.begin(),
+                                                references->second.end(),
+                                                location->range,
+                                                [](const SnapshotUriReferenceRangeFact& reference,
+                                                   const ParseRange& range) {
+                                                    return rangeStartLess(reference.range, range);
+                                                });
+            for (auto it = first; it != references->second.end(); ++it) {
+                if (rangeStartsAfter(it->range, location->range)) {
+                    break;
+                }
+                if (!it->is_declaration && rangeContainsRange(location->range, it->range) &&
+                    !it->stable_id.empty()) {
+                    ids.push_back(it->stable_id);
+                }
+            }
+        }
+        std::sort(ids.begin(), ids.end());
+        ids.erase(std::unique(ids.begin(), ids.end()), ids.end());
+        for (const auto& id : ids) {
+            parts.push_back(SnapshotGraphConnectionBindingFact::SourcePart{
+                .source_symbol_id = id,
+                .source_location = *location,
+                .source_slice = source_slice,
+                .endpoint_slice = current_endpoint_slice,
+                .slice_kind = slice_kind,
+                .source_role = source_role,
+                .control_origin = control_origin,
+                .unresolved = false});
+        }
+        if (ids.empty() && !syntaxExpressionIsLiteral(current)) {
+            parts.push_back(SnapshotGraphConnectionBindingFact::SourcePart{
+                .source_symbol_id = {},
+                .source_location = *location,
+                .source_slice = source_slice,
+                .endpoint_slice = current_endpoint_slice,
+                .slice_kind = slice_kind,
+                .source_role = source_role,
+                .control_origin = control_origin,
+                .unresolved = true});
+        }
+    };
+
+    const auto collect = [&](const auto& self,
+                             const slang::syntax::ExpressionSyntax& current,
+                             const SnapshotConeSliceFact& current_endpoint_slice,
+                             std::optional<SnapshotConeSliceKind> inherited_slice_kind) -> void {
+        if (current.kind == slang::syntax::SyntaxKind::ParenthesizedExpression) {
+            self(self,
+                 *current.as<slang::syntax::ParenthesizedExpressionSyntax>().expression,
+                 current_endpoint_slice,
+                 inherited_slice_kind);
+            return;
+        }
+        if (current.kind == slang::syntax::SyntaxKind::ConcatenationExpression) {
+            for (const auto* operand : current.as<slang::syntax::ConcatenationExpressionSyntax>().expressions) {
+                if (operand != nullptr) {
+                    self(self,
+                         *operand,
+                         current_endpoint_slice,
+                         SnapshotConeSliceKind::Concatenation);
+                }
+            }
+            return;
+        }
+        if (current.kind == slang::syntax::SyntaxKind::IdentifierSelectName) {
+            const auto& name = current.as<slang::syntax::IdentifierSelectNameSyntax>();
+            const slang::syntax::ElementSelectSyntax* final_select = nullptr;
+            for (const auto* select : name.selectors) {
+                final_select = select;
+            }
+            if (final_select != nullptr && final_select->selector != nullptr) {
+                const auto source_slice = sliceFactForSyntaxSelector(*final_select->selector);
+                const auto slice_kind = sliceKindForSyntaxSelector(*final_select->selector);
+                if (source_slice.precision == SnapshotConeSlicePrecision::Dynamic) {
+                    const auto& selector = *final_select->selector;
+                    if (selector.kind == slang::syntax::SyntaxKind::BitSelect) {
+                        append_ids(*selector.as<slang::syntax::BitSelectSyntax>().expr,
+                                   SnapshotConeSourceRole::Control,
+                                   SnapshotConeControlOrigin::DynamicSelect,
+                                   SnapshotConeSliceKind::DynamicSelect,
+                                   nonExactSyntaxSlice(SnapshotConeSlicePrecision::Dynamic),
+                                   current_endpoint_slice);
+                    }
+                    else if (slang::syntax::RangeSelectSyntax::isKind(selector.kind)) {
+                        const auto& range = selector.as<slang::syntax::RangeSelectSyntax>();
+                        append_ids(*range.left,
+                                   SnapshotConeSourceRole::Control,
+                                   SnapshotConeControlOrigin::DynamicSelect,
+                                   SnapshotConeSliceKind::DynamicSelect,
+                                   nonExactSyntaxSlice(SnapshotConeSlicePrecision::Dynamic),
+                                   current_endpoint_slice);
+                        append_ids(*range.right,
+                                   SnapshotConeSourceRole::Control,
+                                   SnapshotConeControlOrigin::DynamicSelect,
+                                   SnapshotConeSliceKind::DynamicSelect,
+                                   nonExactSyntaxSlice(SnapshotConeSlicePrecision::Dynamic),
+                                   current_endpoint_slice);
+                    }
+                }
+                append_ids(current,
+                           SnapshotConeSourceRole::Data,
+                           SnapshotConeControlOrigin::None,
+                           inherited_slice_kind.value_or(slice_kind),
+                           source_slice,
+                           current_endpoint_slice,
+                           locationForSyntaxToken(source_manager, name.identifier));
+                return;
+            }
+        }
+        if (current.kind == slang::syntax::SyntaxKind::ElementSelectExpression) {
+            const auto& selected = current.as<slang::syntax::ElementSelectExpressionSyntax>();
+            if (selected.select->selector == nullptr) {
+                append_ids(current,
+                           SnapshotConeSourceRole::Data,
+                           SnapshotConeControlOrigin::None,
+                           SnapshotConeSliceKind::DynamicSelect,
+                           nonExactSyntaxSlice(SnapshotConeSlicePrecision::Unresolved),
+                           current_endpoint_slice);
+                return;
+            }
+            const auto source_slice = sliceFactForSyntaxSelector(*selected.select->selector);
+            const auto slice_kind = sliceKindForSyntaxSelector(*selected.select->selector);
+            if (source_slice.precision == SnapshotConeSlicePrecision::Dynamic) {
+                const auto& selector = *selected.select->selector;
+                if (selector.kind == slang::syntax::SyntaxKind::BitSelect) {
+                    append_ids(*selector.as<slang::syntax::BitSelectSyntax>().expr,
+                               SnapshotConeSourceRole::Control,
+                               SnapshotConeControlOrigin::DynamicSelect,
+                               SnapshotConeSliceKind::DynamicSelect,
+                               nonExactSyntaxSlice(SnapshotConeSlicePrecision::Dynamic),
+                               current_endpoint_slice);
+                }
+                else if (slang::syntax::RangeSelectSyntax::isKind(selector.kind)) {
+                    const auto& range = selector.as<slang::syntax::RangeSelectSyntax>();
+                    append_ids(*range.left,
+                               SnapshotConeSourceRole::Control,
+                               SnapshotConeControlOrigin::DynamicSelect,
+                               SnapshotConeSliceKind::DynamicSelect,
+                               nonExactSyntaxSlice(SnapshotConeSlicePrecision::Dynamic),
+                               current_endpoint_slice);
+                    append_ids(*range.right,
+                               SnapshotConeSourceRole::Control,
+                               SnapshotConeControlOrigin::DynamicSelect,
+                               SnapshotConeSliceKind::DynamicSelect,
+                               nonExactSyntaxSlice(SnapshotConeSlicePrecision::Dynamic),
+                               current_endpoint_slice);
+                }
+            }
+            append_ids(*selected.left,
+                       SnapshotConeSourceRole::Data,
+                       SnapshotConeControlOrigin::None,
+                       inherited_slice_kind.value_or(slice_kind),
+                       source_slice,
+                       current_endpoint_slice);
+            return;
+        }
+        append_ids(current,
+                   SnapshotConeSourceRole::Data,
+                   SnapshotConeControlOrigin::None,
+                   inherited_slice_kind.value_or(SnapshotConeSliceKind::Whole),
+                   SnapshotConeSliceFact{},
+                   current_endpoint_slice);
+    };
+
+    collect(collect, syntax, endpoint_slice, std::nullopt);
     normalizeConnectionSourceParts(parts);
 }
 
@@ -4624,7 +4896,6 @@ void indexModuleInstanceBinding(SnapshotData& data,
     }
     const auto definition_id = symbolStableId(source_manager, definition, *definition_location);
     const auto instance_id = instanceStableId(source_manager, instance, *instance_location);
-
     const auto document_it = documents.find(instance_location->uri);
     const auto* document = document_it == documents.end() ? nullptr : &document_it->second;
     auto cell = schematicCellForAstInstance(source_manager, instance, document);
@@ -4873,14 +5144,13 @@ void collectSyntaxModuleCandidates(SnapshotData& data,
                         continue;
                     }
                     if (node.parameters != nullptr) {
-                        data.parameter_override_syntax_by_instance_key.insert_or_assign(
-                            instance_location->uri + "\x1f" + rangeKey(instance_location->range),
-                            SnapshotParameterOverrideSyntaxFact{.syntax = node.parameters,
-                                                               .uri = instance_location->uri,
-                                                               .module_name = module_name,
-                                                               .instance_name = std::string(
-                                                                   instance->decl->name.valueText()),
-                                                               .instance_range = instance_location->range});
+                        data.parameter_override_syntax_facts.push_back(
+                            SnapshotParameterOverrideSyntaxFact{
+                                .syntax = node.parameters,
+                                .uri = instance_location->uri,
+                                .module_name = module_name,
+                                .instance_name = std::string(instance->decl->name.valueText()),
+                                .instance_range = instance_location->range});
                     }
                     const auto statement_location = locationForSourceRange(source_manager,
                                                                            node.sourceRange());

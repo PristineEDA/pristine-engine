@@ -1147,6 +1147,18 @@ void runBackwardConeFixture(SemanticEngine& engine, const nlohmann::json& fixtur
     if (expected.contains("staticSliceMatchCount")) {
         CHECK(result.cone_static_slice_match_count == expected.at("staticSliceMatchCount").get<size_t>());
     }
+    if (expected.contains("exactConnectionEdgeCount")) {
+        CHECK(result.cone_exact_connection_edge_count ==
+              expected.at("exactConnectionEdgeCount").get<size_t>());
+    }
+    if (expected.contains("parameterOverrideExactMappingCount")) {
+        CHECK(result.cone_parameter_override_exact_mapping_count ==
+              expected.at("parameterOverrideExactMappingCount").get<size_t>());
+    }
+    if (expected.contains("dynamicConnectionFactCount")) {
+        CHECK(result.cone_dynamic_connection_fact_count ==
+              expected.at("dynamicConnectionFactCount").get<size_t>());
+    }
 }
 
 void runCodeActionFixture(SemanticEngine& engine, const nlohmann::json& fixture) {

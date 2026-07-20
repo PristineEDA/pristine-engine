@@ -25,6 +25,10 @@ class SyntaxTree;
 struct ParameterValueAssignmentSyntax;
 }
 
+namespace slang::ast {
+class InstanceSymbol;
+}
+
 namespace pristine::analysis::semantic {
 
 struct SnapshotIndexedSymbol {
@@ -402,6 +406,16 @@ struct SnapshotGraphConnectionBindingFact {
     bool unresolved = false;
 };
 
+// Build-only syntax ownership for resolving parameter override expressions in
+// the caller instance scope. These pointers are discarded before providers run.
+struct SnapshotParameterOverrideSyntaxFact {
+    const slang::syntax::ParameterValueAssignmentSyntax* syntax = nullptr;
+    std::string uri;
+    std::string module_name;
+    std::string instance_name;
+    ParseRange instance_range;
+};
+
 // Resolved connection slices are produced while the slang AST and the parent
 // scope are alive. DesignGraphIndexBuilder only consumes this value-type view;
 // it must never recover signal semantics from schematic strings or source text.
@@ -485,17 +499,6 @@ struct SemanticModuleSignature {
     std::string uri;
 };
 
-// This is build-only syntax ownership used to bind parameter override
-// expressions in the caller scope. It is cleared after AstIndex lowers the
-// expressions into resolved value facts and is never exposed to providers.
-struct SnapshotParameterOverrideSyntaxFact {
-    const slang::syntax::ParameterValueAssignmentSyntax* syntax = nullptr;
-    std::string uri;
-    std::string module_name;
-    std::string instance_name;
-    ParseRange instance_range;
-};
-
 struct SnapshotData {
     SnapshotData();
     ~SnapshotData();
@@ -559,8 +562,14 @@ struct SnapshotData {
     std::unordered_map<std::string, std::vector<SnapshotTypeReference>> type_references_by_uri;
     std::unordered_map<std::string, std::vector<IncludeDirective>> include_directives_by_uri;
     std::unordered_map<std::string, std::vector<SnapshotModuleInstance>> module_instances_by_uri;
-    std::unordered_map<std::string, SnapshotParameterOverrideSyntaxFact>
-        parameter_override_syntax_by_instance_key;
+    std::vector<SnapshotParameterOverrideSyntaxFact> parameter_override_syntax_facts;
+    std::unordered_map<std::string, const slang::ast::InstanceSymbol*>
+        instance_symbols_by_stable_id;
+    size_t parameter_override_syntax_binding_count = 0;
+    size_t parameter_override_syntax_binding_miss_count = 0;
+    size_t parameter_override_available_endpoint_count = 0;
+    size_t parameter_override_matched_endpoint_count = 0;
+    size_t parameter_override_resolved_fact_count = 0;
     std::unordered_map<std::string, std::vector<CallableInvocationFact>> callable_invocations_by_uri;
     std::unordered_map<std::string, std::vector<MacroInvocationFact>> macro_invocations_by_uri;
     std::unordered_map<std::string, std::vector<SignatureInlaySymbol>> inlay_symbols_by_uri;
