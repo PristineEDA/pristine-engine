@@ -141,6 +141,46 @@ DesignGraphContext simpleDesignContext() {
         SnapshotModuleCallHierarchyRange{.range = top.instances.front().module_selection_range,
                                          .item_id = "module|child"}};
     populateEndpointFacts(context);
+    const auto source_part = [](std::string stable_id, ParseRange range) {
+        return SnapshotGraphConnectionBindingFact::SourcePart{
+            .source_symbol_id = std::move(stable_id),
+            .source_location = SemanticLocation{.uri = "file:///workspace/top.sv", .range = range},
+            .source_slice = {},
+            .endpoint_slice = {},
+            .slice_kind = SnapshotConeSliceKind::Whole,
+            .source_role = SnapshotConeSourceRole::Data,
+            .control_origin = SnapshotConeControlOrigin::None,
+            .unresolved = false};
+    };
+    context.binding_index.schematic_connections_by_module["top"] = {
+        SnapshotSchematicConnectionFact{.caller_module_name = "top",
+                                        .instance_stable_id = "instance|u_child",
+                                        .instance_name = "u_child",
+                                        .instance_selection_range = top.instances.front().selection_range,
+                                        .endpoint_stable_id = "endpoint|child|clk",
+                                        .endpoint_name = "clk",
+                                        .endpoint_index = 0,
+                                        .endpoint_direction = SnapshotGraphPortDirection::Input,
+                                        .location = SemanticLocation{.uri = "file:///workspace/top.sv",
+                                                                     .range = rangeAt(3, 17, 26)},
+                                        .kind = SnapshotConeEdgeKind::InstancePort,
+                                        .source_parts = {source_part("signal|clk", rangeAt(3, 17, 20))},
+                                        .display_label = "clk",
+                                        .unresolved = false},
+        SnapshotSchematicConnectionFact{.caller_module_name = "top",
+                                        .instance_stable_id = "instance|u_child",
+                                        .instance_name = "u_child",
+                                        .instance_selection_range = top.instances.front().selection_range,
+                                        .endpoint_stable_id = "endpoint|child|out",
+                                        .endpoint_name = "out",
+                                        .endpoint_index = 1,
+                                        .endpoint_direction = SnapshotGraphPortDirection::Output,
+                                        .location = SemanticLocation{.uri = "file:///workspace/top.sv",
+                                                                     .range = rangeAt(3, 28, 34)},
+                                        .kind = SnapshotConeEdgeKind::InstancePort,
+                                        .source_parts = {source_part("signal|ready", rangeAt(3, 28, 33))},
+                                        .display_label = "ready",
+                                        .unresolved = false}};
     return context;
 }
 
@@ -390,6 +430,48 @@ TEST_CASE("DesignGraphProvider schematic emits Pristine-compatible ports cells a
                                                            .signal = "ordered_out",
                                                            .range = rangeAt(4, 23, 29)}}});
 
+    const auto source_part = [](std::string stable_id, ParseRange range) {
+        return SnapshotGraphConnectionBindingFact::SourcePart{
+            .source_symbol_id = std::move(stable_id),
+            .source_location = SemanticLocation{.uri = "file:///workspace/top.sv", .range = range},
+            .source_slice = {},
+            .endpoint_slice = {},
+            .slice_kind = SnapshotConeSliceKind::Whole,
+            .source_role = SnapshotConeSourceRole::Data,
+            .control_origin = SnapshotConeControlOrigin::None,
+            .unresolved = false};
+    };
+    context.binding_index.port_symbol_ids_by_module_port["top\x1f" "clk"] = "signal|clk";
+    context.binding_index.port_symbol_ids_by_module_port["top\x1f" "ready"] = "signal|ready";
+    context.binding_index.schematic_connections_by_module["top"].push_back(
+        SnapshotSchematicConnectionFact{.caller_module_name = "top",
+                                        .instance_stable_id = "instance|u_ordered",
+                                        .instance_name = "u_ordered",
+                                        .instance_selection_range = rangeAt(4, 8, 17),
+                                        .endpoint_stable_id = "endpoint|child|clk",
+                                        .endpoint_name = "clk",
+                                        .endpoint_index = 0,
+                                        .endpoint_direction = SnapshotGraphPortDirection::Input,
+                                        .location = SemanticLocation{.uri = "file:///workspace/top.sv",
+                                                                     .range = rangeAt(4, 18, 21)},
+                                        .kind = SnapshotConeEdgeKind::InstancePort,
+                                        .source_parts = {source_part("signal|clk", rangeAt(4, 18, 21))},
+                                        .display_label = "clk"});
+    context.binding_index.schematic_connections_by_module["top"].push_back(
+        SnapshotSchematicConnectionFact{.caller_module_name = "top",
+                                        .instance_stable_id = "instance|u_ordered",
+                                        .instance_name = "u_ordered",
+                                        .instance_selection_range = rangeAt(4, 8, 17),
+                                        .endpoint_stable_id = "endpoint|child|out",
+                                        .endpoint_name = "out",
+                                        .endpoint_index = 1,
+                                        .endpoint_direction = SnapshotGraphPortDirection::Output,
+                                        .location = SemanticLocation{.uri = "file:///workspace/top.sv",
+                                                                     .range = rangeAt(4, 23, 29)},
+                                        .kind = SnapshotConeEdgeKind::InstancePort,
+                                        .source_parts = {source_part("signal|ordered_out", rangeAt(4, 23, 29))},
+                                        .display_label = "ordered_out"});
+
     const auto graph = schematic(context, std::string_view("top"), 8);
 
     REQUIRE_FALSE(graph.unresolved);
@@ -541,6 +623,31 @@ TEST_CASE("DesignGraphProvider schematic connects interface cells to same-name n
                               DesignGraphModuleEntry{.uri = "file:///workspace/top.sv",
                                                      .definition = top}};
     populateEndpointFacts(context);
+    const auto source_part = SnapshotGraphConnectionBindingFact::SourcePart{
+        .source_symbol_id = "fixture|top|bus",
+        .source_location = SemanticLocation{.uri = "file:///workspace/top.sv", .range = rangeAt(14, 22, 25)},
+        .source_slice = {},
+        .endpoint_slice = {},
+        .slice_kind = SnapshotConeSliceKind::Whole,
+        .source_role = SnapshotConeSourceRole::Data,
+        .control_origin = SnapshotConeControlOrigin::None,
+        .unresolved = false};
+    context.binding_index.instance_ids_by_uri_range["file:///workspace/top.sv\x1f" "13:9:13:12"] =
+        "fixture|top|bus";
+    context.binding_index.schematic_connections_by_module["top"] = {
+        SnapshotSchematicConnectionFact{.caller_module_name = "top",
+                                        .instance_stable_id = "fixture|top|u_consumer",
+                                        .instance_name = "u_consumer",
+                                        .instance_selection_range = rangeAt(14, 11, 21),
+                                        .endpoint_stable_id = "endpoint|consumer|bus",
+                                        .endpoint_name = "bus",
+                                        .endpoint_index = 0,
+                                        .endpoint_direction = SnapshotGraphPortDirection::Unknown,
+                                        .location = SemanticLocation{.uri = "file:///workspace/top.sv",
+                                                                     .range = rangeAt(14, 22, 25)},
+                                        .kind = SnapshotConeEdgeKind::InstancePort,
+                                        .source_parts = {source_part},
+                                        .display_label = "bus"}};
 
     const auto graph = schematic(context, std::string_view("top"), 8);
 
@@ -583,6 +690,7 @@ TEST_CASE("DesignGraphProvider reports missing endpoint bindings without port-na
           "[analysis][design-graph-provider][schematic][no-fallback][endpoint]") {
     auto context = simpleDesignContext();
     context.binding_index.endpoints_by_module_member.erase("child\x1f" "out");
+    context.binding_index.endpoints_by_stable_id.erase("endpoint|child|out");
 
     const auto graph = schematic(context, std::string_view("top"), 8);
 

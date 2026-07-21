@@ -301,6 +301,9 @@ struct SemanticSchematicResult {
     bool discovery_closure_used = false;
     bool discovery_closure_cache_hit = false;
     size_t graph_binding_lookup_scanned_facts = 0;
+    size_t schematic_connection_fact_lookup_count = 0;
+    size_t schematic_source_part_scan_count = 0;
+    size_t schematic_partial_connection_fact_count = 0;
     size_t graph_scanned_global_symbols = 0;
     bool unresolved = false;
     bool partial = false;

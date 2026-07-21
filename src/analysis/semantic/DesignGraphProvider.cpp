@@ -3,10 +3,12 @@
 #include "pristine/analysis/SourceUtil.h"
 
 #include <algorithm>
+#include <cstdint>
 #include <map>
 #include <set>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <unordered_map>
 #include <vector>
 
@@ -38,21 +40,6 @@ std::vector<std::string> inferredHierarchyRootNames(
     return roots;
 }
 
-const SchematicPort* findSchematicPortByName(const ModuleSchematic& schematic,
-                                             std::string_view name) {
-    const auto found = std::find_if(schematic.ports.begin(), schematic.ports.end(), [&](const auto& port) {
-        return port.name == name;
-    });
-    return found == schematic.ports.end() ? nullptr : &*found;
-}
-
-const SchematicPort* findSchematicPortByIndex(const ModuleSchematic& schematic, int index) {
-    if (index < 0 || static_cast<size_t>(index) >= schematic.ports.size()) {
-        return nullptr;
-    }
-    return &schematic.ports[static_cast<size_t>(index)];
-}
-
 bool locationLess(const SemanticLocation& lhs, const SemanticLocation& rhs) {
     if (lhs.uri != rhs.uri) {
         return lhs.uri < rhs.uri;
@@ -67,6 +54,15 @@ bool locationLess(const SemanticLocation& lhs, const SemanticLocation& rhs) {
         return lhs.range.end_line < rhs.range.end_line;
     }
     return lhs.range.end_character < rhs.range.end_character;
+}
+
+std::string rangeKey(const ParseRange& range) {
+    return std::to_string(range.start_line) + ":" + std::to_string(range.start_character) + ":" +
+           std::to_string(range.end_line) + ":" + std::to_string(range.end_character);
+}
+
+std::string uriRangeKey(std::string_view uri, const ParseRange& range) {
+    return std::string(uri) + "\x1f" + rangeKey(range);
 }
 
 std::string directionLabel(SnapshotGraphPortDirection direction) {
@@ -211,26 +207,187 @@ void appendUniqueMessage(std::vector<std::string>& messages, std::string message
 struct SchematicNetBuildResult {
     std::vector<SemanticSchematicNet> nets;
     std::vector<std::string> messages;
+    size_t typed_connection_fact_lookups = 0;
+    size_t source_part_scans = 0;
+    size_t partial_connection_facts = 0;
     bool partial = false;
 };
+
+bool isStaticSchematicSource(const SnapshotGraphConnectionBindingFact::SourcePart& part) {
+    return !part.unresolved && !part.source_symbol_id.empty() &&
+           (part.source_slice.precision == SnapshotConeSlicePrecision::Whole ||
+            part.source_slice.precision == SnapshotConeSlicePrecision::Exact);
+}
+
+std::string schematicNetKey(const SnapshotGraphConnectionBindingFact::SourcePart& part) {
+    return part.source_symbol_id + "\x1f" + coneSliceKey(part.source_slice);
+}
+
+std::string stableShortId(std::string_view value) {
+    std::uint64_t hash = 1469598103934665603ULL;
+    for (const unsigned char ch : value) {
+        hash ^= ch;
+        hash *= 1099511628211ULL;
+    }
+    constexpr std::string_view digits = "0123456789abcdef";
+    std::string result(8, '0');
+    for (size_t index = 0; index < result.size(); ++index) {
+        result[result.size() - index - 1] = digits[hash & 0xfU];
+        hash >>= 4U;
+    }
+    return result;
+}
 
 SchematicNetBuildResult buildSchematicNets(const ModuleSchematic& schematic,
                                            const DesignGraphContext& context) {
     std::map<std::string, SemanticSchematicNet> nets;
     SchematicNetBuildResult result;
-    const auto ensure_net = [&](std::string_view signal) -> SemanticSchematicNet& {
-        auto [it, inserted] = nets.try_emplace(std::string(signal));
+    std::unordered_map<std::string, std::string> net_key_by_display;
+    const auto ensure_net = [&](std::string key, std::string label) -> SemanticSchematicNet& {
+        auto [it, inserted] = nets.try_emplace(std::move(key));
         if (inserted) {
-            it->second.name = std::string(signal);
+            const auto displayed = net_key_by_display.find(label);
+            if (displayed != net_key_by_display.end() && displayed->second != it->first) {
+                label += "@" + stableShortId(it->first);
+            }
+            else {
+                net_key_by_display.try_emplace(label, it->first);
+            }
+            it->second.name = std::move(label);
         }
         return it->second;
     };
 
+    const auto signature_it = context.module_signatures_by_name.find(schematic.name);
+    const auto& cells = signature_it == context.module_signatures_by_name.end()
+                            ? schematic.cells
+                            : signature_it->second.schematic.cells;
+
+    std::unordered_map<std::string, const SchematicPort*> ports_by_symbol_id;
     for (const auto& port : schematic.ports) {
-        if (port.name.empty()) {
+        const auto stable_id = context.binding_index.port_symbol_ids_by_module_port.find(
+            schematic.name + "\x1f" + port.name);
+        if (stable_id != context.binding_index.port_symbol_ids_by_module_port.end()) {
+            ports_by_symbol_id.try_emplace(stable_id->second, &port);
+        }
+    }
+
+    std::set<std::string> connected_port_ids;
+    const auto typed_facts = context.binding_index.schematic_connections_by_module.find(schematic.name);
+    if (typed_facts != context.binding_index.schematic_connections_by_module.end()) {
+        for (const auto& fact : typed_facts->second) {
+            ++result.typed_connection_fact_lookups;
+            if (fact.kind != SnapshotConeEdgeKind::InstancePort) {
+                continue;
+            }
+            if (fact.endpoint_stable_id.empty() ||
+                !context.binding_index.endpoints_by_stable_id.contains(fact.endpoint_stable_id)) {
+                result.partial = true;
+                ++result.partial_connection_facts;
+                appendUniqueMessage(result.messages,
+                                    "No AST-backed endpoint binding for instance '" +
+                                        fact.instance_name + "'.");
+                continue;
+            }
+            if (fact.unresolved || fact.source_parts.empty()) {
+                result.partial = true;
+                ++result.partial_connection_facts;
+                appendUniqueMessage(result.messages,
+                                    "No resolved schematic source fact for instance '" +
+                                        fact.instance_name + "'.");
+                continue;
+            }
+
+            for (const auto& part : fact.source_parts) {
+                ++result.source_part_scans;
+                if (!isStaticSchematicSource(part)) {
+                    result.partial = true;
+                    ++result.partial_connection_facts;
+                    appendUniqueMessage(result.messages,
+                                        "Partial schematic connection for instance '" +
+                                            fact.instance_name + "'.");
+                    continue;
+                }
+                auto& net = ensure_net(schematicNetKey(part), fact.display_label);
+                appendEndpointByDirection(net,
+                                          directionLabel(fact.endpoint_direction),
+                                          SemanticSchematicEndpoint{.node_id = fact.instance_name,
+                                                                    .port_name = fact.endpoint_name});
+                if (const auto port = ports_by_symbol_id.find(part.source_symbol_id);
+                    port != ports_by_symbol_id.end()) {
+                    appendEndpointByDirection(net,
+                                              port->second->direction,
+                                              SemanticSchematicEndpoint{.node_id =
+                                                                            std::string("$port:") +
+                                                                                port->second->name,
+                                                                        .port_name = port->second->name},
+                                              true);
+                    connected_port_ids.insert(part.source_symbol_id);
+                }
+            }
+        }
+    }
+
+    std::set<std::string> typed_assignment_cell_ids;
+    const auto typed_assignments = context.binding_index.schematic_assignments_by_module.find(schematic.name);
+    if (typed_assignments != context.binding_index.schematic_assignments_by_module.end()) {
+        const auto static_slice = [](const SnapshotConeSliceFact& slice) {
+            return slice.precision == SnapshotConeSlicePrecision::Whole ||
+                   slice.precision == SnapshotConeSlicePrecision::Exact;
+        };
+        const auto assignment_net_key = [](std::string_view symbol_id,
+                                           const SnapshotConeSliceFact& slice) {
+            return std::string(symbol_id) + "\x1f" + coneSliceKey(slice);
+        };
+        const auto append_port_endpoint = [&](SemanticSchematicNet& net, std::string_view symbol_id) {
+            const auto port = ports_by_symbol_id.find(std::string(symbol_id));
+            if (port == ports_by_symbol_id.end()) {
+                return;
+            }
+            appendEndpointByDirection(net,
+                                      port->second->direction,
+                                      SemanticSchematicEndpoint{.node_id = std::string("$port:") +
+                                                                            port->second->name,
+                                                                .port_name = port->second->name},
+                                      true);
+            connected_port_ids.insert(std::string(symbol_id));
+        };
+        for (const auto& fact : typed_assignments->second) {
+            ++result.typed_connection_fact_lookups;
+            typed_assignment_cell_ids.insert(fact.cell_id);
+            if (fact.unresolved || fact.source_symbol_id.empty() || fact.sink_symbol_id.empty() ||
+                !static_slice(fact.source_slice) || !static_slice(fact.sink_slice)) {
+                result.partial = true;
+                ++result.partial_connection_facts;
+                appendUniqueMessage(result.messages,
+                                    "Partial AST-backed assignment connection for cell '" + fact.cell_id + "'.");
+                continue;
+            }
+            auto& source_net = ensure_net(assignment_net_key(fact.source_symbol_id, fact.source_slice),
+                                          fact.source_display_label.empty() ? "<unresolved>" :
+                                                                              fact.source_display_label);
+            source_net.loads.push_back(SemanticSchematicEndpoint{
+                .node_id = fact.cell_id,
+                .port_name = fact.source_role == SnapshotConeSourceRole::Control ? "S" : "A"});
+            append_port_endpoint(source_net, fact.source_symbol_id);
+
+            auto& sink_net = ensure_net(assignment_net_key(fact.sink_symbol_id, fact.sink_slice),
+                                        fact.sink_display_label.empty() ? "<unresolved>" :
+                                                                           fact.sink_display_label);
+            sink_net.drivers.push_back(SemanticSchematicEndpoint{.node_id = fact.cell_id,
+                                                                   .port_name = "Y"});
+            append_port_endpoint(sink_net, fact.sink_symbol_id);
+        }
+    }
+
+    for (const auto& port : schematic.ports) {
+        const auto stable_id = context.binding_index.port_symbol_ids_by_module_port.find(
+            schematic.name + "\x1f" + port.name);
+        if (port.name.empty() || stable_id == context.binding_index.port_symbol_ids_by_module_port.end() ||
+            connected_port_ids.contains(stable_id->second)) {
             continue;
         }
-        auto& net = ensure_net(port.name);
+        auto& net = ensure_net(stable_id->second + "\x1f" + "whole", port.name);
         appendEndpointByDirection(net,
                                   port.direction,
                                   SemanticSchematicEndpoint{.node_id = std::string("$port:") + port.name,
@@ -238,67 +395,41 @@ SchematicNetBuildResult buildSchematicNets(const ModuleSchematic& schematic,
                                   true);
     }
 
-    const auto signature_it = context.module_signatures_by_name.find(schematic.name);
-    const auto& cells = signature_it == context.module_signatures_by_name.end()
-                            ? schematic.cells
-                            : signature_it->second.schematic.cells;
-
     for (const auto& cell : cells) {
         if (cell.kind == "interface" && !cell.name.empty()) {
-            auto& net = ensure_net(cell.name);
+            std::string key = "interface\x1f" + cell.id;
+            if (signature_it != context.module_signatures_by_name.end()) {
+                const auto instance = context.binding_index.instance_ids_by_uri_range.find(
+                    uriRangeKey(signature_it->second.uri, cell.selection_range));
+                if (instance != context.binding_index.instance_ids_by_uri_range.end()) {
+                    const auto whole_key = instance->second + "\x1fwhole::";
+                    if (nets.contains(whole_key)) {
+                        key = whole_key;
+                    }
+                }
+            }
+            auto& net = ensure_net(std::move(key), cell.name);
             appendEndpointByDirection(net,
                                       "interface",
                                       SemanticSchematicEndpoint{.node_id = cell.id,
                                                                 .port_name = "interface"});
         }
-
-        const auto target_it = cell.kind == "module"
-                                   ? context.module_signatures_by_name.find(cell.type)
-                                   : context.module_signatures_by_name.end();
+        if (cell.kind == "module" || typed_assignment_cell_ids.contains(cell.id)) {
+            continue;
+        }
         for (const auto& connection : cell.connections) {
             if (connection.signal.empty()) {
                 continue;
             }
 
-            std::string port_name = connection.port_name;
-            std::string direction = "inout";
-            if (target_it != context.module_signatures_by_name.end()) {
-                const auto& target_schematic = target_it->second.schematic;
-                const auto* port = !port_name.empty()
-                                       ? findSchematicPortByName(target_schematic, port_name)
-                                       : findSchematicPortByIndex(target_schematic, connection.port_index);
-                if (port == nullptr) {
-                    result.partial = true;
-                    appendUniqueMessage(result.messages,
-                                        "No indexed port binding found for cell '" + cell.name + "'.");
-                    continue;
-                }
-                port_name = port->name;
-                const auto endpoint = context.binding_index.endpoints_by_module_member.find(
-                    cell.type + "\x1f" + port_name);
-                if (endpoint == context.binding_index.endpoints_by_module_member.end()) {
-                    result.partial = true;
-                    appendUniqueMessage(result.messages,
-                                        "No AST-backed endpoint binding found for '" + cell.type + "." +
-                                            port_name + "'.");
-                    continue;
-                }
-                direction = directionLabel(endpoint->second.direction);
-            }
-            else if (cell.kind == "module") {
-                result.partial = true;
-                appendUniqueMessage(result.messages,
-                                    "No AST-backed module signature found for cell '" + cell.name + "'.");
-                continue;
-            }
-
-            if (port_name.empty() && connection.port_index >= 0) {
-                port_name = std::to_string(connection.port_index);
-            }
-
-            auto& net = ensure_net(connection.signal);
+            const auto port_name = connection.port_name.empty() && connection.port_index >= 0
+                                       ? std::to_string(connection.port_index)
+                                       : connection.port_name;
+            auto& net = ensure_net("display\x1f" + cell.id + "\x1f" + port_name + "\x1f" +
+                                       connection.signal,
+                                   connection.signal);
             appendEndpointByDirection(net,
-                                      direction,
+                                      "inout",
                                       SemanticSchematicEndpoint{.node_id = cell.id,
                                                                 .port_name = port_name});
         }
@@ -306,6 +437,17 @@ SchematicNetBuildResult buildSchematicNets(const ModuleSchematic& schematic,
 
     result.nets.reserve(nets.size());
     for (auto& [_, net] : nets) {
+        const auto sort_endpoints = [](std::vector<SemanticSchematicEndpoint>& endpoints) {
+            std::sort(endpoints.begin(), endpoints.end(), [](const auto& lhs, const auto& rhs) {
+                return std::tie(lhs.node_id, lhs.port_name) < std::tie(rhs.node_id, rhs.port_name);
+            });
+            endpoints.erase(std::unique(endpoints.begin(), endpoints.end(), [](const auto& lhs, const auto& rhs) {
+                                return lhs.node_id == rhs.node_id && lhs.port_name == rhs.port_name;
+                            }),
+                            endpoints.end());
+        };
+        sort_endpoints(net.drivers);
+        sort_endpoints(net.loads);
         result.nets.push_back(std::move(net));
     }
     return result;
@@ -567,6 +709,10 @@ SemanticSchematicResult schematic(const DesignGraphContext& context,
         emitted.insert(current);
         auto net_result = buildSchematicNets(schematic, context);
         result.partial = result.partial || net_result.partial;
+        result.graph_binding_lookup_scanned_facts += net_result.typed_connection_fact_lookups;
+        result.schematic_connection_fact_lookup_count += net_result.typed_connection_fact_lookups;
+        result.schematic_source_part_scan_count += net_result.source_part_scans;
+        result.schematic_partial_connection_fact_count += net_result.partial_connection_facts;
         for (auto& message : net_result.messages) {
             appendUniqueMessage(result.messages, std::move(message));
         }

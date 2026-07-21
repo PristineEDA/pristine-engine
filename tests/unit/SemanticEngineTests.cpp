@@ -2627,4 +2627,54 @@ TEST_CASE("SemanticEngine document change invalidates indexed macro hover",
     CHECK(second.contents.find("Expansion: `1`") == std::string::npos);
 }
 
+TEST_CASE("SemanticEngine invalidates typed schematic connection projections after a document change",
+          "[analysis][semantic-engine][schematic][typed-connection][affected][cache]") {
+    SemanticEngine engine;
+    engine.configure(SemanticEngineConfig{.top_modules = {"top"}});
+    const auto child_uri = std::string("file:///workspace/child.sv");
+    const auto top_uri = std::string("file:///workspace/top.sv");
+    engine.updateDocument(child_uri,
+                          "module child(input logic in); endmodule\n",
+                          SemanticEngineDocumentState{.version = 1, .is_open = true});
+    engine.updateDocument(top_uri,
+                          "module top; logic a; child u(.in(a)); endmodule\n",
+                          SemanticEngineDocumentState{.version = 1, .is_open = true});
+
+    const auto connection_signal = [](const SemanticSchematicResult& result) -> std::string {
+        const auto module = std::find_if(result.modules.begin(), result.modules.end(), [](const auto& view) {
+            return view.module.name == "top";
+        });
+        if (module == result.modules.end()) return {};
+        const auto cell = std::find_if(module->module.cells.begin(), module->module.cells.end(), [](const auto& item) {
+            return item.name == "u" && item.type == "child";
+        });
+        if (cell == module->module.cells.end() || cell->connections.empty()) return {};
+        return cell->connections.front().signal;
+    };
+
+    engine.resetQueryCacheStats();
+    const auto first = engine.schematic(std::string_view("top"), 8);
+    REQUIRE_FALSE(first.unresolved);
+    CHECK(connection_signal(first) == "a");
+    CHECK(first.schematic_connection_fact_lookup_count >= 1);
+    CHECK(first.schematic_source_part_scan_count >= 1);
+    CHECK(first.graph_scanned_global_symbols == 0);
+
+    const auto warm = engine.schematic(std::string_view("top"), 8);
+    CHECK(connection_signal(warm) == "a");
+    CHECK(engine.queryCacheStats().schematic_entries >= 1);
+    CHECK(engine.queryCacheStats().hits >= 1);
+
+    engine.updateDocument(top_uri,
+                          "module top; logic b; child u(.in(b)); endmodule\n",
+                          SemanticEngineDocumentState{.version = 2, .is_open = true});
+    const auto changed = engine.schematic(std::string_view("top"), 8);
+    REQUIRE_FALSE(changed.unresolved);
+    CHECK(changed.generation > first.generation);
+    CHECK(connection_signal(changed) == "b");
+    CHECK(connection_signal(changed) != "a");
+    CHECK(changed.schematic_connection_fact_lookup_count >= 1);
+    CHECK(changed.schematic_source_part_scan_count >= 1);
+    CHECK(changed.graph_scanned_global_symbols == 0);
+}
 } // namespace pristine::analysis

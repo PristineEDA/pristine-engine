@@ -49,8 +49,11 @@ auto buildReferenceCallDesign(std::string top_source =
     return SnapshotBuilder{}.build(std::move(input));
 }
 
-auto buildGraphSource(std::string source, std::uint64_t generation = 91) {
+auto buildGraphSource(std::string source,
+                      std::uint64_t generation = 91,
+                      std::vector<std::string> top_modules = {}) {
     SnapshotBuildInput input{.generation = generation,
+                             .config = SemanticEngineConfig{.top_modules = std::move(top_modules)},
                              .documents = {{"file:///workspace/top.sv",
                                             SemanticEngineDocument{.uri = "file:///workspace/top.sv",
                                                                    .text = std::move(source),
@@ -102,6 +105,39 @@ bool hasIndexedParameterEndpoints(const std::vector<const SnapshotResolvedConnec
 
 bool hasDirectParameterEndpoints(const std::vector<const SnapshotResolvedConnectionSliceFact*>& facts) {
     return hasIndexedParameterEndpoints(facts);
+}
+
+std::vector<const SnapshotSchematicConnectionFact*> schematicConnectionFacts(const SnapshotData& data) {
+    std::vector<const SnapshotSchematicConnectionFact*> facts;
+    for (const auto& [_, values] : data.design_graph_binding_index.schematic_connections_by_module) {
+        for (const auto& value : values) {
+            facts.push_back(&value);
+        }
+    }
+    std::sort(facts.begin(), facts.end(), [](const auto* left, const auto* right) {
+        return std::tie(left->caller_module_name,
+                        left->instance_stable_id,
+                        left->kind,
+                        left->endpoint_index,
+                        left->endpoint_stable_id) <
+               std::tie(right->caller_module_name,
+                        right->instance_stable_id,
+                        right->kind,
+                        right->endpoint_index,
+                        right->endpoint_stable_id);
+    });
+    return facts;
+}
+
+const SchematicCell* schematicCell(const AstIndexView& view,
+                                   std::string_view module,
+                                   std::string_view instance) {
+    const auto signature = view.module_signatures_by_name.find(std::string(module));
+    if (signature == view.module_signatures_by_name.end()) return nullptr;
+    const auto cell = std::find_if(signature->second.schematic.cells.begin(),
+                                   signature->second.schematic.cells.end(),
+                                   [&](const auto& candidate) { return candidate.name == instance; });
+    return cell == signature->second.schematic.cells.end() ? nullptr : &*cell;
 }
 
 TEST_CASE("AstIndex filters, sorts, and maps workspace symbols",
@@ -776,6 +812,7 @@ TEST_CASE("AstIndex attaches self-cycle and unresolved instance candidates to mo
 TEST_CASE("AstIndex promotes generated module instances into schematic cells",
           "[analysis][semantic][ast-index][schematic][generate][no-fallback]") {
     SnapshotBuildInput input{.generation = 38,
+                             .config = SemanticEngineConfig{.top_modules = {"top"}},
                              .documents = {{"file:///workspace/generated.sv",
                                             SemanticEngineDocument{
                                                 .uri = "file:///workspace/generated.sv",
@@ -861,6 +898,7 @@ TEST_CASE("AstIndex preserves elaborated generated instances as distinct call ed
 TEST_CASE("AstIndex preserves generated schematic port width and connection facts",
           "[analysis][semantic][ast-index][schematic][generate][port-net][no-fallback]") {
     SnapshotBuildInput input{.generation = 40,
+                             .config = SemanticEngineConfig{.top_modules = {"top"}},
                              .documents = {{"file:///workspace/generated-port-net.sv",
                                             SemanticEngineDocument{
                                                 .uri = "file:///workspace/generated-port-net.sv",
@@ -927,6 +965,7 @@ TEST_CASE("AstIndex preserves generated schematic port width and connection fact
 TEST_CASE("AstIndex exposes generated-only instance connection facts for backward cone",
           "[analysis][semantic][ast-index][cone][generate][no-fallback]") {
     SnapshotBuildInput input{.generation = 39,
+                             .config = SemanticEngineConfig{.top_modules = {"top"}},
                              .documents = {{"file:///workspace/generated-cone.sv",
                                             SemanticEngineDocument{
                                                 .uri = "file:///workspace/generated-cone.sv",
@@ -967,12 +1006,15 @@ TEST_CASE("AstIndex exposes generated-only instance connection facts for backwar
                           return connection.port_name == "out" && connection.signal == "y";
                       }));
 
-    REQUIRE(output.data->assignment_edge_seeds.size() == 1);
-    CHECK(output.data->assignment_edge_seeds.front().left_expression == "out");
-    CHECK(output.data->assignment_edge_seeds.front().left_symbol_names == std::vector<std::string>{"out"});
-    REQUIRE(output.data->assignment_edge_seeds.front().data_sources.size() == 1);
-    CHECK(output.data->assignment_edge_seeds.front().data_sources.front().source_symbol_names ==
-          std::vector<std::string>{"in"});
+    const auto seed = std::find_if(output.data->assignment_edge_seeds.begin(),
+                                   output.data->assignment_edge_seeds.end(),
+                                   [](const SnapshotAssignmentEdgeSeed& candidate) {
+                                       return candidate.left_expression == "out" &&
+                                              candidate.left_symbol_names == std::vector<std::string>{"out"};
+                                   });
+    REQUIRE(seed != output.data->assignment_edge_seeds.end());
+    REQUIRE(seed->data_sources.size() == 1);
+    CHECK(seed->data_sources.front().source_symbol_names == std::vector<std::string>{"in"});
 
     const auto edge_it = view.assignment_edges_by_uri.find("file:///workspace/generated-cone.sv");
     REQUIRE(edge_it != view.assignment_edges_by_uri.end());
@@ -3332,6 +3374,252 @@ TEST_CASE("AstIndex keeps connection binding ordering deterministic across equiv
         CHECK(lhs[index].endpoint_stable_id == rhs[index].endpoint_stable_id);
         CHECK(lhs[index].source_symbol_ids == rhs[index].source_symbol_ids);
     }
+}
+
+TEST_CASE("AstIndex projects named module connections into schematic facts",
+          "[analysis][semantic][ast-index][schematic-projection][named]") {
+    auto output = buildGraphSource(
+        "module child(input logic in, output logic out); endmodule\n"
+        "module top; logic a; logic y; child u(.in(a), .out(y)); endmodule\n");
+    REQUIRE(output.data != nullptr);
+    const auto facts = schematicConnectionFacts(*output.data);
+    REQUIRE(facts.size() == 2);
+    CHECK(std::all_of(facts.begin(), facts.end(), [](const auto* fact) {
+        return fact->caller_module_name == "top" && fact->kind == SnapshotConeEdgeKind::InstancePort &&
+               !fact->endpoint_stable_id.empty() && !fact->display_label.empty();
+    }));
+}
+
+TEST_CASE("AstIndex projects positional module connections into schematic facts",
+          "[analysis][semantic][ast-index][schematic-projection][positional]") {
+    auto output = buildGraphSource(
+        "module child(input logic in, output logic out); endmodule\n"
+        "module top; logic a; logic y; child u(a, y); endmodule\n");
+    REQUIRE(output.data != nullptr);
+    const auto facts = schematicConnectionFacts(*output.data);
+    REQUIRE(facts.size() == 2);
+    CHECK(facts[0]->endpoint_index == 0);
+    CHECK(facts[1]->endpoint_index == 1);
+}
+
+TEST_CASE("AstIndex projects concatenated schematic sources without raw expression recovery",
+          "[analysis][semantic][ast-index][schematic-projection][concat]") {
+    auto output = buildGraphSource(
+        "module child(input logic [1:0] in); endmodule\n"
+        "module top; logic a; logic b; child u(.in({a, b})); endmodule\n");
+    REQUIRE(output.data != nullptr);
+    const auto facts = schematicConnectionFacts(*output.data);
+    REQUIRE(facts.size() == 1);
+    CHECK(facts.front()->source_parts.size() == 2);
+    CHECK(facts.front()->display_label == "{a,b}");
+    CHECK(facts.front()->display_label.find('&') == std::string::npos);
+}
+
+TEST_CASE("AstIndex preserves static bit-select slice projection for schematic facts",
+          "[analysis][semantic][ast-index][schematic-projection][bit-select]") {
+    auto output = buildGraphSource(
+        "module child(input logic in); endmodule\n"
+        "module top; logic [3:0] bus; child u(.in(bus[2])); endmodule\n");
+    REQUIRE(output.data != nullptr);
+    const auto facts = schematicConnectionFacts(*output.data);
+    REQUIRE(facts.size() == 1);
+    REQUIRE(facts.front()->source_parts.size() == 1);
+    CHECK(facts.front()->source_parts.front().source_slice.precision == SnapshotConeSlicePrecision::Exact);
+    CHECK(facts.front()->display_label == "bus[2]");
+}
+
+TEST_CASE("AstIndex preserves static part-select slice projection for schematic facts",
+          "[analysis][semantic][ast-index][schematic-projection][part-select]") {
+    auto output = buildGraphSource(
+        "module child(input logic [1:0] in); endmodule\n"
+        "module top; logic [3:0] bus; child u(.in(bus[3:2])); endmodule\n");
+    REQUIRE(output.data != nullptr);
+    const auto facts = schematicConnectionFacts(*output.data);
+    REQUIRE(facts.size() == 1);
+    CHECK(facts.front()->source_parts.front().source_slice.precision == SnapshotConeSlicePrecision::Exact);
+    CHECK(facts.front()->display_label == "bus[3:2]");
+}
+
+TEST_CASE("AstIndex marks dynamic schematic connections partial",
+          "[analysis][semantic][ast-index][schematic-projection][dynamic]") {
+    auto output = buildGraphSource(
+        "module child(input logic in); endmodule\n"
+        "module top; logic [3:0] bus; logic [1:0] index; child u(.in(bus[index])); endmodule\n");
+    REQUIRE(output.data != nullptr);
+    const auto facts = schematicConnectionFacts(*output.data);
+    REQUIRE(facts.size() == 1);
+    CHECK(facts.front()->display_label == "<partial>");
+    CHECK(output.data->design_graph_binding_index.schematic_partial_connection_fact_count == 1);
+}
+
+TEST_CASE("AstIndex projects constant module connections without synthesizing a net source",
+          "[analysis][semantic][ast-index][schematic-projection][constant]") {
+    auto output = buildGraphSource(
+        "module child(input logic in); endmodule\n"
+        "module top; child u(.in(1'b1)); endmodule\n");
+    REQUIRE(output.data != nullptr);
+    const auto facts = schematicConnectionFacts(*output.data);
+    REQUIRE(facts.size() == 1);
+    CHECK(facts.front()->display_label == "<constant>");
+    CHECK(facts.front()->source_parts.empty());
+}
+
+TEST_CASE("AstIndex projects named parameter overrides without text parsing",
+          "[analysis][semantic][ast-index][schematic-projection][parameter][named]") {
+    auto output = buildGraphSource(
+        "module child #(parameter int WIDTH = 1)(); endmodule\n"
+        "module top; localparam int W = 4; child #(.WIDTH(W)) u(); endmodule\n");
+    REQUIRE(output.data != nullptr);
+    const auto facts = schematicConnectionFacts(*output.data);
+    REQUIRE(facts.size() == 1);
+    CHECK(facts.front()->kind == SnapshotConeEdgeKind::ParameterOverride);
+    CHECK(facts.front()->display_label == "W");
+}
+
+TEST_CASE("AstIndex projects positional parameter overrides without text parsing",
+          "[analysis][semantic][ast-index][schematic-projection][parameter][positional]") {
+    auto output = buildGraphSource(
+        "module child #(parameter int WIDTH = 1, parameter int DEPTH = 2)(); endmodule\n"
+        "module top; localparam int W = 4; localparam int D = 8; child #(W, D) u(); endmodule\n");
+    REQUIRE(output.data != nullptr);
+    const auto facts = schematicConnectionFacts(*output.data);
+    REQUIRE(facts.size() == 2);
+    CHECK(std::all_of(facts.begin(), facts.end(), [](const auto* fact) {
+        return fact->kind == SnapshotConeEdgeKind::ParameterOverride && !fact->display_label.empty();
+    }));
+}
+
+TEST_CASE("AstIndex keeps repeated instance schematic identities distinct",
+          "[analysis][semantic][ast-index][schematic-projection][repeated]") {
+    auto output = buildGraphSource(
+        "module child(input logic in); endmodule\n"
+        "module top; logic a; logic b; child u0(.in(a)); child u1(.in(b)); endmodule\n");
+    REQUIRE(output.data != nullptr);
+    const auto facts = schematicConnectionFacts(*output.data);
+    REQUIRE(facts.size() == 2);
+    CHECK(facts[0]->instance_stable_id != facts[1]->instance_stable_id);
+    CHECK(facts[0]->display_label != facts[1]->display_label);
+}
+
+TEST_CASE("AstIndex keeps generated schematic connection identities distinct",
+          "[analysis][semantic][ast-index][schematic-projection][generated]") {
+    const std::vector<std::string> top_modules{"top"};
+    auto output = buildGraphSource(
+        "module child(input logic in); endmodule\n"
+        "module top; logic a; genvar i; generate for (i=0; i<2; i=i+1) begin : g child u(.in(a)); end endgenerate endmodule\n",
+        91,
+        top_modules);
+    REQUIRE(output.data != nullptr);
+    const auto facts = schematicConnectionFacts(*output.data);
+    REQUIRE(facts.size() >= 2);
+    CHECK(output.data->design_graph_binding_index.schematic_connections_by_module.contains("top"));
+    CHECK(facts[0]->instance_stable_id != facts[1]->instance_stable_id);
+}
+TEST_CASE("AstIndex carries interface endpoint direction into schematic facts",
+          "[analysis][semantic][ast-index][schematic-projection][interface]") {
+    auto output = buildGraphSource(
+        "interface bus_if; logic ready; endinterface\n"
+        "module child(bus_if bus); endmodule\n"
+        "module top; bus_if bus(); child u(.bus(bus)); endmodule\n");
+    REQUIRE(output.data != nullptr);
+    const auto facts = schematicConnectionFacts(*output.data);
+    REQUIRE(facts.size() == 1);
+    CHECK(facts.front()->endpoint_direction == SnapshotGraphPortDirection::Unknown);
+    CHECK(facts.front()->endpoint_name == "bus");
+}
+
+TEST_CASE("AstIndex projection updates schematic cell connections from typed facts",
+          "[analysis][semantic][ast-index][schematic-projection][cell]") {
+    auto output = buildGraphSource(
+        "module child(input logic in); endmodule\n"
+        "module top; logic a; child u(.in(a)); endmodule\n");
+    REQUIRE(output.data != nullptr);
+    const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
+    const auto* cell = schematicCell(view, "top", "u");
+    REQUIRE(cell != nullptr);
+    REQUIRE(cell->connections.size() == 1);
+    CHECK(cell->connections.front().port_name == "in");
+    CHECK(cell->connections.front().signal == "a");
+}
+
+TEST_CASE("AstIndex projection retains parameter display on module instances",
+          "[analysis][semantic][ast-index][schematic-projection][parameter][display]") {
+    auto output = buildGraphSource(
+        "module child #(parameter int WIDTH = 1)(); endmodule\n"
+        "module top; localparam int W = 4; child #(.WIDTH(W)) u(); endmodule\n");
+    REQUIRE(output.data != nullptr);
+    const auto instances = output.data->module_instances_by_uri.find("file:///workspace/top.sv");
+    REQUIRE(instances != output.data->module_instances_by_uri.end());
+    REQUIRE(instances->second.size() == 1);
+    REQUIRE(instances->second.front().parameter_connections.size() == 1);
+    CHECK(instances->second.front().parameter_connections.front().signal == "W");
+}
+
+TEST_CASE("AstIndex schematic projection ordering is deterministic",
+          "[analysis][semantic][ast-index][schematic-projection][deterministic]") {
+    const auto build = [](std::uint64_t generation) {
+        return buildGraphSource(
+            "module child(input logic a, input logic b); endmodule\n"
+            "module top; logic a; logic b; child u(.b(b), .a(a)); endmodule\n", generation);
+    };
+    auto first = build(801);
+    auto second = build(802);
+    REQUIRE(first.data != nullptr);
+    REQUIRE(second.data != nullptr);
+    const auto lhs = schematicConnectionFacts(*first.data);
+    const auto rhs = schematicConnectionFacts(*second.data);
+    REQUIRE(lhs.size() == rhs.size());
+    for (size_t index = 0; index < lhs.size(); ++index) {
+        CHECK(lhs[index]->endpoint_stable_id == rhs[index]->endpoint_stable_id);
+        CHECK(lhs[index]->display_label == rhs[index]->display_label);
+    }
+}
+
+TEST_CASE("AstIndex schematic facts keep shadowed source identities separate",
+          "[analysis][semantic][ast-index][schematic-projection][shadowing]") {
+    const std::vector<std::string> top_modules{"top"};
+    auto output = buildGraphSource(
+        "module child(input logic in); endmodule\n"
+        "module top; logic data; generate begin : scope logic data; child u(.in(data)); end endgenerate endmodule\n",
+        91,
+        top_modules);
+    REQUIRE(output.data != nullptr);
+    const auto facts = schematicConnectionFacts(*output.data);
+    REQUIRE(facts.size() == 1);
+    REQUIRE(facts.front()->source_parts.size() == 1);
+    const auto source = output.data->symbols_by_id.find(facts.front()->source_parts.front().source_symbol_id);
+    REQUIRE(source != output.data->symbols_by_id.end());
+    CHECK(source->second.identity.location.range.start_line == 1);
+}
+TEST_CASE("AstIndex leaves missing module connections without a typed schematic fallback",
+          "[analysis][semantic][ast-index][schematic-projection][unresolved][no-fallback]") {
+    auto output = buildGraphSource("module top; logic y; missing_child u(.out(y)); endmodule\n");
+    REQUIRE(output.data != nullptr);
+    CHECK(schematicConnectionFacts(*output.data).empty());
+    CHECK(output.data->design_graph_binding_index.schematic_connection_fact_count == 0);
+}
+
+TEST_CASE("AstIndex records typed schematic projection counters",
+          "[analysis][semantic][ast-index][schematic-projection][metrics]") {
+    auto output = buildGraphSource(
+        "module child(input logic in, output logic out); endmodule\n"
+        "module top; logic a; logic y; child u(.in(a), .out(y)); endmodule\n");
+    REQUIRE(output.data != nullptr);
+    CHECK(output.data->design_graph_binding_index.schematic_connection_fact_count == 2);
+    CHECK(output.data->design_graph_binding_index.schematic_partial_connection_fact_count == 0);
+}
+
+TEST_CASE("AstIndex does not preserve raw binary connection text in schematic display",
+          "[analysis][semantic][ast-index][schematic-projection][no-text-fallback]") {
+    auto output = buildGraphSource(
+        "module child(input logic in); endmodule\n"
+        "module top; logic a; logic b; child u(.in(a & b)); endmodule\n");
+    REQUIRE(output.data != nullptr);
+    const auto facts = schematicConnectionFacts(*output.data);
+    REQUIRE(facts.size() == 1);
+    CHECK(facts.front()->display_label == "<partial>");
+    CHECK(output.data->design_graph_binding_index.schematic_partial_connection_fact_count == 1);
+    CHECK(facts.front()->display_label.find('&') == std::string::npos);
 }
 
 } // namespace

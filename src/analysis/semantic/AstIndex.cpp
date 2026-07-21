@@ -603,54 +603,6 @@ void appendAssignmentEdgeSeed(SnapshotData& data, SnapshotAssignmentEdgeSeed see
     data.assignment_edge_seeds.push_back(std::move(seed));
 }
 
-std::vector<SchematicConnection> syntaxPortConnectionsForInstance(
-    const slang::SourceManager& source_manager,
-    const SemanticEngineDocument* document,
-    const slang::syntax::HierarchicalInstanceSyntax& instance) {
-    std::vector<SchematicConnection> connections;
-    int port_index = 0;
-    for (const auto* connection : instance.connections) {
-        if (connection == nullptr) {
-            ++port_index;
-            continue;
-        }
-        switch (connection->kind) {
-            case slang::syntax::SyntaxKind::NamedPortConnection: {
-                const auto& named = connection->as<slang::syntax::NamedPortConnectionSyntax>();
-                std::string port_name(named.name.valueText());
-                if (port_name.empty()) {
-                    ++port_index;
-                    continue;
-                }
-                auto range = sourceRangeForSourceRange(source_manager, named.name.range());
-                std::string signal = port_name;
-                if (named.expr != nullptr) {
-                    range = sourceRangeForSourceRange(source_manager, named.expr->sourceRange());
-                    signal = textForRangeOrEmpty(document, range);
-                }
-                connections.push_back(SchematicConnection{.port_name = std::move(port_name),
-                                                          .port_index = port_index,
-                                                          .signal = std::move(signal),
-                                                          .range = range});
-                break;
-            }
-            case slang::syntax::SyntaxKind::OrderedPortConnection: {
-                const auto& ordered = connection->as<slang::syntax::OrderedPortConnectionSyntax>();
-                const auto range = sourceRangeForSourceRange(source_manager, ordered.expr->sourceRange());
-                connections.push_back(SchematicConnection{.port_name = {},
-                                                          .port_index = port_index,
-                                                          .signal = textForRangeOrEmpty(document, range),
-                                                          .range = range});
-                break;
-            }
-            default:
-                break;
-        }
-        ++port_index;
-    }
-    return connections;
-}
-
 std::optional<std::string> logicKindForBinary(slang::ast::BinaryOperator op) {
     switch (op) {
         case slang::ast::BinaryOperator::BinaryAnd:
@@ -1105,161 +1057,6 @@ std::optional<SchematicPort> schematicPortForAstParameter(
                          .selection_range = location->range};
 }
 
-std::optional<size_t> findMatchingParen(std::string_view text, size_t open) {
-    if (open >= text.size() || text[open] != '(') {
-        return std::nullopt;
-    }
-
-    int depth = 0;
-    for (size_t index = open; index < text.size(); ++index) {
-        if (text[index] == '(') {
-            ++depth;
-        }
-        else if (text[index] == ')') {
-            --depth;
-            if (depth == 0) {
-                return index;
-            }
-        }
-    }
-    return std::nullopt;
-}
-
-std::optional<ParseRange> singleLineRangeAt(const ParseRange& statement_range,
-                                            size_t start,
-                                            size_t end) {
-    if (start > end || start > static_cast<size_t>(std::numeric_limits<int>::max()) ||
-        end > static_cast<size_t>(std::numeric_limits<int>::max())) {
-        return std::nullopt;
-    }
-    return ParseRange{.start_line = statement_range.start_line,
-                      .start_character = statement_range.start_character + static_cast<int>(start),
-                      .end_line = statement_range.start_line,
-                      .end_character = statement_range.start_character + static_cast<int>(end)};
-}
-
-std::vector<SchematicConnection> parameterOverrideConnectionsForAstInstance(
-    const slang::ast::InstanceSymbol& instance,
-    const SemanticEngineDocument* document,
-    const ParseRange& statement_range) {
-    if (document == nullptr || statement_range.start_line != statement_range.end_line) {
-        return {};
-    }
-
-    std::set<std::string> parameter_names;
-    for (const auto* parameter : instance.body.getParameters()) {
-        if (parameter == nullptr || parameter->symbol.name.empty() || !parameter->isPortParam()) {
-            continue;
-        }
-        parameter_names.insert(std::string(parameter->symbol.name));
-    }
-    if (parameter_names.empty()) {
-        return {};
-    }
-
-    const auto statement_text = textForRange(document->text, statement_range);
-    if (!statement_text.has_value()) {
-        return {};
-    }
-
-    const auto instance_name = std::string(instance.name);
-    const auto instance_name_offset = statement_text->find(instance_name);
-    if (instance_name_offset == std::string::npos) {
-        return {};
-    }
-    const auto param_marker = statement_text->find('#');
-    if (param_marker == std::string::npos || param_marker > instance_name_offset) {
-        return {};
-    }
-    const auto param_open = statement_text->find('(', param_marker);
-    if (param_open == std::string::npos || param_open > instance_name_offset) {
-        return {};
-    }
-    const auto param_close = findMatchingParen(*statement_text, param_open);
-    if (!param_close.has_value() || *param_close > instance_name_offset) {
-        return {};
-    }
-
-    std::vector<SchematicConnection> connections;
-    size_t cursor = param_open + 1;
-    while (cursor < *param_close) {
-        const auto dot = statement_text->find('.', cursor);
-        if (dot == std::string::npos || dot >= *param_close) {
-            break;
-        }
-
-        auto name_start = dot + 1;
-        while (name_start < *param_close &&
-               std::isspace(static_cast<unsigned char>((*statement_text)[name_start])) != 0) {
-            ++name_start;
-        }
-        auto name_end = name_start;
-        while (name_end < *param_close) {
-            const auto ch = (*statement_text)[name_end];
-            if (std::isalnum(static_cast<unsigned char>(ch)) == 0 && ch != '_' && ch != '$') {
-                break;
-            }
-            ++name_end;
-        }
-        if (name_end == name_start) {
-            cursor = name_end + 1;
-            continue;
-        }
-
-        const auto parameter_name = statement_text->substr(name_start, name_end - name_start);
-        const auto parameter_name_string = std::string(parameter_name);
-        if (!parameter_names.contains(parameter_name_string)) {
-            cursor = name_end;
-            continue;
-        }
-
-        const auto value_open = statement_text->find('(', name_end);
-        if (value_open == std::string::npos || value_open >= *param_close) {
-            break;
-        }
-        const auto value_close = findMatchingParen(*statement_text, value_open);
-        if (!value_close.has_value() || *value_close > *param_close) {
-            break;
-        }
-
-        auto value_start = value_open + 1;
-        while (value_start < *value_close &&
-               std::isspace(static_cast<unsigned char>((*statement_text)[value_start])) != 0) {
-            ++value_start;
-        }
-        auto value_end = *value_close;
-        while (value_end > value_start &&
-               std::isspace(static_cast<unsigned char>((*statement_text)[value_end - 1])) != 0) {
-            --value_end;
-        }
-        auto value_text = statement_text->substr(value_start, value_end - value_start);
-        auto value_range = singleLineRangeAt(statement_range, value_start, value_end);
-        if (!value_range.has_value()) {
-            value_range = singleLineRangeAt(statement_range, name_start, name_end);
-        }
-        if (value_range.has_value()) {
-            connections.push_back(SchematicConnection{.port_name = std::move(parameter_name_string),
-                                                      .port_index = -1,
-                                                      .signal = std::string(value_text),
-                                                      .range = *value_range});
-        }
-        cursor = *value_close + 1;
-    }
-
-    std::sort(connections.begin(),
-              connections.end(),
-              [](const SchematicConnection& lhs, const SchematicConnection& rhs) {
-                  if (lhs.range.start_line != rhs.range.start_line) {
-                      return lhs.range.start_line < rhs.range.start_line;
-                  }
-                  if (lhs.range.start_character != rhs.range.start_character) {
-                      return lhs.range.start_character < rhs.range.start_character;
-                  }
-                  return lhs.port_name < rhs.port_name;
-              });
-    return connections;
-}
-
 SnapshotConeSliceFact declaredSliceForEndpoint(const slang::ast::Symbol& symbol);
 void collectResolvedConnectionSourceParts(
     SnapshotData& data,
@@ -1305,6 +1102,9 @@ bool appendResolvedConnectionSliceFact(
                                              .location = *location,
                                              .kind = kind,
                                              .source_parts = {},
+                                             .literal_display = source_syntax == nullptr
+                                                                    ? std::string{}
+                                                                    : std::string(source_syntax->toString()),
                                              .unresolved = false};
     // The endpoint's declared range is captured from the resolved port or
     // parameter symbol. The expression collector then narrows individual
@@ -1538,6 +1338,60 @@ void collectSyntaxBoundParameterOverrideSlices(SnapshotData& data,
     }
 }
 
+void collectSyntaxBoundEmptyPortConnectionRanges(SnapshotData& data,
+                                                  const slang::SourceManager& source_manager) {
+    for (const auto& pending : data.port_connection_syntax_facts) {
+        if (pending.syntax == nullptr || pending.uri.empty() || pending.module_name.empty() ||
+            pending.instance_name.empty()) {
+            continue;
+        }
+        const auto instances = data.module_instances_by_uri.find(pending.uri);
+        if (instances == data.module_instances_by_uri.end()) {
+            continue;
+        }
+        auto instance = std::find_if(instances->second.begin(),
+                                     instances->second.end(),
+                                     [&](const SnapshotModuleInstance& candidate) {
+                                         return candidate.module_name == pending.module_name &&
+                                                candidate.instance_name == pending.instance_name &&
+                                                (sameRange(candidate.selection_range, pending.instance_range) ||
+                                                 rangesOverlapOrTouch(candidate.selection_range,
+                                                                      pending.instance_range));
+                                     });
+        if (instance == instances->second.end()) {
+            continue;
+        }
+        for (const auto* connection : pending.syntax->connections) {
+            if (connection == nullptr ||
+                connection->kind != slang::syntax::SyntaxKind::NamedPortConnection) {
+                continue;
+            }
+            const auto& named = connection->as<slang::syntax::NamedPortConnectionSyntax>();
+            if (named.expr != nullptr || named.name.isMissing()) {
+                continue;
+            }
+            const auto location = locationForSourceRange(source_manager, named.sourceRange());
+            if (!location.has_value()) {
+                continue;
+            }
+            const auto port_name = std::string(named.name.valueText());
+            const auto duplicate = std::any_of(instance->port_connections.begin(),
+                                               instance->port_connections.end(),
+                                               [&](const SchematicConnection& existing) {
+                                                   return existing.port_name == port_name &&
+                                                          sameRange(existing.range, location->range);
+                                               });
+            if (!duplicate) {
+                instance->port_connections.push_back(
+                    SchematicConnection{.port_name = port_name,
+                                        .port_index = -1,
+                                        .signal = {},
+                                        .range = location->range});
+            }
+        }
+    }
+}
+
 class ConnectionSliceIndexer {
 public:
     ConnectionSliceIndexer(SnapshotData& data, const slang::SourceManager& source_manager) :
@@ -1569,6 +1423,7 @@ public:
             });
         }
         data_.parameter_override_syntax_facts.clear();
+        data_.port_connection_syntax_facts.clear();
         data_.instance_symbols_by_stable_id.clear();
     }
 
@@ -1623,6 +1478,7 @@ void buildResolvedConnectionSliceFacts(SnapshotData& data, const slang::SourceMa
     ConnectionSliceIndexer indexer(data, source_manager);
     ResolvedConnectionSliceVisitor visitor(data, source_manager, indexer);
     data.compilation->getRoot().visit(visitor);
+    collectSyntaxBoundEmptyPortConnectionRanges(data, source_manager);
     collectSyntaxBoundParameterOverrideSlices(data, source_manager);
     indexer.finalize();
 }
@@ -2667,8 +2523,7 @@ std::optional<ModuleDefinition> moduleDefinitionForAstBody(const slang::SourceMa
 }
 
 std::optional<SchematicCell> schematicCellForAstInstance(const slang::SourceManager& source_manager,
-                                                         const slang::ast::InstanceSymbol& instance,
-                                                         const SemanticEngineDocument* document) {
+                                                         const slang::ast::InstanceSymbol& instance) {
     const auto location = declarationLocationForSymbol(source_manager, instance);
     const auto range = parseRangeForSymbolSyntax(source_manager, instance);
     if (!location.has_value() || !range.has_value()) {
@@ -2682,49 +2537,6 @@ std::optional<SchematicCell> schematicCellForAstInstance(const slang::SourceMana
     cell.kind = instance.isInterface() ? "interface" : "module";
     cell.range = *range;
     cell.selection_range = location->range;
-    if (document != nullptr) {
-        if (const auto statement_range = instanceStatementRange(document->text,
-                                                                location->range,
-                                                                cell.type)) {
-            cell.range = *statement_range;
-        }
-        else if (const auto module_range = identifierRangeByName(document->text, *range, cell.type)) {
-            cell.range = ParseRange{.start_line = module_range->start_line,
-                                    .start_character = module_range->start_character,
-                                    .end_line = range->end_line,
-                                    .end_character = range->end_character};
-        }
-    }
-    int port_index = 0;
-    for (const auto* connection : instance.getPortConnections()) {
-        if (connection == nullptr || connection->port.name.empty()) {
-            ++port_index;
-            continue;
-        }
-        const auto* expression = connection->getExpression();
-        if (expression == nullptr) {
-            ++port_index;
-            continue;
-        }
-        std::string signal;
-        ParseRange connection_range = location->range;
-        if (expression->sourceRange.start().valid()) {
-            connection_range = sourceRangeForSourceRange(source_manager, expression->sourceRange);
-            if (document != nullptr) {
-                if (auto text = textForRange(document->text, connection_range)) {
-                    signal = std::move(*text);
-                }
-            }
-        }
-        if (signal.empty()) {
-            signal = std::string(connection->port.name);
-        }
-        cell.connections.push_back(SchematicConnection{.port_name = std::string(connection->port.name),
-                                                       .port_index = port_index,
-                                                       .signal = std::move(signal),
-                                                       .range = connection_range});
-        ++port_index;
-    }
     return cell;
 }
 
@@ -2837,15 +2649,8 @@ void upsertAstModuleSignature(SnapshotData& data,
         if (member.kind != slang::ast::SymbolKind::Instance) {
             continue;
         }
-        const auto document_it = documents.find(declarationLocationForSymbol(
-                                                    source_manager,
-                                                    member.as<slang::ast::InstanceSymbol>())
-                                                    .value_or(SemanticLocation{})
-                                                    .uri);
-        const auto* document = document_it == documents.end() ? nullptr : &document_it->second;
         if (auto cell = schematicCellForAstInstance(source_manager,
-                                                   member.as<slang::ast::InstanceSymbol>(),
-                                                   document)) {
+                                                   member.as<slang::ast::InstanceSymbol>())) {
             definition->instances.push_back(ModuleInstantiation{.module_name = cell->type,
                                                                 .instance_name = cell->name,
                                                                 .range = cell->range,
@@ -4898,7 +4703,7 @@ void indexModuleInstanceBinding(SnapshotData& data,
     const auto instance_id = instanceStableId(source_manager, instance, *instance_location);
     const auto document_it = documents.find(instance_location->uri);
     const auto* document = document_it == documents.end() ? nullptr : &document_it->second;
-    auto cell = schematicCellForAstInstance(source_manager, instance, document);
+    auto cell = schematicCellForAstInstance(source_manager, instance);
     if (!cell.has_value()) {
         return;
     }
@@ -4928,11 +4733,6 @@ void indexModuleInstanceBinding(SnapshotData& data,
             module_instance.instance_stable_id = instance_id;
             module_instance.type_display = type_display;
             module_instance.target_stable_id = definition_id;
-            if (!cell->connections.empty() || module_instance.port_connections.empty()) {
-                module_instance.port_connections = cell->connections;
-            }
-            module_instance.parameter_connections =
-                parameterOverrideConnectionsForAstInstance(instance, document, instance_range);
             return;
         }
     }
@@ -4946,11 +4746,8 @@ void indexModuleInstanceBinding(SnapshotData& data,
                                                .range = instance_range,
                                                .selection_range = instance_location->range,
                                                .module_selection_range = module_selection_range,
-                                               .port_connections = std::move(cell->connections),
-                                               .parameter_connections =
-                                                   parameterOverrideConnectionsForAstInstance(instance,
-                                                                                              document,
-                                                                                              instance_range)});
+                                               .port_connections = {},
+                                               .parameter_connections = {}});
     data.selection_ranges_by_uri[instance_location->uri].push_back(instance_range);
     data.selection_ranges_by_uri[instance_location->uri].push_back(instance_location->range);
     data.selection_ranges_by_uri[instance_location->uri].push_back(module_selection_range);
@@ -4961,8 +4758,7 @@ void upsertModuleInstanceCandidate(SnapshotData& data,
                                    std::string instance_name,
                                    SemanticLocation instance_location,
                                    ParseRange range,
-                                   ParseRange module_selection_range,
-                                   std::vector<SchematicConnection> port_connections) {
+                                   ParseRange module_selection_range) {
     auto& instances = data.module_instances_by_uri[instance_location.uri];
     const auto duplicate = std::find_if(instances.begin(),
                                         instances.end(),
@@ -4979,9 +4775,6 @@ void upsertModuleInstanceCandidate(SnapshotData& data,
             duplicate->range = range;
             duplicate->module_selection_range = module_selection_range;
         }
-        if (duplicate->port_connections.empty()) {
-            duplicate->port_connections = std::move(port_connections);
-        }
         return;
     }
 
@@ -4995,7 +4788,7 @@ void upsertModuleInstanceCandidate(SnapshotData& data,
                                                .range = range,
                                                .selection_range = instance_location.range,
                                                .module_selection_range = module_selection_range,
-                                               .port_connections = std::move(port_connections),
+                                               .port_connections = {},
                                                .parameter_connections = {}});
     data.selection_ranges_by_uri[instance_location.uri].push_back(range);
     data.selection_ranges_by_uri[instance_location.uri].push_back(instance_location.range);
@@ -5152,25 +4945,25 @@ void collectSyntaxModuleCandidates(SnapshotData& data,
                                 .instance_name = std::string(instance->decl->name.valueText()),
                                 .instance_range = instance_location->range});
                     }
+                    data.port_connection_syntax_facts.push_back(
+                        SnapshotPortConnectionSyntaxFact{
+                            .syntax = instance,
+                            .uri = instance_location->uri,
+                            .module_name = module_name,
+                            .instance_name = std::string(instance->decl->name.valueText()),
+                            .instance_range = instance_location->range});
                     const auto statement_location = locationForSourceRange(source_manager,
                                                                            node.sourceRange());
                     const auto instance_range = statement_location.has_value()
                                                     ? statement_location->range
                                                     : sourceRangeForSourceRange(source_manager,
                                                                                 instance->sourceRange());
-                    const auto document_it = instance_location.has_value()
-                                                 ? documents.find(instance_location->uri)
-                                                 : documents.end();
-                    const auto* document = document_it == documents.end() ? nullptr : &document_it->second;
                     upsertModuleInstanceCandidate(data,
                                                   module_name,
                                                   std::string(instance->decl->name.valueText()),
                                                   *instance_location,
                                                   instance_range,
-                                                  module_location->range,
-                                                  syntaxPortConnectionsForInstance(source_manager,
-                                                                                   document,
-                                                                                   *instance));
+                                                  module_location->range);
                 }
                 self.visitDefault(node);
             });

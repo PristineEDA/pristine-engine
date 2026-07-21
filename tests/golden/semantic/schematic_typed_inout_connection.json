@@ -1,0 +1,1 @@
+{"name":"typed schematic inout connection projection","config":{"topModules":["top"]},"sources":[{"uri":"file:///golden/semantic/typed-inout.sv","text":"module child(inout wire value); endmodule\nmodule top; wire value; child u(.value(value)); endmodule\n"}],"request":{"kind":"schematic","moduleName":"top","maxDepth":8},"expected":{"rootModule":"top","modules":["top","child"]}}

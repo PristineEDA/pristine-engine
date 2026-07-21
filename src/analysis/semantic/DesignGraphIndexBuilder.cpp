@@ -169,6 +169,377 @@ void appendEdge(SnapshotConeAdjacencyIndex& index, SnapshotConeAdjacencyEdge edg
     if (!edge.from_symbol_id.empty() && !edge.to_symbol_id.empty()) index.edges.push_back(std::move(edge));
 }
 
+bool isStaticSchematicSource(const SnapshotGraphConnectionBindingFact::SourcePart& part) {
+    return !part.unresolved && !part.source_symbol_id.empty() &&
+           (part.source_slice.precision == SnapshotConeSlicePrecision::Whole ||
+            part.source_slice.precision == SnapshotConeSlicePrecision::Exact);
+}
+
+std::string displayLabelForSchematicSource(const SnapshotData& data,
+                                           const SnapshotGraphConnectionBindingFact::SourcePart& part) {
+    const auto symbol = data.symbols_by_id.find(part.source_symbol_id);
+    if (symbol == data.symbols_by_id.end() || symbol->second.identity.name.empty()) {
+        return "<partial>";
+    }
+    auto label = symbol->second.identity.name;
+    if (part.source_slice.precision != SnapshotConeSlicePrecision::Exact || !part.source_slice.msb ||
+        !part.source_slice.lsb) {
+        return label;
+    }
+    label += "[" + std::to_string(*part.source_slice.msb);
+    if (*part.source_slice.msb != *part.source_slice.lsb) {
+        label += ":" + std::to_string(*part.source_slice.lsb);
+    }
+    return label + "]";
+}
+
+std::string displayLabelForSchematicConnection(
+    const SnapshotData& data,
+    const std::vector<SnapshotGraphConnectionBindingFact::SourcePart>& source_parts,
+    bool unresolved,
+    std::string_view literal_display) {
+    std::vector<std::string> labels;
+    bool partial = unresolved;
+    for (const auto& part : source_parts) {
+        if (!isStaticSchematicSource(part)) {
+            partial = true;
+            continue;
+        }
+        labels.push_back(displayLabelForSchematicSource(data, part));
+    }
+    // A schematic net must represent a proven source-to-endpoint mapping. Do
+    // not label a dynamic / aggregate connection with only its exact-looking
+    // control or operand fragments.
+    if (partial) {
+        return "<partial>";
+    }
+    std::sort(labels.begin(), labels.end());
+    labels.erase(std::unique(labels.begin(), labels.end()), labels.end());
+    if (labels.empty()) {
+        if (partial) return "<partial>";
+        return literal_display.empty() ? "<constant>" : std::string(literal_display);
+    }
+    if (labels.size() == 1) {
+        return labels.front();
+    }
+    std::string label = "{";
+    for (size_t index = 0; index < labels.size(); ++index) {
+        if (index != 0) label += ",";
+        label += labels[index];
+    }
+    return label + "}";
+}
+
+bool hasPartialSchematicSource(const SnapshotSchematicConnectionFact& fact) {
+    if (fact.unresolved) return true;
+    return std::any_of(fact.source_parts.begin(), fact.source_parts.end(), [](const auto& part) {
+        return !isStaticSchematicSource(part);
+    });
+}
+
+void appendSchematicConnectionFact(
+    SnapshotData& data,
+    SnapshotDesignGraphBindingIndex& bindings,
+    std::string caller_module_name,
+    const SnapshotModuleInstance& instance,
+    const SnapshotGraphEndpointFact& endpoint,
+    const SnapshotResolvedConnectionSliceFact& connection) {
+    SnapshotSchematicConnectionFact fact{.caller_module_name = std::move(caller_module_name),
+                                         .instance_stable_id = instance.instance_stable_id,
+                                         .instance_name = instance.instance_name,
+                                         .instance_selection_range = instance.selection_range,
+                                         .endpoint_stable_id = endpoint.stable_id,
+                                         .endpoint_name = endpoint.name,
+                                         .endpoint_index = connection.endpoint_index,
+                                         .endpoint_direction = endpoint.direction,
+                                         .location = connection.location,
+                                         .kind = connection.kind,
+                                         .source_parts = connection.source_parts,
+                                         .display_label = {},
+                                         .unresolved = connection.unresolved};
+    fact.display_label =
+        displayLabelForSchematicConnection(data, fact.source_parts, fact.unresolved, connection.literal_display);
+    ++bindings.schematic_connection_fact_count;
+    if (hasPartialSchematicSource(fact)) {
+        ++bindings.schematic_partial_connection_fact_count;
+    }
+    bindings.schematic_connections_by_module[fact.caller_module_name].push_back(std::move(fact));
+}
+
+bool schematicFactLess(const SnapshotSchematicConnectionFact& lhs,
+                       const SnapshotSchematicConnectionFact& rhs) {
+    if (lhs.instance_stable_id != rhs.instance_stable_id) {
+        return lhs.instance_stable_id < rhs.instance_stable_id;
+    }
+    if (lhs.kind != rhs.kind) return static_cast<int>(lhs.kind) < static_cast<int>(rhs.kind);
+    if (lhs.endpoint_index != rhs.endpoint_index) return lhs.endpoint_index < rhs.endpoint_index;
+    if (lhs.endpoint_stable_id != rhs.endpoint_stable_id) return lhs.endpoint_stable_id < rhs.endpoint_stable_id;
+    if (!sameLocation(lhs.location, rhs.location)) return locationLess(lhs.location, rhs.location);
+    return lhs.display_label < rhs.display_label;
+}
+
+void projectSchematicConnections(SnapshotData& data, SnapshotDesignGraphBindingIndex& bindings) {
+    std::unordered_map<std::string, std::vector<SchematicConnection>> port_connections_by_instance;
+    std::unordered_map<std::string, std::vector<SchematicConnection>> parameter_connections_by_instance;
+
+    for (auto& [_, facts] : bindings.schematic_connections_by_module) {
+        std::sort(facts.begin(), facts.end(), schematicFactLess);
+        for (const auto& fact : facts) {
+            SchematicConnection connection{.port_name = fact.endpoint_name,
+                                           .port_index = fact.endpoint_index,
+                                           .signal = fact.display_label,
+                                           .range = fact.location.range};
+            auto& target = fact.kind == SnapshotConeEdgeKind::ParameterOverride
+                               ? parameter_connections_by_instance[fact.instance_stable_id]
+                               : port_connections_by_instance[fact.instance_stable_id];
+            target.push_back(std::move(connection));
+        }
+    }
+
+    const auto sort_connections = [](std::vector<SchematicConnection>& connections) {
+        std::sort(connections.begin(), connections.end(), [](const auto& lhs, const auto& rhs) {
+            if (lhs.port_index != rhs.port_index) return lhs.port_index < rhs.port_index;
+            if (lhs.port_name != rhs.port_name) return lhs.port_name < rhs.port_name;
+            if (lhs.range.start_line != rhs.range.start_line) return lhs.range.start_line < rhs.range.start_line;
+            if (lhs.range.start_character != rhs.range.start_character) {
+                return lhs.range.start_character < rhs.range.start_character;
+            }
+            return lhs.signal < rhs.signal;
+        });
+        connections.erase(std::unique(connections.begin(), connections.end(), [](const auto& lhs, const auto& rhs) {
+                              return lhs.port_name == rhs.port_name && lhs.port_index == rhs.port_index &&
+                                     lhs.signal == rhs.signal && sameRange(lhs.range, rhs.range);
+                          }),
+                          connections.end());
+    };
+    for (auto& [_, connections] : port_connections_by_instance) sort_connections(connections);
+    for (auto& [_, connections] : parameter_connections_by_instance) sort_connections(connections);
+
+    for (auto& [_, instances] : data.module_instances_by_uri) {
+        for (auto& instance : instances) {
+            if (const auto port = port_connections_by_instance.find(instance.instance_stable_id);
+                port != port_connections_by_instance.end()) {
+                instance.port_connections.insert(instance.port_connections.end(),
+                                                 port->second.begin(),
+                                                 port->second.end());
+                sort_connections(instance.port_connections);
+            }
+            if (const auto parameter = parameter_connections_by_instance.find(instance.instance_stable_id);
+                parameter != parameter_connections_by_instance.end()) {
+                instance.parameter_connections.insert(instance.parameter_connections.end(),
+                                                      parameter->second.begin(),
+                                                      parameter->second.end());
+                sort_connections(instance.parameter_connections);
+            }
+        }
+    }
+
+    for (auto& [module_name, signature] : data.ast_module_signatures_by_name) {
+        const auto facts = bindings.schematic_connections_by_module.find(module_name);
+        if (facts == bindings.schematic_connections_by_module.end()) continue;
+        for (auto& cell : signature.schematic.cells) {
+            std::vector<SchematicConnection> connections;
+            const auto instance_id = bindings.instance_ids_by_uri_range.find(
+                uriRangeKey(signature.uri, cell.selection_range));
+            const auto same_name_cell_count = std::count_if(
+                signature.schematic.cells.begin(), signature.schematic.cells.end(), [&](const auto& candidate) {
+                    return candidate.name == cell.name;
+                });
+            for (const auto& fact : facts->second) {
+                if (fact.kind != SnapshotConeEdgeKind::InstancePort) {
+                    continue;
+                }
+                const bool matches_instance_id =
+                    instance_id != bindings.instance_ids_by_uri_range.end() &&
+                    instance_id->second == fact.instance_stable_id;
+                const bool matches_elaborated_cell =
+                    fact.instance_name == cell.name &&
+                    (sameRange(fact.instance_selection_range, cell.selection_range) ||
+                     rangeContainsRange(fact.instance_selection_range, cell.selection_range) ||
+                     rangeContainsRange(cell.selection_range, fact.instance_selection_range) ||
+                     same_name_cell_count == 1);
+                if (!matches_instance_id && !matches_elaborated_cell) {
+                    continue;
+                }
+                connections.push_back(SchematicConnection{.port_name = fact.endpoint_name,
+                                                          .port_index = fact.endpoint_index,
+                                                          .signal = fact.display_label,
+                                                          .range = fact.location.range});
+            }
+            if (!connections.empty()) {
+                sort_connections(connections);
+                cell.connections = std::move(connections);
+            }
+        }
+    }
+    for (auto& [module_name, signature] : data.ast_module_signatures_by_name) {
+        if (signature.schematic.cells.size() != 1 || !signature.schematic.cells.front().connections.empty()) {
+            continue;
+        }
+        const auto facts = bindings.schematic_connections_by_module.find(module_name);
+        if (facts == bindings.schematic_connections_by_module.end()) continue;
+        std::vector<SchematicConnection> connections;
+        for (const auto& fact : facts->second) {
+            if (fact.kind != SnapshotConeEdgeKind::InstancePort) continue;
+            connections.push_back(SchematicConnection{.port_name = fact.endpoint_name,
+                                                      .port_index = fact.endpoint_index,
+                                                      .signal = fact.display_label,
+                                                      .range = fact.location.range});
+        }
+        if (!connections.empty()) {
+            sort_connections(connections);
+            signature.schematic.cells.front().connections = std::move(connections);
+        }
+    }
+    // Elaborated generate arrays may share a template cell range. Their typed
+    // instance projections already carry the resolved port connections, so a
+    // uniquely named cell can expose that value-type projection directly.
+    for (auto& [_, signature] : data.ast_module_signatures_by_name) {
+        const auto instances = data.module_instances_by_uri.find(signature.uri);
+        if (instances == data.module_instances_by_uri.end()) continue;
+        for (auto& cell : signature.schematic.cells) {
+            if (!cell.connections.empty()) continue;
+            const auto instance = std::find_if(instances->second.begin(),
+                                               instances->second.end(),
+                                               [&](const auto& candidate) {
+                                                   return candidate.instance_name == cell.name &&
+                                                          candidate.module_name == cell.type &&
+                                                          !candidate.port_connections.empty();
+                                               });
+            if (instance != instances->second.end()) {
+                cell.connections = instance->port_connections;
+            }
+        }
+    }
+}
+
+void buildCallerModuleBindings(SnapshotData& data, SnapshotDesignGraphBindingIndex& bindings) {
+    bindings.caller_module_names_by_instance_id.clear();
+    struct ModuleScope {
+        ParseRange range;
+        std::string name;
+    };
+    std::unordered_map<std::string, std::vector<ModuleScope>> scopes_by_uri;
+    for (const auto& [name, signature] : data.ast_module_signatures_by_name) {
+        if (!signature.uri.empty()) {
+            scopes_by_uri[signature.uri].push_back(ModuleScope{.range = signature.definition.range,
+                                                                .name = name});
+        }
+    }
+    for (auto& [_, scopes] : scopes_by_uri) {
+        std::sort(scopes.begin(), scopes.end(), [](const ModuleScope& lhs, const ModuleScope& rhs) {
+            if (!sameRange(lhs.range, rhs.range)) return rangeStartLess(lhs.range, rhs.range);
+            return lhs.name < rhs.name;
+        });
+    }
+    const auto range_size = [](const ParseRange& range) {
+        return (range.end_line - range.start_line) * 100000 +
+               (range.end_character - range.start_character);
+    };
+    for (const auto& [uri, instances] : data.module_instances_by_uri) {
+        const auto scopes = scopes_by_uri.find(uri);
+        if (scopes == scopes_by_uri.end()) continue;
+        for (const auto& instance : instances) {
+            if (instance.instance_stable_id.empty()) continue;
+            const ModuleScope* best = nullptr;
+            for (const auto& candidate : scopes->second) {
+                if (!rangeContainsRange(candidate.range, instance.selection_range)) continue;
+                if (best == nullptr || range_size(candidate.range) < range_size(best->range) ||
+                    (range_size(candidate.range) == range_size(best->range) && candidate.name < best->name)) {
+                    best = &candidate;
+                }
+            }
+            if (best != nullptr) {
+                bindings.caller_module_names_by_instance_id.insert_or_assign(instance.instance_stable_id,
+                                                                              best->name);
+            }
+        }
+    }
+}
+
+void buildSchematicAssignmentFacts(SnapshotData& data, SnapshotDesignGraphBindingIndex& bindings) {
+    bindings.schematic_assignments_by_module.clear();
+    const auto range_size = [](const ParseRange& range) {
+        return (range.end_line - range.start_line) * 100000 +
+               (range.end_character - range.start_character);
+    };
+    const auto display_name = [&](std::string_view stable_id) {
+        const auto symbol = data.symbols_by_id.find(std::string(stable_id));
+        return symbol == data.symbols_by_id.end() ? std::string{} : symbol->second.identity.name;
+    };
+    for (const auto& [module_name, signature] : data.ast_module_signatures_by_name) {
+        const auto edges = data.assignment_edges_by_uri.find(signature.uri);
+        if (signature.uri.empty() || edges == data.assignment_edges_by_uri.end()) {
+            continue;
+        }
+        for (const auto& edge : edges->second) {
+            if (!rangeContainsRange(signature.definition.range, edge.location.range)) {
+                continue;
+            }
+            const SchematicCell* cell = nullptr;
+            for (const auto& candidate : signature.schematic.cells) {
+                if (candidate.id.empty() || candidate.id.front() != '$' ||
+                    !(rangeContainsRange(candidate.range, edge.location.range) ||
+                      rangeContainsRange(edge.location.range, candidate.range))) {
+                    continue;
+                }
+                if (cell == nullptr || range_size(candidate.range) < range_size(cell->range) ||
+                    (range_size(candidate.range) == range_size(cell->range) && candidate.id < cell->id)) {
+                    cell = &candidate;
+                }
+            }
+            if (cell == nullptr) {
+                continue;
+            }
+            bindings.schematic_assignments_by_module[module_name].push_back(
+                SnapshotSchematicAssignmentFact{.caller_module_name = module_name,
+                                                .cell_id = cell->id,
+                                                .cell_selection_range = cell->selection_range,
+                                                .location = edge.location,
+                                                .source_symbol_id = edge.to_symbol_id,
+                                                .source_display_label = display_name(edge.to_symbol_id),
+                                                .source_slice = edge.source_slice,
+                                                .sink_symbol_id = edge.from_symbol_id,
+                                                .sink_display_label = display_name(edge.from_symbol_id),
+                                                .sink_slice = edge.sink_slice,
+                                                .source_role = edge.source_role,
+                                                .unresolved = edge.from_symbol_id.empty() ||
+                                                              edge.to_symbol_id.empty()});
+        }
+    }
+    for (auto& [_, facts] : bindings.schematic_assignments_by_module) {
+        std::sort(facts.begin(), facts.end(), [](const auto& lhs, const auto& rhs) {
+            return std::tie(lhs.cell_id,
+                            lhs.location.uri,
+                            lhs.location.range.start_line,
+                            lhs.location.range.start_character,
+                            lhs.source_symbol_id,
+                            lhs.sink_symbol_id,
+                            lhs.source_role) <
+                   std::tie(rhs.cell_id,
+                            rhs.location.uri,
+                            rhs.location.range.start_line,
+                            rhs.location.range.start_character,
+                            rhs.source_symbol_id,
+                            rhs.sink_symbol_id,
+                            rhs.source_role);
+        });
+        facts.erase(std::unique(facts.begin(), facts.end(), [](const auto& lhs, const auto& rhs) {
+                        return lhs.cell_id == rhs.cell_id && sameLocation(lhs.location, rhs.location) &&
+                               lhs.source_symbol_id == rhs.source_symbol_id &&
+                               lhs.sink_symbol_id == rhs.sink_symbol_id &&
+                               lhs.source_role == rhs.source_role &&
+                               lhs.source_slice.precision == rhs.source_slice.precision &&
+                               lhs.source_slice.msb == rhs.source_slice.msb &&
+                               lhs.source_slice.lsb == rhs.source_slice.lsb &&
+                               lhs.sink_slice.precision == rhs.sink_slice.precision &&
+                               lhs.sink_slice.msb == rhs.sink_slice.msb &&
+                               lhs.sink_slice.lsb == rhs.sink_slice.lsb;
+                    }),
+                    facts.end());
+    }
+}
+
 } // namespace
 
 void buildDesignGraphIndexes(SnapshotData& data) {
@@ -310,18 +681,14 @@ void buildDesignGraphIndexes(SnapshotData& data) {
         }
     }
 
-    std::unordered_map<std::string, std::string> caller_module_by_instance_id;
-    for (const auto& edge : data.module_call_edge_index.edges) {
-        const auto caller = data.module_call_edge_index.items_by_id.find(edge.caller_item_id);
-        if (caller != data.module_call_edge_index.items_by_id.end() && !edge.instance_id.empty()) {
-            caller_module_by_instance_id.insert_or_assign(edge.instance_id, caller->second.name);
-        }
-    }
+    buildCallerModuleBindings(data, bindings);
+    buildSchematicAssignmentFacts(data, bindings);
     for (const auto& [_, instances] : data.module_instances_by_uri) {
         for (const auto& instance : instances) {
-            const auto caller = caller_module_by_instance_id.find(instance.instance_stable_id);
+            const auto caller = bindings.caller_module_names_by_instance_id.find(instance.instance_stable_id);
             const auto child = data.ast_module_signatures_by_name.find(instance.module_name);
-            if (instance.instance_stable_id.empty() || caller == caller_module_by_instance_id.end() ||
+            if (instance.instance_stable_id.empty() ||
+                caller == bindings.caller_module_names_by_instance_id.end() ||
                 child == data.ast_module_signatures_by_name.end()) continue;
             const auto parent = data.ast_module_signatures_by_name.find(caller->second);
             if (parent == data.ast_module_signatures_by_name.end() || parent->second.uri.empty()) continue;
@@ -337,6 +704,7 @@ void buildDesignGraphIndexes(SnapshotData& data) {
                 }
                 const auto& endpoint = child_endpoint->second;
                 const auto location = connection.location;
+                appendSchematicConnectionFact(data, bindings, caller->second, instance, endpoint, connection);
                 if (connection.kind == SnapshotConeEdgeKind::InstancePort &&
                     endpoint.kind == SnapshotGraphEndpointKind::InterfacePort) {
                     const auto port_binding = data.interface_modport_binding_index.ports_by_stable_id.find(
@@ -531,6 +899,8 @@ void buildDesignGraphIndexes(SnapshotData& data) {
         }
         roots = std::move(merged_roots);
     }
+
+    projectSchematicConnections(data, bindings);
 
     std::sort(bindings.connection_bindings.begin(), bindings.connection_bindings.end(), [](const auto& lhs,
                                                                                            const auto& rhs) {

@@ -1,0 +1,1 @@
+{"name":"typed schematic unresolved module has no guessed connection","config":{"topModules":["top"]},"sources":[{"uri":"file:///golden/semantic/typed-unresolved.sv","text":"module top; logic y; missing_child u(.out(y)); endmodule\n"}],"request":{"kind":"schematic","moduleName":"top","maxDepth":8},"expected":{"rootModule":"top","partial":true}}

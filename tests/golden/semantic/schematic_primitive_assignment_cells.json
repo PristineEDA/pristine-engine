@@ -18,6 +18,12 @@
   },
   "expected": {
     "rootModule": "top",
+    "partial": true,
+    "messagesContain": [
+      "Partial AST-backed assignment connection"
+    ],
+    "typedConnectionFactLookupsAtLeast": 4,
+    "partialConnectionFactsAtLeast": 2,
     "modules": [
       "top"
     ],

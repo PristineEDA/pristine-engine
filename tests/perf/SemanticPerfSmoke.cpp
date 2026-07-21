@@ -237,7 +237,10 @@ int main() {
                                      highlights.unresolved ||
                                      call_prepare.unresolved || call_prepare.items.empty() ||
                                      call_outgoing.unresolved || cache_stats.call_hierarchy_scanned_modules != 0 ||
-                                     hierarchy_warm.unresolved || schematic_warm.unresolved || cone_warm.unresolved ||
+                                     hierarchy_warm.unresolved || schematic_warm.unresolved ||
+                                     schematic.schematic_connection_fact_lookup_count == 0 ||
+                                     schematic.schematic_source_part_scan_count == 0 ||
+                                     cache_stats.schematic_entries == 0 || cone_warm.unresolved ||
                                      ternary_cone.unresolved || ternary_cone_warm.unresolved ||
                                      cone.nodes.size() < 2 || cache_stats.cone_adjacency_scanned_edges == 0 ||
                                      ternary_cone.cone_control_edge_count == 0 ||
@@ -328,6 +331,12 @@ int main() {
                   << "\"semanticTokenCount\":" << semantic_tokens.tokens.size() << ","
                   << "\"moduleHierarchyRootCount\":" << hierarchy.roots.size() << ","
                   << "\"schematicModuleCount\":" << schematic.modules.size() << ","
+                  << "\"schematicTypedConnectionFactLookups\":"
+                  << schematic.schematic_connection_fact_lookup_count << ","
+                  << "\"schematicLocalSourcePartScans\":"
+                  << schematic.schematic_source_part_scan_count << ","
+                  << "\"schematicPartialConnectionFacts\":"
+                  << schematic.schematic_partial_connection_fact_count << ","
                   << "\"backwardConeNodeCount\":" << cone.nodes.size() << ","
                   << "\"coneControlEdgeCount\":" << cone.cone_control_edge_count << ","
                   << "\"ternaryBackwardConeNodeCount\":" << ternary_cone.nodes.size() << ","

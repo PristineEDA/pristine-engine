@@ -891,9 +891,33 @@ void runSchematicFixture(SemanticEngine& engine, const nlohmann::json& fixture) 
         module_name = *module_name_storage;
     }
     const auto result = engine.schematic(module_name, request.value("maxDepth", 64));
+
     CHECK(result.unresolved == expected.value("unresolved", false));
     CHECK(result.partial == expected.value("partial", false));
     CHECK(result.truncated == expected.value("truncated", false));
+    if (expected.contains("typedConnectionFactLookupsAtLeast")) {
+        CHECK(result.schematic_connection_fact_lookup_count >=
+              expected.at("typedConnectionFactLookupsAtLeast").get<size_t>());
+    }
+    if (expected.contains("localSourcePartScansAtLeast")) {
+        CHECK(result.schematic_source_part_scan_count >=
+              expected.at("localSourcePartScansAtLeast").get<size_t>());
+    }
+    if (expected.contains("partialConnectionFactsAtLeast")) {
+        CHECK(result.schematic_partial_connection_fact_count >=
+              expected.at("partialConnectionFactsAtLeast").get<size_t>());
+    }
+    if (expected.contains("typedConnectionFactLookups")) {
+        CHECK(result.schematic_connection_fact_lookup_count ==
+              expected.at("typedConnectionFactLookups").get<size_t>());
+    }
+    if (expected.contains("localSourcePartScans")) {
+        CHECK(result.schematic_source_part_scan_count == expected.at("localSourcePartScans").get<size_t>());
+    }
+    if (expected.contains("partialConnectionFacts")) {
+        CHECK(result.schematic_partial_connection_fact_count ==
+              expected.at("partialConnectionFacts").get<size_t>());
+    }
     if (expected.contains("discoveryClosureUsed")) {
         CHECK(result.discovery_closure_used == expected.at("discoveryClosureUsed").get<bool>());
     }

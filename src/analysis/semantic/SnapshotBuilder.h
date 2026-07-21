@@ -23,6 +23,7 @@ class Symbol;
 namespace slang::syntax {
 class SyntaxTree;
 struct ParameterValueAssignmentSyntax;
+struct HierarchicalInstanceSyntax;
 }
 
 namespace slang::ast {
@@ -416,6 +417,16 @@ struct SnapshotParameterOverrideSyntaxFact {
     ParseRange instance_range;
 };
 
+// Build-only structural port ranges preserve empty named connections such as
+// `.clk()` for signature help. They are discarded before providers run.
+struct SnapshotPortConnectionSyntaxFact {
+    const slang::syntax::HierarchicalInstanceSyntax* syntax = nullptr;
+    std::string uri;
+    std::string module_name;
+    std::string instance_name;
+    ParseRange instance_range;
+};
+
 // Resolved connection slices are produced while the slang AST and the parent
 // scope are alive. DesignGraphIndexBuilder only consumes this value-type view;
 // it must never recover signal semantics from schematic strings or source text.
@@ -427,6 +438,43 @@ struct SnapshotResolvedConnectionSliceFact {
     SemanticLocation location;
     SnapshotConeEdgeKind kind = SnapshotConeEdgeKind::InstancePort;
     std::vector<SnapshotGraphConnectionBindingFact::SourcePart> source_parts;
+    std::string literal_display;
+    bool unresolved = false;
+};
+
+// The schematic projection mirrors a resolved connection while the snapshot
+// owns all AST-derived identities. Providers use this instead of treating the
+// display-only SchematicConnection::signal text as a semantic net key.
+struct SnapshotSchematicConnectionFact {
+    std::string caller_module_name;
+    std::string instance_stable_id;
+    std::string instance_name;
+    ParseRange instance_selection_range;
+    std::string endpoint_stable_id;
+    std::string endpoint_name;
+    int endpoint_index = -1;
+    SnapshotGraphPortDirection endpoint_direction = SnapshotGraphPortDirection::Unknown;
+    SemanticLocation location;
+    SnapshotConeEdgeKind kind = SnapshotConeEdgeKind::InstancePort;
+    std::vector<SnapshotGraphConnectionBindingFact::SourcePart> source_parts;
+    std::string display_label;
+    bool unresolved = false;
+};
+
+// Assignment cells are projected from AST-derived source / sink identities.
+// Their labels are display-only; net grouping remains stable-id and slice based.
+struct SnapshotSchematicAssignmentFact {
+    std::string caller_module_name;
+    std::string cell_id;
+    ParseRange cell_selection_range;
+    SemanticLocation location;
+    std::string source_symbol_id;
+    std::string source_display_label;
+    SnapshotConeSliceFact source_slice;
+    std::string sink_symbol_id;
+    std::string sink_display_label;
+    SnapshotConeSliceFact sink_slice;
+    SnapshotConeSourceRole source_role = SnapshotConeSourceRole::Data;
     bool unresolved = false;
 };
 
@@ -470,12 +518,19 @@ struct SnapshotDesignGraphBindingIndex {
     std::unordered_map<std::string, std::string> port_symbol_ids_by_module_port;
     std::unordered_map<std::string, std::string> parameter_symbol_ids_by_module_parameter;
     std::unordered_map<std::string, std::string> instance_ids_by_uri_range;
+    std::unordered_map<std::string, std::string> caller_module_names_by_instance_id;
     std::unordered_map<std::string, SnapshotGraphEndpointFact> endpoints_by_module_member;
     std::unordered_map<std::string, SnapshotGraphEndpointFact> endpoints_by_stable_id;
     std::vector<SnapshotGraphConnectionBindingFact> connection_bindings;
     std::unordered_map<std::string, std::vector<size_t>> connection_bindings_by_uri_range;
+    std::unordered_map<std::string, std::vector<SnapshotSchematicConnectionFact>>
+        schematic_connections_by_module;
+    std::unordered_map<std::string, std::vector<SnapshotSchematicAssignmentFact>>
+        schematic_assignments_by_module;
     size_t scoped_symbol_candidate_count = 0;
     size_t connection_reference_candidate_count = 0;
+    size_t schematic_connection_fact_count = 0;
+    size_t schematic_partial_connection_fact_count = 0;
 };
 
 struct SnapshotConeAdjacencyIndex {
@@ -563,6 +618,7 @@ struct SnapshotData {
     std::unordered_map<std::string, std::vector<IncludeDirective>> include_directives_by_uri;
     std::unordered_map<std::string, std::vector<SnapshotModuleInstance>> module_instances_by_uri;
     std::vector<SnapshotParameterOverrideSyntaxFact> parameter_override_syntax_facts;
+    std::vector<SnapshotPortConnectionSyntaxFact> port_connection_syntax_facts;
     std::unordered_map<std::string, const slang::ast::InstanceSymbol*>
         instance_symbols_by_stable_id;
     size_t parameter_override_syntax_binding_count = 0;

@@ -1418,6 +1418,15 @@ jsonrpc::Json ServerSession::handleSchematic(const jsonrpc::Json& params) {
         result["discoveryClosureQueryMicros"] = schematic.discovery_closure_query_micros;
         result["discoveryClosureCacheHit"] = schematic.discovery_closure_cache_hit;
     }
+    if (schematic.schematic_connection_fact_lookup_count > 0) {
+        result["schematicConnectionFactLookups"] = schematic.schematic_connection_fact_lookup_count;
+    }
+    if (schematic.schematic_source_part_scan_count > 0) {
+        result["schematicSourcePartScans"] = schematic.schematic_source_part_scan_count;
+    }
+    if (schematic.schematic_partial_connection_fact_count > 0) {
+        result["schematicPartialConnectionFacts"] = schematic.schematic_partial_connection_fact_count;
+    }
     appendQueryCacheTelemetry(result, query_cache_stats);
     appendBackgroundDiagnosticsTelemetry(result, background_diagnostics_worker_.get());
     return result;
