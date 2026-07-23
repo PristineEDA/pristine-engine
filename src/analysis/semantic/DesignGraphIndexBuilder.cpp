@@ -634,6 +634,126 @@ void projectSchematicCellPins(SnapshotData& data, SnapshotDesignGraphBindingInde
         }
     }
 }
+bool isStaticPrimitiveCellPin(const SnapshotSchematicCellPinFact& fact) {
+    return !fact.unresolved && !fact.literal && !fact.net_symbol_id.empty() &&
+           (fact.net_slice.precision == SnapshotConeSlicePrecision::Whole ||
+            fact.net_slice.precision == SnapshotConeSlicePrecision::Exact);
+}
+
+void appendPrimitiveCellConeEdges(const SnapshotDesignGraphBindingIndex& bindings,
+                                  SnapshotConeAdjacencyIndex& adjacency) {
+    const auto append = [&](const SnapshotSchematicCellPinFact& sink,
+                            const SnapshotSchematicCellPinFact& source,
+                            SnapshotConeSourceRole role,
+                            SnapshotConeControlOrigin origin) {
+        appendEdge(adjacency,
+                   SnapshotConeAdjacencyEdge{.from_symbol_id = sink.net_symbol_id,
+                                              .to_symbol_id = source.net_symbol_id,
+                                              .location = SemanticLocation{.uri = sink.location.uri,
+                                                                           .range = sink.cell_selection_range},
+                                              .target_location = sink.location,
+                                              .expression_location = source.location,
+                                              .expression = source.display_label.empty()
+                                                                ? source.pin_name
+                                                                : source.display_label,
+                                              .kind = SnapshotConeEdgeKind::PrimitiveCell,
+                                              .source_role = role,
+                                              .slice_kind = SnapshotConeSliceKind::Whole,
+                                              .control_origin = origin,
+                                              .source_slice = source.net_slice,
+                                              .sink_slice = sink.net_slice,
+                                              .generated_instance_id = {}});
+    };
+    const auto appendUnresolved = [&](const SnapshotSchematicCellPinFact& sink,
+                                      const SnapshotSchematicCellPinFact& source,
+                                      SnapshotConeSourceRole role,
+                                      SnapshotConeControlOrigin origin) {
+        if (sink.net_symbol_id.empty()) {
+            return;
+        }
+        adjacency.unresolved_sources_by_from_symbol_id[sink.net_symbol_id].push_back(
+            SnapshotConeUnresolvedSourceFact{.from_symbol_id = sink.net_symbol_id,
+                                             .location = SemanticLocation{.uri = sink.location.uri,
+                                                                          .range = sink.cell_selection_range},
+                                             .expression_location = source.location,
+                                             .expression = "primitive pin " + source.pin_name,
+                                             .kind = SnapshotConeEdgeKind::PrimitiveCell,
+                                             .source_role = role,
+                                             .control_origin = origin});
+    };
+
+    for (const auto& [_, pins] : bindings.schematic_cell_pins_by_module) {
+        for (const auto& sink : pins) {
+            if (sink.cell_kind != SnapshotSchematicCellKind::Primitive ||
+                sink.pin_direction != SnapshotSchematicCellPinDirection::Output ||
+                !isStaticPrimitiveCellPin(sink)) {
+                continue;
+            }
+            for (const auto& source : pins) {
+                if (source.cell_kind != SnapshotSchematicCellKind::Primitive ||
+                    source.cell_id != sink.cell_id || source.pin_index == sink.pin_index) {
+                    continue;
+                }
+                const auto role = source.pin_direction == SnapshotSchematicCellPinDirection::Control
+                                      ? SnapshotConeSourceRole::Control
+                                      : SnapshotConeSourceRole::Data;
+                const auto origin = role == SnapshotConeSourceRole::Control
+                                        ? SnapshotConeControlOrigin::PrimitiveControl
+                                        : SnapshotConeControlOrigin::None;
+                if (source.pin_direction != SnapshotSchematicCellPinDirection::Input &&
+                    source.pin_direction != SnapshotSchematicCellPinDirection::Control) {
+                    continue;
+                }
+                if (isStaticPrimitiveCellPin(source)) {
+                    append(sink, source, role, origin);
+                }
+                else {
+                    appendUnresolved(sink, source, role, origin);
+                }
+            }
+        }
+
+        for (size_t left_index = 0; left_index < pins.size(); ++left_index) {
+            const auto& left = pins[left_index];
+            if (left.cell_kind != SnapshotSchematicCellKind::Primitive ||
+                left.pin_direction != SnapshotSchematicCellPinDirection::Inout ||
+                !isStaticPrimitiveCellPin(left)) {
+                continue;
+            }
+            for (size_t right_index = left_index + 1; right_index < pins.size(); ++right_index) {
+                const auto& right = pins[right_index];
+                if (right.cell_kind != SnapshotSchematicCellKind::Primitive ||
+                    right.cell_id != left.cell_id ||
+                    right.pin_direction != SnapshotSchematicCellPinDirection::Inout ||
+                    !isStaticPrimitiveCellPin(right)) {
+                    continue;
+                }
+                append(left, right, SnapshotConeSourceRole::Data, SnapshotConeControlOrigin::None);
+                append(right, left, SnapshotConeSourceRole::Data, SnapshotConeControlOrigin::None);
+            }
+            for (const auto& control : pins) {
+                if (control.cell_kind != SnapshotSchematicCellKind::Primitive ||
+                    control.cell_id != left.cell_id ||
+                    control.pin_direction != SnapshotSchematicCellPinDirection::Control) {
+                    continue;
+                }
+                if (isStaticPrimitiveCellPin(control)) {
+                    append(left,
+                           control,
+                           SnapshotConeSourceRole::Control,
+                           SnapshotConeControlOrigin::PrimitiveControl);
+                }
+                else {
+                    appendUnresolved(left,
+                                     control,
+                                     SnapshotConeSourceRole::Control,
+                                     SnapshotConeControlOrigin::PrimitiveControl);
+                }
+            }
+        }
+    }
+}
+
 } // namespace
 
 void buildDesignGraphIndexes(SnapshotData& data) {
@@ -777,6 +897,7 @@ void buildDesignGraphIndexes(SnapshotData& data) {
 
     buildCallerModuleBindings(data, bindings);
     projectSchematicCellPins(data, bindings);
+    appendPrimitiveCellConeEdges(bindings, adjacency);
     for (const auto& [_, instances] : data.module_instances_by_uri) {
         for (const auto& instance : instances) {
             const auto caller = bindings.caller_module_names_by_instance_id.find(instance.instance_stable_id);
@@ -942,6 +1063,9 @@ void buildDesignGraphIndexes(SnapshotData& data) {
         if (lhs.source_role != rhs.source_role) {
             return static_cast<int>(lhs.source_role) < static_cast<int>(rhs.source_role);
         }
+        if (lhs.control_origin != rhs.control_origin) {
+            return static_cast<int>(lhs.control_origin) < static_cast<int>(rhs.control_origin);
+        }
         if (lhs.slice_kind != rhs.slice_kind) {
             return static_cast<int>(lhs.slice_kind) < static_cast<int>(rhs.slice_kind);
         }
@@ -957,6 +1081,7 @@ void buildDesignGraphIndexes(SnapshotData& data) {
                                      sameLocation(lhs.location, rhs.location) &&
                                      sameLocation(lhs.target_location, rhs.target_location) &&
                                      sameLocation(lhs.expression_location, rhs.expression_location) &&
+                                     lhs.control_origin == rhs.control_origin &&
                                      lhs.kind == rhs.kind &&
                                      lhs.source_role == rhs.source_role &&
                                      lhs.slice_kind == rhs.slice_kind &&

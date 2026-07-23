@@ -307,6 +307,8 @@ struct SemanticSchematicResult {
     size_t schematic_cell_pin_fact_lookup_count = 0;
     size_t schematic_cell_pin_scan_count = 0;
     size_t schematic_partial_cell_pin_fact_count = 0;
+    size_t schematic_primitive_cell_pin_fact_lookup_count = 0;
+    size_t schematic_primitive_control_pin_fact_count = 0;
     size_t graph_scanned_global_symbols = 0;
     bool unresolved = false;
     bool partial = false;
@@ -394,6 +396,8 @@ struct SemanticConeTrace {
     size_t cone_parameter_override_exact_mapping_count = 0;
     size_t cone_dynamic_connection_fact_count = 0;
     size_t cone_unresolved_connection_fact_count = 0;
+    size_t cone_primitive_data_edge_count = 0;
+    size_t cone_primitive_control_edge_count = 0;
     size_t graph_build_scoped_symbol_candidates = 0;
     size_t graph_build_connection_reference_candidates = 0;
     bool unresolved = false;

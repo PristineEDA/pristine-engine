@@ -243,7 +243,13 @@ struct SnapshotModuleCallEdgeIndex {
     std::unordered_map<std::string, std::vector<SnapshotModuleCallHierarchyRange>> items_by_uri;
 };
 
-enum class SnapshotConeEdgeKind { Assignment, InstancePort, ParameterOverride, ControlDependency };
+enum class SnapshotConeEdgeKind {
+    Assignment,
+    InstancePort,
+    ParameterOverride,
+    ControlDependency,
+    PrimitiveCell,
+};
 enum class SnapshotConeSourceRole { Data, Control };
 enum class SnapshotConeControlOrigin {
     None,
@@ -251,6 +257,7 @@ enum class SnapshotConeControlOrigin {
     CaseStatement,
     TernaryCondition,
     DynamicSelect,
+    PrimitiveControl,
 };
 enum class SnapshotConeSliceKind {
     Whole,

@@ -91,8 +91,11 @@ std::string coneEdgeKindLabel(SnapshotConeEdgeKind kind) {
         return "parameterOverride";
     case SnapshotConeEdgeKind::ControlDependency:
         return "controlDependency";
+    case SnapshotConeEdgeKind::PrimitiveCell:
+        return "primitiveCell";
+    default:
+        return "assignment";
     }
-    return "assignment";
 }
 
 std::string coneSourceRoleLabel(SnapshotConeSourceRole role) {
@@ -111,6 +114,8 @@ std::string coneControlOriginLabel(SnapshotConeControlOrigin origin) {
         return "ternary";
     case SnapshotConeControlOrigin::DynamicSelect:
         return "dynamicSelect";
+    case SnapshotConeControlOrigin::PrimitiveControl:
+        return "primitiveControl";
     }
     return {};
 }
@@ -214,6 +219,8 @@ struct SchematicNetBuildResult {
     size_t cell_pin_scans = 0;
     size_t partial_cell_pin_facts = 0;
     bool partial = false;
+    size_t primitive_cell_pin_fact_lookups = 0;
+    size_t primitive_control_pin_facts = 0;
 };
 
 bool isStaticSchematicSource(const SnapshotGraphConnectionBindingFact::SourcePart& part) {
@@ -358,6 +365,12 @@ SchematicNetBuildResult buildSchematicNets(const ModuleSchematic& schematic,
             ++result.typed_connection_fact_lookups;
             ++result.typed_cell_pin_fact_lookups;
             typed_cell_ids.insert(fact.cell_id);
+            if (fact.cell_kind == SnapshotSchematicCellKind::Primitive) {
+                ++result.primitive_cell_pin_fact_lookups;
+                if (fact.pin_direction == SnapshotSchematicCellPinDirection::Control) {
+                    ++result.primitive_control_pin_facts;
+                }
+            }
             ++result.source_part_scans;
             ++result.cell_pin_scans;
             if (fact.unresolved || fact.literal || fact.net_symbol_id.empty() ||
@@ -718,6 +731,8 @@ SemanticSchematicResult schematic(const DesignGraphContext& context,
         result.schematic_cell_pin_fact_lookup_count += net_result.typed_cell_pin_fact_lookups;
         result.schematic_cell_pin_scan_count += net_result.cell_pin_scans;
         result.schematic_partial_cell_pin_fact_count += net_result.partial_cell_pin_facts;
+        result.schematic_primitive_cell_pin_fact_lookup_count += net_result.primitive_cell_pin_fact_lookups;
+        result.schematic_primitive_control_pin_fact_count += net_result.primitive_control_pin_facts;
         for (auto& message : net_result.messages) {
             appendUniqueMessage(result.messages, std::move(message));
         }
@@ -1040,6 +1055,14 @@ SemanticConeTrace backwardCone(const DesignGraphContext& context,
                                                        .source_range = edge.expression_location.range,
                                                        .source_slice = coneSlice(edge.source_slice),
                                                        .sink_slice = coneSlice(edge.sink_slice)});
+                if (edge.kind == SnapshotConeEdgeKind::PrimitiveCell) {
+                    if (edge.source_role == SnapshotConeSourceRole::Control) {
+                        ++trace.cone_primitive_control_edge_count;
+                    }
+                    else {
+                        ++trace.cone_primitive_data_edge_count;
+                    }
+                }
                 if (edge.source_role == SnapshotConeSourceRole::Control) {
                     ++trace.cone_control_edge_count;
                     if (edge.control_origin == SnapshotConeControlOrigin::TernaryCondition) {

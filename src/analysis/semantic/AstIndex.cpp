@@ -5863,7 +5863,10 @@ class SchematicCellFactIndexer
     : public slang::ast::ASTVisitor<SchematicCellFactIndexer, slang::ast::VisitFlags::AllGood> {
 public:
     SchematicCellFactIndexer(SnapshotData& data, const slang::SourceManager& source_manager) :
-        data_(data), source_manager_(source_manager) {}
+        data_(data), source_manager_(source_manager) {
+        buildPrimitiveCellBindings();
+        buildDisplayLabels();
+    }
 
     void handle(const slang::ast::PrimitiveInstanceSymbol& instance) {
         collect(instance);
@@ -5930,11 +5933,95 @@ public:
     }
 
 private:
+    struct PrimitiveCellBinding {
+        std::string module_name;
+        const SchematicCell* cell = nullptr;
+    };
+
+    static std::string locationKey(std::string_view uri, const ParseRange& range) {
+        return std::string(uri) + "\x1f" + std::to_string(range.start_line) + ":" +
+               std::to_string(range.start_character) + ":" + std::to_string(range.end_line) + ":" +
+               std::to_string(range.end_character);
+    }
+
+    static size_t rangeSize(const ParseRange& range) {
+        return static_cast<size_t>(range.end_line - range.start_line) * 100000U +
+               static_cast<size_t>(range.end_character - range.start_character);
+    }
+
+    void insertPrimitiveCellBinding(std::string_view uri,
+                                    const std::string& module_name,
+                                    const SchematicCell& cell,
+                                    const ParseRange& range) {
+        if (uri.empty()) {
+            return;
+        }
+        const auto key = locationKey(uri, range);
+        const auto existing = primitive_cells_by_location_.find(key);
+        if (existing == primitive_cells_by_location_.end() ||
+            rangeSize(cell.range) < rangeSize(existing->second.cell->range) ||
+            (rangeSize(cell.range) == rangeSize(existing->second.cell->range) &&
+             std::tie(module_name, cell.id) <
+                 std::tie(existing->second.module_name, existing->second.cell->id))) {
+            primitive_cells_by_location_.insert_or_assign(
+                key, PrimitiveCellBinding{.module_name = module_name, .cell = &cell});
+        }
+    }
+
+    void buildPrimitiveCellBindings() {
+        for (const auto& [module_name, signature] : data_.ast_module_signatures_by_name) {
+            if (signature.uri.empty()) {
+                continue;
+            }
+            for (const auto& cell : signature.schematic.cells) {
+                if (cell.id.empty() || cell.id.front() == '$' || cell.kind == "module" ||
+                    cell.kind == "interface") {
+                    continue;
+                }
+                insertPrimitiveCellBinding(signature.uri, module_name, cell, cell.selection_range);
+                insertPrimitiveCellBinding(signature.uri, module_name, cell, cell.range);
+            }
+        }
+    }
+
+    void buildDisplayLabels() {
+        for (const auto& [_, symbols] : data_.graph_symbols_by_uri) {
+            for (const auto& symbol : symbols) {
+                const auto indexed = data_.symbols_by_id.find(symbol.stable_id);
+                if (indexed == data_.symbols_by_id.end() || indexed->second.identity.name.empty()) {
+                    continue;
+                }
+                const auto existing = display_labels_by_stable_id_.find(symbol.stable_id);
+                if (existing == display_labels_by_stable_id_.end() ||
+                    indexed->second.identity.name < existing->second) {
+                    display_labels_by_stable_id_.insert_or_assign(symbol.stable_id,
+                                                                  indexed->second.identity.name);
+                }
+            }
+        }
+    }
+
     static SnapshotSchematicCellPinDirection pinDirection(
         const slang::ast::PrimitiveInstanceSymbol& instance,
         size_t index,
         size_t connection_count) {
         const auto kind = instance.primitiveType.primitiveKind;
+        const auto primitive_name = instance.primitiveType.name;
+        if ((primitive_name == "bufif0" || primitive_name == "bufif1" ||
+             primitive_name == "notif0" || primitive_name == "notif1" ||
+             primitive_name == "nmos" || primitive_name == "pmos" ||
+             primitive_name == "rnmos" || primitive_name == "rpmos") && index == 2) {
+            return SnapshotSchematicCellPinDirection::Control;
+        }
+        if ((primitive_name == "cmos" || primitive_name == "rcmos") &&
+            (index == 2 || index == 3)) {
+            return SnapshotSchematicCellPinDirection::Control;
+        }
+        if ((primitive_name == "tranif0" || primitive_name == "tranif1" ||
+             primitive_name == "rtranif0" || primitive_name == "rtranif1") && index == 2) {
+            return SnapshotSchematicCellPinDirection::Control;
+        }
+
         if (kind == slang::ast::PrimitiveSymbol::NInput) {
             return index == 0 ? SnapshotSchematicCellPinDirection::Output :
                                 SnapshotSchematicCellPinDirection::Input;
@@ -5962,54 +6049,18 @@ private:
     }
 
     std::optional<std::pair<std::string, const SchematicCell*>> cellFor(
-        const slang::ast::PrimitiveInstanceSymbol& instance,
         const SemanticLocation& location) const {
-        const SemanticModuleSignature* best_signature = nullptr;
-        std::string best_module;
-        const auto range_size = [](const ParseRange& range) {
-            return (range.end_line - range.start_line) * 100000 +
-                   (range.end_character - range.start_character);
-        };
-        for (const auto& [module_name, signature] : data_.ast_module_signatures_by_name) {
-            if (signature.uri != location.uri ||
-                !rangeContainsRange(signature.definition.range, location.range)) {
-                continue;
-            }
-            if (best_signature == nullptr ||
-                range_size(signature.definition.range) < range_size(best_signature->definition.range) ||
-                (range_size(signature.definition.range) == range_size(best_signature->definition.range) &&
-                 module_name < best_module)) {
-                best_signature = &signature;
-                best_module = module_name;
-            }
-        }
-        if (best_signature == nullptr) {
+        const auto binding = primitive_cells_by_location_.find(locationKey(location.uri, location.range));
+        if (binding == primitive_cells_by_location_.end() || binding->second.cell == nullptr) {
             return std::nullopt;
         }
-        const SchematicCell* best_cell = nullptr;
-        for (const auto& candidate : best_signature->schematic.cells) {
-            if (!(sameRange(candidate.selection_range, location.range) ||
-                  rangeContainsRange(candidate.range, location.range) ||
-                  rangeContainsRange(location.range, candidate.range))) {
-                continue;
-            }
-            if (candidate.type != instance.primitiveType.name) {
-                continue;
-            }
-            if (best_cell == nullptr || range_size(candidate.range) < range_size(best_cell->range) ||
-                (range_size(candidate.range) == range_size(best_cell->range) && candidate.id < best_cell->id)) {
-                best_cell = &candidate;
-            }
-        }
-        if (best_cell == nullptr) {
-            return std::nullopt;
-        }
-        return std::pair<std::string, const SchematicCell*>{std::move(best_module), best_cell};
+        return std::pair<std::string, const SchematicCell*>{binding->second.module_name,
+                                                             binding->second.cell};
     }
 
     std::string displayLabel(std::string_view stable_id) const {
-        const auto symbol = data_.symbols_by_id.find(std::string(stable_id));
-        return symbol == data_.symbols_by_id.end() ? std::string{} : symbol->second.identity.name;
+        const auto label = display_labels_by_stable_id_.find(std::string(stable_id));
+        return label == display_labels_by_stable_id_.end() ? std::string{} : label->second;
     }
 
     void collect(const slang::ast::PrimitiveInstanceSymbol& instance) {
@@ -6017,7 +6068,7 @@ private:
         if (!location.has_value()) {
             return;
         }
-        const auto cell = cellFor(instance, *location);
+        const auto cell = cellFor(*location);
         if (!cell.has_value()) {
             return;
         }
@@ -6084,6 +6135,8 @@ private:
     }
 
     SnapshotData& data_;
+    std::unordered_map<std::string, PrimitiveCellBinding> primitive_cells_by_location_;
+    std::unordered_map<std::string, std::string> display_labels_by_stable_id_;
     const slang::SourceManager& source_manager_;
 };
 

@@ -1142,6 +1142,62 @@ TEST_CASE("AstIndex derives typed N-input and bidirectional primitive pins",
                      fact.pin_direction == SnapshotSchematicCellPinDirection::Inout;
           }) == 2);
 }
+
+TEST_CASE("AstIndex classifies primitive controls and indexes typed primitive cone facts",
+          "[analysis][semantic][ast-index][schematic][primitive][cone][control][no-fallback]") {
+    SnapshotBuildInput input{.generation = 342,
+                             .documents = {{"file:///workspace/primitive-control.sv",
+                                            SemanticEngineDocument{
+                                                .uri = "file:///workspace/primitive-control.sv",
+                                                .text = "module top(input wire data, input wire enable, input wire nctrl, input wire pctrl,\n"
+                                                        "           inout wire left, inout wire right, output wire y, output wire y2);\n"
+                                                        "  bufif1 u_buf(y, data, enable);\n"
+                                                        "  cmos u_cmos(y2, data, nctrl, pctrl);\n"
+                                                        "  tranif1 u_tran(left, right, enable);\n"
+                                                        "endmodule\n",
+                                                .version = 1,
+                                                .is_open = true}}}};
+
+    auto output = SnapshotBuilder{}.build(std::move(input));
+    REQUIRE(output.data != nullptr);
+    const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
+    const auto& pins = view.design_graph_binding_index.schematic_cell_pins_by_module.at("top");
+    const auto has_pin = [&](std::string_view cell_id, int pin_index,
+                             SnapshotSchematicCellPinDirection direction) {
+        return std::any_of(pins.begin(), pins.end(), [&](const auto& fact) {
+            return fact.cell_id == cell_id && fact.pin_index == pin_index &&
+                   fact.pin_direction == direction && !fact.unresolved;
+        });
+    };
+    CHECK(has_pin("u_buf", 2, SnapshotSchematicCellPinDirection::Control));
+    CHECK(has_pin("u_cmos", 2, SnapshotSchematicCellPinDirection::Control));
+    CHECK(has_pin("u_cmos", 3, SnapshotSchematicCellPinDirection::Control));
+    CHECK(has_pin("u_tran", 0, SnapshotSchematicCellPinDirection::Inout));
+    CHECK(has_pin("u_tran", 1, SnapshotSchematicCellPinDirection::Inout));
+    CHECK(has_pin("u_tran", 2, SnapshotSchematicCellPinDirection::Control));
+
+    const auto has_edge = [&](std::string_view sink_name,
+                              std::string_view source_name,
+                              SnapshotConeSourceRole role,
+                              SnapshotConeControlOrigin origin) {
+        return std::any_of(view.cone_adjacency_index.edges.begin(),
+                           view.cone_adjacency_index.edges.end(),
+                           [&](const SnapshotConeAdjacencyEdge& edge) {
+                               const auto sink = view.design_graph_symbols_by_id.find(edge.from_symbol_id);
+                               const auto source = view.design_graph_symbols_by_id.find(edge.to_symbol_id);
+                               return sink != view.design_graph_symbols_by_id.end() &&
+                                      source != view.design_graph_symbols_by_id.end() &&
+                                      sink->second.identity.name == sink_name &&
+                                      source->second.identity.name == source_name &&
+                                      edge.kind == SnapshotConeEdgeKind::PrimitiveCell &&
+                                      edge.source_role == role && edge.control_origin == origin;
+                           });
+    };
+    CHECK(has_edge("y", "data", SnapshotConeSourceRole::Data, SnapshotConeControlOrigin::None));
+    CHECK(has_edge("y", "enable", SnapshotConeSourceRole::Control,
+                   SnapshotConeControlOrigin::PrimitiveControl));
+}
+
 TEST_CASE("AstIndex preserves literal primitive pins as explicit partial facts",
           "[analysis][semantic][ast-index][schematic][primitive][literal][partial][no-fallback]") {
     SnapshotBuildInput input{.generation = 341,

@@ -1436,6 +1436,13 @@ jsonrpc::Json ServerSession::handleSchematic(const jsonrpc::Json& params) {
     if (schematic.schematic_partial_cell_pin_fact_count > 0) {
         result["schematicPartialCellPinFacts"] = schematic.schematic_partial_cell_pin_fact_count;
     }
+    if (schematic.schematic_primitive_cell_pin_fact_lookup_count > 0) {
+        result["schematicPrimitiveCellPinFactLookups"] =
+            schematic.schematic_primitive_cell_pin_fact_lookup_count;
+    }
+    if (schematic.schematic_primitive_control_pin_fact_count > 0) {
+        result["schematicPrimitiveControlPinFacts"] = schematic.schematic_primitive_control_pin_fact_count;
+    }
     appendQueryCacheTelemetry(result, query_cache_stats);
     appendBackgroundDiagnosticsTelemetry(result, background_diagnostics_worker_.get());
     return result;
@@ -1461,6 +1468,12 @@ jsonrpc::Json ServerSession::handleBackwardCone(const jsonrpc::Json& params) {
     result["coneControlEdges"] = trace.cone_control_edge_count;
     if (trace.cone_ternary_control_edge_count > 0) {
         result["coneTernaryControlEdges"] = trace.cone_ternary_control_edge_count;
+    }
+    if (trace.cone_primitive_data_edge_count > 0) {
+        result["conePrimitiveDataEdges"] = trace.cone_primitive_data_edge_count;
+    }
+    if (trace.cone_primitive_control_edge_count > 0) {
+        result["conePrimitiveControlEdges"] = trace.cone_primitive_control_edge_count;
     }
     result["coneSliceFacts"] = trace.cone_slice_fact_count;
     if (trace.cone_exact_slice_edge_count > 0) {

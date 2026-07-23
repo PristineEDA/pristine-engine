@@ -1076,6 +1076,13 @@ void runBackwardConeFixture(SemanticEngine& engine, const nlohmann::json& fixtur
     if (expected.contains("ternaryControlEdgeCount")) {
         CHECK(result.cone_ternary_control_edge_count == expected.at("ternaryControlEdgeCount").get<size_t>());
     }
+    if (expected.contains("primitiveDataEdgeCount")) {
+        CHECK(result.cone_primitive_data_edge_count == expected.at("primitiveDataEdgeCount").get<size_t>());
+    }
+    if (expected.contains("primitiveControlEdgeCount")) {
+        CHECK(result.cone_primitive_control_edge_count ==
+              expected.at("primitiveControlEdgeCount").get<size_t>());
+    }
     if (expected.contains("unresolvedSourceFactCount")) {
         CHECK(result.cone_unresolved_source_fact_count == expected.at("unresolvedSourceFactCount").get<size_t>());
     }
