@@ -461,21 +461,28 @@ struct SnapshotSchematicConnectionFact {
     bool unresolved = false;
 };
 
-// Assignment cells are projected from AST-derived source / sink identities.
-// Their labels are display-only; net grouping remains stable-id and slice based.
-struct SnapshotSchematicAssignmentFact {
+enum class SnapshotSchematicCellKind { Primitive, Assignment };
+
+enum class SnapshotSchematicCellPinDirection { Input, Output, Inout, Control, Unknown };
+
+// Every primitive and assignment schematic pin is projected from AST-derived
+// identities while the snapshot owns the compilation. Providers group nets by
+// stable id and slice; display labels are never semantic keys.
+struct SnapshotSchematicCellPinFact {
     std::string caller_module_name;
     std::string cell_id;
     ParseRange cell_selection_range;
     SemanticLocation location;
-    std::string source_symbol_id;
-    std::string source_display_label;
-    SnapshotConeSliceFact source_slice;
-    std::string sink_symbol_id;
-    std::string sink_display_label;
-    SnapshotConeSliceFact sink_slice;
+    SnapshotSchematicCellKind cell_kind = SnapshotSchematicCellKind::Assignment;
+    std::string pin_name;
+    int pin_index = -1;
+    SnapshotSchematicCellPinDirection pin_direction = SnapshotSchematicCellPinDirection::Unknown;
+    std::string net_symbol_id;
+    std::string display_label;
+    SnapshotConeSliceFact net_slice;
     SnapshotConeSourceRole source_role = SnapshotConeSourceRole::Data;
     bool unresolved = false;
+    bool literal = false;
 };
 
 struct SnapshotConeAdjacencyEdge {
@@ -525,12 +532,14 @@ struct SnapshotDesignGraphBindingIndex {
     std::unordered_map<std::string, std::vector<size_t>> connection_bindings_by_uri_range;
     std::unordered_map<std::string, std::vector<SnapshotSchematicConnectionFact>>
         schematic_connections_by_module;
-    std::unordered_map<std::string, std::vector<SnapshotSchematicAssignmentFact>>
-        schematic_assignments_by_module;
+    std::unordered_map<std::string, std::vector<SnapshotSchematicCellPinFact>>
+        schematic_cell_pins_by_module;
     size_t scoped_symbol_candidate_count = 0;
     size_t connection_reference_candidate_count = 0;
     size_t schematic_connection_fact_count = 0;
     size_t schematic_partial_connection_fact_count = 0;
+    size_t schematic_cell_pin_fact_count = 0;
+    size_t schematic_partial_cell_pin_fact_count = 0;
 };
 
 struct SnapshotConeAdjacencyIndex {
@@ -608,6 +617,9 @@ struct SnapshotData {
     std::vector<SnapshotAssignmentEdgeSeed> assignment_edge_seeds;
     std::unordered_map<std::string, std::vector<SnapshotAssignmentEdge>> assignment_edges_by_uri;
     std::vector<SnapshotConeUnresolvedSourceFact> unresolved_cone_sources;
+    // Collected while slang AST primitive instances are alive; the design graph
+    // builder merges these with assignment pins into its provider-facing view.
+    std::vector<SnapshotSchematicCellPinFact> schematic_cell_pin_facts;
     std::unordered_map<std::string, std::vector<SnapshotResolvedConnectionSliceFact>>
         resolved_connection_slices_by_instance_id;
     std::unordered_map<std::string, SnapshotConeSliceFact> endpoint_declared_slices_by_id;

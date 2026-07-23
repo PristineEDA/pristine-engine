@@ -210,6 +210,9 @@ struct SchematicNetBuildResult {
     size_t typed_connection_fact_lookups = 0;
     size_t source_part_scans = 0;
     size_t partial_connection_facts = 0;
+    size_t typed_cell_pin_fact_lookups = 0;
+    size_t cell_pin_scans = 0;
+    size_t partial_cell_pin_facts = 0;
     bool partial = false;
 };
 
@@ -328,15 +331,14 @@ SchematicNetBuildResult buildSchematicNets(const ModuleSchematic& schematic,
         }
     }
 
-    std::set<std::string> typed_assignment_cell_ids;
-    const auto typed_assignments = context.binding_index.schematic_assignments_by_module.find(schematic.name);
-    if (typed_assignments != context.binding_index.schematic_assignments_by_module.end()) {
+    std::set<std::string> typed_cell_ids;
+    const auto typed_cell_pins = context.binding_index.schematic_cell_pins_by_module.find(schematic.name);
+    if (typed_cell_pins != context.binding_index.schematic_cell_pins_by_module.end()) {
         const auto static_slice = [](const SnapshotConeSliceFact& slice) {
             return slice.precision == SnapshotConeSlicePrecision::Whole ||
                    slice.precision == SnapshotConeSlicePrecision::Exact;
         };
-        const auto assignment_net_key = [](std::string_view symbol_id,
-                                           const SnapshotConeSliceFact& slice) {
+        const auto cell_net_key = [](std::string_view symbol_id, const SnapshotConeSliceFact& slice) {
             return std::string(symbol_id) + "\x1f" + coneSliceKey(slice);
         };
         const auto append_port_endpoint = [&](SemanticSchematicNet& net, std::string_view symbol_id) {
@@ -352,34 +354,44 @@ SchematicNetBuildResult buildSchematicNets(const ModuleSchematic& schematic,
                                       true);
             connected_port_ids.insert(std::string(symbol_id));
         };
-        for (const auto& fact : typed_assignments->second) {
+        for (const auto& fact : typed_cell_pins->second) {
             ++result.typed_connection_fact_lookups;
-            typed_assignment_cell_ids.insert(fact.cell_id);
-            if (fact.unresolved || fact.source_symbol_id.empty() || fact.sink_symbol_id.empty() ||
-                !static_slice(fact.source_slice) || !static_slice(fact.sink_slice)) {
+            ++result.typed_cell_pin_fact_lookups;
+            typed_cell_ids.insert(fact.cell_id);
+            ++result.source_part_scans;
+            ++result.cell_pin_scans;
+            if (fact.unresolved || fact.literal || fact.net_symbol_id.empty() ||
+                !static_slice(fact.net_slice) ||
+                fact.pin_direction == SnapshotSchematicCellPinDirection::Unknown) {
                 result.partial = true;
                 ++result.partial_connection_facts;
+                ++result.partial_cell_pin_facts;
                 appendUniqueMessage(result.messages,
-                                    "Partial AST-backed assignment connection for cell '" + fact.cell_id + "'.");
+                                    "Partial AST-backed schematic cell pin for cell '" + fact.cell_id + "'.");
                 continue;
             }
-            auto& source_net = ensure_net(assignment_net_key(fact.source_symbol_id, fact.source_slice),
-                                          fact.source_display_label.empty() ? "<unresolved>" :
-                                                                              fact.source_display_label);
-            source_net.loads.push_back(SemanticSchematicEndpoint{
-                .node_id = fact.cell_id,
-                .port_name = fact.source_role == SnapshotConeSourceRole::Control ? "S" : "A"});
-            append_port_endpoint(source_net, fact.source_symbol_id);
-
-            auto& sink_net = ensure_net(assignment_net_key(fact.sink_symbol_id, fact.sink_slice),
-                                        fact.sink_display_label.empty() ? "<unresolved>" :
-                                                                           fact.sink_display_label);
-            sink_net.drivers.push_back(SemanticSchematicEndpoint{.node_id = fact.cell_id,
-                                                                   .port_name = "Y"});
-            append_port_endpoint(sink_net, fact.sink_symbol_id);
+            auto& net = ensure_net(cell_net_key(fact.net_symbol_id, fact.net_slice),
+                                   fact.display_label.empty() ? "<unresolved>" : fact.display_label);
+            const auto endpoint = SemanticSchematicEndpoint{.node_id = fact.cell_id,
+                                                              .port_name = fact.pin_name};
+            switch (fact.pin_direction) {
+                case SnapshotSchematicCellPinDirection::Input:
+                case SnapshotSchematicCellPinDirection::Control:
+                    net.loads.push_back(endpoint);
+                    break;
+                case SnapshotSchematicCellPinDirection::Output:
+                    net.drivers.push_back(endpoint);
+                    break;
+                case SnapshotSchematicCellPinDirection::Inout:
+                    net.drivers.push_back(endpoint);
+                    net.loads.push_back(endpoint);
+                    break;
+                case SnapshotSchematicCellPinDirection::Unknown:
+                    break;
+            }
+            append_port_endpoint(net, fact.net_symbol_id);
         }
     }
-
     for (const auto& port : schematic.ports) {
         const auto stable_id = context.binding_index.port_symbol_ids_by_module_port.find(
             schematic.name + "\x1f" + port.name);
@@ -414,24 +426,14 @@ SchematicNetBuildResult buildSchematicNets(const ModuleSchematic& schematic,
                                       SemanticSchematicEndpoint{.node_id = cell.id,
                                                                 .port_name = "interface"});
         }
-        if (cell.kind == "module" || typed_assignment_cell_ids.contains(cell.id)) {
+        if (cell.kind == "module" || typed_cell_ids.contains(cell.id)) {
             continue;
         }
-        for (const auto& connection : cell.connections) {
-            if (connection.signal.empty()) {
-                continue;
-            }
-
-            const auto port_name = connection.port_name.empty() && connection.port_index >= 0
-                                       ? std::to_string(connection.port_index)
-                                       : connection.port_name;
-            auto& net = ensure_net("display\x1f" + cell.id + "\x1f" + port_name + "\x1f" +
-                                       connection.signal,
-                                   connection.signal);
-            appendEndpointByDirection(net,
-                                      "inout",
-                                      SemanticSchematicEndpoint{.node_id = cell.id,
-                                                                .port_name = port_name});
+        if (!cell.connections.empty()) {
+            result.partial = true;
+            ++result.partial_cell_pin_facts;
+            appendUniqueMessage(result.messages,
+                                "No AST-backed schematic cell pin facts for cell '" + cell.id + "'.");
         }
     }
 
@@ -713,6 +715,9 @@ SemanticSchematicResult schematic(const DesignGraphContext& context,
         result.schematic_connection_fact_lookup_count += net_result.typed_connection_fact_lookups;
         result.schematic_source_part_scan_count += net_result.source_part_scans;
         result.schematic_partial_connection_fact_count += net_result.partial_connection_facts;
+        result.schematic_cell_pin_fact_lookup_count += net_result.typed_cell_pin_fact_lookups;
+        result.schematic_cell_pin_scan_count += net_result.cell_pin_scans;
+        result.schematic_partial_cell_pin_fact_count += net_result.partial_cell_pin_facts;
         for (auto& message : net_result.messages) {
             appendUniqueMessage(result.messages, std::move(message));
         }

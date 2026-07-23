@@ -5859,6 +5859,244 @@ void buildAssignmentEdges(SnapshotData& data) {
               });
 }
 
+class SchematicCellFactIndexer
+    : public slang::ast::ASTVisitor<SchematicCellFactIndexer, slang::ast::VisitFlags::AllGood> {
+public:
+    SchematicCellFactIndexer(SnapshotData& data, const slang::SourceManager& source_manager) :
+        data_(data), source_manager_(source_manager) {}
+
+    void handle(const slang::ast::PrimitiveInstanceSymbol& instance) {
+        collect(instance);
+        this->visitDefault(instance);
+    }
+
+    template<typename T>
+    void handle(const T& symbol)
+        requires std::is_base_of_v<slang::ast::Symbol, T>
+    {
+        this->visitDefault(symbol);
+    }
+
+    template<typename T>
+    void handle(const T& expression)
+        requires std::is_base_of_v<slang::ast::Expression, T>
+    {
+        this->visitDefault(expression);
+    }
+
+    void finalize() {
+        auto& facts = data_.schematic_cell_pin_facts;
+        std::sort(facts.begin(), facts.end(), [](const auto& lhs, const auto& rhs) {
+            return std::tie(lhs.caller_module_name,
+                            lhs.cell_id,
+                            lhs.pin_index,
+                            lhs.pin_direction,
+                            lhs.location.uri,
+                            lhs.location.range.start_line,
+                            lhs.location.range.start_character,
+                            lhs.net_symbol_id,
+                            lhs.source_role,
+                            lhs.net_slice.precision,
+                            lhs.net_slice.msb,
+                            lhs.net_slice.lsb,
+                            lhs.unresolved,
+                            lhs.literal) <
+                   std::tie(rhs.caller_module_name,
+                            rhs.cell_id,
+                            rhs.pin_index,
+                            rhs.pin_direction,
+                            rhs.location.uri,
+                            rhs.location.range.start_line,
+                            rhs.location.range.start_character,
+                            rhs.net_symbol_id,
+                            rhs.source_role,
+                            rhs.net_slice.precision,
+                            rhs.net_slice.msb,
+                            rhs.net_slice.lsb,
+                            rhs.unresolved,
+                            rhs.literal);
+        });
+        facts.erase(std::unique(facts.begin(), facts.end(), [](const auto& lhs, const auto& rhs) {
+                        return lhs.caller_module_name == rhs.caller_module_name &&
+                               lhs.cell_id == rhs.cell_id && lhs.pin_index == rhs.pin_index &&
+                               lhs.pin_direction == rhs.pin_direction &&
+                               sameLocation(lhs.location, rhs.location) &&
+                               lhs.net_symbol_id == rhs.net_symbol_id &&
+                               lhs.source_role == rhs.source_role &&
+                               sameSliceFact(lhs.net_slice, rhs.net_slice) &&
+                               lhs.unresolved == rhs.unresolved && lhs.literal == rhs.literal;
+                    }),
+                    facts.end());
+    }
+
+private:
+    static SnapshotSchematicCellPinDirection pinDirection(
+        const slang::ast::PrimitiveInstanceSymbol& instance,
+        size_t index,
+        size_t connection_count) {
+        const auto kind = instance.primitiveType.primitiveKind;
+        if (kind == slang::ast::PrimitiveSymbol::NInput) {
+            return index == 0 ? SnapshotSchematicCellPinDirection::Output :
+                                SnapshotSchematicCellPinDirection::Input;
+        }
+        if (kind == slang::ast::PrimitiveSymbol::NOutput) {
+            return index + 1 == connection_count ? SnapshotSchematicCellPinDirection::Input :
+                                                   SnapshotSchematicCellPinDirection::Output;
+        }
+        if (kind == slang::ast::PrimitiveSymbol::BiDiSwitch) {
+            return SnapshotSchematicCellPinDirection::Inout;
+        }
+        if (index >= instance.primitiveType.ports.size()) {
+            return SnapshotSchematicCellPinDirection::Unknown;
+        }
+        switch (instance.primitiveType.ports[index]->direction) {
+            case slang::ast::PrimitivePortDirection::In:
+                return SnapshotSchematicCellPinDirection::Input;
+            case slang::ast::PrimitivePortDirection::Out:
+            case slang::ast::PrimitivePortDirection::OutReg:
+                return SnapshotSchematicCellPinDirection::Output;
+            case slang::ast::PrimitivePortDirection::InOut:
+                return SnapshotSchematicCellPinDirection::Inout;
+        }
+        return SnapshotSchematicCellPinDirection::Unknown;
+    }
+
+    std::optional<std::pair<std::string, const SchematicCell*>> cellFor(
+        const slang::ast::PrimitiveInstanceSymbol& instance,
+        const SemanticLocation& location) const {
+        const SemanticModuleSignature* best_signature = nullptr;
+        std::string best_module;
+        const auto range_size = [](const ParseRange& range) {
+            return (range.end_line - range.start_line) * 100000 +
+                   (range.end_character - range.start_character);
+        };
+        for (const auto& [module_name, signature] : data_.ast_module_signatures_by_name) {
+            if (signature.uri != location.uri ||
+                !rangeContainsRange(signature.definition.range, location.range)) {
+                continue;
+            }
+            if (best_signature == nullptr ||
+                range_size(signature.definition.range) < range_size(best_signature->definition.range) ||
+                (range_size(signature.definition.range) == range_size(best_signature->definition.range) &&
+                 module_name < best_module)) {
+                best_signature = &signature;
+                best_module = module_name;
+            }
+        }
+        if (best_signature == nullptr) {
+            return std::nullopt;
+        }
+        const SchematicCell* best_cell = nullptr;
+        for (const auto& candidate : best_signature->schematic.cells) {
+            if (!(sameRange(candidate.selection_range, location.range) ||
+                  rangeContainsRange(candidate.range, location.range) ||
+                  rangeContainsRange(location.range, candidate.range))) {
+                continue;
+            }
+            if (candidate.type != instance.primitiveType.name) {
+                continue;
+            }
+            if (best_cell == nullptr || range_size(candidate.range) < range_size(best_cell->range) ||
+                (range_size(candidate.range) == range_size(best_cell->range) && candidate.id < best_cell->id)) {
+                best_cell = &candidate;
+            }
+        }
+        if (best_cell == nullptr) {
+            return std::nullopt;
+        }
+        return std::pair<std::string, const SchematicCell*>{std::move(best_module), best_cell};
+    }
+
+    std::string displayLabel(std::string_view stable_id) const {
+        const auto symbol = data_.symbols_by_id.find(std::string(stable_id));
+        return symbol == data_.symbols_by_id.end() ? std::string{} : symbol->second.identity.name;
+    }
+
+    void collect(const slang::ast::PrimitiveInstanceSymbol& instance) {
+        const auto location = declarationLocationForSymbol(source_manager_, instance);
+        if (!location.has_value()) {
+            return;
+        }
+        const auto cell = cellFor(instance, *location);
+        if (!cell.has_value()) {
+            return;
+        }
+        const auto connections = instance.getPortConnections();
+        for (size_t index = 0; index < connections.size(); ++index) {
+            const auto* expression = connections[index];
+            if (expression == nullptr) {
+                continue;
+            }
+            std::vector<SnapshotGraphConnectionBindingFact::SourcePart> parts;
+            collectResolvedConnectionSourceParts(data_,
+                                                 source_manager_,
+                                                 *expression,
+                                                 SnapshotConeSliceFact{},
+                                                 parts,
+                                                 *location);
+            normalizeConnectionSourceParts(parts);
+            std::string pin_name;
+            if (index < instance.primitiveType.ports.size() &&
+                !instance.primitiveType.ports[index]->name.empty()) {
+                pin_name = std::string(instance.primitiveType.ports[index]->name);
+            }
+            else {
+                pin_name = "P" + std::to_string(index);
+            }
+            const auto direction = pinDirection(instance, index, connections.size());
+            const auto literal = parts.empty() && connectionExpressionIsLiteral(*expression);
+            if (parts.empty()) {
+                data_.schematic_cell_pin_facts.push_back(
+                    SnapshotSchematicCellPinFact{.caller_module_name = cell->first,
+                                                 .cell_id = cell->second->id,
+                                                 .cell_selection_range = cell->second->selection_range,
+                                                 .location = *location,
+                                                 .cell_kind = SnapshotSchematicCellKind::Primitive,
+                                                 .pin_name = std::move(pin_name),
+                                                 .pin_index = static_cast<int>(index),
+                                                 .pin_direction = direction,
+                                                 .net_symbol_id = {},
+                                                 .display_label = {},
+                                                 .net_slice = {},
+                                                 .source_role = SnapshotConeSourceRole::Data,
+                                                 .unresolved = !literal,
+                                                 .literal = literal});
+                continue;
+            }
+            for (const auto& part : parts) {
+                data_.schematic_cell_pin_facts.push_back(
+                    SnapshotSchematicCellPinFact{.caller_module_name = cell->first,
+                                                 .cell_id = cell->second->id,
+                                                 .cell_selection_range = cell->second->selection_range,
+                                                 .location = part.source_location,
+                                                 .cell_kind = SnapshotSchematicCellKind::Primitive,
+                                                 .pin_name = pin_name,
+                                                 .pin_index = static_cast<int>(index),
+                                                 .pin_direction = direction,
+                                                 .net_symbol_id = part.source_symbol_id,
+                                                 .display_label = displayLabel(part.source_symbol_id),
+                                                 .net_slice = part.source_slice,
+                                                 .source_role = part.source_role,
+                                                 .unresolved = part.unresolved,
+                                                 .literal = false});
+            }
+        }
+    }
+
+    SnapshotData& data_;
+    const slang::SourceManager& source_manager_;
+};
+
+void buildSchematicCellPinFacts(SnapshotData& data, const slang::SourceManager& source_manager) {
+    data.schematic_cell_pin_facts.clear();
+    if (!data.compilation) {
+        return;
+    }
+    SchematicCellFactIndexer indexer(data, source_manager);
+    data.compilation->getRoot().visit(indexer);
+    indexer.finalize();
+}
+
 std::optional<SemanticLocation> locationForDeclaredTypeReference(
     const slang::SourceManager& source_manager,
     const slang::syntax::DataTypeSyntax& type_syntax) {
@@ -6970,6 +7208,10 @@ void buildAstIndexes(SnapshotData& data,
     {
         PRISTINE_DEBUG_TRACE_SCOPE_SIMPLE("astIndex.buildAssignmentEdges");
         buildAssignmentEdges(data);
+    }
+    {
+        PRISTINE_DEBUG_TRACE_SCOPE_SIMPLE("astIndex.buildSchematicCellPinFacts");
+        buildSchematicCellPinFacts(data, *data.source_manager);
     }
     {
         PRISTINE_DEBUG_TRACE_SCOPE_SIMPLE("astIndex.buildInterfaceModportBindingIndex");

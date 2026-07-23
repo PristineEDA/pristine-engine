@@ -918,6 +918,18 @@ void runSchematicFixture(SemanticEngine& engine, const nlohmann::json& fixture) 
         CHECK(result.schematic_partial_connection_fact_count ==
               expected.at("partialConnectionFacts").get<size_t>());
     }
+    if (expected.contains("typedCellPinFactLookupsAtLeast")) {
+        CHECK(result.schematic_cell_pin_fact_lookup_count >=
+              expected.at("typedCellPinFactLookupsAtLeast").get<size_t>());
+    }
+    if (expected.contains("localCellPinScansAtLeast")) {
+        CHECK(result.schematic_cell_pin_scan_count >=
+              expected.at("localCellPinScansAtLeast").get<size_t>());
+    }
+    if (expected.contains("partialCellPinFactsAtLeast")) {
+        CHECK(result.schematic_partial_cell_pin_fact_count >=
+              expected.at("partialCellPinFactsAtLeast").get<size_t>());
+    }
     if (expected.contains("discoveryClosureUsed")) {
         CHECK(result.discovery_closure_used == expected.at("discoveryClosureUsed").get<bool>());
     }

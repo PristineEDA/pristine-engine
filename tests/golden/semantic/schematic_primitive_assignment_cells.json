@@ -20,9 +20,11 @@
     "rootModule": "top",
     "partial": true,
     "messagesContain": [
-      "Partial AST-backed assignment connection"
+      "Partial AST-backed schematic cell pin"
     ],
     "typedConnectionFactLookupsAtLeast": 4,
+    "typedCellPinFactLookupsAtLeast": 1,
+    "localCellPinScansAtLeast": 1,
     "partialConnectionFactsAtLeast": 2,
     "modules": [
       "top"

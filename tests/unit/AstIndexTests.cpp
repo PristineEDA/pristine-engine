@@ -1061,6 +1061,23 @@ TEST_CASE("AstIndex derives primitive and assignment schematic cells from slang 
         return cell.kind == "buf";
     }));
 
+    const auto pins_it = output.data->design_graph_binding_index.schematic_cell_pins_by_module.find("top");
+    REQUIRE(pins_it != output.data->design_graph_binding_index.schematic_cell_pins_by_module.end());
+    CHECK(std::any_of(pins_it->second.begin(), pins_it->second.end(), [](const auto& fact) {
+        return fact.cell_id == "u_and" && fact.pin_name == "P0" &&
+               fact.pin_direction == SnapshotSchematicCellPinDirection::Output &&
+               fact.display_label == "n1" && !fact.unresolved;
+    }));
+    CHECK(std::any_of(pins_it->second.begin(), pins_it->second.end(), [](const auto& fact) {
+        return fact.cell_id == "u_and" && fact.pin_name == "P1" &&
+               fact.pin_direction == SnapshotSchematicCellPinDirection::Input &&
+               fact.display_label == "a" && !fact.unresolved;
+    }));
+    CHECK(std::any_of(pins_it->second.begin(), pins_it->second.end(), [](const auto& fact) {
+        return fact.cell_kind == SnapshotSchematicCellKind::Assignment &&
+               fact.pin_direction == SnapshotSchematicCellPinDirection::Control &&
+               fact.pin_name == "S" && fact.display_label == "sel" && !fact.unresolved;
+    }));
     const auto edges_it = view.assignment_edges_by_uri.find("file:///workspace/top.sv");
     REQUIRE(edges_it != view.assignment_edges_by_uri.end());
     const auto edgeTargetNames = [&](std::string_view expected,
@@ -1097,6 +1114,53 @@ TEST_CASE("AstIndex derives primitive and assignment schematic cells from slang 
                           "a | b"));
 }
 
+TEST_CASE("AstIndex derives typed N-input and bidirectional primitive pins",
+          "[analysis][semantic][ast-index][schematic][primitive][direction][no-fallback]") {
+    SnapshotBuildInput input{.generation = 340,
+                             .documents = {{"file:///workspace/primitive-directions.sv",
+                                            SemanticEngineDocument{
+                                                .uri = "file:///workspace/primitive-directions.sv",
+                                                .text = "module top(input wire a, input wire b, output wire y);\n"
+                                                        "  or u_or(y, a, b);\n"
+                                                        "  tran u_tran(a, b);\n"
+                                                        "endmodule\n",
+                                                .version = 1,
+                                                .is_open = true}}}};
+    auto output = SnapshotBuilder{}.build(std::move(input));
+    REQUIRE(output.data != nullptr);
+    const auto pins = output.data->design_graph_binding_index.schematic_cell_pins_by_module.at("top");
+    CHECK(std::any_of(pins.begin(), pins.end(), [](const auto& fact) {
+        return fact.cell_id == "u_or" && fact.pin_name == "P0" &&
+               fact.pin_direction == SnapshotSchematicCellPinDirection::Output && fact.display_label == "y";
+    }));
+    CHECK(std::any_of(pins.begin(), pins.end(), [](const auto& fact) {
+        return fact.cell_id == "u_or" && fact.pin_name == "P1" &&
+               fact.pin_direction == SnapshotSchematicCellPinDirection::Input && fact.display_label == "a";
+    }));
+    CHECK(std::count_if(pins.begin(), pins.end(), [](const auto& fact) {
+              return fact.cell_id == "u_tran" &&
+                     fact.pin_direction == SnapshotSchematicCellPinDirection::Inout;
+          }) == 2);
+}
+TEST_CASE("AstIndex preserves literal primitive pins as explicit partial facts",
+          "[analysis][semantic][ast-index][schematic][primitive][literal][partial][no-fallback]") {
+    SnapshotBuildInput input{.generation = 341,
+                             .documents = {{"file:///workspace/primitive-literal.sv",
+                                            SemanticEngineDocument{
+                                                .uri = "file:///workspace/primitive-literal.sv",
+                                                .text = "module top(input logic a, output logic y);\n"
+                                                        "  and u_and(y, a, 1);\n"
+                                                        "endmodule\n",
+                                                .version = 1,
+                                                .is_open = true}}}};
+    auto output = SnapshotBuilder{}.build(std::move(input));
+    REQUIRE(output.data != nullptr);
+    const auto pins = output.data->design_graph_binding_index.schematic_cell_pins_by_module.at("top");
+    CHECK(std::any_of(pins.begin(), pins.end(), [](const auto& fact) {
+        return fact.cell_id == "u_and" && fact.pin_name == "P2" && fact.literal &&
+               fact.net_symbol_id.empty() && !fact.unresolved;
+    }));
+}
 TEST_CASE("AstIndex derives declared type references from slang AST",
           "[analysis][semantic][ast-index][type-definition][no-fallback]") {
     SnapshotBuildInput input{.generation = 35,
