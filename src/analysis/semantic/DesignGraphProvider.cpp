@@ -56,15 +56,6 @@ bool locationLess(const SemanticLocation& lhs, const SemanticLocation& rhs) {
     return lhs.range.end_character < rhs.range.end_character;
 }
 
-std::string rangeKey(const ParseRange& range) {
-    return std::to_string(range.start_line) + ":" + std::to_string(range.start_character) + ":" +
-           std::to_string(range.end_line) + ":" + std::to_string(range.end_character);
-}
-
-std::string uriRangeKey(std::string_view uri, const ParseRange& range) {
-    return std::string(uri) + "\x1f" + rangeKey(range);
-}
-
 std::string directionLabel(SnapshotGraphPortDirection direction) {
     switch (direction) {
     case SnapshotGraphPortDirection::Input:
@@ -87,6 +78,8 @@ std::string coneEdgeKindLabel(SnapshotConeEdgeKind kind) {
         return "assignment";
     case SnapshotConeEdgeKind::InstancePort:
         return "instancePort";
+    case SnapshotConeEdgeKind::InterfaceMember:
+        return "interfaceMember";
     case SnapshotConeEdgeKind::ParameterOverride:
         return "parameterOverride";
     case SnapshotConeEdgeKind::ControlDependency:
@@ -218,6 +211,9 @@ struct SchematicNetBuildResult {
     size_t typed_cell_pin_fact_lookups = 0;
     size_t cell_pin_scans = 0;
     size_t partial_cell_pin_facts = 0;
+    size_t interface_member_connection_fact_lookups = 0;
+    size_t interface_member_connection_scans = 0;
+    size_t partial_interface_member_connection_facts = 0;
     bool partial = false;
     size_t primitive_cell_pin_fact_lookups = 0;
     size_t primitive_control_pin_facts = 0;
@@ -272,6 +268,10 @@ SchematicNetBuildResult buildSchematicNets(const ModuleSchematic& schematic,
     const auto& cells = signature_it == context.module_signatures_by_name.end()
                             ? schematic.cells
                             : signature_it->second.schematic.cells;
+    std::unordered_map<std::string, std::string> cell_names_by_id;
+    for (const auto& cell : cells) {
+        cell_names_by_id.try_emplace(cell.id, cell.name);
+    }
 
     std::unordered_map<std::string, const SchematicPort*> ports_by_symbol_id;
     for (const auto& port : schematic.ports) {
@@ -283,6 +283,76 @@ SchematicNetBuildResult buildSchematicNets(const ModuleSchematic& schematic,
     }
 
     std::set<std::string> connected_port_ids;
+    std::set<std::string> typed_interface_endpoint_ids;
+    std::set<std::string> typed_interface_cell_ids;
+    const auto interface_facts = context.binding_index.interface_member_connections_by_module.find(schematic.name);
+    if (interface_facts != context.binding_index.interface_member_connections_by_module.end()) {
+        for (const auto& fact : interface_facts->second) {
+            ++result.typed_connection_fact_lookups;
+            ++result.interface_member_connection_fact_lookups;
+            ++result.interface_member_connection_scans;
+            if (fact.unresolved || fact.parent_member_stable_id.empty() ||
+                fact.child_member_stable_id.empty()) {
+                result.partial = true;
+                ++result.partial_connection_facts;
+                ++result.partial_interface_member_connection_facts;
+                appendUniqueMessage(result.messages,
+                                    "No resolved interface/modport member fact for instance '" +
+                                        fact.child_instance_name + "'.");
+                continue;
+            }
+            const auto parent_cell = context.binding_index.schematic_cell_ids_by_instance_id.find(
+                fact.parent_interface_instance_stable_id);
+            const auto child_cell = context.binding_index.schematic_cell_ids_by_instance_id.find(
+                fact.child_instance_stable_id);
+            if (parent_cell == context.binding_index.schematic_cell_ids_by_instance_id.end() ||
+                child_cell == context.binding_index.schematic_cell_ids_by_instance_id.end()) {
+                result.partial = true;
+                ++result.partial_connection_facts;
+                ++result.partial_interface_member_connection_facts;
+                appendUniqueMessage(result.messages,
+                                    "No typed schematic cell binding for interface/modport member '" +
+                                        fact.member_name + "'.");
+                continue;
+            }
+            typed_interface_endpoint_ids.insert(fact.child_endpoint_stable_id);
+            typed_interface_cell_ids.insert(parent_cell->second);
+            const auto parent_name = cell_names_by_id.find(parent_cell->second);
+            const auto display_name = (parent_name == cell_names_by_id.end() || parent_name->second.empty())
+                                          ? fact.member_name
+                                          : parent_name->second + "." + fact.member_name;
+            auto& net = ensure_net(fact.parent_member_stable_id + "\x1fwhole", display_name);
+            const auto parent_endpoint = SemanticSchematicEndpoint{.node_id = parent_cell->second,
+                                                                     .port_name = fact.member_name};
+            const auto child_endpoint = SemanticSchematicEndpoint{
+                .node_id = child_cell->second,
+                .port_name = fact.child_endpoint_name.empty()
+                                 ? fact.member_name
+                                 : fact.child_endpoint_name + "." + fact.member_name};
+            if (fact.direction == SnapshotGraphPortDirection::Input) {
+                net.drivers.push_back(parent_endpoint);
+                net.loads.push_back(child_endpoint);
+            }
+            else if (fact.direction == SnapshotGraphPortDirection::Output) {
+                net.drivers.push_back(child_endpoint);
+                net.loads.push_back(parent_endpoint);
+            }
+            else if (fact.direction == SnapshotGraphPortDirection::Inout ||
+                     fact.direction == SnapshotGraphPortDirection::Ref) {
+                net.drivers.push_back(parent_endpoint);
+                net.loads.push_back(parent_endpoint);
+                net.drivers.push_back(child_endpoint);
+                net.loads.push_back(child_endpoint);
+            }
+            else {
+                result.partial = true;
+                ++result.partial_connection_facts;
+                ++result.partial_interface_member_connection_facts;
+                appendUniqueMessage(result.messages,
+                                    "No direction for interface/modport member '" + fact.member_name + "'.");
+            }
+        }
+    }
     const auto typed_facts = context.binding_index.schematic_connections_by_module.find(schematic.name);
     if (typed_facts != context.binding_index.schematic_connections_by_module.end()) {
         for (const auto& fact : typed_facts->second) {
@@ -290,12 +360,24 @@ SchematicNetBuildResult buildSchematicNets(const ModuleSchematic& schematic,
             if (fact.kind != SnapshotConeEdgeKind::InstancePort) {
                 continue;
             }
+            const auto endpoint = context.binding_index.endpoints_by_stable_id.find(fact.endpoint_stable_id);
             if (fact.endpoint_stable_id.empty() ||
-                !context.binding_index.endpoints_by_stable_id.contains(fact.endpoint_stable_id)) {
+                endpoint == context.binding_index.endpoints_by_stable_id.end()) {
                 result.partial = true;
                 ++result.partial_connection_facts;
                 appendUniqueMessage(result.messages,
                                     "No AST-backed endpoint binding for instance '" +
+                                        fact.instance_name + "'.");
+                continue;
+            }
+            if (endpoint->second.kind == SnapshotGraphEndpointKind::InterfacePort) {
+                if (typed_interface_endpoint_ids.contains(fact.endpoint_stable_id)) {
+                    continue;
+                }
+                result.partial = true;
+                ++result.partial_connection_facts;
+                appendUniqueMessage(result.messages,
+                                    "No resolved interface/modport member fact for instance '" +
                                         fact.instance_name + "'.");
                 continue;
             }
@@ -421,25 +503,10 @@ SchematicNetBuildResult buildSchematicNets(const ModuleSchematic& schematic,
     }
 
     for (const auto& cell : cells) {
-        if (cell.kind == "interface" && !cell.name.empty()) {
-            std::string key = "interface\x1f" + cell.id;
-            if (signature_it != context.module_signatures_by_name.end()) {
-                const auto instance = context.binding_index.instance_ids_by_uri_range.find(
-                    uriRangeKey(signature_it->second.uri, cell.selection_range));
-                if (instance != context.binding_index.instance_ids_by_uri_range.end()) {
-                    const auto whole_key = instance->second + "\x1fwhole::";
-                    if (nets.contains(whole_key)) {
-                        key = whole_key;
-                    }
-                }
-            }
-            auto& net = ensure_net(std::move(key), cell.name);
-            appendEndpointByDirection(net,
-                                      "interface",
-                                      SemanticSchematicEndpoint{.node_id = cell.id,
-                                                                .port_name = "interface"});
+        if (cell.kind == "interface") {
+            continue;
         }
-        if (cell.kind == "module" || cell.kind == "interface" || typed_cell_ids.contains(cell.id)) {
+        if (cell.kind == "module" || typed_cell_ids.contains(cell.id)) {
             continue;
         }
         if (!typed_cell_ids.contains(cell.id)) {
@@ -513,6 +580,35 @@ std::vector<SemanticSchematicCell> projectSchematicCells(
                    fact.endpoint_name,
                    fact.endpoint_index,
                    fact.display_label.empty() ? "<partial>" : fact.display_label,
+                   fact.location.range);
+        }
+    }
+
+    if (const auto interface_members =
+            context.binding_index.interface_member_connections_by_module.find(schematic.name);
+        interface_members != context.binding_index.interface_member_connections_by_module.end()) {
+        for (const auto& fact : interface_members->second) {
+            if (fact.unresolved || fact.member_name.empty()) {
+                continue;
+            }
+            const auto parent = context.binding_index.schematic_cell_ids_by_instance_id.find(
+                fact.parent_interface_instance_stable_id);
+            const auto child = context.binding_index.schematic_cell_ids_by_instance_id.find(
+                fact.child_instance_stable_id);
+            if (parent == context.binding_index.schematic_cell_ids_by_instance_id.end() ||
+                child == context.binding_index.schematic_cell_ids_by_instance_id.end()) {
+                continue;
+            }
+            const auto parent_cell = cell_indexes.find(parent->second);
+            const auto display = parent_cell == cell_indexes.end()
+                                     ? fact.member_name
+                                     : cells[parent_cell->second].name + "." + fact.member_name;
+            append(parent->second, fact.member_name, -1, display, fact.location.range);
+            append(child->second,
+                   fact.child_endpoint_name.empty() ? fact.member_name
+                                                    : fact.child_endpoint_name + "." + fact.member_name,
+                   -1,
+                   display,
                    fact.location.range);
         }
     }
@@ -814,6 +910,12 @@ SemanticSchematicResult schematic(const DesignGraphContext& context,
         result.schematic_partial_cell_pin_fact_count += net_result.partial_cell_pin_facts;
         result.schematic_primitive_cell_pin_fact_lookup_count += net_result.primitive_cell_pin_fact_lookups;
         result.schematic_primitive_control_pin_fact_count += net_result.primitive_control_pin_facts;
+        result.schematic_interface_member_connection_fact_lookup_count +=
+            net_result.interface_member_connection_fact_lookups;
+        result.schematic_interface_member_connection_scan_count +=
+            net_result.interface_member_connection_scans;
+        result.schematic_partial_interface_member_connection_fact_count +=
+            net_result.partial_interface_member_connection_facts;
         for (auto& message : net_result.messages) {
             appendUniqueMessage(result.messages, std::move(message));
         }

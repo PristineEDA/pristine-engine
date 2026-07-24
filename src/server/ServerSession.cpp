@@ -1443,6 +1443,18 @@ jsonrpc::Json ServerSession::handleSchematic(const jsonrpc::Json& params) {
     if (schematic.schematic_primitive_control_pin_fact_count > 0) {
         result["schematicPrimitiveControlPinFacts"] = schematic.schematic_primitive_control_pin_fact_count;
     }
+    if (schematic.schematic_interface_member_connection_fact_lookup_count > 0) {
+        result["schematicInterfaceMemberConnectionFactLookups"] =
+            schematic.schematic_interface_member_connection_fact_lookup_count;
+    }
+    if (schematic.schematic_interface_member_connection_scan_count > 0) {
+        result["schematicInterfaceMemberConnectionScans"] =
+            schematic.schematic_interface_member_connection_scan_count;
+    }
+    if (schematic.schematic_partial_interface_member_connection_fact_count > 0) {
+        result["schematicPartialInterfaceMemberConnectionFacts"] =
+            schematic.schematic_partial_interface_member_connection_fact_count;
+    }
     appendQueryCacheTelemetry(result, query_cache_stats);
     appendBackgroundDiagnosticsTelemetry(result, background_diagnostics_worker_.get());
     return result;

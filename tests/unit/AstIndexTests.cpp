@@ -3406,6 +3406,8 @@ TEST_CASE("AstIndex records interface endpoints without inventing cone direction
     REQUIRE(endpoint != view.design_graph_binding_index.endpoints_by_module_member.end());
     CHECK(endpoint->second.kind == SnapshotGraphEndpointKind::InterfacePort);
     CHECK(endpoint->second.direction == SnapshotGraphPortDirection::Unknown);
+    const auto member_facts = view.design_graph_binding_index.interface_member_connections_by_module.find("top");
+    CHECK(member_facts == view.design_graph_binding_index.interface_member_connections_by_module.end());
     CHECK(std::none_of(view.cone_adjacency_index.edges.begin(),
                        view.cone_adjacency_index.edges.end(),
                        [&](const SnapshotConeAdjacencyEdge& edge) {
@@ -3447,12 +3449,22 @@ TEST_CASE("AstIndex connects resolved modport members with indexed directions",
     });
     REQUIRE(child_ready != child_members.end());
     REQUIRE(parent_ready != parent_members.end());
+    const auto member_facts = view.design_graph_binding_index.interface_member_connections_by_module.find("top");
+    REQUIRE(member_facts != view.design_graph_binding_index.interface_member_connections_by_module.end());
+    const auto ready_fact = std::find_if(member_facts->second.begin(), member_facts->second.end(),
+                                         [&](const SnapshotInterfaceMemberConnectionFact& fact) {
+                                             return fact.child_member_stable_id == child_ready->stable_id &&
+                                                    fact.parent_member_stable_id == parent_ready->stable_id &&
+                                                    fact.direction == SnapshotGraphPortDirection::Input &&
+                                                    !fact.unresolved;
+                                         });
+    REQUIRE(ready_fact != member_facts->second.end());
     CHECK(std::any_of(view.cone_adjacency_index.edges.begin(),
                       view.cone_adjacency_index.edges.end(),
                       [&](const SnapshotConeAdjacencyEdge& edge) {
                           return edge.from_symbol_id == child_ready->stable_id &&
                                  edge.to_symbol_id == parent_ready->stable_id &&
-                                 edge.kind == SnapshotConeEdgeKind::InstancePort;
+                                 edge.kind == SnapshotConeEdgeKind::InterfaceMember;
                       }));
 }
 
@@ -3644,17 +3656,16 @@ TEST_CASE("AstIndex keeps generated schematic connection identities distinct",
     CHECK(output.data->design_graph_binding_index.schematic_connections_by_module.contains("top"));
     CHECK(facts[0]->instance_stable_id != facts[1]->instance_stable_id);
 }
-TEST_CASE("AstIndex carries interface endpoint direction into schematic facts",
-          "[analysis][semantic][ast-index][schematic-projection][interface]") {
+TEST_CASE("AstIndex leaves bare interface schematic projection structural without a member fallback",
+          "[analysis][semantic][ast-index][schematic-projection][interface][no-fallback]") {
     auto output = buildGraphSource(
         "interface bus_if; logic ready; endinterface\n"
         "module child(bus_if bus); endmodule\n"
         "module top; bus_if bus(); child u(.bus(bus)); endmodule\n");
     REQUIRE(output.data != nullptr);
     const auto facts = schematicConnectionFacts(*output.data);
-    REQUIRE(facts.size() == 1);
-    CHECK(facts.front()->endpoint_direction == SnapshotGraphPortDirection::Unknown);
-    CHECK(facts.front()->endpoint_name == "bus");
+    CHECK(facts.empty());
+    CHECK(output.data->design_graph_binding_index.interface_member_connections_by_module.empty());
 }
 
 TEST_CASE("AstIndex projection updates schematic cell connections from typed facts",

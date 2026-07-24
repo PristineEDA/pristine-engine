@@ -329,6 +329,9 @@ struct SemanticSchematicResult {
     size_t schematic_partial_cell_pin_fact_count = 0;
     size_t schematic_primitive_cell_pin_fact_lookup_count = 0;
     size_t schematic_primitive_control_pin_fact_count = 0;
+    size_t schematic_interface_member_connection_fact_lookup_count = 0;
+    size_t schematic_interface_member_connection_scan_count = 0;
+    size_t schematic_partial_interface_member_connection_fact_count = 0;
     size_t graph_scanned_global_symbols = 0;
     bool unresolved = false;
     bool partial = false;

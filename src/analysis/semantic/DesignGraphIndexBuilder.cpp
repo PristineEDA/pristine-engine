@@ -270,6 +270,183 @@ void appendSchematicConnectionFact(
     bindings.schematic_connections_by_module[fact.caller_module_name].push_back(std::move(fact));
 }
 
+void appendInterfaceMemberConnectionFacts(
+    const SnapshotData& data,
+    SnapshotDesignGraphBindingIndex& bindings,
+    std::string_view caller_module_name,
+    const SnapshotModuleInstance& instance,
+    const SnapshotGraphEndpointFact& endpoint,
+    const SnapshotResolvedConnectionSliceFact& connection) {
+    SnapshotInterfaceMemberConnectionFact unresolved{
+        .caller_module_name = std::string(caller_module_name),
+        .child_instance_stable_id = instance.instance_stable_id,
+        .child_instance_name = instance.instance_name,
+        .child_endpoint_stable_id = endpoint.stable_id,
+        .child_endpoint_name = endpoint.name,
+        .child_member_stable_id = {},
+        .parent_interface_instance_stable_id = {},
+        .parent_member_stable_id = {},
+        .member_name = {},
+        .direction = SnapshotGraphPortDirection::Unknown,
+        .location = connection.location,
+        .generated_instance_id = instance.instance_stable_id,
+        .unresolved = true};
+    const auto port = data.interface_modport_binding_index.ports_by_stable_id.find(endpoint.stable_id);
+    if (port == data.interface_modport_binding_index.ports_by_stable_id.end() ||
+        !port->second.resolved || port->second.modport_stable_id.empty() ||
+        port->second.connected_interface_instance_stable_id.empty() ||
+        port->second.connected_modport_stable_id.empty()) {
+        bindings.interface_member_connections_by_module[std::string(caller_module_name)].push_back(
+            std::move(unresolved));
+        return;
+    }
+
+    const auto child_members = data.interface_modport_binding_index.members_by_modport_stable_id.find(
+        port->second.modport_stable_id);
+    const auto parent_members = data.interface_modport_binding_index.members_by_modport_stable_id.find(
+        port->second.connected_modport_stable_id);
+    if (child_members == data.interface_modport_binding_index.members_by_modport_stable_id.end() ||
+        parent_members == data.interface_modport_binding_index.members_by_modport_stable_id.end()) {
+        bindings.interface_member_connections_by_module[std::string(caller_module_name)].push_back(
+            std::move(unresolved));
+        return;
+    }
+
+    std::unordered_map<std::string, const SnapshotInterfaceModportMemberFact*> parent_by_internal_id;
+    for (const auto& member : parent_members->second) {
+        if (!member.internal_symbol_stable_id.empty()) {
+            parent_by_internal_id.try_emplace(member.internal_symbol_stable_id, &member);
+        }
+    }
+    for (const auto& child_member : child_members->second) {
+        auto fact = unresolved;
+        fact.child_member_stable_id = child_member.stable_id;
+        fact.member_name = child_member.name;
+        fact.direction = child_member.direction;
+        const auto parent = parent_by_internal_id.find(child_member.internal_symbol_stable_id);
+        if (parent == parent_by_internal_id.end() || parent->second->stable_id.empty()) {
+            bindings.interface_member_connections_by_module[std::string(caller_module_name)].push_back(
+                std::move(fact));
+            continue;
+        }
+        fact.parent_interface_instance_stable_id = port->second.connected_interface_instance_stable_id;
+        fact.parent_member_stable_id = parent->second->stable_id;
+        fact.unresolved = false;
+        bindings.interface_member_connections_by_module[std::string(caller_module_name)].push_back(
+            std::move(fact));
+    }
+}
+
+bool interfaceMemberConnectionFactLess(const SnapshotInterfaceMemberConnectionFact& lhs,
+                                       const SnapshotInterfaceMemberConnectionFact& rhs) {
+    return std::tie(lhs.child_instance_stable_id,
+                    lhs.child_endpoint_stable_id,
+                    lhs.child_endpoint_name,
+                    lhs.child_member_stable_id,
+                    lhs.parent_interface_instance_stable_id,
+                    lhs.parent_member_stable_id,
+                    lhs.direction,
+                    lhs.location.uri,
+                    lhs.location.range.start_line,
+                    lhs.location.range.start_character,
+                    lhs.generated_instance_id,
+                    lhs.unresolved) <
+           std::tie(rhs.child_instance_stable_id,
+                    rhs.child_endpoint_stable_id,
+                    rhs.child_endpoint_name,
+                    rhs.child_member_stable_id,
+                    rhs.parent_interface_instance_stable_id,
+                    rhs.parent_member_stable_id,
+                    rhs.direction,
+                    rhs.location.uri,
+                    rhs.location.range.start_line,
+                    rhs.location.range.start_character,
+                    rhs.generated_instance_id,
+                    rhs.unresolved);
+}
+
+void finalizeInterfaceMemberConnectionFacts(SnapshotDesignGraphBindingIndex& bindings) {
+    bindings.interface_member_connection_fact_count = 0;
+    bindings.partial_interface_member_connection_fact_count = 0;
+    for (auto& [_, facts] : bindings.interface_member_connections_by_module) {
+        std::sort(facts.begin(), facts.end(), interfaceMemberConnectionFactLess);
+        facts.erase(std::unique(facts.begin(), facts.end(), [](const auto& lhs, const auto& rhs) {
+                        return lhs.child_instance_stable_id == rhs.child_instance_stable_id &&
+                               lhs.child_endpoint_stable_id == rhs.child_endpoint_stable_id &&
+                               lhs.child_endpoint_name == rhs.child_endpoint_name &&
+                               lhs.child_member_stable_id == rhs.child_member_stable_id &&
+                               lhs.parent_interface_instance_stable_id == rhs.parent_interface_instance_stable_id &&
+                               lhs.parent_member_stable_id == rhs.parent_member_stable_id &&
+                               lhs.direction == rhs.direction && sameLocation(lhs.location, rhs.location) &&
+                               lhs.generated_instance_id == rhs.generated_instance_id &&
+                               lhs.unresolved == rhs.unresolved;
+                    }),
+                    facts.end());
+        for (const auto& fact : facts) {
+            ++bindings.interface_member_connection_fact_count;
+            if (fact.unresolved) {
+                ++bindings.partial_interface_member_connection_fact_count;
+            }
+        }
+    }
+}
+
+void appendInterfaceMemberConeEdges(const SnapshotDesignGraphBindingIndex& bindings,
+                                    SnapshotConeAdjacencyIndex& adjacency) {
+    for (const auto& [_, facts] : bindings.interface_member_connections_by_module) {
+        for (const auto& fact : facts) {
+            const auto append_unresolved = [&](std::string_view sink_id) {
+                if (!fact.unresolved || sink_id.empty()) {
+                    return;
+                }
+                adjacency.unresolved_sources_by_from_symbol_id[std::string(sink_id)].push_back(
+                    SnapshotConeUnresolvedSourceFact{.from_symbol_id = std::string(sink_id),
+                                                     .location = fact.location,
+                                                     .expression_location = fact.location,
+                                                     .expression = "interface/modport member " + fact.member_name,
+                                                     .kind = SnapshotConeEdgeKind::InterfaceMember,
+                                                     .source_role = SnapshotConeSourceRole::Data,
+                                                     .control_origin = SnapshotConeControlOrigin::None});
+            };
+            if (fact.unresolved || fact.child_member_stable_id.empty() ||
+                fact.parent_member_stable_id.empty()) {
+                append_unresolved(fact.child_member_stable_id);
+                continue;
+            }
+            const auto append = [&](std::string from, std::string to) {
+                appendEdge(adjacency,
+                           SnapshotConeAdjacencyEdge{.from_symbol_id = std::move(from),
+                                                      .to_symbol_id = std::move(to),
+                                                      .location = fact.location,
+                                                      .target_location = {},
+                                                      .expression_location = fact.location,
+                                                      .expression = fact.member_name,
+                                                      .kind = SnapshotConeEdgeKind::InterfaceMember,
+                                                      .source_role = SnapshotConeSourceRole::Data,
+                                                      .slice_kind = SnapshotConeSliceKind::Whole,
+                                                      .control_origin = SnapshotConeControlOrigin::None,
+                                                      .source_slice = {},
+                                                      .sink_slice = {},
+                                                      .generated_instance_id = fact.generated_instance_id});
+            };
+            if (fact.direction == SnapshotGraphPortDirection::Input) {
+                append(fact.child_member_stable_id, fact.parent_member_stable_id);
+            }
+            else if (fact.direction == SnapshotGraphPortDirection::Output) {
+                append(fact.parent_member_stable_id, fact.child_member_stable_id);
+            }
+            else if (fact.direction == SnapshotGraphPortDirection::Inout ||
+                     fact.direction == SnapshotGraphPortDirection::Ref) {
+                append(fact.child_member_stable_id, fact.parent_member_stable_id);
+                append(fact.parent_member_stable_id, fact.child_member_stable_id);
+            }
+            else {
+                append_unresolved(fact.child_member_stable_id);
+            }
+        }
+    }
+}
+
 bool schematicFactLess(const SnapshotSchematicConnectionFact& lhs,
                        const SnapshotSchematicConnectionFact& rhs) {
     if (lhs.instance_stable_id != rhs.instance_stable_id) {
@@ -715,62 +892,16 @@ void buildDesignGraphIndexes(SnapshotData& data) {
                 }
                 const auto& endpoint = child_endpoint->second;
                 const auto location = connection.location;
-                appendSchematicConnectionFact(data, bindings, caller->second, instance, endpoint, connection);
                 if (connection.kind == SnapshotConeEdgeKind::InstancePort &&
                     endpoint.kind == SnapshotGraphEndpointKind::InterfacePort) {
-                    const auto port_binding = data.interface_modport_binding_index.ports_by_stable_id.find(
-                        endpoint.stable_id);
-                    if (port_binding == data.interface_modport_binding_index.ports_by_stable_id.end() ||
-                        !port_binding->second.resolved || port_binding->second.modport_stable_id.empty() ||
-                        port_binding->second.connected_modport_stable_id.empty()) {
-                        continue;
-                    }
-                    const auto child_members = data.interface_modport_binding_index.members_by_modport_stable_id.find(
-                        port_binding->second.modport_stable_id);
-                    const auto parent_members = data.interface_modport_binding_index.members_by_modport_stable_id.find(
-                        port_binding->second.connected_modport_stable_id);
-                    if (child_members == data.interface_modport_binding_index.members_by_modport_stable_id.end() ||
-                        parent_members == data.interface_modport_binding_index.members_by_modport_stable_id.end()) {
-                        continue;
-                    }
-                    for (const auto& child_member : child_members->second) {
-                        const auto parent_member = std::find_if(parent_members->second.begin(),
-                                                                parent_members->second.end(),
-                                                                [&](const auto& candidate) {
-                                                                    return candidate.name == child_member.name;
-                                                                });
-                        if (parent_member == parent_members->second.end()) {
-                            continue;
-                        }
-                        const auto append_member_edge = [&](std::string from, std::string to) {
-                            appendEdge(adjacency,
-                                       SnapshotConeAdjacencyEdge{.from_symbol_id = std::move(from),
-                                                                  .to_symbol_id = std::move(to),
-                                                                  .location = location,
-                                                                  .target_location = {},
-                                                                  .expression_location = location,
-                                                                  .expression = child_member.name,
-                                                                  .kind = SnapshotConeEdgeKind::InstancePort,
-                                                                  .source_role = SnapshotConeSourceRole::Data,
-                                                                  .slice_kind = SnapshotConeSliceKind::Whole,
-                                                                  .source_slice = {},
-                                                                  .sink_slice = {},
-                                                                  .generated_instance_id = instance.instance_stable_id});
-                        };
-                        if (child_member.direction == SnapshotGraphPortDirection::Input) {
-                            append_member_edge(child_member.stable_id, parent_member->stable_id);
-                        }
-                        else if (child_member.direction == SnapshotGraphPortDirection::Output) {
-                            append_member_edge(parent_member->stable_id, child_member.stable_id);
-                        }
-                        else if (child_member.direction == SnapshotGraphPortDirection::Inout ||
-                                 child_member.direction == SnapshotGraphPortDirection::Ref) {
-                            append_member_edge(child_member.stable_id, parent_member->stable_id);
-                            append_member_edge(parent_member->stable_id, child_member.stable_id);
-                        }
+                    if (!endpoint.modport_stable_id.empty()) {
+                        appendInterfaceMemberConnectionFacts(
+                            data, bindings, caller->second, instance, endpoint, connection);
                     }
                     continue;
                 }
+
+                appendSchematicConnectionFact(data, bindings, caller->second, instance, endpoint, connection);
 
                 bindings.connection_reference_candidate_count += connection.source_parts.size();
                 appendConnectionBinding(bindings,
@@ -842,6 +973,9 @@ void buildDesignGraphIndexes(SnapshotData& data) {
             }
         }
     }
+
+    finalizeInterfaceMemberConnectionFacts(bindings);
+    appendInterfaceMemberConeEdges(bindings, adjacency);
 
     std::sort(adjacency.edges.begin(), adjacency.edges.end(), [](const auto& lhs, const auto& rhs) {
         if (lhs.from_symbol_id != rhs.from_symbol_id) return lhs.from_symbol_id < rhs.from_symbol_id;

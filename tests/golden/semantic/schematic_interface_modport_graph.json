@@ -8,7 +8,7 @@
   "sources": [
     {
       "uri": "file:///golden/semantic/schematic-if-modport.sv",
-      "text": "interface bus_if;\n  logic ready;\n  modport master(input ready);\nendinterface\nmodule consumer(bus_if.master bus);\nendmodule\nmodule top;\n  bus_if bus();\n  consumer u_consumer(bus);\nendmodule\n"
+      "text": "interface bus_if;\n  logic ready;\n  modport master(input ready);\nendinterface\nmodule consumer(bus_if.master bus);\nendmodule\nmodule top;\n  bus_if bus();\n  consumer u_consumer(bus.master);\nendmodule\n"
     }
   ],
   "request": {
@@ -34,31 +34,23 @@
         "name": "u_consumer",
         "type": "consumer",
         "connections": [
-          "bus"
+          "bus.ready"
         ]
       }
     ],
     "nets": [
       {
-        "name": "bus",
+        "name": "bus.ready",
         "drivers": [
           {
             "nodeId": "bus",
-            "portName": "interface"
-          },
-          {
-            "nodeId": "u_consumer",
-            "portName": "bus"
+            "portName": "ready"
           }
         ],
         "loads": [
           {
-            "nodeId": "bus",
-            "portName": "interface"
-          },
-          {
             "nodeId": "u_consumer",
-            "portName": "bus"
+            "portName": "bus.ready"
           }
         ]
       }

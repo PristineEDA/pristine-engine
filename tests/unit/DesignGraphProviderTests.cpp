@@ -561,7 +561,7 @@ TEST_CASE("DesignGraphProvider schematic emits Pristine-compatible ports cells a
                       }));
 }
 
-TEST_CASE("DesignGraphProvider schematic connects interface cells to same-name nets",
+TEST_CASE("DesignGraphProvider schematic projects typed interface modport member facts",
           "[analysis][semantic][design-graph-provider][schematic][interface][modport]") {
     auto context = simpleDesignContext();
     ModuleDefinition bus_if{.name = "bus_if",
@@ -648,33 +648,26 @@ TEST_CASE("DesignGraphProvider schematic connects interface cells to same-name n
                               DesignGraphModuleEntry{.uri = "file:///workspace/consumer.sv",
                                                      .definition = consumer},
                               DesignGraphModuleEntry{.uri = "file:///workspace/top.sv",
-                                                     .definition = top}};
+                                                      .definition = top}};
     populateEndpointFacts(context);
-    const auto source_part = SnapshotGraphConnectionBindingFact::SourcePart{
-        .source_symbol_id = "fixture|top|bus",
-        .source_location = SemanticLocation{.uri = "file:///workspace/top.sv", .range = rangeAt(14, 22, 25)},
-        .source_slice = {},
-        .endpoint_slice = {},
-        .slice_kind = SnapshotConeSliceKind::Whole,
-        .source_role = SnapshotConeSourceRole::Data,
-        .control_origin = SnapshotConeControlOrigin::None,
-        .unresolved = false};
     context.binding_index.instance_ids_by_uri_range["file:///workspace/top.sv\x1f" "13:9:13:12"] =
         "fixture|top|bus";
-    context.binding_index.schematic_connections_by_module["top"] = {
-        SnapshotSchematicConnectionFact{.caller_module_name = "top",
-                                        .instance_stable_id = "fixture|top|u_consumer",
-                                        .instance_name = "u_consumer",
-                                        .instance_selection_range = rangeAt(14, 11, 21),
-                                        .endpoint_stable_id = "endpoint|consumer|bus",
-                                        .endpoint_name = "bus",
-                                        .endpoint_index = 0,
-                                        .endpoint_direction = SnapshotGraphPortDirection::Unknown,
-                                        .location = SemanticLocation{.uri = "file:///workspace/top.sv",
-                                                                     .range = rangeAt(14, 22, 25)},
-                                        .kind = SnapshotConeEdgeKind::InstancePort,
-                                        .source_parts = {source_part},
-                                        .display_label = "bus"}};
+    context.binding_index.schematic_cell_ids_by_instance_id = {
+        {"fixture|top|bus", "bus"}, {"fixture|top|u_consumer", "u_consumer"}};
+    context.binding_index.interface_member_connections_by_module["top"] = {
+        SnapshotInterfaceMemberConnectionFact{.caller_module_name = "top",
+                                              .child_instance_stable_id = "fixture|top|u_consumer",
+                                              .child_instance_name = "u_consumer",
+                                              .child_endpoint_stable_id = "endpoint|consumer|bus",
+                                              .child_endpoint_name = "bus",
+                                              .child_member_stable_id = "member|consumer|bus|ready",
+                                              .parent_interface_instance_stable_id = "fixture|top|bus",
+                                              .parent_member_stable_id = "member|bus|ready",
+                                              .member_name = "ready",
+                                              .direction = SnapshotGraphPortDirection::Input,
+                                              .location = SemanticLocation{.uri = "file:///workspace/top.sv",
+                                                                           .range = rangeAt(14, 22, 25)},
+                                              .generated_instance_id = "fixture|top|u_consumer"}};
 
     const auto graph = schematic(context, std::string_view("top"), 8);
 
@@ -688,29 +681,21 @@ TEST_CASE("DesignGraphProvider schematic connects interface cells to same-name n
     const auto bus_net = std::find_if(top_view->nets.begin(),
                                       top_view->nets.end(),
                                       [](const SemanticSchematicNet& net) {
-                                          return net.name == "bus";
+                                          return net.name == "bus.ready";
                                       });
     REQUIRE(bus_net != top_view->nets.end());
     CHECK(std::any_of(bus_net->drivers.begin(),
                       bus_net->drivers.end(),
                       [](const SemanticSchematicEndpoint& endpoint) {
-                          return endpoint.node_id == "bus" && endpoint.port_name == "interface";
+                          return endpoint.node_id == "bus" && endpoint.port_name == "ready";
                       }));
     CHECK(std::any_of(bus_net->loads.begin(),
                       bus_net->loads.end(),
                       [](const SemanticSchematicEndpoint& endpoint) {
-                          return endpoint.node_id == "bus" && endpoint.port_name == "interface";
+                          return endpoint.node_id == "u_consumer" && endpoint.port_name == "bus.ready";
                       }));
-    CHECK(std::any_of(bus_net->drivers.begin(),
-                      bus_net->drivers.end(),
-                      [](const SemanticSchematicEndpoint& endpoint) {
-                          return endpoint.node_id == "u_consumer" && endpoint.port_name == "bus";
-                      }));
-    CHECK(std::any_of(bus_net->loads.begin(),
-                      bus_net->loads.end(),
-                      [](const SemanticSchematicEndpoint& endpoint) {
-                          return endpoint.node_id == "u_consumer" && endpoint.port_name == "bus";
-                      }));
+    CHECK(graph.schematic_interface_member_connection_fact_lookup_count == 1);
+    CHECK(graph.schematic_interface_member_connection_scan_count == 1);
 }
 
 TEST_CASE("DesignGraphProvider reports missing endpoint bindings without port-name guessing",

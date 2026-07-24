@@ -246,6 +246,7 @@ struct SnapshotModuleCallEdgeIndex {
 enum class SnapshotConeEdgeKind {
     Assignment,
     InstancePort,
+    InterfaceMember,
     ParameterOverride,
     ControlDependency,
     PrimitiveCell,
@@ -382,6 +383,25 @@ struct SnapshotInterfacePortBindingFact {
     SemanticLocation interface_definition_location;
     SemanticLocation modport_definition_location;
     bool resolved = false;
+};
+
+// A resolved interface/modport connection links the exact member identities on
+// both sides of one module instance. It is built while the AST bindings are
+// alive so schematic and cone providers never need to join members by text.
+struct SnapshotInterfaceMemberConnectionFact {
+    std::string caller_module_name;
+    std::string child_instance_stable_id;
+    std::string child_instance_name;
+    std::string child_endpoint_stable_id;
+    std::string child_endpoint_name;
+    std::string child_member_stable_id;
+    std::string parent_interface_instance_stable_id;
+    std::string parent_member_stable_id;
+    std::string member_name;
+    SnapshotGraphPortDirection direction = SnapshotGraphPortDirection::Unknown;
+    SemanticLocation location;
+    std::string generated_instance_id;
+    bool unresolved = false;
 };
 
 struct SnapshotInterfaceModportBindingIndex {
@@ -544,12 +564,16 @@ struct SnapshotDesignGraphBindingIndex {
         schematic_connections_by_module;
     std::unordered_map<std::string, std::vector<SnapshotSchematicCellPinFact>>
         schematic_cell_pins_by_module;
+    std::unordered_map<std::string, std::vector<SnapshotInterfaceMemberConnectionFact>>
+        interface_member_connections_by_module;
     size_t scoped_symbol_candidate_count = 0;
     size_t connection_reference_candidate_count = 0;
     size_t schematic_connection_fact_count = 0;
     size_t schematic_partial_connection_fact_count = 0;
     size_t schematic_cell_pin_fact_count = 0;
     size_t schematic_partial_cell_pin_fact_count = 0;
+    size_t interface_member_connection_fact_count = 0;
+    size_t partial_interface_member_connection_fact_count = 0;
 };
 
 struct SnapshotConeAdjacencyIndex {
