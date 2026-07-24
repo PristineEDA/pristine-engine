@@ -21,6 +21,7 @@ struct CodeActionContext {
     std::vector<ModuleSchematic> document_schematics;
     std::vector<IncludeDirective> include_directives;
     std::vector<SnapshotModuleInstance> module_instances;
+    const SnapshotDesignGraphBindingIndex* design_graph_bindings = nullptr;
     std::unordered_map<std::string, SnapshotPackageVisibility> packages_by_name;
     std::vector<MacroInvocationFact> macro_invocations;
     std::unordered_map<std::string, std::vector<PackageImport>> package_imports_by_uri;

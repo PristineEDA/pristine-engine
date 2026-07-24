@@ -353,35 +353,58 @@ std::vector<SchematicPort> modulePorts(const ModuleDefinition& module) {
     return ports;
 }
 
-std::set<std::string> connectedPortNames(const SchematicCell& cell,
-                                         const std::vector<SchematicPort>& ports) {
-    std::set<std::string> connected;
-    for (const auto& connection : cell.connections) {
-        if (!connection.port_name.empty()) {
-            connected.insert(connection.port_name);
-            continue;
-        }
-        if (connection.port_index >= 0 && static_cast<size_t>(connection.port_index) < ports.size()) {
-            connected.insert(ports[static_cast<size_t>(connection.port_index)].name);
-        }
-    }
-    return connected;
+struct MissingPortBinding {
+    std::vector<SchematicPort> ports;
+    bool has_existing_connection = false;
+};
+
+std::string uriRangeKey(std::string_view uri, const ParseRange& range) {
+    return std::string(uri) + "\x1f" + std::to_string(range.start_line) + ":" +
+           std::to_string(range.start_character) + ":" + std::to_string(range.end_line) + ":" +
+           std::to_string(range.end_character);
 }
 
-std::vector<SchematicPort> missingPorts(const SchematicCell& cell,
-                                        const ModuleDefinition& module) {
-    const auto ports = modulePorts(module);
-    const auto connected = connectedPortNames(cell, ports);
-    std::vector<SchematicPort> result;
-    for (const auto& port : ports) {
-        if (port.name.empty() || connected.contains(port.name)) {
+std::optional<MissingPortBinding> missingPortsFromBindings(const CodeActionContext& context,
+                                                           const SchematicCell& cell,
+                                                           const ModuleDefinition& module) {
+    if (context.design_graph_bindings == nullptr) {
+        return std::nullopt;
+    }
+    const auto& bindings = *context.design_graph_bindings;
+    const auto instance = bindings.instance_ids_by_uri_range.find(
+        uriRangeKey(context.document.uri, cell.selection_range));
+    if (instance == bindings.instance_ids_by_uri_range.end()) {
+        return std::nullopt;
+    }
+    const auto binding_indexes = bindings.connection_bindings_by_instance_id.find(instance->second);
+    if (binding_indexes == bindings.connection_bindings_by_instance_id.end()) {
+        return std::nullopt;
+    }
+
+    std::set<std::string> connected;
+    for (const auto index : binding_indexes->second) {
+        if (index >= bindings.connection_bindings.size()) {
             continue;
         }
-        result.push_back(port);
+        const auto& binding = bindings.connection_bindings[index];
+        if (binding.kind != SnapshotConeEdgeKind::InstancePort) {
+            continue;
+        }
+        const auto endpoint = bindings.endpoints_by_stable_id.find(binding.endpoint_stable_id);
+        if (endpoint != bindings.endpoints_by_stable_id.end() && !endpoint->second.name.empty()) {
+            connected.insert(endpoint->second.name);
+        }
+    }
+
+    MissingPortBinding result;
+    result.has_existing_connection = !connected.empty();
+    for (const auto& port : modulePorts(module)) {
+        if (!port.name.empty() && !connected.contains(port.name)) {
+            result.ports.push_back(port);
+        }
     }
     return result;
 }
-
 } // namespace
 
 SemanticCodeActionResult codeActionsAt(const CodeActionContext& context) {
@@ -457,8 +480,8 @@ SemanticCodeActionResult codeActionsAt(const CodeActionContext& context) {
             if (module_it == context.modules_by_name.end()) {
                 continue;
             }
-            const auto missing_ports = missingPorts(cell, module_it->second);
-            if (missing_ports.empty()) {
+            const auto missing_ports = missingPortsFromBindings(context, cell, module_it->second);
+            if (!missing_ports.has_value() || missing_ports->ports.empty()) {
                 continue;
             }
             const auto insertion_range = instancePortInsertionRange(context.document.text, cell);
@@ -471,7 +494,7 @@ SemanticCodeActionResult codeActionsAt(const CodeActionContext& context) {
             action.edits.push_back(SemanticCodeActionEdit{
                 .uri = context.document.uri,
                 .range = *insertion_range,
-                .new_text = missingPortConnectionText(missing_ports, !cell.connections.empty())});
+                .new_text = missingPortConnectionText(missing_ports->ports, missing_ports->has_existing_connection)});
             result.actions.push_back(std::move(action));
         }
     }

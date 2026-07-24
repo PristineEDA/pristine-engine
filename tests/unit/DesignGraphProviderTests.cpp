@@ -180,7 +180,8 @@ DesignGraphContext simpleDesignContext() {
                                         .kind = SnapshotConeEdgeKind::InstancePort,
                                         .source_parts = {source_part("signal|ready", rangeAt(3, 28, 33))},
                                         .display_label = "ready",
-                                        .unresolved = false}};
+                                         .unresolved = false}};
+    context.binding_index.schematic_cell_ids_by_instance_id["instance|u_child"] = "u_child";
     return context;
 }
 
@@ -235,6 +236,32 @@ TEST_CASE("DesignGraphProvider builds module hierarchy and schematic from design
     CHECK(ready_net->drivers.front().node_id == "u_child");
 }
 
+
+TEST_CASE("DesignGraphProvider ignores display-only connections without typed cell bindings",
+           "[analysis][semantic][design-graph-provider][schematic][no-fallback]") {
+    auto context = simpleDesignContext();
+    context.binding_index.schematic_cell_ids_by_instance_id.clear();
+
+    const auto graph = schematic(context, std::string_view("top"), 8);
+
+    REQUIRE_FALSE(graph.unresolved);
+    const auto top_view = std::find_if(graph.modules.begin(),
+                                       graph.modules.end(),
+                                       [](const SemanticSchematicModuleView& view) {
+                                           return view.module.name == "top";
+                                       });
+    REQUIRE(top_view != graph.modules.end());
+    const auto cell = std::find_if(top_view->module.cells.begin(),
+                                   top_view->module.cells.end(),
+                                   [](const SemanticSchematicCell& candidate) {
+                                       return candidate.id == "u_child";
+                                   });
+    REQUIRE(cell != top_view->module.cells.end());
+    CHECK(cell->connections.empty());
+    CHECK(std::any_of(top_view->nets.begin(), top_view->nets.end(), [](const SemanticSchematicNet& net) {
+        return net.name == "ready";
+    }));
+}
 TEST_CASE("DesignGraphProvider module hierarchy preserves Pristine tree fields and partial messages",
           "[analysis][semantic][design-graph-provider][hierarchy][pristine]") {
     auto context = simpleDesignContext();
@@ -490,7 +517,7 @@ TEST_CASE("DesignGraphProvider schematic emits Pristine-compatible ports cells a
                       }));
     CHECK(std::any_of(top_view->module.cells.begin(),
                       top_view->module.cells.end(),
-                      [](const SchematicCell& cell) {
+                      [](const SemanticSchematicCell& cell) {
                           return cell.id == "u_ordered" && cell.type == "child";
                       }));
 

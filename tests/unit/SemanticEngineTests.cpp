@@ -1996,7 +1996,7 @@ TEST_CASE("SemanticEngine routes module signatures and schematic cells through A
     CHECK(top->module.cells.front().type == "child");
     CHECK(std::any_of(top->module.cells.front().connections.begin(),
                       top->module.cells.front().connections.end(),
-                      [](const SchematicConnection& connection) {
+                      [](const SemanticSchematicConnection& connection) {
                           return connection.port_name == "data";
                       }));
 }

@@ -15,6 +15,35 @@ ParseRange rangeAt(int line, int start, int end) {
                       .end_character = end};
 }
 
+std::string bindingKey(std::string_view uri, const ParseRange& range) {
+    return std::string(uri) + "\x1f" + std::to_string(range.start_line) + ":" +
+           std::to_string(range.start_character) + ":" + std::to_string(range.end_line) + ":" +
+           std::to_string(range.end_character);
+}
+
+void addPortBinding(SnapshotDesignGraphBindingIndex& bindings,
+                    std::string_view uri,
+                    const ParseRange& instance_selection_range,
+                    std::string instance_id,
+                    std::string endpoint_id,
+                    std::string endpoint_name) {
+    bindings.instance_ids_by_uri_range.insert_or_assign(bindingKey(uri, instance_selection_range), instance_id);
+    bindings.endpoints_by_stable_id.insert_or_assign(
+        endpoint_id,
+        SnapshotGraphEndpointFact{.stable_id = endpoint_id,
+                                  .module_name = "child",
+                                  .name = endpoint_name,
+                                  .kind = SnapshotGraphEndpointKind::Port,
+                                  .direction = SnapshotGraphPortDirection::Input,
+                                  .location = SemanticLocation{.uri = std::string(uri),
+                                                               .range = instance_selection_range}});
+    bindings.connection_bindings_by_instance_id[instance_id].push_back(bindings.connection_bindings.size());
+    bindings.connection_bindings.push_back(SnapshotGraphConnectionBindingFact{
+        .instance_stable_id = std::move(instance_id),
+        .endpoint_stable_id = std::move(endpoint_id),
+        .location = SemanticLocation{.uri = std::string(uri), .range = instance_selection_range},
+        .kind = SnapshotConeEdgeKind::InstancePort});
+}
 } // namespace
 
 TEST_CASE("CodeActionProvider creates include, module, port, and typedef fixes",
@@ -28,6 +57,10 @@ TEST_CASE("CodeActionProvider creates include, module, port, and typedef fixes",
                                "  missing_t value;\n"
                                "  pkg_only_t imported_later;\n"
                                "endmodule\n";
+
+    SnapshotDesignGraphBindingIndex bindings;
+    addPortBinding(bindings, uri, rangeAt(2, 8, 15), "instance|u_child", "endpoint|child|clk", "clk");
+
     CodeActionContext context{
         .generation = 9,
         .snapshot_available = true,
@@ -69,6 +102,7 @@ TEST_CASE("CodeActionProvider creates include, module, port, and typedef fixes",
                                                     .range = rangeAt(3, 2, 28),
                                                     .selection_range = rangeAt(3, 16, 25),
                                                     .module_selection_range = rangeAt(3, 2, 15)}},
+        .design_graph_bindings = &bindings,
         .packages_by_name = {{"defs",
                               SnapshotPackageVisibility{
                                   .package_name = "defs",
@@ -141,6 +175,11 @@ TEST_CASE("CodeActionProvider scopes missing port fixes to the requested instanc
                                "  child u_a(.clk(clk));\n"
                                "  child u_b(.clk(clk));\n"
                                "endmodule\n";
+
+
+    SnapshotDesignGraphBindingIndex scoped_bindings;
+    addPortBinding(scoped_bindings, uri, rangeAt(3, 8, 11), "instance|u_b", "endpoint|child|clk", "clk");
+
     CodeActionContext context{
         .generation = 11,
         .snapshot_available = true,
@@ -178,8 +217,8 @@ TEST_CASE("CodeActionProvider scopes missing port fixes to the requested instanc
                                                                         .connections = {SchematicConnection{
                                                                             .port_name = "clk",
                                                                             .signal = "clk",
-                                                                            .range = rangeAt(3, 12, 21)}}}}}}};
-
+                                                                            .range = rangeAt(3, 12, 21)}}}}}},
+        .design_graph_bindings = &scoped_bindings};
     const auto result = codeActionsAt(context);
 
     REQUIRE_FALSE(result.unresolved);
@@ -192,12 +231,46 @@ TEST_CASE("CodeActionProvider scopes missing port fixes to the requested instanc
     CHECK(action.edits.front().new_text == ", .rst_n(rst_n), .data(data)");
 }
 
+TEST_CASE("CodeActionProvider requires typed bindings for missing-port fixes",
+           "[analysis][semantic][code-action-provider][ports][no-fallback]") {
+    constexpr std::string_view uri = "file:///workspace/rtl/top.sv";
+    const auto document_text = "module top;\n"
+                               "  child u_child(.clk(clk));\n"
+                               "endmodule\n";
+    ModuleDefinition child{.name = "child",
+                           .kind = "module",
+                           .port_details = {SchematicPort{.name = "clk"},
+                                            SchematicPort{.name = "rst_n"}}};
+    ModuleSchematic top{.name = "top"};
+    top.cells.push_back(SchematicCell{.id = "u_child",
+                                      .name = "u_child",
+                                      .type = "child",
+                                      .kind = "module",
+                                      .range = rangeAt(1, 2, 27),
+                                      .selection_range = rangeAt(1, 8, 15),
+                                      .connections = {SchematicConnection{.port_name = "clk",
+                                                                           .signal = "clk",
+                                                                           .range = rangeAt(1, 17, 26)}}});
+    const CodeActionContext context{.generation = 12,
+                                    .snapshot_available = true,
+                                    .document = SemanticEngineDocument{.uri = std::string(uri),
+                                                                       .text = document_text},
+                                    .range = rangeAt(1, 2, 27),
+                                    .modules_by_name = {{"child", child}},
+                                    .document_schematics = {top}};
+
+    const auto result = codeActionsAt(context);
+
+    REQUIRE_FALSE(result.unresolved);
+    CHECK(result.actions.empty());
+}
 TEST_CASE("CodeActionProvider creates macro definitions from slang macro diagnostics",
           "[analysis][semantic][code-action-provider][macro]") {
     constexpr std::string_view uri = "file:///workspace/rtl/top.sv";
     const auto document_text = "module top;\n"
                                "  assign value = `MISSING(ready, valid);\n"
                                "endmodule\n";
+
     CodeActionContext context{.generation = 10,
                               .snapshot_available = true,
                               .document = SemanticEngineDocument{.uri = std::string(uri),

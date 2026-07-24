@@ -311,6 +311,7 @@ semantic::CodeActionContext codeActionContextFor(const semantic::SnapshotData* d
     }
     if (data != nullptr) {
         context.modules_by_name = ast_index.modules_by_name;
+        context.design_graph_bindings = &ast_index.design_graph_binding_index;
         for (const auto& signature_entry : ast_index.module_signatures_by_name) {
             const auto& signature = signature_entry.second;
             if (signature.uri == context.document.uri ||

@@ -566,9 +566,15 @@ TEST_CASE("AstIndex derives module signatures and schematic views from slang AST
     REQUIRE(top_schematic.cells.size() == 1);
     CHECK(top_schematic.cells.front().name == "u_child");
     CHECK(top_schematic.cells.front().type == "child");
-    REQUIRE(top_schematic.cells.front().connections.size() == 2);
-    CHECK(top_schematic.cells.front().connections[0].port_name == "clk");
-    CHECK(top_schematic.cells.front().connections[1].port_name == "data");
+    CHECK(top_schematic.cells.front().connections.empty());
+    const auto typed_connections = schematicConnectionFacts(*output.data);
+    REQUIRE(typed_connections.size() == 2);
+    CHECK(std::any_of(typed_connections.begin(), typed_connections.end(), [](const auto* fact) {
+        return fact->endpoint_name == "clk" && fact->display_label == "clk";
+    }));
+    CHECK(std::any_of(typed_connections.begin(), typed_connections.end(), [](const auto* fact) {
+        return fact->endpoint_name == "data" && fact->display_label == "data";
+    }));
 }
 
 TEST_CASE("AstIndex derives module instances from slang AST rather than syntax model",
@@ -698,8 +704,12 @@ TEST_CASE("AstIndex derives parameter override inlay facts from AST module param
     REQUIRE(view.module_signatures_by_name.contains("top"));
     const auto& top_cells = view.module_signatures_by_name.at("top").schematic.cells;
     REQUIRE(top_cells.size() == 1);
-    REQUIRE(top_cells.front().connections.size() == 1);
-    CHECK(top_cells.front().connections.front().port_name == "clk");
+    CHECK(top_cells.front().connections.empty());
+    const auto typed_connections = schematicConnectionFacts(*output.data);
+    REQUIRE(typed_connections.size() == 3);
+    CHECK(std::all_of(typed_connections.begin(), typed_connections.end(), [](const auto* fact) {
+        return !fact->endpoint_stable_id.empty() && !fact->endpoint_name.empty();
+    }));
 
     REQUIRE(view.signature_module_instances_by_uri.contains("file:///workspace/top.sv"));
     const auto& inlay_instances = view.signature_module_instances_by_uri.at("file:///workspace/top.sv");
@@ -707,20 +717,20 @@ TEST_CASE("AstIndex derives parameter override inlay facts from AST module param
     const auto& inlay_connections = inlay_instances.front().connections;
     CHECK(std::any_of(inlay_connections.begin(),
                       inlay_connections.end(),
-                      [](const SchematicConnection& connection) {
-                          return connection.port_name == "WIDTH" && connection.signal == "16" &&
+                      [](const SignatureInlayConnection& connection) {
+                          return connection.port_name == "WIDTH" && connection.parameter_signature == "parameter int WIDTH" &&
                                  connection.range.start_line == 2;
                       }));
     CHECK(std::any_of(inlay_connections.begin(),
                       inlay_connections.end(),
-                      [](const SchematicConnection& connection) {
-                          return connection.port_name == "DEPTH" && connection.signal == "2" &&
+                      [](const SignatureInlayConnection& connection) {
+                          return connection.port_name == "DEPTH" && connection.parameter_signature == "parameter int DEPTH" &&
                                  connection.range.start_line == 2;
                       }));
     CHECK(std::any_of(inlay_connections.begin(),
                       inlay_connections.end(),
-                      [](const SchematicConnection& connection) {
-                          return connection.port_name == "clk" && connection.signal == "clk";
+                      [](const SignatureInlayConnection& connection) {
+                          return connection.port_name == "clk" && connection.parameter_signature == "input logic clk";
                       }));
 }
 
@@ -760,16 +770,15 @@ TEST_CASE("AstIndex exposes parameterized cross-module cone inputs to design gra
     REQUIRE(view.module_signatures_by_name.contains("top"));
     const auto& cells = view.module_signatures_by_name.at("top").schematic.cells;
     REQUIRE(cells.size() == 1);
-    CHECK(std::any_of(cells.front().connections.begin(),
-                      cells.front().connections.end(),
-                      [](const SchematicConnection& connection) {
-                          return connection.port_name == "in" && connection.signal == "a";
-                      }));
-    CHECK(std::any_of(cells.front().connections.begin(),
-                      cells.front().connections.end(),
-                      [](const SchematicConnection& connection) {
-                          return connection.port_name == "out" && connection.signal == "y";
-                      }));
+    CHECK(cells.front().connections.empty());
+    const auto typed_connections = schematicConnectionFacts(*output.data);
+    REQUIRE(typed_connections.size() == 3);
+    CHECK(std::any_of(typed_connections.begin(), typed_connections.end(), [](const auto* fact) {
+        return fact->endpoint_name == "in" && fact->display_label == "a";
+    }));
+    CHECK(std::any_of(typed_connections.begin(), typed_connections.end(), [](const auto* fact) {
+        return fact->endpoint_name == "out" && fact->display_label == "y";
+    }));
 
     REQUIRE(view.assignment_edges_by_uri.contains("file:///workspace/cone.sv"));
     CHECK(std::any_of(view.assignment_edges_by_uri.at("file:///workspace/cone.sv").begin(),
@@ -855,14 +864,12 @@ TEST_CASE("AstIndex promotes generated module instances into schematic cells",
     CHECK(std::any_of(top.schematic.cells.begin(),
                       top.schematic.cells.end(),
                       [](const SchematicCell& cell) {
-                          return cell.name == "u_leaf" &&
-                                 std::any_of(cell.connections.begin(),
-                                             cell.connections.end(),
-                                             [](const SchematicConnection& connection) {
-                                                 return connection.port_name == "clk" &&
-                                                        connection.signal == "clk";
-                                             });
+                          return cell.name == "u_leaf" && cell.connections.empty();
                       }));
+    const auto typed_connections = schematicConnectionFacts(*output.data);
+    REQUIRE(typed_connections.size() == 1);
+    CHECK(typed_connections.front()->endpoint_name == "clk");
+    CHECK(typed_connections.front()->display_label == "clk");
 }
 
 TEST_CASE("AstIndex preserves elaborated generated instances as distinct call edges",
@@ -950,16 +957,15 @@ TEST_CASE("AstIndex preserves generated schematic port width and connection fact
                                           return cell.name == "u_child" && cell.type == "child";
                                       });
     REQUIRE(cell_it != top.schematic.cells.end());
-    CHECK(std::any_of(cell_it->connections.begin(),
-                      cell_it->connections.end(),
-                      [](const SchematicConnection& connection) {
-                          return connection.port_name == "in" && connection.signal == "data_i";
-                      }));
-    CHECK(std::any_of(cell_it->connections.begin(),
-                      cell_it->connections.end(),
-                      [](const SchematicConnection& connection) {
-                          return connection.port_name == "out" && connection.signal == "data_o";
-                      }));
+    CHECK(cell_it->connections.empty());
+    const auto typed_connections = schematicConnectionFacts(*output.data);
+    REQUIRE(typed_connections.size() == 2);
+    CHECK(std::any_of(typed_connections.begin(), typed_connections.end(), [](const auto* fact) {
+        return fact->endpoint_name == "in" && fact->display_label == "data_i";
+    }));
+    CHECK(std::any_of(typed_connections.begin(), typed_connections.end(), [](const auto* fact) {
+        return fact->endpoint_name == "out" && fact->display_label == "data_o";
+    }));
 }
 
 TEST_CASE("AstIndex exposes generated-only instance connection facts for backward cone",
@@ -995,16 +1001,15 @@ TEST_CASE("AstIndex exposes generated-only instance connection facts for backwar
         return cell.name == "u_child" && cell.type == "child";
     });
     REQUIRE(cell_it != cells.end());
-    CHECK(std::any_of(cell_it->connections.begin(),
-                      cell_it->connections.end(),
-                      [](const SchematicConnection& connection) {
-                          return connection.port_name == "in" && connection.signal == "a";
-                      }));
-    CHECK(std::any_of(cell_it->connections.begin(),
-                      cell_it->connections.end(),
-                      [](const SchematicConnection& connection) {
-                          return connection.port_name == "out" && connection.signal == "y";
-                      }));
+    CHECK(cell_it->connections.empty());
+    const auto typed_connections = schematicConnectionFacts(*output.data);
+    REQUIRE(typed_connections.size() == 2);
+    CHECK(std::any_of(typed_connections.begin(), typed_connections.end(), [](const auto* fact) {
+        return fact->endpoint_name == "in" && fact->display_label == "a";
+    }));
+    CHECK(std::any_of(typed_connections.begin(), typed_connections.end(), [](const auto* fact) {
+        return fact->endpoint_name == "out" && fact->display_label == "y";
+    }));
 
     const auto seed = std::find_if(output.data->assignment_edge_seeds.begin(),
                                    output.data->assignment_edge_seeds.end(),
@@ -1074,9 +1079,13 @@ TEST_CASE("AstIndex derives primitive and assignment schematic cells from slang 
                fact.display_label == "a" && !fact.unresolved;
     }));
     CHECK(std::any_of(pins_it->second.begin(), pins_it->second.end(), [](const auto& fact) {
-        return fact.cell_kind == SnapshotSchematicCellKind::Assignment &&
+        return fact.cell_kind == SnapshotSchematicCellKind::Operator &&
                fact.pin_direction == SnapshotSchematicCellPinDirection::Control &&
                fact.pin_name == "S" && fact.display_label == "sel" && !fact.unresolved;
+    }));
+    CHECK_FALSE(std::any_of(pins_it->second.begin(), pins_it->second.end(), [](const auto& fact) {
+        return fact.pin_direction == SnapshotSchematicCellPinDirection::Input &&
+               fact.pin_name == "S" && fact.display_label == "sel";
     }));
     const auto edges_it = view.assignment_edges_by_uri.find("file:///workspace/top.sv");
     REQUIRE(edges_it != view.assignment_edges_by_uri.end());
@@ -3657,9 +3666,11 @@ TEST_CASE("AstIndex projection updates schematic cell connections from typed fac
     const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
     const auto* cell = schematicCell(view, "top", "u");
     REQUIRE(cell != nullptr);
-    REQUIRE(cell->connections.size() == 1);
-    CHECK(cell->connections.front().port_name == "in");
-    CHECK(cell->connections.front().signal == "a");
+    CHECK(cell->connections.empty());
+    const auto facts = schematicConnectionFacts(*output.data);
+    REQUIRE(facts.size() == 1);
+    CHECK(facts.front()->endpoint_name == "in");
+    CHECK(facts.front()->display_label == "a");
 }
 
 TEST_CASE("AstIndex projection retains parameter display on module instances",
@@ -3668,11 +3679,13 @@ TEST_CASE("AstIndex projection retains parameter display on module instances",
         "module child #(parameter int WIDTH = 1)(); endmodule\n"
         "module top; localparam int W = 4; child #(.WIDTH(W)) u(); endmodule\n");
     REQUIRE(output.data != nullptr);
-    const auto instances = output.data->module_instances_by_uri.find("file:///workspace/top.sv");
-    REQUIRE(instances != output.data->module_instances_by_uri.end());
-    REQUIRE(instances->second.size() == 1);
-    REQUIRE(instances->second.front().parameter_connections.size() == 1);
-    CHECK(instances->second.front().parameter_connections.front().signal == "W");
+    const auto facts = parameterOverrideFacts(*output.data);
+    REQUIRE(facts.size() == 1);
+    CHECK(facts.front()->endpoint_name == "WIDTH");
+    REQUIRE(facts.front()->source_parts.size() == 1);
+    const auto source = output.data->symbols_by_id.find(facts.front()->source_parts.front().source_symbol_id);
+    REQUIRE(source != output.data->symbols_by_id.end());
+    CHECK(source->second.identity.name == "W");
 }
 
 TEST_CASE("AstIndex schematic projection ordering is deterministic",
@@ -3719,6 +3732,35 @@ TEST_CASE("AstIndex leaves missing module connections without a typed schematic 
     CHECK(output.data->design_graph_binding_index.schematic_connection_fact_count == 0);
 }
 
+TEST_CASE("AstIndex projects operator cell pins without raw schematic connections",
+          "[analysis][semantic][ast-index][schematic-projection][operator][no-fallback]") {
+    auto output = buildGraphSource(
+        "module top; logic a; logic b; logic y; assign y = a & b; endmodule\n");
+    REQUIRE(output.data != nullptr);
+    const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
+    const auto& cells = view.module_signatures_by_name.at("top").schematic.cells;
+    const auto cell = std::find_if(cells.begin(), cells.end(), [](const SchematicCell& candidate) {
+        return candidate.kind == "and";
+    });
+    REQUIRE(cell != cells.end());
+    CHECK(cell->connections.empty());
+
+    const auto pins = output.data->design_graph_binding_index.schematic_cell_pins_by_module.find("top");
+    REQUIRE(pins != output.data->design_graph_binding_index.schematic_cell_pins_by_module.end());
+    CHECK(std::any_of(pins->second.begin(), pins->second.end(), [&](const auto& fact) {
+        return fact.cell_id == cell->id && fact.cell_kind == SnapshotSchematicCellKind::Operator &&
+               fact.cell_type == "and" && fact.pin_direction == SnapshotSchematicCellPinDirection::Output &&
+               !fact.net_symbol_id.empty() && !fact.unresolved;
+    }));
+    CHECK(std::any_of(pins->second.begin(), pins->second.end(), [&](const auto& fact) {
+        return fact.cell_id == cell->id && fact.pin_direction == SnapshotSchematicCellPinDirection::Input &&
+               fact.display_label == "a" && !fact.unresolved;
+    }));
+    CHECK(std::any_of(pins->second.begin(), pins->second.end(), [&](const auto& fact) {
+        return fact.cell_id == cell->id && fact.pin_direction == SnapshotSchematicCellPinDirection::Input &&
+               fact.display_label == "b" && !fact.unresolved;
+    }));
+}
 TEST_CASE("AstIndex records typed schematic projection counters",
           "[analysis][semantic][ast-index][schematic-projection][metrics]") {
     auto output = buildGraphSource(

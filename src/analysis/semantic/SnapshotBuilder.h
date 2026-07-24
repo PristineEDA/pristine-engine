@@ -468,7 +468,7 @@ struct SnapshotSchematicConnectionFact {
     bool unresolved = false;
 };
 
-enum class SnapshotSchematicCellKind { Primitive, Assignment };
+enum class SnapshotSchematicCellKind { Primitive, Assignment, Operator };
 
 enum class SnapshotSchematicCellPinDirection { Input, Output, Inout, Control, Unknown };
 
@@ -481,6 +481,7 @@ struct SnapshotSchematicCellPinFact {
     ParseRange cell_selection_range;
     SemanticLocation location;
     SnapshotSchematicCellKind cell_kind = SnapshotSchematicCellKind::Assignment;
+    std::string cell_type;
     std::string pin_name;
     int pin_index = -1;
     SnapshotSchematicCellPinDirection pin_direction = SnapshotSchematicCellPinDirection::Unknown;
@@ -532,11 +533,13 @@ struct SnapshotDesignGraphBindingIndex {
     std::unordered_map<std::string, std::string> port_symbol_ids_by_module_port;
     std::unordered_map<std::string, std::string> parameter_symbol_ids_by_module_parameter;
     std::unordered_map<std::string, std::string> instance_ids_by_uri_range;
+    std::unordered_map<std::string, std::string> schematic_cell_ids_by_instance_id;
     std::unordered_map<std::string, std::string> caller_module_names_by_instance_id;
     std::unordered_map<std::string, SnapshotGraphEndpointFact> endpoints_by_module_member;
     std::unordered_map<std::string, SnapshotGraphEndpointFact> endpoints_by_stable_id;
     std::vector<SnapshotGraphConnectionBindingFact> connection_bindings;
     std::unordered_map<std::string, std::vector<size_t>> connection_bindings_by_uri_range;
+    std::unordered_map<std::string, std::vector<size_t>> connection_bindings_by_instance_id;
     std::unordered_map<std::string, std::vector<SnapshotSchematicConnectionFact>>
         schematic_connections_by_module;
     std::unordered_map<std::string, std::vector<SnapshotSchematicCellPinFact>>

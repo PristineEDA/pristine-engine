@@ -260,6 +260,26 @@ struct SemanticModuleHierarchyResult {
     bool truncated = false;
 };
 
+// Provider-owned display projection. The graph index owns the identities; the
+// fields below preserve the established schematic response shape without
+// exposing CompilationService's syntax-only connection model.
+struct SemanticSchematicConnection {
+    std::string port_name;
+    int port_index = -1;
+    std::string signal;
+    ParseRange range;
+};
+
+struct SemanticSchematicCell {
+    std::string id;
+    std::string name;
+    std::string type;
+    std::string kind;
+    ParseRange range;
+    ParseRange selection_range;
+    std::vector<SemanticSchematicConnection> connections;
+};
+
 struct SemanticSchematicModule {
     std::string id;
     std::string name;
@@ -267,7 +287,7 @@ struct SemanticSchematicModule {
     ParseRange range;
     ParseRange selection_range;
     std::vector<SchematicPort> ports;
-    std::vector<SchematicCell> cells;
+    std::vector<SemanticSchematicCell> cells;
 };
 
 struct SemanticSchematicEndpoint {

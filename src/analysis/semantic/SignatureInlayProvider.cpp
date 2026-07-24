@@ -42,37 +42,6 @@ bool sameRange(const ParseRange& lhs, const ParseRange& rhs) {
            lhs.end_character == rhs.end_character;
 }
 
-const SchematicPort* portForConnection(const ModuleDefinition& module,
-                                       const SchematicConnection& connection) {
-    if (!connection.port_name.empty()) {
-        const auto found_parameter = std::find_if(module.parameter_details.begin(),
-                                                  module.parameter_details.end(),
-                                                  [&](const SchematicPort& port) {
-                                                      return port.name == connection.port_name;
-                                                  });
-        if (found_parameter != module.parameter_details.end()) {
-            return &*found_parameter;
-        }
-        const auto found = std::find_if(module.port_details.begin(),
-                                        module.port_details.end(),
-                                        [&](const SchematicPort& port) {
-                                            return port.name == connection.port_name;
-                                        });
-        if (found != module.port_details.end()) {
-            return &*found;
-        }
-    }
-    if (connection.port_index >= 0 &&
-        static_cast<size_t>(connection.port_index) < module.port_details.size()) {
-        return &module.port_details[static_cast<size_t>(connection.port_index)];
-    }
-    if (module.port_details.empty() && connection.port_index >= 0 &&
-        static_cast<size_t>(connection.port_index) < module.parameter_details.size()) {
-        return &module.parameter_details[static_cast<size_t>(connection.port_index)];
-    }
-    return nullptr;
-}
-
 int comparePosition(int lhs_line, int lhs_character, int rhs_line, int rhs_character) {
     if (lhs_line != rhs_line) {
         return lhs_line < rhs_line ? -1 : 1;
@@ -235,7 +204,9 @@ SemanticSignatureHelpResult signatureHelpAt(const SignatureInlayContext& context
         std::vector<ParseRange> connection_ranges;
         connection_ranges.reserve(instance.connections.size());
         for (const auto& connection : instance.connections) {
-            connection_ranges.push_back(connection.range);
+            if (connection.module_port) {
+                connection_ranges.push_back(connection.range);
+            }
         }
         result.active_parameter = activeParameterAt(connection_ranges,
                                                     result.parameters.size(), line, character);
@@ -310,11 +281,7 @@ SemanticInlayHintResult inlayHints(const SignatureInlayContext& context,
             continue;
         }
         for (const auto& connection : instance.connections) {
-            if (!rangesOverlapOrTouch(connection.range, range)) {
-                continue;
-            }
-            const auto* port = portForConnection(module_it->second, connection);
-            if (port == nullptr || port->name.empty()) {
+            if (!rangesOverlapOrTouch(connection.range, range) || connection.port_name.empty()) {
                 continue;
             }
             const ParseRange label_range{.start_line = connection.range.start_line,
@@ -322,21 +289,21 @@ SemanticInlayHintResult inlayHints(const SignatureInlayContext& context,
                                          .end_line = connection.range.start_line,
                                          .end_character = connection.range.start_character};
             const auto duplicate = std::any_of(result.hints.begin(),
-                                               result.hints.end(),
-                                               [&](const SemanticInlayHint& hint) {
-                                                   return hint.kind == "parameter" &&
-                                                          hint.label == "." + port->name &&
-                                                          sameRange(hint.location.range, label_range);
-                                               });
+                                                result.hints.end(),
+                                                [&](const SemanticInlayHint& hint) {
+                                                    return hint.kind == "parameter" &&
+                                                           hint.label == "." + connection.port_name &&
+                                                           sameRange(hint.location.range, label_range);
+                                                });
             if (duplicate) {
                 continue;
             }
             result.hints.push_back(SemanticInlayHint{
                 .location = SemanticLocation{.uri = context.document_uri,
                                              .range = label_range},
-                .label = "." + port->name,
+                .label = "." + connection.port_name,
                 .kind = "parameter",
-                .tooltip = portSignatureLabel(*port)});
+                .tooltip = connection.parameter_signature});
         }
     }
 

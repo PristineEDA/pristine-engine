@@ -558,13 +558,8 @@ TEST_CASE("SignatureInlayProvider omits duplicate named and ordered port labels"
             .module_name = "child",
             .range = rangeAt(1, 2, 28),
             .selection_range = rangeAt(1, 8, 15),
-            .connections = {SchematicConnection{.port_name = "clk",
-                                                .port_index = 0,
-                                                .signal = "clk",
-                                                .range = rangeAt(1, 17, 20)},
-                            SchematicConnection{.port_index = 0,
-                                                .signal = "clk",
-                                                .range = rangeAt(1, 17, 20)}}}},
+            .connections = {SignatureInlayConnection{.port_name = "clk", .parameter_signature = "input logic clk", .range = rangeAt(1, 17, 20)},
+                            SignatureInlayConnection{.port_name = "clk", .parameter_signature = "input logic clk", .range = rangeAt(1, 17, 20)}}}},
         .snapshot_available = true};
 
     const auto result = inlayHints(context, lineSpan(1, 2));
@@ -638,12 +633,8 @@ TEST_CASE("SignatureInlayProvider emits parameter override labels",
             .module_name = "child",
             .range = rangeAt(1, 2, 32),
             .selection_range = rangeAt(1, 8, 15),
-            .connections = {SchematicConnection{.port_index = 0,
-                                                .signal = "8",
-                                                .range = rangeAt(1, 16, 17)},
-                            SchematicConnection{.port_index = 1,
-                                                .signal = "4",
-                                                .range = rangeAt(1, 19, 20)}}}},
+            .connections = {SignatureInlayConnection{.port_name = "WIDTH", .parameter_signature = "parameter int WIDTH", .range = rangeAt(1, 16, 17), .module_port = false},
+                            SignatureInlayConnection{.port_name = "DEPTH", .parameter_signature = "parameter int DEPTH", .range = rangeAt(1, 19, 20), .module_port = false}}}},
         .snapshot_available = true};
 
     const auto result = inlayHints(context, lineSpan(1, 2));
@@ -901,15 +892,9 @@ TEST_CASE("SignatureInlayProvider emits ordered third port hints",
             .module_name = "child",
             .range = rangeAt(1, 2, 34),
             .selection_range = rangeAt(1, 8, 15),
-            .connections = {SchematicConnection{.port_index = 0,
-                                                .signal = "clk",
-                                                .range = rangeAt(1, 16, 19)},
-                            SchematicConnection{.port_index = 1,
-                                                .signal = "ready",
-                                                .range = rangeAt(1, 21, 26)},
-                            SchematicConnection{.port_index = 2,
-                                                .signal = "data",
-                                                .range = rangeAt(1, 28, 32)}}}},
+            .connections = {SignatureInlayConnection{.port_name = "clk", .parameter_signature = "input logic clk", .range = rangeAt(1, 16, 19)},
+                            SignatureInlayConnection{.port_name = "ready", .parameter_signature = "input logic ready", .range = rangeAt(1, 21, 26)},
+                            SignatureInlayConnection{.port_name = "data", .parameter_signature = "output logic data", .range = rangeAt(1, 28, 32)}}}},
         .snapshot_available = true};
 
     const auto result = inlayHints(context, lineSpan(1, 2));

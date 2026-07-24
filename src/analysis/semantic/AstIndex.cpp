@@ -639,33 +639,14 @@ std::string rangeKey(const ParseRange& range) {
            std::to_string(range.end_line) + ":" + std::to_string(range.end_character);
 }
 
-SchematicConnection makeConnection(std::string port_name,
-                                   int port_index,
-                                   std::string signal,
-                                   const slang::SourceManager& source_manager,
-                                   const slang::ast::Expression& expression) {
-    return SchematicConnection{.port_name = std::move(port_name),
-                               .port_index = port_index,
-                               .signal = std::move(signal),
-                               .range = sourceRangeForSourceRange(source_manager, expression.sourceRange)};
-}
-
 struct AstExpressionSchematicContext {
     int cell_index = 0;
-    int net_index = 0;
 };
-
-std::string materializeAstExpression(ModuleSchematic& schematic,
-                                     const SemanticEngineDocument* document,
-                                     const slang::SourceManager& source_manager,
-                                     const slang::ast::Expression& expression,
-                                     AstExpressionSchematicContext& context);
 
 void appendAstLogicCell(ModuleSchematic& schematic,
                         const slang::SourceManager& source_manager,
                         std::string kind,
                         const slang::ast::Expression& source,
-                        std::vector<SchematicConnection> connections,
                         AstExpressionSchematicContext& context) {
     const auto name = generatedName(kind, context.cell_index++);
     const auto range = sourceRangeForSourceRange(source_manager, source.sourceRange);
@@ -675,41 +656,21 @@ void appendAstLogicCell(ModuleSchematic& schematic,
                                             .kind = std::move(kind),
                                             .range = range,
                                             .selection_range = range,
-                                            .connections = std::move(connections)});
+                                            .connections = {}});
 }
 
 bool appendAstLogicExpression(ModuleSchematic& schematic,
-                              const SemanticEngineDocument* document,
                               const slang::SourceManager& source_manager,
                               const slang::ast::Expression& expression,
-                              std::string output_signal,
                               AstExpressionSchematicContext& context) {
     if (const auto* binary = expression.as_if<slang::ast::BinaryExpression>()) {
         const auto kind = logicKindForBinary(binary->op);
         if (!kind.has_value()) {
             return false;
         }
-        std::vector<SchematicConnection> connections;
-        connections.push_back(makeConnection("Y", -1, std::move(output_signal), source_manager, expression));
-        connections.push_back(makeConnection("A",
-                                             -1,
-                                             materializeAstExpression(schematic,
-                                                                      document,
-                                                                      source_manager,
-                                                                      binary->left(),
-                                                                      context),
-                                             source_manager,
-                                             binary->left()));
-        connections.push_back(makeConnection("B",
-                                             -1,
-                                             materializeAstExpression(schematic,
-                                                                      document,
-                                                                      source_manager,
-                                                                      binary->right(),
-                                                                      context),
-                                             source_manager,
-                                             binary->right()));
-        appendAstLogicCell(schematic, source_manager, *kind, expression, std::move(connections), context);
+        appendAstLogicExpression(schematic, source_manager, binary->left(), context);
+        appendAstLogicExpression(schematic, source_manager, binary->right(), context);
+        appendAstLogicCell(schematic, source_manager, *kind, expression, context);
         return true;
     }
 
@@ -718,77 +679,25 @@ bool appendAstLogicExpression(ModuleSchematic& schematic,
         if (!kind.has_value()) {
             return false;
         }
-        std::vector<SchematicConnection> connections;
-        connections.push_back(makeConnection("Y", -1, std::move(output_signal), source_manager, expression));
-        connections.push_back(makeConnection("A",
-                                             -1,
-                                             materializeAstExpression(schematic,
-                                                                      document,
-                                                                      source_manager,
-                                                                      unary->operand(),
-                                                                      context),
-                                             source_manager,
-                                             unary->operand()));
-        appendAstLogicCell(schematic, source_manager, *kind, expression, std::move(connections), context);
+        appendAstLogicExpression(schematic, source_manager, unary->operand(), context);
+        appendAstLogicCell(schematic, source_manager, *kind, expression, context);
         return true;
     }
 
     if (const auto* conditional = expression.as_if<slang::ast::ConditionalExpression>()) {
-        std::vector<SchematicConnection> connections;
-        connections.push_back(makeConnection("Y", -1, std::move(output_signal), source_manager, expression));
-        if (!conditional->conditions.empty()) {
-            const auto& condition = *conditional->conditions.begin();
-            connections.push_back(makeConnection("S",
-                                                 -1,
-                                                 materializeAstExpression(schematic,
-                                                                          document,
-                                                                          source_manager,
-                                                                          *condition.expr,
-                                                                          context),
-                                                 source_manager,
-                                                 *condition.expr));
+        for (const auto& condition : conditional->conditions) {
+            if (condition.expr != nullptr) {
+                appendAstLogicExpression(schematic, source_manager, *condition.expr, context);
+            }
         }
-        connections.push_back(makeConnection("I1",
-                                             -1,
-                                             materializeAstExpression(schematic,
-                                                                      document,
-                                                                      source_manager,
-                                                                      conditional->left(),
-                                                                      context),
-                                             source_manager,
-                                             conditional->left()));
-        connections.push_back(makeConnection("I0",
-                                             -1,
-                                             materializeAstExpression(schematic,
-                                                                      document,
-                                                                      source_manager,
-                                                                      conditional->right(),
-                                                                      context),
-                                             source_manager,
-                                             conditional->right()));
-        appendAstLogicCell(schematic, source_manager, "mux", expression, std::move(connections), context);
+        appendAstLogicExpression(schematic, source_manager, conditional->left(), context);
+        appendAstLogicExpression(schematic, source_manager, conditional->right(), context);
+        appendAstLogicCell(schematic, source_manager, "mux", expression, context);
         return true;
     }
 
     return false;
 }
-
-std::string materializeAstExpression(ModuleSchematic& schematic,
-                                     const SemanticEngineDocument* document,
-                                     const slang::SourceManager& source_manager,
-                                     const slang::ast::Expression& expression,
-                                     AstExpressionSchematicContext& context) {
-    if (expression.as_if<slang::ast::BinaryExpression>() != nullptr ||
-        expression.as_if<slang::ast::UnaryExpression>() != nullptr ||
-        expression.as_if<slang::ast::ConditionalExpression>() != nullptr) {
-        const auto signal = generatedName("net", context.net_index++);
-        if (appendAstLogicExpression(schematic, document, source_manager, expression, signal, context)) {
-            return signal;
-        }
-    }
-    return expressionText(document, source_manager, expression);
-}
-
 std::optional<ParseRange> identifierRangeByName(std::string_view text,
                                                 const ParseRange& range,
                                                 std::string_view name) {
@@ -1338,8 +1247,8 @@ void collectSyntaxBoundParameterOverrideSlices(SnapshotData& data,
     }
 }
 
-void collectSyntaxBoundEmptyPortConnectionRanges(SnapshotData& data,
-                                                  const slang::SourceManager& source_manager) {
+void collectSyntaxBoundEmptyPortConnectionFacts(SnapshotData& data,
+                                                 const slang::SourceManager& source_manager) {
     for (const auto& pending : data.port_connection_syntax_facts) {
         if (pending.syntax == nullptr || pending.uri.empty() || pending.module_name.empty() ||
             pending.instance_name.empty()) {
@@ -1349,16 +1258,20 @@ void collectSyntaxBoundEmptyPortConnectionRanges(SnapshotData& data,
         if (instances == data.module_instances_by_uri.end()) {
             continue;
         }
-        auto instance = std::find_if(instances->second.begin(),
-                                     instances->second.end(),
-                                     [&](const SnapshotModuleInstance& candidate) {
-                                         return candidate.module_name == pending.module_name &&
-                                                candidate.instance_name == pending.instance_name &&
-                                                (sameRange(candidate.selection_range, pending.instance_range) ||
-                                                 rangesOverlapOrTouch(candidate.selection_range,
-                                                                      pending.instance_range));
-                                     });
-        if (instance == instances->second.end()) {
+        const auto instance = std::find_if(instances->second.begin(),
+                                           instances->second.end(),
+                                           [&](const SnapshotModuleInstance& candidate) {
+                                               return candidate.module_name == pending.module_name &&
+                                                      candidate.instance_name == pending.instance_name &&
+                                                      (sameRange(candidate.selection_range, pending.instance_range) ||
+                                                       rangesOverlapOrTouch(candidate.selection_range,
+                                                                            pending.instance_range));
+                                           });
+        if (instance == instances->second.end() || instance->instance_stable_id.empty()) {
+            continue;
+        }
+        const auto ast_instance = data.instance_symbols_by_stable_id.find(instance->instance_stable_id);
+        if (ast_instance == data.instance_symbols_by_stable_id.end() || ast_instance->second == nullptr) {
             continue;
         }
         for (const auto* connection : pending.syntax->connections) {
@@ -1375,19 +1288,45 @@ void collectSyntaxBoundEmptyPortConnectionRanges(SnapshotData& data,
                 continue;
             }
             const auto port_name = std::string(named.name.valueText());
-            const auto duplicate = std::any_of(instance->port_connections.begin(),
-                                               instance->port_connections.end(),
-                                               [&](const SchematicConnection& existing) {
-                                                   return existing.port_name == port_name &&
-                                                          sameRange(existing.range, location->range);
-                                               });
-            if (!duplicate) {
-                instance->port_connections.push_back(
-                    SchematicConnection{.port_name = port_name,
-                                        .port_index = -1,
-                                        .signal = {},
-                                        .range = location->range});
+            size_t endpoint_index = 0;
+            const slang::ast::PortConnection* endpoint = nullptr;
+            for (const auto* candidate : ast_instance->second->getPortConnections()) {
+                if (candidate != nullptr && candidate->port.name == port_name) {
+                    endpoint = candidate;
+                    break;
+                }
+                ++endpoint_index;
             }
+            if (endpoint == nullptr) {
+                continue;
+            }
+            const auto endpoint_id = data.ids_by_symbol.find(&endpoint->port);
+            if (endpoint_id == data.ids_by_symbol.end()) {
+                continue;
+            }
+            const auto duplicate = std::any_of(
+                data.resolved_connection_slices_by_instance_id[instance->instance_stable_id].begin(),
+                data.resolved_connection_slices_by_instance_id[instance->instance_stable_id].end(),
+                [&](const SnapshotResolvedConnectionSliceFact& existing) {
+                    return existing.kind == SnapshotConeEdgeKind::InstancePort &&
+                           existing.endpoint_stable_id == endpoint_id->second &&
+                           sameRange(existing.location.range, location->range);
+                });
+            if (duplicate) {
+                continue;
+            }
+            const auto declared_slice = declaredSliceForEndpoint(endpoint->port);
+            data.endpoint_declared_slices_by_id.insert_or_assign(endpoint_id->second, declared_slice);
+            data.resolved_connection_slices_by_instance_id[instance->instance_stable_id].push_back(
+                SnapshotResolvedConnectionSliceFact{.instance_stable_id = instance->instance_stable_id,
+                                                    .endpoint_stable_id = endpoint_id->second,
+                                                    .endpoint_name = port_name,
+                                                    .endpoint_index = static_cast<int>(endpoint_index),
+                                                    .location = *location,
+                                                    .kind = SnapshotConeEdgeKind::InstancePort,
+                                                    .source_parts = {},
+                                                    .literal_display = {},
+                                                    .unresolved = false});
         }
     }
 }
@@ -1478,7 +1417,7 @@ void buildResolvedConnectionSliceFacts(SnapshotData& data, const slang::SourceMa
     ConnectionSliceIndexer indexer(data, source_manager);
     ResolvedConnectionSliceVisitor visitor(data, source_manager, indexer);
     data.compilation->getRoot().visit(visitor);
-    collectSyntaxBoundEmptyPortConnectionRanges(data, source_manager);
+    collectSyntaxBoundEmptyPortConnectionFacts(data, source_manager);
     collectSyntaxBoundParameterOverrideSlices(data, source_manager);
     indexer.finalize();
 }
@@ -2571,63 +2510,6 @@ std::optional<SchematicCell> schematicCellForAstPrimitiveInstance(
         }
     }
 
-    const auto connections = instance.getPortConnections();
-    for (size_t index = 0; index < connections.size(); ++index) {
-        const auto* expression = connections[index];
-        if (expression == nullptr) {
-            continue;
-        }
-
-        ParseRange connection_range = location->range;
-        std::string signal;
-        if (expression->sourceRange.start().valid()) {
-            connection_range = sourceRangeForSourceRange(source_manager, expression->sourceRange);
-            if (document != nullptr) {
-                if (auto text = textForRange(document->text, connection_range)) {
-                    signal = std::move(*text);
-                }
-            }
-        }
-        if (signal.empty()) {
-            signal = std::string("P") + std::to_string(index);
-        }
-
-        std::string port_name = std::string("P") + std::to_string(index);
-        if (index < instance.primitiveType.ports.size()) {
-            if (!instance.primitiveType.ports[index]->name.empty()) {
-                port_name = std::string(instance.primitiveType.ports[index]->name);
-            }
-            else if (index == 0) {
-                port_name = "Y";
-            }
-            else if (index == 1) {
-                port_name = "A";
-            }
-            else if (index == 2) {
-                port_name = "B";
-            }
-            else {
-                port_name = std::string("I") + std::to_string(index - 1);
-            }
-        }
-        else if (index == 0) {
-            port_name = "Y";
-        }
-        else if (index == 1) {
-            port_name = "A";
-        }
-        else if (index == 2) {
-            port_name = "B";
-        }
-        else {
-            port_name = std::string("I") + std::to_string(index - 1);
-        }
-
-        cell.connections.push_back(SchematicConnection{.port_name = std::move(port_name),
-                                                       .port_index = static_cast<int>(index),
-                                                       .signal = std::move(signal),
-                                                       .range = connection_range});
-    }
     return cell;
 }
 
@@ -4086,29 +3968,8 @@ void upsertAstContinuousAssignment(SnapshotData& data,
 
     auto& schematic = signature_it->second.schematic;
     AstExpressionSchematicContext context{.cell_index = static_cast<int>(schematic.cells.size())};
-    std::vector<SchematicConnection> connections;
-    connections.push_back(makeConnection("Y",
-                                         -1,
-                                         expressionText(document,
-                                                        source_manager,
-                                                        assignment_expression->left()),
-                                         source_manager,
-                                         assignment_expression->left()));
-    connections.push_back(makeConnection("A",
-                                         -1,
-                                         materializeAstExpression(schematic,
-                                                                  document,
-                                                                  source_manager,
-                                                                  assignment_expression->right(),
-                                                                  context),
-                                         source_manager,
-                                         assignment_expression->right()));
-    appendAstLogicCell(schematic,
-                       source_manager,
-                       "buf",
-                       assignment.getAssignment(),
-                       std::move(connections),
-                       context);
+    appendAstLogicExpression(schematic, source_manager, assignment_expression->right(), context);
+    appendAstLogicCell(schematic, source_manager, "buf", assignment.getAssignment(), context);
 }
 
 void insertReference(SnapshotData& data,
@@ -5063,7 +4924,7 @@ void appendMissingSchematicCellsForInstances(const SnapshotData& data, SemanticM
                                                                                            instance.module_name),
                                                           .range = instance.range,
                                                           .selection_range = instance.selection_range,
-                                                          .connections = instance.port_connections});
+                                                          .connections = {}});
         inserted = true;
     }
     if (inserted) {
@@ -5888,6 +5749,8 @@ public:
     }
 
     void finalize() {
+        appendAssignmentCellPins();
+        appendUnresolvedOperatorPins();
         auto& facts = data_.schematic_cell_pin_facts;
         std::sort(facts.begin(), facts.end(), [](const auto& lhs, const auto& rhs) {
             return std::tie(lhs.caller_module_name,
@@ -6103,6 +5966,7 @@ private:
                                                  .cell_selection_range = cell->second->selection_range,
                                                  .location = *location,
                                                  .cell_kind = SnapshotSchematicCellKind::Primitive,
+                                                 .cell_type = cell->second->type,
                                                  .pin_name = std::move(pin_name),
                                                  .pin_index = static_cast<int>(index),
                                                  .pin_direction = direction,
@@ -6121,6 +5985,7 @@ private:
                                                  .cell_selection_range = cell->second->selection_range,
                                                  .location = part.source_location,
                                                  .cell_kind = SnapshotSchematicCellKind::Primitive,
+                                                 .cell_type = cell->second->type,
                                                  .pin_name = pin_name,
                                                  .pin_index = static_cast<int>(index),
                                                  .pin_direction = direction,
@@ -6134,6 +5999,251 @@ private:
         }
     }
 
+    static SnapshotSchematicCellKind cellKindFor(const SchematicCell& cell) {
+        return cell.type == "buf" ? SnapshotSchematicCellKind::Assignment
+                                  : SnapshotSchematicCellKind::Operator;
+    }
+
+    static std::string syntheticCellOutputId(std::string_view module_name,
+                                             const SchematicCell& cell) {
+        return std::string(module_name) + "\x1f" "cell-output" "\x1f" + cell.id;
+    }
+
+    static std::int64_t cellRangeSize(const ParseRange& range) {
+        return static_cast<std::int64_t>(range.end_line - range.start_line) * 100000 +
+               (range.end_character - range.start_character);
+    }
+
+    void appendPin(std::string_view module_name,
+                   const SchematicCell& cell,
+                   SemanticLocation location,
+                   SnapshotSchematicCellPinDirection direction,
+                   SnapshotConeSourceRole role,
+                   std::string net_symbol_id,
+                   std::string display_label,
+                   SnapshotConeSliceFact slice,
+                   bool unresolved,
+                   bool literal) {
+        data_.schematic_cell_pin_facts.push_back(
+            SnapshotSchematicCellPinFact{.caller_module_name = std::string(module_name),
+                                         .cell_id = cell.id,
+                                         .cell_selection_range = cell.selection_range,
+                                         .location = std::move(location),
+                                         .cell_kind = cellKindFor(cell),
+                                         .cell_type = cell.type,
+                                         .pin_name = direction == SnapshotSchematicCellPinDirection::Output ? "Y" : "",
+                                         .pin_index = direction == SnapshotSchematicCellPinDirection::Output ? 0 : -1,
+                                         .pin_direction = direction,
+                                         .net_symbol_id = std::move(net_symbol_id),
+                                         .display_label = std::move(display_label),
+                                         .net_slice = std::move(slice),
+                                         .source_role = role,
+                                         .unresolved = unresolved,
+                                         .literal = literal});
+    }
+
+    void appendSeedSource(std::string_view module_name,
+                          const SchematicCell& cell,
+                          std::string_view uri,
+                          const ParseRange& range,
+                          const std::vector<std::string>& source_ids,
+                          const SnapshotConeSliceFact& slice,
+                          SnapshotConeSourceRole role,
+                          bool unresolved) {
+        const auto direction = role == SnapshotConeSourceRole::Control
+                                   ? SnapshotSchematicCellPinDirection::Control
+                                   : SnapshotSchematicCellPinDirection::Input;
+        const auto location = SemanticLocation{.uri = std::string(uri), .range = range};
+        if (source_ids.empty()) {
+            appendPin(module_name,
+                      cell,
+                      location,
+                      direction,
+                      role,
+                      {},
+                      {},
+                      slice,
+                      unresolved,
+                      !unresolved);
+            return;
+        }
+        for (const auto& source_id : source_ids) {
+            appendPin(module_name,
+                      cell,
+                      location,
+                      direction,
+                      role,
+                      source_id,
+                      displayLabel(source_id),
+                      slice,
+                      unresolved || source_id.empty(),
+                      false);
+        }
+    }
+
+    void appendAssignmentCellPins() {
+        for (const auto& [module_name, signature] : data_.ast_module_signatures_by_name) {
+            if (signature.uri.empty()) {
+                continue;
+            }
+            for (const auto& seed : data_.assignment_edge_seeds) {
+                if (seed.uri != signature.uri ||
+                    !rangeContainsRange(signature.definition.range, seed.assignment_range)) {
+                    continue;
+                }
+                std::vector<const SchematicCell*> cells;
+                for (const auto& candidate : signature.schematic.cells) {
+                    if (candidate.id.empty() || candidate.id.front() != '$' ||
+                        !(rangeContainsRange(seed.assignment_range, candidate.range) ||
+                          rangeContainsRange(candidate.range, seed.assignment_range))) {
+                        continue;
+                    }
+                    cells.push_back(&candidate);
+                }
+                const auto root = std::find_if(cells.begin(), cells.end(), [](const auto* cell) {
+                    return cell->type == "buf";
+                });
+                if (root == cells.end()) {
+                    continue;
+                }
+                const auto* buffer = *root;
+                std::sort(cells.begin(), cells.end(), [](const auto* lhs, const auto* rhs) {
+                    if (cellRangeSize(lhs->range) != cellRangeSize(rhs->range)) {
+                        return cellRangeSize(lhs->range) < cellRangeSize(rhs->range);
+                    }
+                    return lhs->id < rhs->id;
+                });
+
+                const auto sink_location = SemanticLocation{.uri = seed.uri, .range = seed.left_range};
+                if (seed.left_symbol_ids.empty()) {
+                    appendPin(module_name,
+                              *buffer,
+                              sink_location,
+                              SnapshotSchematicCellPinDirection::Output,
+                              SnapshotConeSourceRole::Data,
+                              {},
+                              {},
+                              seed.sink_slice,
+                              true,
+                              false);
+                }
+                else {
+                    for (const auto& sink_id : seed.left_symbol_ids) {
+                        appendPin(module_name,
+                                  *buffer,
+                                  sink_location,
+                                  SnapshotSchematicCellPinDirection::Output,
+                                  SnapshotConeSourceRole::Data,
+                                  sink_id,
+                                  displayLabel(sink_id),
+                                  seed.sink_slice,
+                                  sink_id.empty(),
+                                  false);
+                    }
+                }
+
+                for (const auto* cell : cells) {
+                    if (cell == buffer) {
+                        continue;
+                    }
+                    const auto output_id = syntheticCellOutputId(module_name, *cell);
+                    appendPin(module_name,
+                              *cell,
+                              SemanticLocation{.uri = seed.uri, .range = cell->selection_range},
+                              SnapshotSchematicCellPinDirection::Output,
+                              SnapshotConeSourceRole::Data,
+                              output_id,
+                              cell->name + ".Y",
+                              {},
+                              false,
+                              false);
+                    const SchematicCell* parent = buffer;
+                    for (const auto* candidate : cells) {
+                        if (candidate == cell ||
+                            !rangeContainsRange(candidate->range, cell->range) ||
+                            cellRangeSize(candidate->range) <= cellRangeSize(cell->range)) {
+                            continue;
+                        }
+                        if (parent == buffer || cellRangeSize(candidate->range) < cellRangeSize(parent->range) ||
+                            (cellRangeSize(candidate->range) == cellRangeSize(parent->range) &&
+                             candidate->id < parent->id)) {
+                            parent = candidate;
+                        }
+                    }
+                    appendPin(module_name,
+                              *parent,
+                              SemanticLocation{.uri = seed.uri, .range = cell->selection_range},
+                              SnapshotSchematicCellPinDirection::Input,
+                              SnapshotConeSourceRole::Data,
+                              output_id,
+                              cell->name + ".Y",
+                              {},
+                              false,
+                              false);
+                }
+
+                const auto targetFor = [&](const ParseRange& range) {
+                    const SchematicCell* target = buffer;
+                    for (const auto* candidate : cells) {
+                        if (candidate == buffer || !rangeContainsRange(candidate->range, range)) {
+                            continue;
+                        }
+                        if (target == buffer || cellRangeSize(candidate->range) < cellRangeSize(target->range) ||
+                            (cellRangeSize(candidate->range) == cellRangeSize(target->range) &&
+                             candidate->id < target->id)) {
+                            target = candidate;
+                        }
+                    }
+                    return target;
+                };
+                for (const auto& source : seed.data_sources) {
+                    appendSeedSource(module_name,
+                                     *targetFor(source.range),
+                                     seed.uri,
+                                     source.range,
+                                     source.source_symbol_ids,
+                                     source.source_slice,
+                                     SnapshotConeSourceRole::Data,
+                                     source.unresolved);
+                }
+                for (const auto& source : seed.control_sources) {
+                    appendSeedSource(module_name,
+                                     *targetFor(source.range),
+                                     seed.uri,
+                                     source.range,
+                                     source.source_symbol_ids,
+                                     source.source_slice,
+                                     SnapshotConeSourceRole::Control,
+                                     source.unresolved);
+                }
+            }
+        }
+    }
+
+    void appendUnresolvedOperatorPins() {
+        std::set<std::pair<std::string, std::string>> typed_cells;
+        for (const auto& fact : data_.schematic_cell_pin_facts) {
+            typed_cells.emplace(fact.caller_module_name, fact.cell_id);
+        }
+        for (const auto& [module_name, signature] : data_.ast_module_signatures_by_name) {
+            for (const auto& cell : signature.schematic.cells) {
+                if (cell.id.empty() || cell.id.front() != '$' ||
+                    typed_cells.contains({module_name, cell.id})) {
+                    continue;
+                }
+                appendPin(module_name,
+                          cell,
+                          SemanticLocation{.uri = signature.uri, .range = cell.selection_range},
+                          SnapshotSchematicCellPinDirection::Unknown,
+                          SnapshotConeSourceRole::Data,
+                          {},
+                          {},
+                          {},
+                          true,
+                          false);
+            }
+        }
+    }
     SnapshotData& data_;
     std::unordered_map<std::string, PrimitiveCellBinding> primitive_cells_by_location_;
     std::unordered_map<std::string, std::string> display_labels_by_stable_id_;
@@ -7657,46 +7767,65 @@ AstIndexView buildAstIndexView(const SnapshotData* data, std::uint64_t generatio
                                                                        : instance.type_display;
             view_instance.range = instance.range;
             view_instance.selection_range = instance.selection_range;
-            for (const auto& [_, signature] : view.module_signatures_by_name) {
-                if (signature.uri != uri) {
-                    continue;
-                }
-                const auto cell_it = std::find_if(signature.schematic.cells.begin(),
-                                                  signature.schematic.cells.end(),
-                                                  [&](const SchematicCell& cell) {
-                                                      return cell.name == instance.instance_name &&
-                                                             cell.type == instance.module_name &&
-                                                              rangesOverlapOrTouch(cell.selection_range,
-                                                                                  instance.selection_range);
-                                                  });
-                if (cell_it != signature.schematic.cells.end()) {
-                    view_instance.connections = cell_it->connections;
-                    break;
+            // Signature and inlay queries consume the resolved, value-type
+            // connection slices built while the AST is alive. They do not
+            // recover from schematic display text or module-instance fields.
+            const auto connections = data->resolved_connection_slices_by_instance_id.find(
+                instance.instance_stable_id);
+            const auto definition = view.modules_by_name.find(instance.module_name);
+            if (connections != data->resolved_connection_slices_by_instance_id.end() &&
+                definition != view.modules_by_name.end()) {
+                for (const auto& connection : connections->second) {
+                    if ((connection.kind != SnapshotConeEdgeKind::InstancePort &&
+                         connection.kind != SnapshotConeEdgeKind::ParameterOverride) ||
+                        connection.endpoint_name.empty()) {
+                        continue;
+                    }
+                    const auto& candidates = connection.kind == SnapshotConeEdgeKind::ParameterOverride
+                                                 ? definition->second.parameter_details
+                                                 : definition->second.port_details;
+                    const auto port = std::find_if(candidates.begin(),
+                                                   candidates.end(),
+                                                   [&](const SchematicPort& candidate) {
+                                                       return candidate.name == connection.endpoint_name;
+                                                   });
+                    view_instance.connections.push_back(SignatureInlayConnection{
+                        .port_name = connection.endpoint_name,
+                        .parameter_signature = port == candidates.end()
+                                                   ? connection.endpoint_name
+                                                   : portSignatureLabel(*port),
+                        .range = connection.location.range,
+                        .module_port = connection.kind == SnapshotConeEdgeKind::InstancePort});
                 }
             }
-            if (view_instance.connections.empty()) {
-                view_instance.connections = instance.port_connections;
-            }
-            view_instance.connections.insert(view_instance.connections.end(),
-                                             instance.parameter_connections.begin(),
-                                             instance.parameter_connections.end());
             std::sort(view_instance.connections.begin(),
                       view_instance.connections.end(),
-                      [](const SchematicConnection& lhs, const SchematicConnection& rhs) {
-                          if (lhs.range.start_line != rhs.range.start_line) {
-                              return lhs.range.start_line < rhs.range.start_line;
-                          }
-                          if (lhs.range.start_character != rhs.range.start_character) {
-                              return lhs.range.start_character < rhs.range.start_character;
-                          }
-                          if (lhs.range.end_line != rhs.range.end_line) {
-                              return lhs.range.end_line < rhs.range.end_line;
-                          }
-                          if (lhs.range.end_character != rhs.range.end_character) {
-                              return lhs.range.end_character < rhs.range.end_character;
-                          }
-                          return lhs.port_name < rhs.port_name;
+                      [](const SignatureInlayConnection& lhs, const SignatureInlayConnection& rhs) {
+                          return std::tie(lhs.range.start_line,
+                                          lhs.range.start_character,
+                                          lhs.range.end_line,
+                                          lhs.range.end_character,
+                                          lhs.module_port,
+                                          lhs.port_name,
+                                          lhs.parameter_signature) <
+                                 std::tie(rhs.range.start_line,
+                                          rhs.range.start_character,
+                                          rhs.range.end_line,
+                                          rhs.range.end_character,
+                                          rhs.module_port,
+                                          rhs.port_name,
+                                          rhs.parameter_signature);
                       });
+            view_instance.connections.erase(
+                std::unique(view_instance.connections.begin(),
+                            view_instance.connections.end(),
+                            [](const SignatureInlayConnection& lhs, const SignatureInlayConnection& rhs) {
+                                return lhs.port_name == rhs.port_name &&
+                                       lhs.parameter_signature == rhs.parameter_signature &&
+                                       lhs.module_port == rhs.module_port &&
+                                       sameRange(lhs.range, rhs.range);
+                            }),
+                view_instance.connections.end());
             view_instances.push_back(std::move(view_instance));
         }
     }

@@ -14,13 +14,20 @@ struct SignatureInlaySymbol {
     std::string value_display;
 };
 
+struct SignatureInlayConnection {
+    std::string port_name;
+    std::string parameter_signature;
+    ParseRange range;
+    bool module_port = true;
+};
+
 struct SignatureInlayModuleInstance {
     std::string module_name;
     std::string instance_name;
     std::string type_display;
     ParseRange range;
     ParseRange selection_range;
-    std::vector<SchematicConnection> connections;
+    std::vector<SignatureInlayConnection> connections;
 };
 
 struct CallableInvocationFact {

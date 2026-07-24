@@ -439,10 +439,10 @@ SchematicNetBuildResult buildSchematicNets(const ModuleSchematic& schematic,
                                       SemanticSchematicEndpoint{.node_id = cell.id,
                                                                 .port_name = "interface"});
         }
-        if (cell.kind == "module" || typed_cell_ids.contains(cell.id)) {
+        if (cell.kind == "module" || cell.kind == "interface" || typed_cell_ids.contains(cell.id)) {
             continue;
         }
-        if (!cell.connections.empty()) {
+        if (!typed_cell_ids.contains(cell.id)) {
             result.partial = true;
             ++result.partial_cell_pin_facts;
             appendUniqueMessage(result.messages,
@@ -466,6 +466,87 @@ SchematicNetBuildResult buildSchematicNets(const ModuleSchematic& schematic,
         result.nets.push_back(std::move(net));
     }
     return result;
+}
+
+std::vector<SemanticSchematicCell> projectSchematicCells(
+    const ModuleSchematic& schematic,
+    const DesignGraphContext& context) {
+    std::vector<SemanticSchematicCell> cells;
+    cells.reserve(schematic.cells.size());
+    std::unordered_map<std::string, size_t> cell_indexes;
+    for (const auto& cell : schematic.cells) {
+        cell_indexes.try_emplace(cell.id, cells.size());
+        cells.push_back(SemanticSchematicCell{.id = cell.id,
+                                              .name = cell.name,
+                                              .type = cell.type,
+                                              .kind = cell.kind,
+                                              .range = cell.range,
+                                              .selection_range = cell.selection_range,
+                                              .connections = {}});
+    }
+
+    const auto append = [&](std::string_view cell_id,
+                            std::string port_name,
+                            int port_index,
+                            std::string signal,
+                            ParseRange range) {
+        const auto cell = cell_indexes.find(std::string(cell_id));
+        if (cell == cell_indexes.end()) {
+            return;
+        }
+        cells[cell->second].connections.push_back(SemanticSchematicConnection{
+            .port_name = std::move(port_name),
+            .port_index = port_index,
+            .signal = std::move(signal),
+            .range = range});
+    };
+
+    if (const auto connections = context.binding_index.schematic_connections_by_module.find(schematic.name);
+        connections != context.binding_index.schematic_connections_by_module.end()) {
+        for (const auto& fact : connections->second) {
+            const auto cell = context.binding_index.schematic_cell_ids_by_instance_id.find(
+                fact.instance_stable_id);
+            if (cell == context.binding_index.schematic_cell_ids_by_instance_id.end()) {
+                continue;
+            }
+            append(cell->second,
+                   fact.endpoint_name,
+                   fact.endpoint_index,
+                   fact.display_label.empty() ? "<partial>" : fact.display_label,
+                   fact.location.range);
+        }
+    }
+
+    if (const auto pins = context.binding_index.schematic_cell_pins_by_module.find(schematic.name);
+        pins != context.binding_index.schematic_cell_pins_by_module.end()) {
+        for (const auto& fact : pins->second) {
+            append(fact.cell_id,
+                   fact.pin_name,
+                   fact.pin_index,
+                   fact.display_label.empty() ? (fact.literal ? "<literal>" : "<partial>")
+                                              : fact.display_label,
+                   fact.location.range);
+        }
+    }
+
+    for (auto& cell : cells) {
+        std::sort(cell.connections.begin(), cell.connections.end(), [](const auto& lhs, const auto& rhs) {
+            return std::tie(lhs.port_index, lhs.port_name, lhs.range.start_line, lhs.range.start_character,
+                            lhs.range.end_line, lhs.range.end_character, lhs.signal) <
+                   std::tie(rhs.port_index, rhs.port_name, rhs.range.start_line, rhs.range.start_character,
+                            rhs.range.end_line, rhs.range.end_character, rhs.signal);
+        });
+        cell.connections.erase(std::unique(cell.connections.begin(), cell.connections.end(), [](const auto& lhs,
+                                                                                                 const auto& rhs) {
+                                   return lhs.port_name == rhs.port_name && lhs.port_index == rhs.port_index &&
+                                          lhs.signal == rhs.signal && lhs.range.start_line == rhs.range.start_line &&
+                                           lhs.range.start_character == rhs.range.start_character &&
+                                           lhs.range.end_line == rhs.range.end_line &&
+                                           lhs.range.end_character == rhs.range.end_character;
+                               }),
+                               cell.connections.end());
+    }
+    return cells;
 }
 
 void appendUniqueMessage(std::vector<std::string>& messages, std::string message) {
@@ -743,7 +824,7 @@ SemanticSchematicResult schematic(const DesignGraphContext& context,
                                               .range = schematic.range,
                                               .selection_range = schematic.selection_range,
                                               .ports = schematic.ports,
-                                              .cells = schematic.cells},
+                                              .cells = projectSchematicCells(schematic, context)},
             .nets = std::move(net_result.nets)});
 
         if (depth >= max_depth) {

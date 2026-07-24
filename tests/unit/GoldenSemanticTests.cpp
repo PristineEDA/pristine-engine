@@ -984,7 +984,7 @@ void runSchematicFixture(SemanticEngine& engine, const nlohmann::json& fixture) 
             REQUIRE(module_it != result.modules.end());
             const auto cell_it = std::find_if(module_it->module.cells.begin(),
                                               module_it->module.cells.end(),
-                                              [&](const SchematicCell& cell) {
+                                              [&](const SemanticSchematicCell& cell) {
                                                   return cell.name == name && cell.type == type;
                                               });
             REQUIRE(cell_it != module_it->module.cells.end());
@@ -994,7 +994,7 @@ void runSchematicFixture(SemanticEngine& engine, const nlohmann::json& fixture) 
                     CAPTURE(port);
                     CHECK(std::any_of(cell_it->connections.begin(),
                                       cell_it->connections.end(),
-                                      [&](const SchematicConnection& connection) {
+                                      [&](const SemanticSchematicConnection& connection) {
                                           return connection.port_name == port;
                                       }));
                 }

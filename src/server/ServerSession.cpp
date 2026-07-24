@@ -556,14 +556,14 @@ jsonrpc::Json toSchematicPortJson(const analysis::SchematicPort& port) {
                          {"selectionRange", toRangeJson(port.selection_range)}};
 }
 
-jsonrpc::Json toSchematicConnectionJson(const analysis::SchematicConnection& connection) {
+jsonrpc::Json toSchematicConnectionJson(const analysis::SemanticSchematicConnection& connection) {
     return jsonrpc::Json{{"portName", connection.port_name},
                          {"portIndex", connection.port_index},
                          {"signal", connection.signal},
                          {"range", toRangeJson(connection.range)}};
 }
 
-jsonrpc::Json toSchematicCellJson(const analysis::SchematicCell& cell) {
+jsonrpc::Json toSchematicCellJson(const analysis::SemanticSchematicCell& cell) {
     jsonrpc::Json connections = jsonrpc::Json::array();
     for (const auto& connection : cell.connections) {
         connections.push_back(toSchematicConnectionJson(connection));
