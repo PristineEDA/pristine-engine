@@ -70,6 +70,25 @@ const SnapshotConeAdjacencyEdge* coneDataEdge(const SnapshotConeAdjacencyIndex& 
     return it == index.edges.end() ? nullptr : &*it;
 }
 
+bool hasEventConeEdge(const SnapshotConeAdjacencyIndex& index,
+                      std::string_view expression,
+                      SnapshotConeControlOrigin origin,
+                      SnapshotConeEventKind event_kind) {
+    return std::any_of(index.edges.begin(), index.edges.end(), [&](const auto& edge) {
+        return edge.expression == expression && edge.source_role == SnapshotConeSourceRole::Control &&
+               edge.control_origin == origin && edge.event_kind == event_kind;
+    });
+}
+
+size_t eventConeEdgeCount(const SnapshotConeAdjacencyIndex& index,
+                          SnapshotConeControlOrigin origin,
+                          SnapshotConeEventKind event_kind) {
+    return static_cast<size_t>(std::count_if(index.edges.begin(), index.edges.end(), [&](const auto& edge) {
+        return edge.source_role == SnapshotConeSourceRole::Control && edge.control_origin == origin &&
+               edge.event_kind == event_kind;
+    }));
+}
+
 bool graphHasDataSlicePrecision(std::string source, SnapshotConeSlicePrecision precision) {
     auto output = buildGraphSource(std::move(source));
     if (output.data == nullptr) return false;
@@ -3793,6 +3812,325 @@ TEST_CASE("AstIndex does not preserve raw binary connection text in schematic di
     CHECK(facts.front()->display_label == "<partial>");
     CHECK(output.data->design_graph_binding_index.schematic_partial_connection_fact_count == 1);
     CHECK(facts.front()->display_label.find('&') == std::string::npos);
+}
+
+TEST_CASE("AstIndex indexes posedge timing controls as cone facts",
+          "[analysis][semantic][ast-index][cone][event][posedge]") {
+    auto output = buildGraphSource(
+        "module top(input logic clk, input logic data, output logic y);\n"
+        "  always @(posedge clk) y <= data;\nendmodule\n");
+    REQUIRE(output.data != nullptr);
+    const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
+    CHECK(hasEventConeEdge(view.cone_adjacency_index, "clk", SnapshotConeControlOrigin::EventControl,
+                           SnapshotConeEventKind::PosEdge));
+    CHECK(hasEventConeEdge(view.cone_adjacency_index, "data", SnapshotConeControlOrigin::None,
+                           SnapshotConeEventKind::None) == false);
+    CHECK(output.data->event_control_fact_count == 1);
+}
+
+TEST_CASE("AstIndex indexes negedge timing controls as cone facts",
+          "[analysis][semantic][ast-index][cone][event][negedge]") {
+    auto output = buildGraphSource(
+        "module top(input logic reset_n, input logic data, output logic y);\n"
+        "  always @(negedge reset_n) y <= data;\nendmodule\n");
+    REQUIRE(output.data != nullptr);
+    const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
+    CHECK(hasEventConeEdge(view.cone_adjacency_index, "reset_n", SnapshotConeControlOrigin::EventControl,
+                           SnapshotConeEventKind::NegEdge));
+}
+
+TEST_CASE("AstIndex preserves each event-list edge independently",
+          "[analysis][semantic][ast-index][cone][event][event-list]") {
+    auto output = buildGraphSource(
+        "module top(input logic clk, input logic reset_n, input logic data, output logic y);\n"
+        "  always @(posedge clk or negedge reset_n) y <= data;\nendmodule\n");
+    REQUIRE(output.data != nullptr);
+    const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
+    CHECK(hasEventConeEdge(view.cone_adjacency_index, "clk", SnapshotConeControlOrigin::EventControl,
+                           SnapshotConeEventKind::PosEdge));
+    CHECK(hasEventConeEdge(view.cone_adjacency_index, "reset_n", SnapshotConeControlOrigin::EventControl,
+                           SnapshotConeEventKind::NegEdge));
+    CHECK(eventConeEdgeCount(view.cone_adjacency_index, SnapshotConeControlOrigin::EventControl,
+                             SnapshotConeEventKind::PosEdge) == 1);
+}
+
+TEST_CASE("AstIndex indexes event iff guards separately from triggering edges",
+          "[analysis][semantic][ast-index][cone][event][iff]") {
+    auto output = buildGraphSource(
+        "module top(input logic clk, input logic enable, input logic data, output logic y);\n"
+        "  always @(posedge clk iff enable) y <= data;\nendmodule\n");
+    REQUIRE(output.data != nullptr);
+    const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
+    CHECK(hasEventConeEdge(view.cone_adjacency_index, "clk", SnapshotConeControlOrigin::EventControl,
+                           SnapshotConeEventKind::PosEdge));
+    CHECK(hasEventConeEdge(view.cone_adjacency_index, "enable", SnapshotConeControlOrigin::EventIff,
+                           SnapshotConeEventKind::PosEdge));
+}
+
+TEST_CASE("AstIndex keeps implicit event controls free of speculative clock edges",
+          "[analysis][semantic][ast-index][cone][event][implicit][no-fallback]") {
+    auto output = buildGraphSource(
+        "module top(input logic a, input logic b, output logic y);\n"
+        "  always @(*) y = a & b;\nendmodule\n");
+    REQUIRE(output.data != nullptr);
+    const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
+    CHECK(eventConeEdgeCount(view.cone_adjacency_index, SnapshotConeControlOrigin::EventControl,
+                             SnapshotConeEventKind::Implicit) == 0);
+    const auto facts = output.data->event_control_facts_by_uri.find("file:///workspace/top.sv");
+    REQUIRE(facts != output.data->event_control_facts_by_uri.end());
+    REQUIRE(facts->second.size() == 1);
+    CHECK(facts->second.front().event_kind == SnapshotConeEventKind::Implicit);
+    CHECK_FALSE(facts->second.front().unresolved);
+}
+
+TEST_CASE("AstIndex combines event and if control dependencies deterministically",
+          "[analysis][semantic][ast-index][cone][event][if]") {
+    auto output = buildGraphSource(
+        "module top(input logic clk, input logic en, input logic a, input logic b, output logic y);\n"
+        "  always @(posedge clk) if (en) y <= a; else y <= b;\nendmodule\n");
+    REQUIRE(output.data != nullptr);
+    const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
+    CHECK(hasEventConeEdge(view.cone_adjacency_index, "clk", SnapshotConeControlOrigin::EventControl,
+                           SnapshotConeEventKind::PosEdge));
+    CHECK(std::any_of(view.cone_adjacency_index.edges.begin(), view.cone_adjacency_index.edges.end(),
+                      [](const auto& edge) {
+                          return edge.expression == "en" &&
+                                 edge.control_origin == SnapshotConeControlOrigin::ConditionalStatement;
+                      }));
+}
+
+TEST_CASE("AstIndex preserves ternary selector and event control roles",
+          "[analysis][semantic][ast-index][cone][event][ternary]") {
+    auto output = buildGraphSource(
+        "module top(input logic clk, input logic select, input logic a, input logic b, output logic y);\n"
+        "  always @(posedge clk) y <= select ? a : b;\nendmodule\n");
+    REQUIRE(output.data != nullptr);
+    const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
+    CHECK(hasEventConeEdge(view.cone_adjacency_index, "clk", SnapshotConeControlOrigin::EventControl,
+                           SnapshotConeEventKind::PosEdge));
+    CHECK(std::any_of(view.cone_adjacency_index.edges.begin(), view.cone_adjacency_index.edges.end(),
+                      [](const auto& edge) {
+                          return edge.expression == "select" &&
+                                 edge.control_origin == SnapshotConeControlOrigin::TernaryCondition;
+                      }));
+}
+
+TEST_CASE("AstIndex keeps nonblocking sequential data edges alongside event controls",
+          "[analysis][semantic][ast-index][cone][event][nonblocking]") {
+    auto output = buildGraphSource(
+        "module top(input logic clk, input logic data, output logic y);\n"
+        "  always_ff @(posedge clk) y <= data;\nendmodule\n");
+    REQUIRE(output.data != nullptr);
+    const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
+    REQUIRE(coneDataEdge(view.cone_adjacency_index, "data") != nullptr);
+    CHECK(hasEventConeEdge(view.cone_adjacency_index, "clk", SnapshotConeControlOrigin::EventControl,
+                           SnapshotConeEventKind::PosEdge));
+}
+
+TEST_CASE("AstIndex keeps event controls separate for independent procedures",
+          "[analysis][semantic][ast-index][cone][event][isolation]") {
+    auto output = buildGraphSource(
+        "module top(input logic clk, input logic reset_n, input logic a, input logic b, output logic y, output logic z);\n"
+        "  always @(posedge clk) y <= a;\n"
+        "  always @(negedge reset_n) z <= b;\nendmodule\n");
+    REQUIRE(output.data != nullptr);
+    const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
+    CHECK(eventConeEdgeCount(view.cone_adjacency_index, SnapshotConeControlOrigin::EventControl,
+                             SnapshotConeEventKind::PosEdge) == 1);
+    CHECK(eventConeEdgeCount(view.cone_adjacency_index, SnapshotConeControlOrigin::EventControl,
+                             SnapshotConeEventKind::NegEdge) == 1);
+}
+
+TEST_CASE("AstIndex preserves exact static slices on event sources",
+          "[analysis][semantic][ast-index][cone][event][slice]") {
+    auto output = buildGraphSource(
+        "module top(input logic [1:0] clocks, input logic data, output logic y);\n"
+        "  always @(posedge clocks[0]) y <= data;\nendmodule\n");
+    REQUIRE(output.data != nullptr);
+    const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
+    const auto edge = std::find_if(view.cone_adjacency_index.edges.begin(), view.cone_adjacency_index.edges.end(),
+                                   [](const auto& candidate) {
+                                       return candidate.expression == "clocks[0]" &&
+                                              candidate.control_origin == SnapshotConeControlOrigin::EventControl;
+                                   });
+    REQUIRE(edge != view.cone_adjacency_index.edges.end());
+    CHECK(edge->source_slice.precision == SnapshotConeSlicePrecision::Exact);
+}
+
+TEST_CASE("AstIndex marks dynamic event selections as partial control facts",
+          "[analysis][semantic][ast-index][cone][event][dynamic]") {
+    auto output = buildGraphSource(
+        "module top(input logic [3:0] clocks, input logic [1:0] index, input logic data, output logic y);\n"
+        "  always @(posedge clocks[index]) y <= data;\nendmodule\n");
+    REQUIRE(output.data != nullptr);
+    const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
+    CHECK(std::any_of(view.cone_adjacency_index.edges.begin(), view.cone_adjacency_index.edges.end(),
+                      [](const auto& edge) {
+                          return edge.control_origin == SnapshotConeControlOrigin::EventControl &&
+                                 edge.event_kind == SnapshotConeEventKind::PosEdge &&
+                                 edge.source_slice.precision == SnapshotConeSlicePrecision::Dynamic;
+                      }));
+}
+
+TEST_CASE("AstIndex records unsupported timing controls as explicit partial facts",
+          "[analysis][semantic][ast-index][cone][event][delay][partial]") {
+    auto output = buildGraphSource(
+        "module top(input logic data, output logic y);\n"
+        "  always begin #1 y = data; end\nendmodule\n");
+    REQUIRE(output.data != nullptr);
+    CHECK(std::any_of(output.data->unresolved_cone_sources.begin(), output.data->unresolved_cone_sources.end(),
+                      [](const auto& fact) {
+                          return fact.control_origin == SnapshotConeControlOrigin::EventControl &&
+                                 fact.event_kind == SnapshotConeEventKind::Unsupported;
+                      }));
+}
+
+TEST_CASE("AstIndex keeps nested repeat event triggers without a source-text fallback",
+          "[analysis][semantic][ast-index][cone][event][repeat]") {
+    auto output = buildGraphSource(
+        "module top(input logic clk, input logic [1:0] count, input logic data, output logic y);\n"
+        "  always begin repeat (count) @(posedge clk) y = data; end\nendmodule\n");
+    REQUIRE(output.data != nullptr);
+    const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
+    CHECK(hasEventConeEdge(view.cone_adjacency_index, "clk", SnapshotConeControlOrigin::EventControl,
+                           SnapshotConeEventKind::PosEdge));
+    CHECK_FALSE(hasEventConeEdge(view.cone_adjacency_index, "count", SnapshotConeControlOrigin::EventControl,
+                                 SnapshotConeEventKind::Repeated));
+}
+
+TEST_CASE("AstIndex keeps event controls when data and trigger use the same symbol",
+          "[analysis][semantic][ast-index][cone][event][same-source]") {
+    auto output = buildGraphSource(
+        "module top(input logic clk, output logic y);\n"
+        "  always @(posedge clk) y <= clk;\nendmodule\n");
+    REQUIRE(output.data != nullptr);
+    const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
+    REQUIRE(coneDataEdge(view.cone_adjacency_index, "clk") != nullptr);
+    CHECK(hasEventConeEdge(view.cone_adjacency_index, "clk", SnapshotConeControlOrigin::EventControl,
+                           SnapshotConeEventKind::PosEdge));
+}
+
+TEST_CASE("AstIndex indexes generated sequential event controls independently",
+          "[analysis][semantic][ast-index][cone][event][generated]") {
+    auto output = buildGraphSource(
+        "module top(input logic clk, input logic data, output logic y);\n"
+        "  genvar i; generate for (i = 0; i < 2; i = i + 1) begin : g\n"
+        "    always @(posedge clk) y <= data;\n  end endgenerate\nendmodule\n",
+        92,
+        {"top"});
+    REQUIRE(output.data != nullptr);
+    const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
+    CHECK(eventConeEdgeCount(view.cone_adjacency_index, SnapshotConeControlOrigin::EventControl,
+                             SnapshotConeEventKind::PosEdge) >= 1);
+}
+
+TEST_CASE("AstIndex timing facts are deterministic across equivalent builds",
+          "[analysis][semantic][ast-index][cone][event][deterministic]") {
+    const auto build = [](std::uint64_t generation) {
+        return buildGraphSource(
+            "module top(input logic clk, input logic data, output logic y);\n"
+            "  always @(posedge clk) y <= data;\nendmodule\n",
+            generation);
+    };
+    auto first = build(93);
+    auto second = build(94);
+    REQUIRE(first.data != nullptr);
+    REQUIRE(second.data != nullptr);
+    const auto& lhs = first.data->event_control_facts_by_uri.at("file:///workspace/top.sv");
+    const auto& rhs = second.data->event_control_facts_by_uri.at("file:///workspace/top.sv");
+    REQUIRE(lhs.size() == rhs.size());
+    CHECK(lhs.front().event_kind == rhs.front().event_kind);
+    CHECK(lhs.front().sources.front().expression == rhs.front().sources.front().expression);
+}
+
+TEST_CASE("AstIndex records event controls for case-driven sequential logic",
+          "[analysis][semantic][ast-index][cone][event][case]") {
+    auto output = buildGraphSource(
+        "module top(input logic clk, input logic select, input logic a, input logic b, output logic y);\n"
+        "  always @(posedge clk) case (select) 1'b0: y <= a; default: y <= b; endcase\nendmodule\n");
+    REQUIRE(output.data != nullptr);
+    const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
+    CHECK(hasEventConeEdge(view.cone_adjacency_index, "clk", SnapshotConeControlOrigin::EventControl,
+                           SnapshotConeEventKind::PosEdge));
+    CHECK(std::any_of(view.cone_adjacency_index.edges.begin(), view.cone_adjacency_index.edges.end(),
+                      [](const auto& edge) {
+                          return edge.expression == "select" &&
+                                 edge.control_origin == SnapshotConeControlOrigin::CaseStatement;
+                      }));
+}
+
+TEST_CASE("AstIndex preserves event facts across module boundaries",
+          "[analysis][semantic][ast-index][cone][event][cross-module]") {
+    auto output = buildReferenceCallDesign(
+        "module child(input logic clk, input logic data, output logic y);\n"
+        "  always @(posedge clk) y <= data;\nendmodule\n"
+        "module top; logic clk; logic data; logic y; child u(.clk(clk), .data(data), .y(y)); endmodule\n");
+    REQUIRE(output.data != nullptr);
+    CHECK(output.data->event_control_fact_count == 1);
+    const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
+    CHECK(hasEventConeEdge(view.cone_adjacency_index, "clk", SnapshotConeControlOrigin::EventControl,
+                           SnapshotConeEventKind::PosEdge));
+}
+
+TEST_CASE("AstIndex does not turn unresolved event names into guessed edges",
+          "[analysis][semantic][ast-index][cone][event][unresolved][no-fallback]") {
+    auto output = buildGraphSource(
+        "`default_nettype none\n"
+        "module top(input logic data, output logic y);\n"
+        "  always @(posedge missing_clock) y <= data;\nendmodule\n");
+    REQUIRE(output.data != nullptr);
+    const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
+    CHECK_FALSE(hasEventConeEdge(view.cone_adjacency_index, "missing_clock",
+                                 SnapshotConeControlOrigin::EventControl,
+                                 SnapshotConeEventKind::PosEdge));
+}
+
+TEST_CASE("AstIndex deduplicates repeated event source facts per assignment",
+          "[analysis][semantic][ast-index][cone][event][dedupe]") {
+    auto output = buildGraphSource(
+        "module top(input logic clk, input logic data, output logic y);\n"
+        "  always @(posedge clk or posedge clk) y <= data;\nendmodule\n");
+    REQUIRE(output.data != nullptr);
+    const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
+    CHECK(eventConeEdgeCount(view.cone_adjacency_index, SnapshotConeControlOrigin::EventControl,
+                             SnapshotConeEventKind::PosEdge) == 2);
+}
+
+TEST_CASE("AstIndex uses event timing facts without global graph scans",
+          "[analysis][semantic][ast-index][cone][event][zero-global-scan]") {
+    auto output = buildGraphSource(
+        "module top(input logic clk, input logic data, output logic y);\n"
+        "  always @(posedge clk) y <= data;\nendmodule\n");
+    REQUIRE(output.data != nullptr);
+    const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
+    CHECK_FALSE(view.cone_adjacency_index.edges.empty());
+    CHECK(output.data->design_graph_binding_index.scoped_symbol_candidate_count > 0);
+}
+
+TEST_CASE("AstIndex retains each event-list source range in timing facts",
+          "[analysis][semantic][ast-index][cone][event][ranges]") {
+    auto output = buildGraphSource(
+        "module top(input logic clk, input logic reset_n, input logic data, output logic y);\n"
+        "  always @(posedge clk or negedge reset_n) y <= data;\nendmodule\n");
+    REQUIRE(output.data != nullptr);
+    const auto& facts = output.data->event_control_facts_by_uri.at("file:///workspace/top.sv");
+    REQUIRE(facts.size() == 1);
+    REQUIRE(facts.front().sources.size() == 2);
+    CHECK(facts.front().sources[0].range.start_character != facts.front().sources[1].range.start_character);
+}
+
+TEST_CASE("AstIndex does not leak implicit timing facts into sequential procedures",
+          "[analysis][semantic][ast-index][cone][event][implicit-isolation]") {
+    auto output = buildGraphSource(
+        "module top(input logic clk, input logic a, input logic b, output logic comb, output logic seq);\n"
+        "  always @(*) comb = a & b;\n"
+        "  always @(posedge clk) seq <= comb;\nendmodule\n");
+    REQUIRE(output.data != nullptr);
+    const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
+    CHECK(eventConeEdgeCount(view.cone_adjacency_index, SnapshotConeControlOrigin::EventControl,
+                             SnapshotConeEventKind::PosEdge) == 1);
+    CHECK(eventConeEdgeCount(view.cone_adjacency_index, SnapshotConeControlOrigin::EventControl,
+                             SnapshotConeEventKind::Implicit) == 0);
 }
 
 } // namespace

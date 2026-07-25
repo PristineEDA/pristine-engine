@@ -394,6 +394,7 @@ struct SemanticConeEdge {
     std::string source_role = "data";
     std::string slice_kind = "whole";
     std::string control_origin;
+    std::string event_kind;
     std::optional<ParseRange> source_range;
     std::optional<SemanticConeSlice> source_slice;
     std::optional<SemanticConeSlice> sink_slice;
@@ -409,6 +410,9 @@ struct SemanticConeTrace {
     size_t cone_scanned_global_edges = 0;
     size_t cone_control_edge_count = 0;
     size_t cone_ternary_control_edge_count = 0;
+    size_t cone_event_control_edge_count = 0;
+    size_t cone_event_iff_edge_count = 0;
+    size_t cone_timing_fact_lookup_count = 0;
     size_t cone_slice_fact_count = 0;
     size_t cone_exact_slice_edge_count = 0;
     size_t cone_dynamic_slice_fact_count = 0;

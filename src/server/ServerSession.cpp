@@ -683,6 +683,7 @@ jsonrpc::Json toConeEdgeJson(const analysis::SemanticConeEdge& edge) {
     if (edge.source_role != "data") result["sourceRole"] = edge.source_role;
     if (edge.slice_kind != "whole") result["sliceKind"] = edge.slice_kind;
     if (!edge.control_origin.empty()) result["controlOrigin"] = edge.control_origin;
+    if (!edge.event_kind.empty()) result["eventKind"] = edge.event_kind;
     if (edge.source_range.has_value()) result["sourceRange"] = toRangeJson(*edge.source_range);
     if (edge.source_slice.has_value()) result["sourceSlice"] = toConeSliceJson(*edge.source_slice);
     if (edge.sink_slice.has_value()) result["sinkSlice"] = toConeSliceJson(*edge.sink_slice);
@@ -1480,6 +1481,15 @@ jsonrpc::Json ServerSession::handleBackwardCone(const jsonrpc::Json& params) {
     result["coneControlEdges"] = trace.cone_control_edge_count;
     if (trace.cone_ternary_control_edge_count > 0) {
         result["coneTernaryControlEdges"] = trace.cone_ternary_control_edge_count;
+    }
+    if (trace.cone_event_control_edge_count > 0) {
+        result["coneEventControlEdges"] = trace.cone_event_control_edge_count;
+    }
+    if (trace.cone_event_iff_edge_count > 0) {
+        result["coneEventIffEdges"] = trace.cone_event_iff_edge_count;
+    }
+    if (trace.cone_timing_fact_lookup_count > 0) {
+        result["coneTimingFactLookups"] = trace.cone_timing_fact_lookup_count;
     }
     if (trace.cone_primitive_data_edge_count > 0) {
         result["conePrimitiveDataEdges"] = trace.cone_primitive_data_edge_count;

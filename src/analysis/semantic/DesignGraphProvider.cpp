@@ -109,6 +109,34 @@ std::string coneControlOriginLabel(SnapshotConeControlOrigin origin) {
         return "dynamicSelect";
     case SnapshotConeControlOrigin::PrimitiveControl:
         return "primitiveControl";
+    case SnapshotConeControlOrigin::EventControl:
+        return "eventControl";
+    case SnapshotConeControlOrigin::EventIff:
+        return "eventIff";
+    }
+    return {};
+}
+
+std::string coneEventKindLabel(SnapshotConeEventKind kind) {
+    switch (kind) {
+    case SnapshotConeEventKind::None:
+        return {};
+    case SnapshotConeEventKind::Any:
+        return "any";
+    case SnapshotConeEventKind::PosEdge:
+        return "posedge";
+    case SnapshotConeEventKind::NegEdge:
+        return "negedge";
+    case SnapshotConeEventKind::BothEdges:
+        return "bothEdges";
+    case SnapshotConeEventKind::EventList:
+        return "eventList";
+    case SnapshotConeEventKind::Implicit:
+        return "implicit";
+    case SnapshotConeEventKind::Repeated:
+        return "repeated";
+    case SnapshotConeEventKind::Unsupported:
+        return "unsupported";
     }
     return {};
 }
@@ -1217,9 +1245,10 @@ SemanticConeTrace backwardCone(const DesignGraphContext& context,
                                   std::to_string(edge.location.range.start_line) + ":" +
                                   std::to_string(edge.location.range.start_character) + "\n" +
                                   coneEdgeKindLabel(edge.kind) + "\n" +
-                                  coneSourceRoleLabel(edge.source_role) + "\n" +
-                                  coneControlOriginLabel(edge.control_origin) + "\n" +
-                                  coneSliceKindLabel(edge.slice_kind) + "\n" +
+                                   coneSourceRoleLabel(edge.source_role) + "\n" +
+                                   coneControlOriginLabel(edge.control_origin) + "\n" +
+                                   coneEventKindLabel(edge.event_kind) + "\n" +
+                                   coneSliceKindLabel(edge.slice_kind) + "\n" +
                                   coneSliceKey(edge.source_slice) + "\n" +
                                   coneSliceKey(edge.sink_slice);
             if (node_available && emitted_edges.insert(edge_key).second) {
@@ -1235,6 +1264,7 @@ SemanticConeTrace backwardCone(const DesignGraphContext& context,
                                                        .source_role = coneSourceRoleLabel(edge.source_role),
                                                        .slice_kind = coneSliceKindLabel(edge.slice_kind),
                                                        .control_origin = coneControlOriginLabel(edge.control_origin),
+                                                       .event_kind = coneEventKindLabel(edge.event_kind),
                                                        .source_range = edge.expression_location.range,
                                                        .source_slice = coneSlice(edge.source_slice),
                                                        .sink_slice = coneSlice(edge.sink_slice)});
@@ -1250,6 +1280,14 @@ SemanticConeTrace backwardCone(const DesignGraphContext& context,
                     ++trace.cone_control_edge_count;
                     if (edge.control_origin == SnapshotConeControlOrigin::TernaryCondition) {
                         ++trace.cone_ternary_control_edge_count;
+                    }
+                    if (edge.control_origin == SnapshotConeControlOrigin::EventControl) {
+                        ++trace.cone_event_control_edge_count;
+                        ++trace.cone_timing_fact_lookup_count;
+                    }
+                    if (edge.control_origin == SnapshotConeControlOrigin::EventIff) {
+                        ++trace.cone_event_iff_edge_count;
+                        ++trace.cone_timing_fact_lookup_count;
                     }
                 }
                 if (edge.slice_kind != SnapshotConeSliceKind::Whole) {

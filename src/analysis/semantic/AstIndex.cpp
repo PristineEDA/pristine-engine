@@ -12,6 +12,7 @@
 #include "slang/ast/Scope.h"
 #include "slang/ast/SemanticFacts.h"
 #include "slang/ast/Symbol.h"
+#include "slang/ast/TimingControl.h"
 #include "slang/ast/expressions/AssignmentExpressions.h"
 #include "slang/ast/expressions/CallExpression.h"
 #include "slang/ast/expressions/ConversionExpression.h"
@@ -20,6 +21,7 @@
 #include "slang/ast/expressions/OperatorExpressions.h"
 #include "slang/ast/expressions/SelectExpressions.h"
 #include "slang/ast/statements/ConditionalStatements.h"
+#include "slang/ast/statements/MiscStatements.h"
 #include "slang/ast/symbols/InstanceSymbols.h"
 #include "slang/ast/symbols/BlockSymbols.h"
 #include "slang/ast/symbols/MemberSymbols.h"
@@ -552,9 +554,11 @@ bool sameControlSources(const std::vector<SnapshotConeControlSourceSeed>& lhs,
             lhs[index].expression != rhs[index].expression ||
             lhs[index].slice_kind != rhs[index].slice_kind ||
             !sameSliceFact(lhs[index].source_slice, rhs[index].source_slice) ||
-            lhs[index].source_symbol_ids != rhs[index].source_symbol_ids ||
-            lhs[index].source_symbol_names != rhs[index].source_symbol_names ||
-            lhs[index].origin != rhs[index].origin || lhs[index].unresolved != rhs[index].unresolved) {
+             lhs[index].source_symbol_ids != rhs[index].source_symbol_ids ||
+             lhs[index].source_symbol_names != rhs[index].source_symbol_names ||
+             lhs[index].origin != rhs[index].origin ||
+             lhs[index].event_kind != rhs[index].event_kind ||
+             lhs[index].unresolved != rhs[index].unresolved) {
             return false;
         }
     }
@@ -3877,6 +3881,7 @@ void normalizeConeControlSources(std::vector<SnapshotConeControlSourceSeed>& sou
                                lhs.slice_kind,
                                sliceFactKey(lhs.source_slice),
                                lhs.origin,
+                               lhs.event_kind,
                                lhs.source_symbol_ids,
                                lhs.source_symbol_names,
                                lhs.unresolved) <
@@ -3888,15 +3893,17 @@ void normalizeConeControlSources(std::vector<SnapshotConeControlSourceSeed>& sou
                                rhs.slice_kind,
                                sliceFactKey(rhs.source_slice),
                                rhs.origin,
+                               rhs.event_kind,
                                rhs.source_symbol_ids,
                                rhs.source_symbol_names,
                                rhs.unresolved);
     });
     sources.erase(std::unique(sources.begin(), sources.end(), [](const auto& lhs, const auto& rhs) {
                       return sameRange(lhs.range, rhs.range) && lhs.expression == rhs.expression &&
-                             lhs.slice_kind == rhs.slice_kind &&
-                             sameSliceFact(lhs.source_slice, rhs.source_slice) && lhs.origin == rhs.origin &&
-                             lhs.source_symbol_ids == rhs.source_symbol_ids &&
+                              lhs.slice_kind == rhs.slice_kind &&
+                              sameSliceFact(lhs.source_slice, rhs.source_slice) && lhs.origin == rhs.origin &&
+                              lhs.event_kind == rhs.event_kind &&
+                              lhs.source_symbol_ids == rhs.source_symbol_ids &&
                              lhs.source_symbol_names == rhs.source_symbol_names &&
                              lhs.unresolved == rhs.unresolved;
                   }),
@@ -5249,27 +5256,174 @@ struct SemanticIndexVisitor
         return document == documents.end() ? nullptr : &document->second;
     }
 
-    void appendControlSource(const slang::ast::Expression& expression,
-                             SnapshotConeControlOrigin origin) {
+    bool appendControlSource(std::vector<SnapshotConeControlSourceSeed>& target,
+                             const slang::ast::Expression& expression,
+                             SnapshotConeControlOrigin origin,
+                             SnapshotConeEventKind event_kind = SnapshotConeEventKind::None) {
         if (auto source = controlSourceForExpression(documentFor(expression),
                                                      source_manager,
                                                      expression)) {
             source->source_symbol_ids = directSymbolIdsForExpression(data, source_manager, expression);
             source->source_symbol_names = coneSymbolNamesForExpression(documentFor(expression),
-                                                                         source_manager,
-                                                                         expression);
+                                                                          source_manager,
+                                                                          expression);
             source->origin = origin;
+            source->event_kind = event_kind;
             source->unresolved = source->source_symbol_ids.empty() &&
-                                 unwrapImplicitConversions(expression).kind ==
-                                     slang::ast::ExpressionKind::Invalid;
-            const auto duplicate = std::any_of(control_sources.begin(), control_sources.end(), [&](const auto& value) {
+                                 (event_kind != SnapshotConeEventKind::None ||
+                                  unwrapImplicitConversions(expression).kind ==
+                                      slang::ast::ExpressionKind::Invalid);
+            const auto duplicate = std::any_of(target.begin(), target.end(), [&](const auto& value) {
                 return sameRange(value.range, source->range) && value.expression == source->expression &&
                        value.slice_kind == source->slice_kind && value.origin == source->origin &&
+                       value.event_kind == source->event_kind &&
                        value.source_symbol_ids == source->source_symbol_ids &&
                        value.source_symbol_names == source->source_symbol_names &&
                        value.unresolved == source->unresolved;
             });
-            if (!duplicate) control_sources.push_back(*source);
+            if (!duplicate) target.push_back(*source);
+            return true;
+        }
+        return false;
+    }
+
+    void appendControlSource(const slang::ast::Expression& expression,
+                             SnapshotConeControlOrigin origin) {
+        appendControlSource(control_sources, expression, origin);
+    }
+
+    static SnapshotConeEventKind eventKindForEdge(slang::ast::EdgeKind edge) {
+        switch (edge) {
+        case slang::ast::EdgeKind::None:
+            return SnapshotConeEventKind::Any;
+        case slang::ast::EdgeKind::PosEdge:
+            return SnapshotConeEventKind::PosEdge;
+        case slang::ast::EdgeKind::NegEdge:
+            return SnapshotConeEventKind::NegEdge;
+        case slang::ast::EdgeKind::BothEdges:
+            return SnapshotConeEventKind::BothEdges;
+        }
+        return SnapshotConeEventKind::Unsupported;
+    }
+
+    static SnapshotConeEventKind eventKindForTiming(const slang::ast::TimingControl& timing) {
+        switch (timing.kind) {
+        case slang::ast::TimingControlKind::SignalEvent:
+            return eventKindForEdge(timing.as<slang::ast::SignalEventControl>().edge);
+        case slang::ast::TimingControlKind::EventList:
+            return SnapshotConeEventKind::EventList;
+        case slang::ast::TimingControlKind::ImplicitEvent:
+            return SnapshotConeEventKind::Implicit;
+        case slang::ast::TimingControlKind::RepeatedEvent:
+            return SnapshotConeEventKind::Repeated;
+        default:
+            return SnapshotConeEventKind::Unsupported;
+        }
+    }
+
+    SnapshotConeControlSourceSeed unresolvedTimingControlSource(
+        const slang::ast::TimingControl& timing,
+        SnapshotConeEventKind event_kind) const {
+        return SnapshotConeControlSourceSeed{
+            .range = sourceRangeForSourceRange(source_manager, timing.sourceRange),
+            .expression = "<timing-control>",
+            .slice_kind = SnapshotConeSliceKind::Whole,
+            .source_slice = SnapshotConeSliceFact{
+                .precision = SnapshotConeSlicePrecision::Unresolved,
+                .msb = std::nullopt,
+                .lsb = std::nullopt,
+            },
+            .source_symbol_ids = {},
+            .source_symbol_names = {},
+            .origin = SnapshotConeControlOrigin::EventControl,
+            .event_kind = event_kind,
+            .unresolved = true};
+    }
+
+    void appendTimingControlSources(const slang::ast::TimingControl& timing,
+                                    std::vector<SnapshotConeControlSourceSeed>& sources,
+                                    bool& unresolved) {
+        switch (timing.kind) {
+        case slang::ast::TimingControlKind::SignalEvent: {
+            const auto& event = timing.as<slang::ast::SignalEventControl>();
+            const auto event_kind = eventKindForEdge(event.edge);
+            if (!appendControlSource(sources,
+                                     event.expr,
+                                     SnapshotConeControlOrigin::EventControl,
+                                     event_kind)) {
+                sources.push_back(unresolvedTimingControlSource(timing, event_kind));
+                unresolved = true;
+            }
+            if (event.iffCondition != nullptr &&
+                !appendControlSource(sources,
+                                     *event.iffCondition,
+                                     SnapshotConeControlOrigin::EventIff,
+                                     event_kind)) {
+                sources.push_back(unresolvedTimingControlSource(timing, event_kind));
+                unresolved = true;
+            }
+            return;
+        }
+        case slang::ast::TimingControlKind::EventList: {
+            const auto& events = timing.as<slang::ast::EventListControl>();
+            for (const auto* event : events.events) {
+                if (event == nullptr) {
+                    unresolved = true;
+                    continue;
+                }
+                appendTimingControlSources(*event, sources, unresolved);
+            }
+            return;
+        }
+        case slang::ast::TimingControlKind::ImplicitEvent:
+            return;
+        case slang::ast::TimingControlKind::RepeatedEvent: {
+            const auto& repeated = timing.as<slang::ast::RepeatedEventControl>();
+            if (!appendControlSource(sources,
+                                     repeated.expr,
+                                     SnapshotConeControlOrigin::EventControl,
+                                     SnapshotConeEventKind::Repeated)) {
+                sources.push_back(unresolvedTimingControlSource(timing,
+                                                                 SnapshotConeEventKind::Repeated));
+                unresolved = true;
+            }
+            appendTimingControlSources(repeated.event, sources, unresolved);
+            return;
+        }
+        default:
+            sources.push_back(unresolvedTimingControlSource(timing,
+                                                             SnapshotConeEventKind::Unsupported));
+            unresolved = true;
+            return;
+        }
+    }
+
+    void appendTimingControlFact(const slang::ast::TimedStatement& statement,
+                                 const std::vector<SnapshotConeControlSourceSeed>& sources,
+                                 SnapshotConeEventKind event_kind,
+                                 bool unresolved) {
+        const auto statement_location = locationForSourceRange(source_manager, statement.sourceRange);
+        const auto timing_location = locationForSourceRange(source_manager, statement.timing.sourceRange);
+        if (!statement_location.has_value() || !timing_location.has_value() ||
+            statement_location->uri != timing_location->uri) {
+            return;
+        }
+        auto& facts = data.event_control_facts_by_uri[statement_location->uri];
+        const auto duplicate = std::any_of(facts.begin(), facts.end(), [&](const auto& fact) {
+            return fact.statement_location.range.start_line == statement_location->range.start_line &&
+                   fact.statement_location.range.start_character == statement_location->range.start_character &&
+                   fact.timing_location.range.start_line == timing_location->range.start_line &&
+                   fact.timing_location.range.start_character == timing_location->range.start_character &&
+                   fact.event_kind == event_kind && fact.unresolved == unresolved &&
+                   sameControlSources(fact.sources, sources);
+        });
+        if (!duplicate) {
+            facts.push_back(SnapshotConeEventControlFact{.statement_location = *statement_location,
+                                                         .timing_location = *timing_location,
+                                                         .event_kind = event_kind,
+                                                         .sources = sources,
+                                                         .unresolved = unresolved});
+            ++data.event_control_fact_count;
         }
     }
 
@@ -5360,6 +5514,23 @@ struct SemanticIndexVisitor
                 }
             }
         }
+        this->visitDefault(statement);
+        control_sources.resize(previous_size);
+    }
+
+    void handle(const slang::ast::TimedStatement& statement) {
+        const auto previous_size = control_sources.size();
+        std::vector<SnapshotConeControlSourceSeed> timing_sources;
+        bool timing_unresolved = false;
+        appendTimingControlSources(statement.timing, timing_sources, timing_unresolved);
+        normalizeConeControlSources(timing_sources);
+        appendTimingControlFact(statement,
+                                timing_sources,
+                                eventKindForTiming(statement.timing),
+                                timing_unresolved ||
+                                    std::any_of(timing_sources.begin(), timing_sources.end(),
+                                                [](const auto& source) { return source.unresolved; }));
+        control_sources.insert(control_sources.end(), timing_sources.begin(), timing_sources.end());
         this->visitDefault(statement);
         control_sources.resize(previous_size);
     }
@@ -5577,10 +5748,11 @@ void buildAssignmentEdges(SnapshotData& data) {
         const auto append_sources = [&](const ParseRange& source_range,
                                         std::string_view expression,
                                         SnapshotConeEdgeKind kind,
-                                        SnapshotConeSourceRole role,
-                                        SnapshotConeSliceKind slice_kind,
-                                        SnapshotConeControlOrigin control_origin,
-                                        const SnapshotConeSliceFact& source_slice,
+                                         SnapshotConeSourceRole role,
+                                         SnapshotConeSliceKind slice_kind,
+                                         SnapshotConeControlOrigin control_origin,
+                                         SnapshotConeEventKind event_kind,
+                                         const SnapshotConeSliceFact& source_slice,
                                         const SnapshotConeSliceFact& sink_slice,
                                         const std::vector<std::string>& direct_symbol_ids,
                                         const std::vector<std::string>& direct_symbol_names) {
@@ -5593,9 +5765,10 @@ void buildAssignmentEdges(SnapshotData& data) {
                                       std::to_string(seed.assignment_range.start_line) + ":" +
                                       std::to_string(seed.assignment_range.start_character) + "\n" +
                                       std::to_string(static_cast<int>(kind)) + "\n" +
-                                      std::to_string(static_cast<int>(role)) + "\n" +
-                                      std::to_string(static_cast<int>(control_origin)) + "\n" +
-                                      std::to_string(source_location.range.start_line) + ":" +
+                                       std::to_string(static_cast<int>(role)) + "\n" +
+                                       std::to_string(static_cast<int>(control_origin)) + "\n" +
+                                       std::to_string(static_cast<int>(event_kind)) + "\n" +
+                                       std::to_string(source_location.range.start_line) + ":" +
                                       std::to_string(source_location.range.start_character);
                 if (!emitted_edges.insert(edge_key).second) return;
                 data.assignment_edges_by_uri[seed.uri].push_back(SnapshotAssignmentEdge{
@@ -5609,6 +5782,7 @@ void buildAssignmentEdges(SnapshotData& data) {
                     .source_role = role,
                     .slice_kind = slice_kind,
                     .control_origin = control_origin,
+                    .event_kind = event_kind,
                     .source_slice = source_slice,
                     .sink_slice = sink_slice});
             };
@@ -5634,11 +5808,13 @@ void buildAssignmentEdges(SnapshotData& data) {
         const auto append_unresolved = [&](const ParseRange& source_range,
                                            std::string_view expression,
                                            SnapshotConeSourceRole role,
-                                           SnapshotConeControlOrigin control_origin) {
+                                           SnapshotConeControlOrigin control_origin,
+                                           SnapshotConeEventKind event_kind) {
             const auto key = *left_id + "\n" + std::to_string(source_range.start_line) + ":" +
                              std::to_string(source_range.start_character) + "\n" +
                              std::to_string(static_cast<int>(role)) + "\n" +
-                             std::to_string(static_cast<int>(control_origin));
+                             std::to_string(static_cast<int>(control_origin)) + "\n" +
+                             std::to_string(static_cast<int>(event_kind));
             if (!emitted_unresolved_sources.insert(key).second) return;
             data.unresolved_cone_sources.push_back(SnapshotConeUnresolvedSourceFact{
                 .from_symbol_id = *left_id,
@@ -5646,17 +5822,19 @@ void buildAssignmentEdges(SnapshotData& data) {
                 .expression_location = SemanticLocation{.uri = seed.uri, .range = source_range},
                 .expression = std::string(expression),
                 .source_role = role,
-                .control_origin = control_origin});
+                .control_origin = control_origin,
+                .event_kind = event_kind});
         };
 
         for (const auto& source : seed.data_sources) {
             append_sources(source.range,
                            source.expression,
                            SnapshotConeEdgeKind::Assignment,
-                           SnapshotConeSourceRole::Data,
-                           source.slice_kind,
-                           SnapshotConeControlOrigin::None,
-                           source.source_slice,
+                            SnapshotConeSourceRole::Data,
+                            source.slice_kind,
+                            SnapshotConeControlOrigin::None,
+                            SnapshotConeEventKind::None,
+                            source.source_slice,
                            source.sink_slice,
                            source.source_symbol_ids,
                            source.source_symbol_names);
@@ -5665,7 +5843,8 @@ void buildAssignmentEdges(SnapshotData& data) {
                     append_unresolved(source.range,
                                       source.expression,
                                       SnapshotConeSourceRole::Data,
-                                      SnapshotConeControlOrigin::None);
+                                      SnapshotConeControlOrigin::None,
+                                      SnapshotConeEventKind::None);
                 }
             }
         }
@@ -5673,10 +5852,11 @@ void buildAssignmentEdges(SnapshotData& data) {
             append_sources(control.range,
                            control.expression,
                            SnapshotConeEdgeKind::ControlDependency,
-                           SnapshotConeSourceRole::Control,
-                           control.slice_kind,
-                           control.origin,
-                           control.source_slice,
+                            SnapshotConeSourceRole::Control,
+                            control.slice_kind,
+                            control.origin,
+                            control.event_kind,
+                            control.source_slice,
                            seed.sink_slice,
                            control.source_symbol_ids,
                            control.source_symbol_names);
@@ -5685,7 +5865,8 @@ void buildAssignmentEdges(SnapshotData& data) {
                     append_unresolved(control.range,
                                       control.expression,
                                       SnapshotConeSourceRole::Control,
-                                      control.origin);
+                                      control.origin,
+                                      control.event_kind);
                 }
             }
         }

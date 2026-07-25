@@ -86,6 +86,10 @@ int main() {
                 text += "  logic mux_select;\n";
                 text += "  logic muxed;\n";
                 text += "  assign muxed = mux_select ? connected : " + name + ";\n";
+                text += "  logic seq_clk;\n";
+                text += "  logic seq_data;\n";
+                text += "  logic seq_y;\n";
+                text += "  always @(posedge seq_clk) seq_y <= seq_data;\n";
             }
             text += "endmodule\n";
             return text;
@@ -208,6 +212,10 @@ int main() {
         const auto ternary_cone = engine.backwardConeAt(target_uri, 13, 10);
         const auto end_ternary_cone = Clock::now();
         const auto ternary_cone_warm = engine.backwardConeAt(target_uri, 13, 10);
+        const auto start_event_cone = Clock::now();
+        const auto event_cone = engine.backwardConeAt(target_uri, 17, 30);
+        const auto end_event_cone = Clock::now();
+        const auto event_cone_warm = engine.backwardConeAt(target_uri, 17, 30);
 
         const auto start_code_action = Clock::now();
         const auto code_actions = engine.codeActionsAt(
@@ -243,11 +251,14 @@ int main() {
                                      schematic.schematic_cell_pin_fact_lookup_count == 0 ||
                                      schematic.schematic_cell_pin_scan_count == 0 ||
                                      cache_stats.schematic_entries == 0 || cone_warm.unresolved ||
-                                     ternary_cone.unresolved || ternary_cone_warm.unresolved ||
-                                     cone.nodes.size() < 2 || cache_stats.cone_adjacency_scanned_edges == 0 ||
-                                     ternary_cone.cone_control_edge_count == 0 ||
-                                     ternary_cone.cone_ternary_control_edge_count == 0 ||
-                                     cache_stats.graph_scanned_global_symbols != 0 ||
+                                      ternary_cone.unresolved || ternary_cone_warm.unresolved ||
+                                      event_cone.unresolved || event_cone_warm.unresolved ||
+                                      cone.nodes.size() < 2 || cache_stats.cone_adjacency_scanned_edges == 0 ||
+                                      ternary_cone.cone_control_edge_count == 0 ||
+                                      ternary_cone.cone_ternary_control_edge_count == 0 ||
+                                      event_cone.cone_event_control_edge_count == 0 ||
+                                      event_cone.cone_timing_fact_lookup_count == 0 ||
+                                      cache_stats.graph_scanned_global_symbols != 0 ||
                                      cache_stats.cone_scanned_global_edges != 0;
 
         if (!first_baseline) {
@@ -286,6 +297,8 @@ int main() {
                   << "\"backwardConeMicros\":" << elapsedMicros(start_cone, end_cone) << ","
                   << "\"ternaryBackwardConeMicros\":"
                   << elapsedMicros(start_ternary_cone, end_ternary_cone) << ","
+                  << "\"eventBackwardConeMicros\":"
+                  << elapsedMicros(start_event_cone, end_event_cone) << ","
                   << "\"codeActionMicros\":" << elapsedMicros(start_code_action, end_code_action) << ","
                   ;
         writeQueryCacheStats(cache_stats);
@@ -352,6 +365,11 @@ int main() {
                   << ternary_cone.cone_control_edge_count << ","
                   << "\"ternaryConeTernaryControlEdgeCount\":"
                   << ternary_cone.cone_ternary_control_edge_count << ","
+                  << "\"eventBackwardConeNodeCount\":" << event_cone.nodes.size() << ","
+                  << "\"eventConeControlEdgeCount\":"
+                  << event_cone.cone_event_control_edge_count << ","
+                  << "\"eventConeTimingFactLookups\":"
+                  << event_cone.cone_timing_fact_lookup_count << ","
                   << "\"coneSliceFactCount\":" << cone.cone_slice_fact_count << ","
                   << "\"graphBuildScopedSymbolCandidates\":"
                   << cone.graph_build_scoped_symbol_candidates << ","

@@ -857,6 +857,7 @@ void buildDesignGraphIndexes(SnapshotData& data) {
                                                   .source_role = edge.source_role,
                                                   .slice_kind = edge.slice_kind,
                                                   .control_origin = edge.control_origin,
+                                                  .event_kind = edge.event_kind,
                                                   .source_slice = edge.source_slice,
                                                   .sink_slice = edge.sink_slice,
                                                   .generated_instance_id = {}});

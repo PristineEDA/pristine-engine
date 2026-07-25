@@ -259,6 +259,19 @@ enum class SnapshotConeControlOrigin {
     TernaryCondition,
     DynamicSelect,
     PrimitiveControl,
+    EventControl,
+    EventIff,
+};
+enum class SnapshotConeEventKind {
+    None,
+    Any,
+    PosEdge,
+    NegEdge,
+    BothEdges,
+    EventList,
+    Implicit,
+    Repeated,
+    Unsupported,
 };
 enum class SnapshotConeSliceKind {
     Whole,
@@ -300,6 +313,17 @@ struct SnapshotConeControlSourceSeed {
     std::vector<std::string> source_symbol_ids;
     std::vector<std::string> source_symbol_names;
     SnapshotConeControlOrigin origin = SnapshotConeControlOrigin::None;
+    SnapshotConeEventKind event_kind = SnapshotConeEventKind::None;
+    bool unresolved = false;
+};
+
+// Captured while the slang AST timing control is still alive. Providers only
+// receive the copied control sources, never a timing-control AST pointer.
+struct SnapshotConeEventControlFact {
+    SemanticLocation statement_location;
+    SemanticLocation timing_location;
+    SnapshotConeEventKind event_kind = SnapshotConeEventKind::None;
+    std::vector<SnapshotConeControlSourceSeed> sources;
     bool unresolved = false;
 };
 
@@ -329,6 +353,7 @@ struct SnapshotAssignmentEdge {
     SnapshotConeSourceRole source_role = SnapshotConeSourceRole::Data;
     SnapshotConeSliceKind slice_kind = SnapshotConeSliceKind::Whole;
     SnapshotConeControlOrigin control_origin = SnapshotConeControlOrigin::None;
+    SnapshotConeEventKind event_kind = SnapshotConeEventKind::None;
     SnapshotConeSliceFact source_slice;
     SnapshotConeSliceFact sink_slice;
 };
@@ -524,6 +549,7 @@ struct SnapshotConeAdjacencyEdge {
     SnapshotConeSourceRole source_role = SnapshotConeSourceRole::Data;
     SnapshotConeSliceKind slice_kind = SnapshotConeSliceKind::Whole;
     SnapshotConeControlOrigin control_origin = SnapshotConeControlOrigin::None;
+    SnapshotConeEventKind event_kind = SnapshotConeEventKind::None;
     SnapshotConeSliceFact source_slice;
     SnapshotConeSliceFact sink_slice;
     std::string generated_instance_id;
@@ -537,6 +563,7 @@ struct SnapshotConeUnresolvedSourceFact {
     SnapshotConeEdgeKind kind = SnapshotConeEdgeKind::Assignment;
     SnapshotConeSourceRole source_role = SnapshotConeSourceRole::Data;
     SnapshotConeControlOrigin control_origin = SnapshotConeControlOrigin::None;
+    SnapshotConeEventKind event_kind = SnapshotConeEventKind::None;
 };
 
 struct SnapshotConeRootSelectionFact {
@@ -651,6 +678,9 @@ struct SnapshotData {
     std::vector<SnapshotAssignmentEdgeSeed> assignment_edge_seeds;
     std::unordered_map<std::string, std::vector<SnapshotAssignmentEdge>> assignment_edges_by_uri;
     std::vector<SnapshotConeUnresolvedSourceFact> unresolved_cone_sources;
+    std::unordered_map<std::string, std::vector<SnapshotConeEventControlFact>>
+        event_control_facts_by_uri;
+    size_t event_control_fact_count = 0;
     // Collected while slang AST primitive instances are alive; the design graph
     // builder merges these with assignment pins into its provider-facing view.
     std::vector<SnapshotSchematicCellPinFact> schematic_cell_pin_facts;

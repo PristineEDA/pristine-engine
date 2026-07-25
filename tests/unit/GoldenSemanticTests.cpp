@@ -1076,6 +1076,12 @@ void runBackwardConeFixture(SemanticEngine& engine, const nlohmann::json& fixtur
     if (expected.contains("ternaryControlEdgeCount")) {
         CHECK(result.cone_ternary_control_edge_count == expected.at("ternaryControlEdgeCount").get<size_t>());
     }
+    if (expected.contains("eventControlEdgeCount")) {
+        CHECK(result.cone_event_control_edge_count == expected.at("eventControlEdgeCount").get<size_t>());
+    }
+    if (expected.contains("eventIffEdgeCount")) {
+        CHECK(result.cone_event_iff_edge_count == expected.at("eventIffEdgeCount").get<size_t>());
+    }
     if (expected.contains("primitiveDataEdgeCount")) {
         CHECK(result.cone_primitive_data_edge_count == expected.at("primitiveDataEdgeCount").get<size_t>());
     }
@@ -1137,6 +1143,15 @@ void runBackwardConeFixture(SemanticEngine& engine, const nlohmann::json& fixtur
             CAPTURE(origin);
             CHECK(std::any_of(result.edges.begin(), result.edges.end(), [&](const SemanticConeEdge& edge) {
                 return edge.control_origin == origin;
+            }));
+        }
+    }
+    if (expected.contains("eventKinds")) {
+        for (const auto& expected_kind : expected.at("eventKinds")) {
+            const auto kind = expected_kind.get<std::string>();
+            CAPTURE(kind);
+            CHECK(std::any_of(result.edges.begin(), result.edges.end(), [&](const SemanticConeEdge& edge) {
+                return edge.event_kind == kind;
             }));
         }
     }
