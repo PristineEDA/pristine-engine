@@ -1497,6 +1497,18 @@ jsonrpc::Json ServerSession::handleBackwardCone(const jsonrpc::Json& params) {
     if (trace.cone_primitive_control_edge_count > 0) {
         result["conePrimitiveControlEdges"] = trace.cone_primitive_control_edge_count;
     }
+    if (trace.cone_assertion_sample_edge_count > 0) {
+        result["coneAssertionSampleEdges"] = trace.cone_assertion_sample_edge_count;
+    }
+    if (trace.cone_assertion_clock_edge_count > 0) {
+        result["coneAssertionClockEdges"] = trace.cone_assertion_clock_edge_count;
+    }
+    if (trace.cone_assertion_disable_edge_count > 0) {
+        result["coneAssertionDisableEdges"] = trace.cone_assertion_disable_edge_count;
+    }
+    if (trace.cone_assertion_abort_edge_count > 0) {
+        result["coneAssertionAbortEdges"] = trace.cone_assertion_abort_edge_count;
+    }
     result["coneSliceFacts"] = trace.cone_slice_fact_count;
     if (trace.cone_exact_slice_edge_count > 0) {
         result["coneExactSliceEdges"] = trace.cone_exact_slice_edge_count;

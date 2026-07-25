@@ -86,13 +86,29 @@ std::string coneEdgeKindLabel(SnapshotConeEdgeKind kind) {
         return "controlDependency";
     case SnapshotConeEdgeKind::PrimitiveCell:
         return "primitiveCell";
+    case SnapshotConeEdgeKind::AssertionSample:
+        return "assertionSample";
     default:
         return "assignment";
     }
 }
 
 std::string coneSourceRoleLabel(SnapshotConeSourceRole role) {
-    return role == SnapshotConeSourceRole::Control ? "control" : "data";
+    switch (role) {
+    case SnapshotConeSourceRole::Data:
+        return "data";
+    case SnapshotConeSourceRole::Control:
+        return "control";
+    case SnapshotConeSourceRole::Sampled:
+        return "sampled";
+    case SnapshotConeSourceRole::Clock:
+        return "clock";
+    case SnapshotConeSourceRole::Disable:
+        return "disable";
+    case SnapshotConeSourceRole::Abort:
+        return "abort";
+    }
+    return "data";
 }
 
 std::string coneControlOriginLabel(SnapshotConeControlOrigin origin) {
@@ -113,6 +129,12 @@ std::string coneControlOriginLabel(SnapshotConeControlOrigin origin) {
         return "eventControl";
     case SnapshotConeControlOrigin::EventIff:
         return "eventIff";
+    case SnapshotConeControlOrigin::AssertionClock:
+        return "assertionClock";
+    case SnapshotConeControlOrigin::AssertionDisable:
+        return "assertionDisable";
+    case SnapshotConeControlOrigin::AssertionAbort:
+        return "assertionAbort";
     }
     return {};
 }
@@ -1274,6 +1296,22 @@ SemanticConeTrace backwardCone(const DesignGraphContext& context,
                     }
                     else {
                         ++trace.cone_primitive_data_edge_count;
+                    }
+                }
+                if (edge.kind == SnapshotConeEdgeKind::AssertionSample) {
+                    ++trace.cone_assertion_sample_edge_count;
+                    switch (edge.source_role) {
+                    case SnapshotConeSourceRole::Clock:
+                        ++trace.cone_assertion_clock_edge_count;
+                        break;
+                    case SnapshotConeSourceRole::Disable:
+                        ++trace.cone_assertion_disable_edge_count;
+                        break;
+                    case SnapshotConeSourceRole::Abort:
+                        ++trace.cone_assertion_abort_edge_count;
+                        break;
+                    default:
+                        break;
                     }
                 }
                 if (edge.source_role == SnapshotConeSourceRole::Control) {

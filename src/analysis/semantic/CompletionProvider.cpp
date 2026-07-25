@@ -220,6 +220,12 @@ int completionKindForSemanticKind(std::string_view kind) {
     if (kind == "Subroutine" || kind == "SubroutinePort") {
         return 3;
     }
+    if (kind == "Property" || kind == "Sequence" || kind == "LetDecl" || kind == "Checker") {
+        return 3;
+    }
+    if (kind == "ClockingBlock") {
+        return 8;
+    }
     if (kind == "Net" || kind == "Variable" || kind == "Field" || kind == "Member") {
         return 6;
     }
@@ -254,6 +260,21 @@ std::string completionDetailForSemanticKind(std::string_view kind) {
     if (kind == "Subroutine" || kind == "SubroutinePort") {
         return "Callable";
     }
+    if (kind == "Property") {
+        return "Property";
+    }
+    if (kind == "Sequence") {
+        return "Sequence";
+    }
+    if (kind == "LetDecl") {
+        return "Let";
+    }
+    if (kind == "Checker") {
+        return "Checker";
+    }
+    if (kind == "ClockingBlock") {
+        return "Clocking Block";
+    }
     if (kind == "Net" || kind == "Variable" || kind == "Field" || kind == "Member") {
         return "Variable";
     }
@@ -271,7 +292,8 @@ std::string completionDetailForSemanticKind(std::string_view kind) {
 
 int completionPriorityForDetail(std::string_view detail) {
     if (detail == "Variable" || detail == "Parameter" || detail == "Enum Member" ||
-        detail == "Callable") {
+        detail == "Callable" || detail == "Property" || detail == "Sequence" ||
+        detail == "Let" || detail == "Checker") {
         return 0;
     }
     if (detail == "Typedef" || detail == "Class" || detail == "Enum") {

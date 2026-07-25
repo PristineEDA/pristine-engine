@@ -4072,6 +4072,93 @@ TEST_CASE("AstIndex preserves event facts across module boundaries",
                            SnapshotConeEventKind::PosEdge));
 }
 
+TEST_CASE("AstIndex lowers concurrent assertion sampling, clocking, and disable facts",
+          "[analysis][semantic][ast-index][cone][assertion][clocking][disable]") {
+    auto output = buildGraphSource(
+        "module top(input logic clk, input logic reset_n, input logic a, input logic b);\n"
+        "  assert property (@(posedge clk) disable iff (!reset_n) a |-> b);\nendmodule\n");
+    REQUIRE(output.data != nullptr);
+    CHECK(output.data->assertion_observation_fact_count == 1);
+    const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
+    const auto edge_for = [&](std::string_view name, SnapshotConeSourceRole role,
+                              SnapshotConeControlOrigin origin) {
+        return std::any_of(view.cone_adjacency_index.edges.begin(),
+                           view.cone_adjacency_index.edges.end(),
+                           [&](const auto& edge) {
+                               const auto symbol = view.design_graph_symbols_by_id.find(edge.to_symbol_id);
+                               return edge.kind == SnapshotConeEdgeKind::AssertionSample &&
+                                      edge.source_role == role && edge.control_origin == origin &&
+                                      symbol != view.design_graph_symbols_by_id.end() &&
+                                      symbol->second.identity.name == name;
+                           });
+    };
+    CHECK(edge_for("a", SnapshotConeSourceRole::Sampled, SnapshotConeControlOrigin::None));
+    CHECK(edge_for("b", SnapshotConeSourceRole::Sampled, SnapshotConeControlOrigin::None));
+    CHECK(edge_for("clk", SnapshotConeSourceRole::Clock,
+                   SnapshotConeControlOrigin::AssertionClock));
+    CHECK(edge_for("reset_n", SnapshotConeSourceRole::Disable,
+                   SnapshotConeControlOrigin::AssertionDisable));
+}
+
+TEST_CASE("AstIndex keeps assertion abort sources separate from sampled sources",
+          "[analysis][semantic][ast-index][cone][assertion][abort]") {
+    auto output = buildGraphSource(
+        "module top(input logic clk, input logic abort_now, input logic a, input logic b);\n"
+        "  assert property (@(posedge clk) accept_on(abort_now) a |-> b);\nendmodule\n");
+    REQUIRE(output.data != nullptr);
+    const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
+    const auto abort_edge = std::find_if(view.cone_adjacency_index.edges.begin(),
+                                         view.cone_adjacency_index.edges.end(),
+                                         [&](const auto& edge) {
+                                             const auto symbol = view.design_graph_symbols_by_id.find(edge.to_symbol_id);
+                                             return edge.kind == SnapshotConeEdgeKind::AssertionSample &&
+                                                    edge.source_role == SnapshotConeSourceRole::Abort &&
+                                                    edge.control_origin ==
+                                                        SnapshotConeControlOrigin::AssertionAbort &&
+                                                    symbol != view.design_graph_symbols_by_id.end() &&
+                                                    symbol->second.identity.name == "abort_now";
+                                         });
+    CHECK(abort_edge != view.cone_adjacency_index.edges.end());
+}
+
+TEST_CASE("AstIndex records assertion property invocations for signature help",
+          "[analysis][semantic][ast-index][assertion][signature]") {
+    auto output = buildGraphSource(
+        "module top(input logic clk, input logic a, input logic b);\n"
+        "  property p(logic lhs, logic rhs); @(posedge clk) lhs |-> rhs; endproperty\n"
+        "  assert property (p(a, b));\nendmodule\n");
+    REQUIRE(output.data != nullptr);
+    const auto invocations = output.data->callable_invocations_by_uri.find("file:///workspace/top.sv");
+    REQUIRE(invocations != output.data->callable_invocations_by_uri.end());
+    const auto invocation = std::find_if(invocations->second.begin(), invocations->second.end(),
+                                         [](const CallableInvocationFact& fact) {
+                                             return fact.name == "p" && fact.kind == "property";
+                                         });
+    REQUIRE(invocation != invocations->second.end());
+    CHECK(invocation->resolved);
+    CHECK(invocation->parameters.size() == 2);
+    CHECK(invocation->argument_ranges.size() == 2);
+}
+
+TEST_CASE("AstIndex keeps unresolved assertion expressions as partial cone facts",
+          "[analysis][semantic][ast-index][cone][assertion][unresolved][no-fallback]") {
+    auto output = buildGraphSource(
+        "`default_nettype none\n"
+        "module top(input logic clk, input logic a);\n"
+        "  assert property (@(posedge clk) missing_signal |-> a);\nendmodule\n");
+    REQUIRE(output.data != nullptr);
+    CHECK_FALSE(std::any_of(output.data->assignment_edges_by_uri.begin(),
+                            output.data->assignment_edges_by_uri.end(),
+                            [](const auto& entry) {
+                                return std::any_of(entry.second.begin(), entry.second.end(),
+                                                   [](const auto& edge) {
+                                                       return edge.kind ==
+                                                                  SnapshotConeEdgeKind::AssertionSample &&
+                                                              edge.expression == "missing_signal";
+                                                   });
+                            }));
+}
+
 TEST_CASE("AstIndex does not turn unresolved event names into guessed edges",
           "[analysis][semantic][ast-index][cone][event][unresolved][no-fallback]") {
     auto output = buildGraphSource(

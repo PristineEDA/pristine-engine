@@ -250,8 +250,9 @@ enum class SnapshotConeEdgeKind {
     ParameterOverride,
     ControlDependency,
     PrimitiveCell,
+    AssertionSample,
 };
-enum class SnapshotConeSourceRole { Data, Control };
+enum class SnapshotConeSourceRole { Data, Control, Sampled, Clock, Disable, Abort };
 enum class SnapshotConeControlOrigin {
     None,
     ConditionalStatement,
@@ -261,6 +262,9 @@ enum class SnapshotConeControlOrigin {
     PrimitiveControl,
     EventControl,
     EventIff,
+    AssertionClock,
+    AssertionDisable,
+    AssertionAbort,
 };
 enum class SnapshotConeEventKind {
     None,
@@ -324,6 +328,30 @@ struct SnapshotConeEventControlFact {
     SemanticLocation timing_location;
     SnapshotConeEventKind event_kind = SnapshotConeEventKind::None;
     std::vector<SnapshotConeControlSourceSeed> sources;
+    bool unresolved = false;
+};
+
+// Concurrent and immediate assertions are materialized while the assertion
+// AST is alive. The synthetic observation id is a normal value-type cone root;
+// providers never reparse a property specification to recover sampled signals.
+struct SnapshotAssertionSourceFact {
+    SemanticLocation location;
+    std::string expression;
+    SnapshotConeSourceRole source_role = SnapshotConeSourceRole::Sampled;
+    SnapshotConeControlOrigin control_origin = SnapshotConeControlOrigin::None;
+    SnapshotConeEventKind event_kind = SnapshotConeEventKind::None;
+    SnapshotConeSliceKind slice_kind = SnapshotConeSliceKind::Whole;
+    SnapshotConeSliceFact source_slice;
+    std::vector<std::string> source_symbol_ids;
+    bool unresolved = false;
+};
+
+struct SnapshotAssertionObservationFact {
+    std::string stable_id;
+    std::string assertion_kind;
+    SemanticLocation location;
+    std::vector<SnapshotAssertionSourceFact> sources;
+    bool concurrent = true;
     bool unresolved = false;
 };
 
@@ -681,6 +709,9 @@ struct SnapshotData {
     std::unordered_map<std::string, std::vector<SnapshotConeEventControlFact>>
         event_control_facts_by_uri;
     size_t event_control_fact_count = 0;
+    std::unordered_map<std::string, std::vector<SnapshotAssertionObservationFact>>
+        assertion_observations_by_uri;
+    size_t assertion_observation_fact_count = 0;
     // Collected while slang AST primitive instances are alive; the design graph
     // builder merges these with assignment pins into its provider-facing view.
     std::vector<SnapshotSchematicCellPinFact> schematic_cell_pin_facts;

@@ -14,6 +14,7 @@
 #include "slang/ast/Symbol.h"
 #include "slang/ast/TimingControl.h"
 #include "slang/ast/expressions/AssignmentExpressions.h"
+#include "slang/ast/expressions/AssertionExpr.h"
 #include "slang/ast/expressions/CallExpression.h"
 #include "slang/ast/expressions/ConversionExpression.h"
 #include "slang/ast/expressions/LiteralExpressions.h"
@@ -52,6 +53,7 @@
 #include <string_view>
 #include <type_traits>
 #include <utility>
+#include <variant>
 
 namespace pristine::analysis::semantic {
 namespace {
@@ -2428,6 +2430,123 @@ void addSignatureCall(SnapshotData& data,
     data.selection_ranges_by_uri[call_location->uri].push_back(signature_call->range);
     data.selection_ranges_by_uri[call_location->uri].push_back(signature_call->selection_range);
     data.callable_invocations_by_uri[call_location->uri].push_back(std::move(*signature_call));
+}
+
+std::string assertionKindLabel(slang::ast::AssertionKind kind) {
+    switch (kind) {
+    case slang::ast::AssertionKind::Assert:
+        return "assert";
+    case slang::ast::AssertionKind::Assume:
+        return "assume";
+    case slang::ast::AssertionKind::CoverProperty:
+        return "cover property";
+    case slang::ast::AssertionKind::CoverSequence:
+        return "cover sequence";
+    case slang::ast::AssertionKind::Restrict:
+        return "restrict";
+    case slang::ast::AssertionKind::Expect:
+        return "expect";
+    }
+    return "assertion";
+}
+
+std::optional<SemanticLocation> assertionExprLocation(const slang::SourceManager& source_manager,
+                                                       const slang::ast::AssertionExpr& expression) {
+    if (expression.syntax == nullptr) {
+        return std::nullopt;
+    }
+    return locationForSourceRange(source_manager, expression.syntax->sourceRange());
+}
+
+std::string assertionPortSignatureLabel(const slang::ast::AssertionPortSymbol& port) {
+    std::string label;
+    if (port.direction.has_value()) {
+        label = directionName(*port.direction);
+    }
+    const auto type_display = normalizedTypeDisplay(port.declaredType.getType().toString());
+    if (!type_display.empty()) {
+        if (!label.empty()) {
+            label.push_back(' ');
+        }
+        label += type_display;
+    }
+    if (!port.name.empty()) {
+        if (!label.empty()) {
+            label.push_back(' ');
+        }
+        label += std::string(port.name);
+    }
+    return label;
+}
+
+void addAssertionSignatureInvocation(SnapshotData& data,
+                                     const slang::SourceManager& source_manager,
+                                     const slang::ast::AssertionInstanceExpression& expression) {
+    const auto location = locationForSourceRange(source_manager, expression.sourceRange);
+    if (!location.has_value() || location->uri.empty() || expression.symbol.name.empty()) {
+        return;
+    }
+
+    CallableInvocationFact fact;
+    fact.name = std::string(expression.symbol.name);
+    fact.range = location->range;
+    fact.selection_range = location->range;
+    const auto symbol_id = data.ids_by_symbol.find(&expression.symbol);
+    fact.resolved = symbol_id != data.ids_by_symbol.end();
+    if (fact.resolved) {
+        fact.target_stable_id = symbol_id->second;
+    }
+
+    const auto append_ports = [&](std::span<const slang::ast::AssertionPortSymbol* const> ports,
+                                  std::string_view kind) {
+        fact.kind = std::string(kind);
+        for (const auto* port : ports) {
+            if (port == nullptr) {
+                continue;
+            }
+            auto label = assertionPortSignatureLabel(*port);
+            fact.parameters.push_back(label.empty() ? std::string(port->name) : std::move(label));
+        }
+    };
+    switch (expression.symbol.kind) {
+    case slang::ast::SymbolKind::Property:
+        append_ports(expression.symbol.as<slang::ast::PropertySymbol>().ports, "property");
+        break;
+    case slang::ast::SymbolKind::Sequence:
+        append_ports(expression.symbol.as<slang::ast::SequenceSymbol>().ports, "sequence");
+        break;
+    case slang::ast::SymbolKind::LetDecl:
+        append_ports(expression.symbol.as<slang::ast::LetDeclSymbol>().ports, "let");
+        break;
+    default:
+        fact.kind = "assertion";
+        break;
+    }
+
+    for (const auto& [_, actual] : expression.arguments) {
+        std::visit(
+            [&](const auto* value) {
+                if (value == nullptr) {
+                    return;
+                }
+                using Value = std::remove_cv_t<std::remove_pointer_t<decltype(value)>>;
+                if constexpr (std::is_same_v<Value, slang::ast::AssertionExpr>) {
+                    if (const auto actual_location = assertionExprLocation(source_manager, *value);
+                        actual_location.has_value() && actual_location->uri == location->uri) {
+                        fact.argument_ranges.push_back(actual_location->range);
+                    }
+                }
+                else {
+                    if (const auto actual_location = locationForSourceRange(source_manager, value->sourceRange);
+                        actual_location.has_value() && actual_location->uri == location->uri) {
+                        fact.argument_ranges.push_back(actual_location->range);
+                    }
+                }
+            },
+            actual);
+    }
+    data.selection_ranges_by_uri[location->uri].push_back(fact.range);
+    data.callable_invocations_by_uri[location->uri].push_back(std::move(fact));
 }
 
 std::optional<ModuleDefinition> moduleDefinitionForAstBody(const slang::SourceManager& source_manager,
@@ -5469,8 +5588,308 @@ struct SemanticIndexVisitor
                                                                                        source_manager,
                                                                                        expression.left()),
                                      .sink_slice = sink_slice,
-                                     .data_sources = std::move(data_sources),
-                                     .control_sources = std::move(controls)});
+                                 .data_sources = std::move(data_sources),
+                                 .control_sources = std::move(controls)});
+    }
+
+    void appendAssertionExpressionSource(std::vector<SnapshotAssertionSourceFact>& target,
+                                         const slang::ast::Expression& expression,
+                                         SnapshotConeSourceRole role,
+                                         SnapshotConeControlOrigin origin =
+                                             SnapshotConeControlOrigin::None,
+                                         SnapshotConeEventKind event_kind =
+                                             SnapshotConeEventKind::None) {
+        const auto location = locationForSourceRange(source_manager, expression.sourceRange);
+        if (!location.has_value()) {
+            return;
+        }
+        const auto symbol_ids = directSymbolIdsForExpression(data, source_manager, expression);
+        const auto& unwrapped = unwrapImplicitConversions(expression);
+        const bool literal = connectionExpressionIsLiteral(expression);
+        const bool unresolved = !literal && symbol_ids.empty() &&
+                                unwrapped.kind == slang::ast::ExpressionKind::Invalid;
+        if (symbol_ids.empty() && !unresolved) {
+            return;
+        }
+        SnapshotAssertionSourceFact source{
+            .location = *location,
+            .expression = expressionText(documentFor(expression), source_manager, expression),
+            .source_role = role,
+            .control_origin = origin,
+            .event_kind = event_kind,
+            .slice_kind = sliceKindForExpression(expression),
+            .source_slice = sliceFactForExpression(expression),
+            .source_symbol_ids = symbol_ids,
+            .unresolved = unresolved,
+        };
+        const auto duplicate = std::any_of(target.begin(), target.end(), [&](const auto& existing) {
+            return existing.source_role == source.source_role &&
+                   existing.control_origin == source.control_origin &&
+                   existing.event_kind == source.event_kind &&
+                   sameLocation(existing.location, source.location) &&
+                   existing.source_symbol_ids == source.source_symbol_ids &&
+                   existing.unresolved == source.unresolved;
+        });
+        if (!duplicate) {
+            target.push_back(std::move(source));
+        }
+    }
+
+    void appendAssertionTimingSources(std::vector<SnapshotAssertionSourceFact>& target,
+                                      const slang::ast::TimingControl& timing) {
+        std::vector<SnapshotConeControlSourceSeed> timing_sources;
+        bool unresolved = false;
+        appendTimingControlSources(timing, timing_sources, unresolved);
+        normalizeConeControlSources(timing_sources);
+        for (const auto& source : timing_sources) {
+            SnapshotAssertionSourceFact fact{
+                .location = SemanticLocation{.uri = locationForSourceRange(source_manager,
+                                                                             timing.sourceRange)
+                                                       .value_or(SemanticLocation{})
+                                                       .uri,
+                                             .range = source.range},
+                .expression = source.expression,
+                .source_role = SnapshotConeSourceRole::Clock,
+                .control_origin = SnapshotConeControlOrigin::AssertionClock,
+                .event_kind = source.event_kind,
+                .slice_kind = source.slice_kind,
+                .source_slice = source.source_slice,
+                .source_symbol_ids = source.source_symbol_ids,
+                .unresolved = source.unresolved,
+            };
+            if (fact.location.uri.empty()) {
+                continue;
+            }
+            target.push_back(std::move(fact));
+        }
+        if (unresolved && timing_sources.empty()) {
+            if (const auto location = locationForSourceRange(source_manager, timing.sourceRange);
+                location.has_value()) {
+                target.push_back(SnapshotAssertionSourceFact{
+                    .location = *location,
+                    .expression = "<assertion-clocking>",
+                    .source_role = SnapshotConeSourceRole::Clock,
+                    .control_origin = SnapshotConeControlOrigin::AssertionClock,
+                    .event_kind = eventKindForTiming(timing),
+                    .slice_kind = SnapshotConeSliceKind::Whole,
+                    .source_slice = SnapshotConeSliceFact{
+                        .precision = SnapshotConeSlicePrecision::Unresolved,
+                        .msb = {},
+                        .lsb = {}},
+                    .source_symbol_ids = {},
+                    .unresolved = true,
+                });
+            }
+        }
+    }
+
+    void collectAssertionSources(std::vector<SnapshotAssertionSourceFact>& target,
+                                 const slang::ast::AssertionExpr& expression,
+                                 std::set<const slang::ast::AssertionExpr*>& active) {
+        if (!active.insert(&expression).second) {
+            return;
+        }
+        const auto recurse = [&](const slang::ast::AssertionExpr& child) {
+            collectAssertionSources(target, child, active);
+        };
+        switch (expression.kind) {
+        case slang::ast::AssertionExprKind::Invalid:
+            if (const auto location = assertionExprLocation(source_manager, expression);
+                location.has_value()) {
+                target.push_back(SnapshotAssertionSourceFact{
+                    .location = *location,
+                    .expression = "<invalid-assertion-expression>",
+                    .source_role = SnapshotConeSourceRole::Sampled,
+                    .control_origin = SnapshotConeControlOrigin::None,
+                    .event_kind = SnapshotConeEventKind::None,
+                    .slice_kind = SnapshotConeSliceKind::Whole,
+                    .source_slice = SnapshotConeSliceFact{
+                        .precision = SnapshotConeSlicePrecision::Unresolved,
+                        .msb = {},
+                        .lsb = {}},
+                    .source_symbol_ids = {},
+                    .unresolved = true,
+                });
+            }
+            break;
+        case slang::ast::AssertionExprKind::Simple: {
+            const auto& simple = expression.as<slang::ast::SimpleAssertionExpr>();
+            const auto& unwrapped = unwrapImplicitConversions(simple.expr);
+            if (unwrapped.kind == slang::ast::ExpressionKind::AssertionInstance) {
+                const auto& instance = unwrapped.as<slang::ast::AssertionInstanceExpression>();
+                if (!instance.isRecursiveProperty) {
+                    recurse(instance.body);
+                }
+                for (const auto& [_, actual] : instance.arguments) {
+                    std::visit(
+                        [&](const auto* value) {
+                            if (value == nullptr) {
+                                return;
+                            }
+                            using Value = std::remove_cv_t<std::remove_pointer_t<decltype(value)>>;
+                            if constexpr (std::is_same_v<Value, slang::ast::AssertionExpr>) {
+                                recurse(*value);
+                            }
+                            else if constexpr (std::is_same_v<Value, slang::ast::TimingControl>) {
+                                appendAssertionTimingSources(target, *value);
+                            }
+                            else {
+                                appendAssertionExpressionSource(target,
+                                                              *value,
+                                                              SnapshotConeSourceRole::Sampled);
+                            }
+                        },
+                        actual);
+                }
+            }
+            else {
+                appendAssertionExpressionSource(target, simple.expr, SnapshotConeSourceRole::Sampled);
+            }
+            break;
+        }
+        case slang::ast::AssertionExprKind::SequenceConcat:
+            for (const auto& element : expression.as<slang::ast::SequenceConcatExpr>().elements) {
+                recurse(*element.sequence);
+            }
+            break;
+        case slang::ast::AssertionExprKind::SequenceWithMatch: {
+            const auto& sequence = expression.as<slang::ast::SequenceWithMatchExpr>();
+            recurse(sequence.expr);
+            for (const auto* item : sequence.matchItems) {
+                if (item != nullptr) {
+                    appendAssertionExpressionSource(target, *item, SnapshotConeSourceRole::Sampled);
+                }
+            }
+            break;
+        }
+        case slang::ast::AssertionExprKind::Unary:
+            recurse(expression.as<slang::ast::UnaryAssertionExpr>().expr);
+            break;
+        case slang::ast::AssertionExprKind::Binary: {
+            const auto& binary = expression.as<slang::ast::BinaryAssertionExpr>();
+            recurse(binary.left);
+            recurse(binary.right);
+            break;
+        }
+        case slang::ast::AssertionExprKind::FirstMatch: {
+            const auto& first_match = expression.as<slang::ast::FirstMatchAssertionExpr>();
+            recurse(first_match.seq);
+            for (const auto* item : first_match.matchItems) {
+                if (item != nullptr) {
+                    appendAssertionExpressionSource(target, *item, SnapshotConeSourceRole::Sampled);
+                }
+            }
+            break;
+        }
+        case slang::ast::AssertionExprKind::Clocking: {
+            const auto& clocking = expression.as<slang::ast::ClockingAssertionExpr>();
+            appendAssertionTimingSources(target, clocking.clocking);
+            recurse(clocking.expr);
+            break;
+        }
+        case slang::ast::AssertionExprKind::StrongWeak:
+            recurse(expression.as<slang::ast::StrongWeakAssertionExpr>().expr);
+            break;
+        case slang::ast::AssertionExprKind::Abort: {
+            const auto& abort = expression.as<slang::ast::AbortAssertionExpr>();
+            appendAssertionExpressionSource(target,
+                                          abort.condition,
+                                          SnapshotConeSourceRole::Abort,
+                                          SnapshotConeControlOrigin::AssertionAbort);
+            recurse(abort.expr);
+            break;
+        }
+        case slang::ast::AssertionExprKind::Conditional: {
+            const auto& conditional = expression.as<slang::ast::ConditionalAssertionExpr>();
+            appendAssertionExpressionSource(target,
+                                          conditional.condition,
+                                          SnapshotConeSourceRole::Sampled);
+            recurse(conditional.ifExpr);
+            if (conditional.elseExpr != nullptr) {
+                recurse(*conditional.elseExpr);
+            }
+            break;
+        }
+        case slang::ast::AssertionExprKind::Case: {
+            const auto& case_expr = expression.as<slang::ast::CaseAssertionExpr>();
+            appendAssertionExpressionSource(target, case_expr.expr, SnapshotConeSourceRole::Sampled);
+            for (const auto& item : case_expr.items) {
+                for (const auto* match : item.expressions) {
+                    if (match != nullptr) {
+                        appendAssertionExpressionSource(target,
+                                                      *match,
+                                                      SnapshotConeSourceRole::Sampled);
+                    }
+                }
+                recurse(*item.body);
+            }
+            if (case_expr.defaultCase != nullptr) {
+                recurse(*case_expr.defaultCase);
+            }
+            break;
+        }
+        case slang::ast::AssertionExprKind::DisableIff: {
+            const auto& disable = expression.as<slang::ast::DisableIffAssertionExpr>();
+            appendAssertionExpressionSource(target,
+                                          disable.condition,
+                                          SnapshotConeSourceRole::Disable,
+                                          SnapshotConeControlOrigin::AssertionDisable);
+            recurse(disable.expr);
+            break;
+        }
+        }
+        active.erase(&expression);
+    }
+
+    void appendAssertionObservation(const slang::ast::Statement& statement,
+                                    slang::ast::AssertionKind kind,
+                                    const slang::ast::AssertionExpr* property_spec,
+                                    const slang::ast::Expression* immediate_condition = nullptr) {
+        const auto location = locationForSourceRange(source_manager, statement.sourceRange);
+        if (!location.has_value() || location->uri.empty()) {
+            return;
+        }
+        const auto kind_label = assertionKindLabel(kind);
+        const auto stable_id = "assertion|" + location->uri + "|" + kind_label + "|" +
+                               std::to_string(location->range.start_line) + ":" +
+                               std::to_string(location->range.start_character);
+        data.symbols_by_id.emplace(
+            stable_id,
+            SnapshotIndexedSymbol{.identity = SemanticSymbolIdentity{.stable_id = stable_id,
+                                                                      .name = kind_label,
+                                                                      .kind = "AssertionObservation",
+                                                                      .location = *location},
+                                  .symbol = nullptr,
+                                  .type_display = "property observation",
+                                  .value_display = {}});
+
+        SnapshotAssertionObservationFact fact{
+            .stable_id = stable_id,
+            .assertion_kind = kind_label,
+            .location = *location,
+            .sources = {},
+            .concurrent = property_spec != nullptr,
+            .unresolved = false,
+        };
+        if (property_spec != nullptr) {
+            std::set<const slang::ast::AssertionExpr*> active;
+            collectAssertionSources(fact.sources, *property_spec, active);
+        }
+        else if (immediate_condition != nullptr) {
+            appendAssertionExpressionSource(fact.sources,
+                                          *immediate_condition,
+                                          SnapshotConeSourceRole::Sampled);
+        }
+        fact.unresolved = std::any_of(fact.sources.begin(), fact.sources.end(),
+                                      [](const auto& source) { return source.unresolved; });
+        auto& observations = data.assertion_observations_by_uri[location->uri];
+        const auto duplicate = std::any_of(observations.begin(), observations.end(), [&](const auto& existing) {
+            return existing.stable_id == fact.stable_id;
+        });
+        if (!duplicate) {
+            observations.push_back(std::move(fact));
+            ++data.assertion_observation_fact_count;
+        }
     }
 
     void handle(const slang::ast::GenerateBlockArraySymbol& symbol) {
@@ -5535,6 +5954,16 @@ struct SemanticIndexVisitor
         control_sources.resize(previous_size);
     }
 
+    void handle(const slang::ast::ConcurrentAssertionStatement& statement) {
+        appendAssertionObservation(statement, statement.assertionKind, &statement.propertySpec);
+        this->visitDefault(statement);
+    }
+
+    void handle(const slang::ast::ImmediateAssertionStatement& statement) {
+        appendAssertionObservation(statement, statement.assertionKind, nullptr, &statement.cond);
+        this->visitDefault(statement);
+    }
+
     template<typename T>
     void handle(const T& symbol)
         requires std::is_base_of_v<slang::ast::Symbol, T>
@@ -5575,6 +6004,9 @@ struct SemanticIndexVisitor
         }
         if constexpr (std::is_same_v<T, slang::ast::CallExpression>) {
             addSignatureCall(data, source_manager, expression);
+        }
+        if constexpr (std::is_same_v<T, slang::ast::AssertionInstanceExpression>) {
+            addAssertionSignatureInvocation(data, source_manager, expression);
         }
         this->visitDefault(expression);
     }
@@ -5898,6 +6330,111 @@ void buildAssignmentEdges(SnapshotData& data) {
                                   rhs.expression_location.range.start_character,
                                   rhs.source_role,
                                   rhs.control_origin);
+              });
+}
+
+void buildAssertionObservationEdges(SnapshotData& data) {
+    std::set<std::string> emitted_edges;
+    std::set<std::string> emitted_unresolved;
+    for (const auto& [uri, observations] : data.assertion_observations_by_uri) {
+        for (const auto& observation : observations) {
+            for (const auto& source : observation.sources) {
+                const auto append_unresolved = [&] {
+                    const auto key = observation.stable_id + "\n" +
+                                     std::to_string(source.location.range.start_line) + ":" +
+                                     std::to_string(source.location.range.start_character) + "\n" +
+                                     std::to_string(static_cast<int>(source.source_role)) + "\n" +
+                                     std::to_string(static_cast<int>(source.control_origin));
+                    if (!emitted_unresolved.insert(key).second) {
+                        return;
+                    }
+                    data.unresolved_cone_sources.push_back(SnapshotConeUnresolvedSourceFact{
+                        .from_symbol_id = observation.stable_id,
+                        .location = observation.location,
+                        .expression_location = source.location,
+                        .expression = source.expression.empty() ? "<assertion-source>" : source.expression,
+                        .kind = SnapshotConeEdgeKind::AssertionSample,
+                        .source_role = source.source_role,
+                        .control_origin = source.control_origin,
+                        .event_kind = source.event_kind,
+                    });
+                };
+
+                if (source.unresolved || source.source_symbol_ids.empty()) {
+                    if (source.unresolved) {
+                        append_unresolved();
+                    }
+                    continue;
+                }
+                for (const auto& source_id : source.source_symbol_ids) {
+                    if (source_id.empty() || source_id == observation.stable_id ||
+                        !data.symbols_by_id.contains(source_id)) {
+                        continue;
+                    }
+                    const auto key = observation.stable_id + "\n" + source_id + "\n" +
+                                     std::to_string(source.location.range.start_line) + ":" +
+                                     std::to_string(source.location.range.start_character) + "\n" +
+                                     std::to_string(static_cast<int>(source.source_role)) + "\n" +
+                                     std::to_string(static_cast<int>(source.control_origin)) + "\n" +
+                                     std::to_string(static_cast<int>(source.event_kind));
+                    if (!emitted_edges.insert(key).second) {
+                        continue;
+                    }
+                    data.assignment_edges_by_uri[uri].push_back(SnapshotAssignmentEdge{
+                        .from_symbol_id = observation.stable_id,
+                        .to_symbol_id = source_id,
+                        .location = observation.location,
+                        .target_location = observation.location,
+                        .expression_location = source.location,
+                        .expression = source.expression,
+                        .kind = SnapshotConeEdgeKind::AssertionSample,
+                        .source_role = source.source_role,
+                        .slice_kind = source.slice_kind,
+                        .control_origin = source.control_origin,
+                        .event_kind = source.event_kind,
+                        .source_slice = source.source_slice,
+                        .sink_slice = SnapshotConeSliceFact{},
+                    });
+                }
+            }
+        }
+    }
+    for (auto& [_, edges] : data.assignment_edges_by_uri) {
+        std::sort(edges.begin(), edges.end(), [](const auto& lhs, const auto& rhs) {
+            return std::tie(lhs.from_symbol_id,
+                            lhs.to_symbol_id,
+                            lhs.location.uri,
+                            lhs.location.range.start_line,
+                            lhs.location.range.start_character,
+                            lhs.source_role,
+                            lhs.control_origin,
+                            lhs.event_kind) <
+                   std::tie(rhs.from_symbol_id,
+                            rhs.to_symbol_id,
+                            rhs.location.uri,
+                            rhs.location.range.start_line,
+                            rhs.location.range.start_character,
+                            rhs.source_role,
+                            rhs.control_origin,
+                            rhs.event_kind);
+        });
+    }
+    std::sort(data.unresolved_cone_sources.begin(), data.unresolved_cone_sources.end(),
+              [](const auto& lhs, const auto& rhs) {
+                  return std::tie(lhs.from_symbol_id,
+                                  lhs.expression_location.uri,
+                                  lhs.expression_location.range.start_line,
+                                  lhs.expression_location.range.start_character,
+                                  lhs.source_role,
+                                  lhs.control_origin,
+                                  lhs.event_kind) <
+                         std::tie(rhs.from_symbol_id,
+                                  rhs.expression_location.uri,
+                                  rhs.expression_location.range.start_line,
+                                  rhs.expression_location.range.start_character,
+                                  rhs.source_role,
+                                  rhs.control_origin,
+                                  rhs.event_kind);
               });
 }
 
@@ -7552,6 +8089,10 @@ void buildAstIndexes(SnapshotData& data,
     {
         PRISTINE_DEBUG_TRACE_SCOPE_SIMPLE("astIndex.buildAssignmentEdges");
         buildAssignmentEdges(data);
+    }
+    {
+        PRISTINE_DEBUG_TRACE_SCOPE_SIMPLE("astIndex.buildAssertionObservationEdges");
+        buildAssertionObservationEdges(data);
     }
     {
         PRISTINE_DEBUG_TRACE_SCOPE_SIMPLE("astIndex.buildSchematicCellPinFacts");

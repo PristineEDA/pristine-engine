@@ -1,0 +1,16 @@
+{
+  "name": "backward cone indexes concurrent assertion sampled clock and disable sources",
+  "sources": [
+    {
+      "uri": "file:///golden/assertion/clock-disable.sv",
+      "text": "module top(input logic clk, input logic reset_n, input logic a, input logic b);\n  assert property (@(posedge clk) disable iff (!reset_n) a |-> b);\nendmodule\n"
+    }
+  ],
+  "request": { "kind": "backwardCone", "uri": "file:///golden/assertion/clock-disable.sv", "line": 1, "character": 2 },
+  "expected": {
+    "edgeKinds": ["assertionSample"],
+    "sourceRoles": ["sampled", "clock", "disable"],
+    "controlOrigins": ["assertionClock", "assertionDisable"],
+    "expressions": ["clk", "!reset_n", "a", "b"]
+  }
+}
