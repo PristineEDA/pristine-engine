@@ -4100,6 +4100,77 @@ TEST_CASE("AstIndex lowers concurrent assertion sampling, clocking, and disable 
                    SnapshotConeControlOrigin::AssertionDisable));
 }
 
+TEST_CASE("AstIndex applies default clocking and disable as scoped assertion facts",
+          "[analysis][semantic][ast-index][cone][assertion][default-context]") {
+    auto output = buildGraphSource(
+        "module top(input logic clk, input logic reset_n, input logic a, input logic b);\n"
+        "  default clocking @(posedge clk); endclocking\n"
+        "  default disable iff (!reset_n);\n"
+        "  assert property (a |-> b);\nendmodule\n");
+    REQUIRE(output.data != nullptr);
+    REQUIRE(output.data->assertion_observation_fact_count == 1);
+    REQUIRE(output.data->assertion_context_fact_count == 1);
+    const auto observations = output.data->assertion_observations_by_uri.find("file:///workspace/top.sv");
+    REQUIRE(observations != output.data->assertion_observations_by_uri.end());
+    REQUIRE(observations->second.size() == 1);
+    const auto context = output.data->assertion_context_by_observation_id.find(
+        observations->second.front().stable_id);
+    REQUIRE(context != output.data->assertion_context_by_observation_id.end());
+    CHECK(context->second.has_default_clock);
+    CHECK(context->second.has_default_disable);
+    CHECK(std::any_of(context->second.sources.begin(), context->second.sources.end(),
+                      [](const SnapshotAssertionSourceFact& source) {
+                          return source.source_role == SnapshotConeSourceRole::Clock &&
+                                 source.control_origin ==
+                                     SnapshotConeControlOrigin::AssertionDefaultClock;
+                      }));
+    CHECK(std::any_of(context->second.sources.begin(), context->second.sources.end(),
+                      [](const SnapshotAssertionSourceFact& source) {
+                          return source.source_role == SnapshotConeSourceRole::Disable &&
+                                 source.control_origin ==
+                                     SnapshotConeControlOrigin::AssertionDefaultDisable;
+                      }));
+    const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
+    const auto edge_for = [&](std::string_view name, SnapshotConeSourceRole role,
+                              SnapshotConeControlOrigin origin) {
+        return std::any_of(view.cone_adjacency_index.edges.begin(),
+                           view.cone_adjacency_index.edges.end(),
+                           [&](const auto& edge) {
+                               const auto symbol = view.design_graph_symbols_by_id.find(edge.to_symbol_id);
+                               return edge.kind == SnapshotConeEdgeKind::AssertionSample &&
+                                      edge.source_role == role && edge.control_origin == origin &&
+                                      symbol != view.design_graph_symbols_by_id.end() &&
+                                      symbol->second.identity.name == name;
+                           });
+    };
+    CHECK(edge_for("clk", SnapshotConeSourceRole::Clock,
+                   SnapshotConeControlOrigin::AssertionDefaultClock));
+    CHECK(edge_for("reset_n", SnapshotConeSourceRole::Disable,
+                   SnapshotConeControlOrigin::AssertionDefaultDisable));
+}
+
+TEST_CASE("AstIndex keeps explicit assertion clocking and disable ahead of defaults",
+          "[analysis][semantic][ast-index][cone][assertion][default-context][precedence]") {
+    auto output = buildGraphSource(
+        "module top(input logic default_clk, input logic clk, input logic default_reset,\n"
+        "           input logic reset_n, input logic a, input logic b);\n"
+        "  default clocking @(posedge default_clk); endclocking\n"
+        "  default disable iff (!default_reset);\n"
+        "  assert property (@(posedge clk) disable iff (!reset_n) a |-> b);\nendmodule\n");
+    REQUIRE(output.data != nullptr);
+    CHECK(output.data->assertion_observation_fact_count == 1);
+    CHECK(output.data->assertion_context_fact_count == 0);
+    const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
+    CHECK_FALSE(std::any_of(view.cone_adjacency_index.edges.begin(),
+                            view.cone_adjacency_index.edges.end(), [](const auto& edge) {
+                                return edge.kind == SnapshotConeEdgeKind::AssertionSample &&
+                                       (edge.control_origin ==
+                                            SnapshotConeControlOrigin::AssertionDefaultClock ||
+                                        edge.control_origin ==
+                                            SnapshotConeControlOrigin::AssertionDefaultDisable);
+                            }));
+}
+
 TEST_CASE("AstIndex keeps assertion abort sources separate from sampled sources",
           "[analysis][semantic][ast-index][cone][assertion][abort]") {
     auto output = buildGraphSource(
@@ -4138,6 +4209,47 @@ TEST_CASE("AstIndex records assertion property invocations for signature help",
     CHECK(invocation->resolved);
     CHECK(invocation->parameters.size() == 2);
     CHECK(invocation->argument_ranges.size() == 2);
+}
+
+TEST_CASE("AstIndex binds named assertion actuals to declaration-order formals",
+          "[analysis][semantic][ast-index][assertion][signature][named-binding]") {
+    auto output = buildGraphSource(
+        "module top(input logic clk, input logic a, input logic b);\n"
+        "  property p(logic lhs, logic rhs); @(posedge clk) lhs |-> rhs; endproperty\n"
+        "  assert property (p(.rhs(b), .lhs(a)));\nendmodule\n");
+    REQUIRE(output.data != nullptr);
+    const auto invocations = output.data->callable_invocations_by_uri.find("file:///workspace/top.sv");
+    REQUIRE(invocations != output.data->callable_invocations_by_uri.end());
+    const auto invocation = std::find_if(invocations->second.begin(), invocations->second.end(),
+                                         [](const CallableInvocationFact& fact) {
+                                             return fact.name == "p" && fact.kind == "property";
+                                         });
+    REQUIRE(invocation != invocations->second.end());
+    REQUIRE(invocation->argument_parameter_indexes.size() == 2);
+    CHECK(invocation->argument_parameter_indexes[0] == 1);
+    CHECK(invocation->argument_parameter_indexes[1] == 0);
+    CHECK(invocation->range.start_line == 2);
+    CHECK(invocation->range.start_character <= 19);
+    CHECK(invocation->range.end_character > 35);
+    const auto bindings = output.data->assertion_invocation_bindings_by_uri.find(
+        "file:///workspace/top.sv");
+    REQUIRE(bindings != output.data->assertion_invocation_bindings_by_uri.end());
+    const auto lhs = std::find_if(bindings->second.begin(), bindings->second.end(),
+                                  [](const SnapshotAssertionInvocationBindingFact& binding) {
+                                      return binding.formal_name == "lhs";
+                                  });
+    const auto rhs = std::find_if(bindings->second.begin(), bindings->second.end(),
+                                  [](const SnapshotAssertionInvocationBindingFact& binding) {
+                                      return binding.formal_name == "rhs";
+                                  });
+    REQUIRE(lhs != bindings->second.end());
+    REQUIRE(rhs != bindings->second.end());
+    CHECK(lhs->parameter_index == 0);
+    CHECK(rhs->parameter_index == 1);
+    CHECK(lhs->actual_kind == SnapshotAssertionActualKind::Expression);
+    CHECK(rhs->actual_kind == SnapshotAssertionActualKind::Expression);
+    CHECK_FALSE(lhs->unresolved);
+    CHECK_FALSE(rhs->unresolved);
 }
 
 TEST_CASE("AstIndex keeps unresolved assertion expressions as partial cone facts",

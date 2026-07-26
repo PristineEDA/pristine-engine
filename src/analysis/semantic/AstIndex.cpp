@@ -2458,6 +2458,10 @@ std::optional<SemanticLocation> assertionExprLocation(const slang::SourceManager
     return locationForSourceRange(source_manager, expression.syntax->sourceRange());
 }
 
+std::vector<std::string> directSymbolIdsForExpression(SnapshotData& data,
+                                                       const slang::SourceManager& source_manager,
+                                                       const slang::ast::Expression& expression);
+
 std::string assertionPortSignatureLabel(const slang::ast::AssertionPortSymbol& port) {
     std::string label;
     if (port.direction.has_value()) {
@@ -2497,13 +2501,16 @@ void addAssertionSignatureInvocation(SnapshotData& data,
         fact.target_stable_id = symbol_id->second;
     }
 
-    const auto append_ports = [&](std::span<const slang::ast::AssertionPortSymbol* const> ports,
+    std::vector<const slang::ast::AssertionPortSymbol*> ports;
+    const auto append_ports = [&](std::span<const slang::ast::AssertionPortSymbol* const> source_ports,
                                   std::string_view kind) {
         fact.kind = std::string(kind);
-        for (const auto* port : ports) {
+        ports.reserve(source_ports.size());
+        for (const auto* port : source_ports) {
             if (port == nullptr) {
                 continue;
             }
+            ports.push_back(port);
             auto label = assertionPortSignatureLabel(*port);
             fact.parameters.push_back(label.empty() ? std::string(port->name) : std::move(label));
         }
@@ -2523,27 +2530,130 @@ void addAssertionSignatureInvocation(SnapshotData& data,
         break;
     }
 
-    for (const auto& [_, actual] : expression.arguments) {
+    struct InvocationArgumentRange {
+        ParseRange range;
+        size_t parameter_index = 0;
+    };
+    std::vector<InvocationArgumentRange> argument_ranges;
+    auto& bindings = data.assertion_invocation_bindings_by_uri[location->uri];
+    const auto invocation_stable_id = "assertion-invocation|" + location->uri + "|" +
+                                      std::to_string(location->range.start_line) + ":" +
+                                      std::to_string(location->range.start_character) + "|" +
+                                      fact.target_stable_id;
+
+    for (const auto& [formal, actual] : expression.arguments) {
+        const auto parameter_it = std::find(ports.begin(), ports.end(), formal);
+        const auto parameter_index = parameter_it == ports.end()
+                                         ? ports.size()
+                                         : static_cast<size_t>(parameter_it - ports.begin());
+        SnapshotAssertionInvocationBindingFact binding{
+            .invocation_stable_id = invocation_stable_id,
+            .target_stable_id = fact.target_stable_id,
+            .formal_stable_id = {},
+            .formal_name = formal == nullptr ? std::string{} : std::string(formal->name),
+            .parameter_index = parameter_index,
+            .invocation_location = *location,
+            .actual_location = {},
+            .actual_kind = SnapshotAssertionActualKind::Unresolved,
+            .source_symbol_ids = {},
+            .unresolved = formal == nullptr || parameter_it == ports.end(),
+        };
+        if (formal != nullptr) {
+            const auto formal_id = data.ids_by_symbol.find(formal);
+            if (formal_id != data.ids_by_symbol.end()) {
+                binding.formal_stable_id = formal_id->second;
+            }
+            else {
+                binding.unresolved = true;
+            }
+        }
         std::visit(
             [&](const auto* value) {
                 if (value == nullptr) {
+                    binding.unresolved = true;
                     return;
                 }
                 using Value = std::remove_cv_t<std::remove_pointer_t<decltype(value)>>;
                 if constexpr (std::is_same_v<Value, slang::ast::AssertionExpr>) {
                     if (const auto actual_location = assertionExprLocation(source_manager, *value);
                         actual_location.has_value() && actual_location->uri == location->uri) {
-                        fact.argument_ranges.push_back(actual_location->range);
+                        binding.actual_location = *actual_location;
+                        binding.actual_kind = SnapshotAssertionActualKind::Assertion;
+                        argument_ranges.push_back(
+                            InvocationArgumentRange{.range = actual_location->range,
+                                                    .parameter_index = parameter_index});
+                    }
+                    else {
+                        binding.unresolved = true;
+                    }
+                }
+                else if constexpr (std::is_same_v<Value, slang::ast::TimingControl>) {
+                    if (const auto actual_location = locationForSourceRange(source_manager, value->sourceRange);
+                        actual_location.has_value() && actual_location->uri == location->uri) {
+                        binding.actual_location = *actual_location;
+                        binding.actual_kind = SnapshotAssertionActualKind::Timing;
+                        argument_ranges.push_back(
+                            InvocationArgumentRange{.range = actual_location->range,
+                                                    .parameter_index = parameter_index});
+                    }
+                    else {
+                        binding.unresolved = true;
                     }
                 }
                 else {
                     if (const auto actual_location = locationForSourceRange(source_manager, value->sourceRange);
                         actual_location.has_value() && actual_location->uri == location->uri) {
-                        fact.argument_ranges.push_back(actual_location->range);
+                        binding.actual_location = *actual_location;
+                        binding.actual_kind = SnapshotAssertionActualKind::Expression;
+                        binding.source_symbol_ids =
+                            directSymbolIdsForExpression(data, source_manager, *value);
+                        argument_ranges.push_back(
+                            InvocationArgumentRange{.range = actual_location->range,
+                                                    .parameter_index = parameter_index});
+                    }
+                    else {
+                        binding.unresolved = true;
                     }
                 }
             },
             actual);
+        const auto duplicate = std::any_of(bindings.begin(), bindings.end(), [&](const auto& existing) {
+            return existing.invocation_stable_id == binding.invocation_stable_id &&
+                   existing.formal_stable_id == binding.formal_stable_id &&
+                   existing.actual_location.uri == binding.actual_location.uri &&
+                   sameRange(existing.actual_location.range, binding.actual_location.range);
+        });
+        if (!duplicate) {
+            bindings.push_back(std::move(binding));
+            ++data.assertion_invocation_binding_fact_count;
+        }
+    }
+    std::sort(argument_ranges.begin(), argument_ranges.end(), [](const auto& lhs, const auto& rhs) {
+        if (lhs.range.start_line != rhs.range.start_line) {
+            return lhs.range.start_line < rhs.range.start_line;
+        }
+        if (lhs.range.start_character != rhs.range.start_character) {
+            return lhs.range.start_character < rhs.range.start_character;
+        }
+        return lhs.parameter_index < rhs.parameter_index;
+    });
+    for (const auto& argument : argument_ranges) {
+        fact.argument_ranges.push_back(argument.range);
+        fact.argument_parameter_indexes.push_back(argument.parameter_index);
+        if (positionLess(argument.range.start_line,
+                         argument.range.start_character,
+                         fact.range.start_line,
+                         fact.range.start_character)) {
+            fact.range.start_line = argument.range.start_line;
+            fact.range.start_character = argument.range.start_character;
+        }
+        if (positionLess(fact.range.end_line,
+                         fact.range.end_character,
+                         argument.range.end_line,
+                         argument.range.end_character)) {
+            fact.range.end_line = argument.range.end_line;
+            fact.range.end_character = argument.range.end_character;
+        }
     }
     data.selection_ranges_by_uri[location->uri].push_back(fact.range);
     data.callable_invocations_by_uri[location->uri].push_back(std::move(fact));
@@ -5350,6 +5460,9 @@ struct SemanticIndexVisitor
     const std::unordered_map<std::string, SemanticEngineDocument>& documents;
     std::vector<ActiveModuleScope> module_scopes;
     std::vector<SnapshotConeControlSourceSeed> control_sources;
+    std::vector<const slang::ast::Scope*> active_scopes;
+    std::unordered_map<const slang::ast::Scope*, const slang::ast::ClockingBlockSymbol*>
+        default_clocking_by_scope;
 
     SemanticIndexVisitor(SnapshotData& data,
                          const slang::SourceManager& source_manager,
@@ -5636,7 +5749,9 @@ struct SemanticIndexVisitor
     }
 
     void appendAssertionTimingSources(std::vector<SnapshotAssertionSourceFact>& target,
-                                      const slang::ast::TimingControl& timing) {
+                                      const slang::ast::TimingControl& timing,
+                                      SnapshotConeControlOrigin origin =
+                                          SnapshotConeControlOrigin::AssertionClock) {
         std::vector<SnapshotConeControlSourceSeed> timing_sources;
         bool unresolved = false;
         appendTimingControlSources(timing, timing_sources, unresolved);
@@ -5650,7 +5765,7 @@ struct SemanticIndexVisitor
                                              .range = source.range},
                 .expression = source.expression,
                 .source_role = SnapshotConeSourceRole::Clock,
-                .control_origin = SnapshotConeControlOrigin::AssertionClock,
+                .control_origin = origin,
                 .event_kind = source.event_kind,
                 .slice_kind = source.slice_kind,
                 .source_slice = source.source_slice,
@@ -5669,7 +5784,7 @@ struct SemanticIndexVisitor
                     .location = *location,
                     .expression = "<assertion-clocking>",
                     .source_role = SnapshotConeSourceRole::Clock,
-                    .control_origin = SnapshotConeControlOrigin::AssertionClock,
+                    .control_origin = origin,
                     .event_kind = eventKindForTiming(timing),
                     .slice_kind = SnapshotConeSliceKind::Whole,
                     .source_slice = SnapshotConeSliceFact{
@@ -5841,6 +5956,98 @@ struct SemanticIndexVisitor
         active.erase(&expression);
     }
 
+    void appendDefaultAssertionContext(SnapshotAssertionObservationFact& observation) {
+        if (!observation.concurrent || active_scopes.empty()) {
+            return;
+        }
+
+        const auto* scope = active_scopes.back();
+        if (scope == nullptr) {
+            return;
+        }
+
+        SnapshotAssertionContextFact context{
+            .observation_stable_id = observation.stable_id,
+            .scope_location = observation.location,
+            .sources = {},
+            .has_default_clock = false,
+            .has_default_disable = false,
+            .unresolved = false,
+        };
+        if (const auto scope_location =
+                declarationLocationForSymbol(source_manager, scope->asSymbol());
+            scope_location.has_value()) {
+            context.scope_location = *scope_location;
+        }
+
+        const auto has_role = [&](SnapshotConeSourceRole role) {
+            return std::any_of(observation.sources.begin(), observation.sources.end(),
+                               [&](const auto& source) { return source.source_role == role; });
+        };
+        if (!has_role(SnapshotConeSourceRole::Clock)) {
+            const slang::ast::ClockingBlockSymbol* default_clock = nullptr;
+            for (auto it = active_scopes.rbegin(); it != active_scopes.rend(); ++it) {
+                if (*it == nullptr) {
+                    continue;
+                }
+                if (const auto* candidate =
+                        (*it)->getCompilation().getDefaultClocking(**it);
+                    candidate != nullptr &&
+                    candidate->kind == slang::ast::SymbolKind::ClockingBlock) {
+                    default_clock = &candidate->as<slang::ast::ClockingBlockSymbol>();
+                    break;
+                }
+                for (const auto* scope_cursor = *it; scope_cursor != nullptr;
+                     scope_cursor = scope_cursor->asSymbol().getParentScope()) {
+                    const auto indexed = default_clocking_by_scope.find(scope_cursor);
+                    if (indexed != default_clocking_by_scope.end()) {
+                        default_clock = indexed->second;
+                        break;
+                    }
+                }
+                if (default_clock != nullptr) {
+                    break;
+                }
+            }
+            if (default_clock != nullptr) {
+                context.has_default_clock = true;
+                const auto source_count = observation.sources.size();
+                appendAssertionTimingSources(observation.sources,
+                                             default_clock->getEvent(),
+                                             SnapshotConeControlOrigin::AssertionDefaultClock);
+                context.sources.insert(context.sources.end(),
+                                       observation.sources.begin() +
+                                           static_cast<std::ptrdiff_t>(source_count),
+                                       observation.sources.end());
+            }
+        }
+
+        if (!has_role(SnapshotConeSourceRole::Disable)) {
+            if (const auto* default_disable =
+                    scope->getCompilation().getDefaultDisable(*scope);
+                default_disable != nullptr) {
+                context.has_default_disable = true;
+                const auto source_count = observation.sources.size();
+                appendAssertionExpressionSource(observation.sources,
+                                                *default_disable,
+                                                SnapshotConeSourceRole::Disable,
+                                                SnapshotConeControlOrigin::AssertionDefaultDisable);
+                context.sources.insert(context.sources.end(),
+                                       observation.sources.begin() +
+                                           static_cast<std::ptrdiff_t>(source_count),
+                                       observation.sources.end());
+            }
+        }
+
+        if (context.has_default_clock || context.has_default_disable || context.unresolved) {
+            const auto [_, inserted] = data.assertion_context_by_observation_id.emplace(
+                context.observation_stable_id, std::move(context));
+            if (inserted) {
+                ++data.assertion_context_fact_count;
+            }
+        }
+    }
+
     void appendAssertionObservation(const slang::ast::Statement& statement,
                                     slang::ast::AssertionKind kind,
                                     const slang::ast::AssertionExpr* property_spec,
@@ -5880,6 +6087,7 @@ struct SemanticIndexVisitor
                                           *immediate_condition,
                                           SnapshotConeSourceRole::Sampled);
         }
+        appendDefaultAssertionContext(fact);
         fact.unresolved = std::any_of(fact.sources.begin(), fact.sources.end(),
                                       [](const auto& source) { return source.unresolved; });
         auto& observations = data.assertion_observations_by_uri[location->uri];
@@ -5910,7 +6118,9 @@ struct SemanticIndexVisitor
             module_scopes.push_back(ActiveModuleScope{.uri = signature->second.uri,
                                                       .range = signature->second.definition.range});
         }
+        active_scopes.push_back(&symbol.as<slang::ast::Scope>());
         this->visitDefault(symbol);
+        active_scopes.pop_back();
         if (has_scope) module_scopes.pop_back();
     }
 
@@ -5964,6 +6174,16 @@ struct SemanticIndexVisitor
         this->visitDefault(statement);
     }
 
+    void handle(const slang::ast::ClockingBlockSymbol& symbol) {
+        insertSymbol(data, source_manager, symbol);
+        if (symbol.isDefault) {
+            if (const auto* parent_scope = symbol.getParentScope(); parent_scope != nullptr) {
+                default_clocking_by_scope.insert_or_assign(parent_scope, &symbol);
+            }
+        }
+        this->visitDefault(symbol);
+    }
+
     template<typename T>
     void handle(const T& symbol)
         requires std::is_base_of_v<slang::ast::Symbol, T>
@@ -5978,7 +6198,14 @@ struct SemanticIndexVisitor
         if (isClassOwnedSubroutine(symbol)) {
             return;
         }
+        const auto* scope = symbol.template as_if<slang::ast::Scope>();
+        if (scope != nullptr) {
+            active_scopes.push_back(scope);
+        }
         this->visitDefault(symbol);
+        if (scope != nullptr) {
+            active_scopes.pop_back();
+        }
     }
 
     template<typename T>

@@ -1,0 +1,15 @@
+{
+  "name": "named assertion actuals keep formal labels independent of source order",
+  "sources": [
+    {
+      "uri": "file:///golden/assertion/named-inlay.sv",
+      "text": "module top(input logic clk, input logic a, input logic b);\n  property p(logic lhs, logic rhs); @(posedge clk) lhs |-> rhs; endproperty\n  assert property (p(.rhs(b), .lhs(a)));\nendmodule\n"
+    }
+  ],
+  "request": {
+    "kind": "inlayHint",
+    "uri": "file:///golden/assertion/named-inlay.sv",
+    "range": { "startLine": 0, "startCharacter": 0, "endLine": 4, "endCharacter": 0 }
+  },
+  "expected": { "labels": ["logic lhs:", "logic rhs:"] }
+}

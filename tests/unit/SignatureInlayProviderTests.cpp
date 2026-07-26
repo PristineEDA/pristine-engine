@@ -458,6 +458,52 @@ TEST_CASE("SignatureInlayProvider clamps function active parameter at the indexe
     CHECK(result.active_parameter == 1);
 }
 
+TEST_CASE("SignatureInlayProvider maps named assertion actuals to indexed formals",
+          "[analysis][semantic][signature-inlay-provider][assertion][named-binding]") {
+    const SignatureInlayContext context{
+        .generation = 21,
+        .document_uri = "file:///workspace/assertion.sv",
+        .callable_invocations = {CallableInvocationFact{
+            .name = "p",
+            .kind = "property",
+            .range = ParseRange{.start_line = 2,
+                                .start_character = 19,
+                                .end_line = 2,
+                                .end_character = 37},
+            .selection_range = ParseRange{.start_line = 2,
+                                          .start_character = 19,
+                                          .end_line = 2,
+                                          .end_character = 20},
+            .parameters = {"logic lhs", "logic rhs"},
+            .argument_ranges = {ParseRange{.start_line = 2,
+                                           .start_character = 26,
+                                           .end_line = 2,
+                                           .end_character = 27},
+                                ParseRange{.start_line = 2,
+                                           .start_character = 35,
+                                           .end_line = 2,
+                                           .end_character = 36}},
+            .argument_parameter_indexes = {1, 0},
+            .resolved = true}},
+        .snapshot_available = true};
+
+    const auto signature = signatureHelpAt(context, 2, 26);
+    REQUIRE_FALSE(signature.unresolved);
+    CHECK(signature.active_parameter == 1);
+
+    const auto inlay = inlayHints(context,
+                                  ParseRange{.start_line = 2,
+                                             .start_character = 19,
+                                             .end_line = 2,
+                                             .end_character = 37});
+    CHECK(std::any_of(inlay.hints.begin(), inlay.hints.end(), [](const SemanticInlayHint& hint) {
+        return hint.label == "logic rhs:" && hint.location.range.start_character == 26;
+    }));
+    CHECK(std::any_of(inlay.hints.begin(), inlay.hints.end(), [](const SemanticInlayHint& hint) {
+        return hint.label == "logic lhs:" && hint.location.range.start_character == 35;
+    }));
+}
+
 TEST_CASE("SignatureInlayProvider reports unresolved snapshot and document states",
           "[analysis][semantic][signature-inlay-provider][unresolved]") {
     {

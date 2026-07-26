@@ -265,6 +265,8 @@ enum class SnapshotConeControlOrigin {
     AssertionClock,
     AssertionDisable,
     AssertionAbort,
+    AssertionDefaultClock,
+    AssertionDefaultDisable,
 };
 enum class SnapshotConeEventKind {
     None,
@@ -352,6 +354,36 @@ struct SnapshotAssertionObservationFact {
     SemanticLocation location;
     std::vector<SnapshotAssertionSourceFact> sources;
     bool concurrent = true;
+    bool unresolved = false;
+};
+
+// Captures the scope-derived assertion defaults while slang's compilation and
+// scope objects are alive. Explicit assertion syntax remains represented by
+// the observation sources; this fact only records defaults actually applied.
+struct SnapshotAssertionContextFact {
+    std::string observation_stable_id;
+    SemanticLocation scope_location;
+    std::vector<SnapshotAssertionSourceFact> sources;
+    bool has_default_clock = false;
+    bool has_default_disable = false;
+    bool unresolved = false;
+};
+
+enum class SnapshotAssertionActualKind { Expression, Assertion, Timing, Unresolved };
+
+// Formal-to-actual relationships are preserved in declaration order so named
+// assertion arguments do not inherit the unordered AST argument container's
+// traversal order in signature and inlay queries.
+struct SnapshotAssertionInvocationBindingFact {
+    std::string invocation_stable_id;
+    std::string target_stable_id;
+    std::string formal_stable_id;
+    std::string formal_name;
+    size_t parameter_index = 0;
+    SemanticLocation invocation_location;
+    SemanticLocation actual_location;
+    SnapshotAssertionActualKind actual_kind = SnapshotAssertionActualKind::Unresolved;
+    std::vector<std::string> source_symbol_ids;
     bool unresolved = false;
 };
 
@@ -712,6 +744,12 @@ struct SnapshotData {
     std::unordered_map<std::string, std::vector<SnapshotAssertionObservationFact>>
         assertion_observations_by_uri;
     size_t assertion_observation_fact_count = 0;
+    std::unordered_map<std::string, SnapshotAssertionContextFact>
+        assertion_context_by_observation_id;
+    std::unordered_map<std::string, std::vector<SnapshotAssertionInvocationBindingFact>>
+        assertion_invocation_bindings_by_uri;
+    size_t assertion_context_fact_count = 0;
+    size_t assertion_invocation_binding_fact_count = 0;
     // Collected while slang AST primitive instances are alive; the design graph
     // builder merges these with assignment pins into its provider-facing view.
     std::vector<SnapshotSchematicCellPinFact> schematic_cell_pin_facts;

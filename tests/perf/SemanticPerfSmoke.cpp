@@ -92,6 +92,9 @@ int main() {
                 text += "  always @(posedge seq_clk) seq_y <= seq_data;\n";
                 text += "  property sampled_p(logic lhs, logic rhs); @(posedge seq_clk) lhs |-> rhs; endproperty\n";
                 text += "  assert property (sampled_p(seq_data, seq_y));\n";
+                text += "  default clocking @(negedge seq_clk); endclocking\n";
+                text += "  default disable iff (!seq_data);\n";
+                text += "  assert property (seq_data |-> seq_y);\n";
             }
             text += "endmodule\n";
             return text;
@@ -222,6 +225,10 @@ int main() {
         const auto assertion_cone = engine.backwardConeAt(target_uri, 19, 2);
         const auto end_assertion_cone = Clock::now();
         const auto assertion_cone_warm = engine.backwardConeAt(target_uri, 19, 2);
+        const auto start_default_assertion_cone = Clock::now();
+        const auto default_assertion_cone = engine.backwardConeAt(target_uri, 22, 2);
+        const auto end_default_assertion_cone = Clock::now();
+        const auto default_assertion_cone_warm = engine.backwardConeAt(target_uri, 22, 2);
 
         const auto start_code_action = Clock::now();
         const auto code_actions = engine.codeActionsAt(
@@ -260,6 +267,8 @@ int main() {
                                       ternary_cone.unresolved || ternary_cone_warm.unresolved ||
                                       event_cone.unresolved || event_cone_warm.unresolved ||
                                       assertion_cone.unresolved || assertion_cone_warm.unresolved ||
+                                      default_assertion_cone.unresolved ||
+                                      default_assertion_cone_warm.unresolved ||
                                       cone.nodes.size() < 2 || cache_stats.cone_adjacency_scanned_edges == 0 ||
                                       ternary_cone.cone_control_edge_count == 0 ||
                                       ternary_cone.cone_ternary_control_edge_count == 0 ||
@@ -267,6 +276,8 @@ int main() {
                                       event_cone.cone_timing_fact_lookup_count == 0 ||
                                       assertion_cone.cone_assertion_sample_edge_count == 0 ||
                                       assertion_cone.cone_assertion_clock_edge_count == 0 ||
+                                      default_assertion_cone.cone_assertion_default_clock_edge_count == 0 ||
+                                      default_assertion_cone.cone_assertion_default_disable_edge_count == 0 ||
                                       cache_stats.graph_scanned_global_symbols != 0 ||
                                      cache_stats.cone_scanned_global_edges != 0;
 
@@ -310,6 +321,8 @@ int main() {
                   << elapsedMicros(start_event_cone, end_event_cone) << ","
                   << "\"assertionBackwardConeMicros\":"
                   << elapsedMicros(start_assertion_cone, end_assertion_cone) << ","
+                  << "\"defaultAssertionBackwardConeMicros\":"
+                  << elapsedMicros(start_default_assertion_cone, end_default_assertion_cone) << ","
                   << "\"codeActionMicros\":" << elapsedMicros(start_code_action, end_code_action) << ","
                   ;
         writeQueryCacheStats(cache_stats);
@@ -386,6 +399,10 @@ int main() {
                   << assertion_cone.cone_assertion_sample_edge_count << ","
                   << "\"assertionConeClockEdges\":"
                   << assertion_cone.cone_assertion_clock_edge_count << ","
+                  << "\"assertionDefaultConeClockEdges\":"
+                  << default_assertion_cone.cone_assertion_default_clock_edge_count << ","
+                  << "\"assertionDefaultConeDisableEdges\":"
+                  << default_assertion_cone.cone_assertion_default_disable_edge_count << ","
                   << "\"coneSliceFactCount\":" << cone.cone_slice_fact_count << ","
                   << "\"graphBuildScopedSymbolCandidates\":"
                   << cone.graph_build_scoped_symbol_candidates << ","

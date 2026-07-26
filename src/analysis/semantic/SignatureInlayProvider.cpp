@@ -79,6 +79,14 @@ ParseRange pointAtRangeStart(const ParseRange& range) {
                       .end_character = range.start_character};
 }
 
+size_t parameterIndexForArgument(const CallableInvocationFact& call, size_t argument_index) {
+    if (argument_index < call.argument_parameter_indexes.size() &&
+        call.argument_parameter_indexes[argument_index] < call.parameters.size()) {
+        return call.argument_parameter_indexes[argument_index];
+    }
+    return std::min(argument_index, call.parameters.empty() ? size_t{0} : call.parameters.size() - 1);
+}
+
 bool rangeIsNarrowerAtPosition(const ParseRange& candidate, const ParseRange& current) {
     if (candidate.start_line != current.start_line) {
         return candidate.start_line > current.start_line;
@@ -168,10 +176,12 @@ SemanticSignatureHelpResult signatureHelpAt(const SignatureInlayContext& context
         }
         result.label = callSignatureLabel(*matched_call);
         result.parameters = matched_call->parameters;
-        result.active_parameter = activeParameterAt(matched_call->argument_ranges,
-                                                    result.parameters.size(),
-                                                    line,
-                                                    character);
+        const auto active_argument = activeParameterAt(matched_call->argument_ranges,
+                                                       matched_call->argument_ranges.size(),
+                                                       line,
+                                                       character);
+        result.active_parameter = static_cast<int>(
+            parameterIndexForArgument(*matched_call, static_cast<size_t>(active_argument)));
         return result;
     }
 
@@ -312,15 +322,17 @@ SemanticInlayHintResult inlayHints(const SignatureInlayContext& context,
         if (!call.resolved || !rangesOverlapOrTouch(call.range, range)) {
             continue;
         }
-        for (size_t index = 0;
-             index < call.argument_ranges.size() && index < call.parameters.size();
-             ++index) {
+        if (call.parameters.empty()) {
+            continue;
+        }
+        for (size_t index = 0; index < call.argument_ranges.size(); ++index) {
             if (!rangesOverlapOrTouch(call.argument_ranges[index], range)) {
                 continue;
             }
-            const auto label = call.parameters[index].empty()
+            const auto parameter_index = parameterIndexForArgument(call, index);
+            const auto label = call.parameters[parameter_index].empty()
                                    ? std::string{"arg"}
-                                   : call.parameters[index] + ":";
+                                   : call.parameters[parameter_index] + ":";
             const auto label_range = pointAtRangeStart(call.argument_ranges[index]);
             const auto duplicate = std::any_of(result.hints.begin(),
                                                result.hints.end(),

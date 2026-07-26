@@ -1,0 +1,15 @@
+{
+  "name": "named assertion actual resolves its declared formal parameter",
+  "sources": [
+    {
+      "uri": "file:///golden/assertion/named-signature.sv",
+      "text": "module top(input logic clk, input logic a, input logic b);\n  property p(logic lhs, logic rhs); @(posedge clk) lhs |-> rhs; endproperty\n  assert property (p(.rhs(b), .lhs(a)));\nendmodule\n"
+    }
+  ],
+  "request": { "kind": "signatureHelp", "uri": "file:///golden/assertion/named-signature.sv", "line": 2, "character": 26 },
+  "expected": {
+    "labelContains": "p(",
+    "activeParameter": 1,
+    "parameters": ["logic lhs", "logic rhs"]
+  }
+}

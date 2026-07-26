@@ -135,6 +135,10 @@ std::string coneControlOriginLabel(SnapshotConeControlOrigin origin) {
         return "assertionDisable";
     case SnapshotConeControlOrigin::AssertionAbort:
         return "assertionAbort";
+    case SnapshotConeControlOrigin::AssertionDefaultClock:
+        return "assertionDefaultClock";
+    case SnapshotConeControlOrigin::AssertionDefaultDisable:
+        return "assertionDefaultDisable";
     }
     return {};
 }
@@ -1303,9 +1307,17 @@ SemanticConeTrace backwardCone(const DesignGraphContext& context,
                     switch (edge.source_role) {
                     case SnapshotConeSourceRole::Clock:
                         ++trace.cone_assertion_clock_edge_count;
+                        if (edge.control_origin ==
+                            SnapshotConeControlOrigin::AssertionDefaultClock) {
+                            ++trace.cone_assertion_default_clock_edge_count;
+                        }
                         break;
                     case SnapshotConeSourceRole::Disable:
                         ++trace.cone_assertion_disable_edge_count;
+                        if (edge.control_origin ==
+                            SnapshotConeControlOrigin::AssertionDefaultDisable) {
+                            ++trace.cone_assertion_default_disable_edge_count;
+                        }
                         break;
                     case SnapshotConeSourceRole::Abort:
                         ++trace.cone_assertion_abort_edge_count;

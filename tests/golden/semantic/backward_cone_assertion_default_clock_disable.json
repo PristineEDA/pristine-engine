@@ -1,0 +1,16 @@
+{
+  "name": "backward cone applies scoped default assertion clock and disable",
+  "sources": [
+    {
+      "uri": "file:///golden/assertion/default-clock-disable.sv",
+      "text": "module top(input logic clk, input logic reset_n, input logic a, input logic b);\n  default clocking @(posedge clk); endclocking\n  default disable iff (!reset_n);\n  assert property (a |-> b);\nendmodule\n"
+    }
+  ],
+  "request": { "kind": "backwardCone", "uri": "file:///golden/assertion/default-clock-disable.sv", "line": 3, "character": 2 },
+  "expected": {
+    "edgeKinds": ["assertionSample"],
+    "sourceRoles": ["sampled", "clock", "disable"],
+    "controlOrigins": ["assertionDefaultClock", "assertionDefaultDisable"],
+    "expressions": ["clk", "!reset_n", "a", "b"]
+  }
+}

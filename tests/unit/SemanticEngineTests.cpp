@@ -2677,4 +2677,51 @@ TEST_CASE("SemanticEngine invalidates typed schematic connection projections aft
     CHECK(changed.schematic_source_part_scan_count >= 1);
     CHECK(changed.graph_scanned_global_symbols == 0);
 }
+
+TEST_CASE("SemanticEngine invalidates default assertion context cone facts after a document change",
+          "[analysis][semantic-engine][cache][cone][assertion][default-context][affected-rebuild]") {
+    SemanticEngine engine;
+    constexpr std::string_view uri = "file:///workspace/assertion-default-context.sv";
+    engine.updateDocument(
+        uri,
+        "module top(input logic clk_a, input logic reset_a, input logic a, input logic b);\n"
+        "  default clocking @(posedge clk_a); endclocking\n"
+        "  default disable iff (!reset_a);\n"
+        "  assert property (a |-> b);\nendmodule\n",
+        SemanticEngineDocumentState{.version = 1, .is_open = true});
+
+    engine.resetQueryCacheStats();
+    const auto first = engine.backwardConeAt(uri, 3, 2);
+    REQUIRE_FALSE(first.unresolved);
+    CHECK(first.cone_assertion_default_clock_edge_count == 1);
+    CHECK(first.cone_assertion_default_disable_edge_count == 1);
+    CHECK(std::any_of(first.edges.begin(), first.edges.end(), [](const SemanticConeEdge& edge) {
+        return edge.control_origin == "assertionDefaultClock" && edge.expression == "clk_a";
+    }));
+    (void)engine.backwardConeAt(uri, 3, 2);
+    CHECK(engine.queryCacheStats().hits >= 1);
+
+    engine.updateDocument(
+        uri,
+        "module top(input logic clk_b, input logic reset_b, input logic a, input logic b);\n"
+        "  default clocking @(negedge clk_b); endclocking\n"
+        "  default disable iff (!reset_b);\n"
+        "  assert property (a |-> b);\nendmodule\n",
+        SemanticEngineDocumentState{.version = 2, .is_open = true});
+
+    const auto updated = engine.backwardConeAt(uri, 3, 2);
+    REQUIRE_FALSE(updated.unresolved);
+    CHECK(updated.generation > first.generation);
+    CHECK(updated.cone_assertion_default_clock_edge_count == 1);
+    CHECK(updated.cone_assertion_default_disable_edge_count == 1);
+    CHECK(std::any_of(updated.edges.begin(), updated.edges.end(), [](const SemanticConeEdge& edge) {
+        return edge.control_origin == "assertionDefaultClock" && edge.expression == "clk_b" &&
+               edge.event_kind == "negedge";
+    }));
+    CHECK(std::none_of(updated.edges.begin(), updated.edges.end(), [](const SemanticConeEdge& edge) {
+        return edge.expression == "clk_a" || edge.expression == "!reset_a";
+    }));
+    CHECK(engine.queryCacheStats().graph_scanned_global_symbols == 0);
+    CHECK(engine.queryCacheStats().cone_scanned_global_edges == 0);
+}
 } // namespace pristine::analysis

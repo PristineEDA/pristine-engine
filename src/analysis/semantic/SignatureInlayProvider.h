@@ -40,6 +40,7 @@ struct CallableInvocationFact {
     ParseRange selection_range;
     std::vector<std::string> parameters;
     std::vector<ParseRange> argument_ranges;
+    std::vector<size_t> argument_parameter_indexes;
     bool resolved = true;
 };
 
