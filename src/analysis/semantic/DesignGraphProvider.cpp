@@ -1226,6 +1226,10 @@ SemanticConeTrace backwardCone(const DesignGraphContext& context,
                 if (is_connection_edge(source.kind)) {
                     ++trace.cone_unresolved_connection_fact_count;
                 }
+                if (source.kind == SnapshotConeEdgeKind::AssertionSample &&
+                    !source.assertion_invocation_stable_id.empty()) {
+                    ++trace.cone_assertion_invocation_partial_binding_count;
+                }
                 const auto origin = coneControlOriginLabel(source.control_origin);
                 appendUniqueMessage(trace.messages,
                                     "Unresolved " +
@@ -1304,6 +1308,9 @@ SemanticConeTrace backwardCone(const DesignGraphContext& context,
                 }
                 if (edge.kind == SnapshotConeEdgeKind::AssertionSample) {
                     ++trace.cone_assertion_sample_edge_count;
+                    if (!edge.assertion_invocation_stable_id.empty()) {
+                        ++trace.cone_assertion_invocation_edge_count;
+                    }
                     switch (edge.source_role) {
                     case SnapshotConeSourceRole::Clock:
                         ++trace.cone_assertion_clock_edge_count;

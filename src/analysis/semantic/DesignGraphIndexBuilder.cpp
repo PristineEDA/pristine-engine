@@ -406,7 +406,9 @@ void appendInterfaceMemberConeEdges(const SnapshotDesignGraphBindingIndex& bindi
                                                      .expression = "interface/modport member " + fact.member_name,
                                                      .kind = SnapshotConeEdgeKind::InterfaceMember,
                                                      .source_role = SnapshotConeSourceRole::Data,
-                                                     .control_origin = SnapshotConeControlOrigin::None});
+                                                     .control_origin = SnapshotConeControlOrigin::None,
+                                                     .assertion_invocation_stable_id = {},
+                                                     .assertion_invocation_formal_stable_id = {}});
             };
             if (fact.unresolved || fact.child_member_stable_id.empty() ||
                 fact.parent_member_stable_id.empty()) {
@@ -427,7 +429,9 @@ void appendInterfaceMemberConeEdges(const SnapshotDesignGraphBindingIndex& bindi
                                                       .control_origin = SnapshotConeControlOrigin::None,
                                                       .source_slice = {},
                                                       .sink_slice = {},
-                                                      .generated_instance_id = fact.generated_instance_id});
+                                                      .generated_instance_id = fact.generated_instance_id,
+                                                      .assertion_invocation_stable_id = {},
+                                                      .assertion_invocation_formal_stable_id = {}});
             };
             if (fact.direction == SnapshotGraphPortDirection::Input) {
                 append(fact.child_member_stable_id, fact.parent_member_stable_id);
@@ -635,7 +639,9 @@ void appendPrimitiveCellConeEdges(const SnapshotDesignGraphBindingIndex& binding
                                               .control_origin = origin,
                                               .source_slice = source.net_slice,
                                               .sink_slice = sink.net_slice,
-                                              .generated_instance_id = {}});
+                                              .generated_instance_id = {},
+                                              .assertion_invocation_stable_id = {},
+                                              .assertion_invocation_formal_stable_id = {}});
     };
     const auto appendUnresolved = [&](const SnapshotSchematicCellPinFact& sink,
                                       const SnapshotSchematicCellPinFact& source,
@@ -652,7 +658,9 @@ void appendPrimitiveCellConeEdges(const SnapshotDesignGraphBindingIndex& binding
                                              .expression = "primitive pin " + source.pin_name,
                                              .kind = SnapshotConeEdgeKind::PrimitiveCell,
                                              .source_role = role,
-                                             .control_origin = origin});
+                                             .control_origin = origin,
+                                             .assertion_invocation_stable_id = {},
+                                             .assertion_invocation_formal_stable_id = {}});
     };
 
     for (const auto& [_, pins] : bindings.schematic_cell_pins_by_module) {
@@ -860,7 +868,11 @@ void buildDesignGraphIndexes(SnapshotData& data) {
                                                   .event_kind = edge.event_kind,
                                                   .source_slice = edge.source_slice,
                                                   .sink_slice = edge.sink_slice,
-                                                  .generated_instance_id = {}});
+                                                  .generated_instance_id = {},
+                                                  .assertion_invocation_stable_id =
+                                                      edge.assertion_invocation_stable_id,
+                                                  .assertion_invocation_formal_stable_id =
+                                                      edge.assertion_invocation_formal_stable_id});
         }
     }
     for (const auto& source : data.unresolved_cone_sources) {
@@ -925,7 +937,9 @@ void buildDesignGraphIndexes(SnapshotData& data) {
                                                          .expression = "connection",
                                                          .kind = connection.kind,
                                                          .source_role = SnapshotConeSourceRole::Data,
-                                                         .control_origin = SnapshotConeControlOrigin::None});
+                                                         .control_origin = SnapshotConeControlOrigin::None,
+                                                         .assertion_invocation_stable_id = {},
+                                                         .assertion_invocation_formal_stable_id = {}});
                 };
                 append_unresolved();
 
@@ -956,7 +970,9 @@ void buildDesignGraphIndexes(SnapshotData& data) {
                                                               .control_origin = part.control_origin,
                                                               .source_slice = source_slice,
                                                               .sink_slice = sink_slice,
-                                                              .generated_instance_id = instance.instance_stable_id});
+                                                              .generated_instance_id = instance.instance_stable_id,
+                                                              .assertion_invocation_stable_id = {},
+                                                              .assertion_invocation_formal_stable_id = {}});
                     };
                     if (connection.kind == SnapshotConeEdgeKind::ParameterOverride ||
                         endpoint.direction == SnapshotGraphPortDirection::Input) {

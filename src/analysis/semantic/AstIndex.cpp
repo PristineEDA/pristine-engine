@@ -52,6 +52,7 @@
 #include <span>
 #include <string_view>
 #include <type_traits>
+#include <unordered_set>
 #include <utility>
 #include <variant>
 
@@ -2483,6 +2484,14 @@ std::string assertionPortSignatureLabel(const slang::ast::AssertionPortSymbol& p
     return label;
 }
 
+std::string assertionInvocationStableId(const SemanticLocation& location,
+                                        std::string_view target_stable_id) {
+    return "assertion-invocation|" + location.uri + "|" +
+           std::to_string(location.range.start_line) + ":" +
+           std::to_string(location.range.start_character) + "|" +
+           std::string(target_stable_id);
+}
+
 void addAssertionSignatureInvocation(SnapshotData& data,
                                      const slang::SourceManager& source_manager,
                                      const slang::ast::AssertionInstanceExpression& expression) {
@@ -2536,10 +2545,7 @@ void addAssertionSignatureInvocation(SnapshotData& data,
     };
     std::vector<InvocationArgumentRange> argument_ranges;
     auto& bindings = data.assertion_invocation_bindings_by_uri[location->uri];
-    const auto invocation_stable_id = "assertion-invocation|" + location->uri + "|" +
-                                      std::to_string(location->range.start_line) + ":" +
-                                      std::to_string(location->range.start_character) + "|" +
-                                      fact.target_stable_id;
+    const auto invocation_stable_id = assertionInvocationStableId(*location, fact.target_stable_id);
 
     for (const auto& [formal, actual] : expression.arguments) {
         const auto parameter_it = std::find(ports.begin(), ports.end(), formal);
@@ -5733,6 +5739,8 @@ struct SemanticIndexVisitor
             .slice_kind = sliceKindForExpression(expression),
             .source_slice = sliceFactForExpression(expression),
             .source_symbol_ids = symbol_ids,
+            .invocation_stable_id = {},
+            .invocation_formal_stable_id = {},
             .unresolved = unresolved,
         };
         const auto duplicate = std::any_of(target.begin(), target.end(), [&](const auto& existing) {
@@ -5770,6 +5778,8 @@ struct SemanticIndexVisitor
                 .slice_kind = source.slice_kind,
                 .source_slice = source.source_slice,
                 .source_symbol_ids = source.source_symbol_ids,
+                .invocation_stable_id = {},
+                .invocation_formal_stable_id = {},
                 .unresolved = source.unresolved,
             };
             if (fact.location.uri.empty()) {
@@ -5792,8 +5802,158 @@ struct SemanticIndexVisitor
                         .msb = {},
                         .lsb = {}},
                     .source_symbol_ids = {},
+                    .invocation_stable_id = {},
+                    .invocation_formal_stable_id = {},
                     .unresolved = true,
                 });
+            }
+        }
+    }
+
+    void appendAssertionSourceFact(std::vector<SnapshotAssertionSourceFact>& target,
+                                   SnapshotAssertionSourceFact source) {
+        const auto duplicate = std::any_of(target.begin(), target.end(), [&](const auto& existing) {
+            return existing.source_role == source.source_role &&
+                   existing.control_origin == source.control_origin &&
+                   existing.event_kind == source.event_kind &&
+                   sameLocation(existing.location, source.location) &&
+                   existing.source_symbol_ids == source.source_symbol_ids &&
+                   existing.invocation_stable_id == source.invocation_stable_id &&
+                   existing.invocation_formal_stable_id == source.invocation_formal_stable_id &&
+                   existing.unresolved == source.unresolved;
+        });
+        if (!duplicate) {
+            target.push_back(std::move(source));
+        }
+    }
+
+    std::string assertionInvocationId(const slang::ast::AssertionInstanceExpression& instance) const {
+        const auto location = locationForSourceRange(source_manager, instance.sourceRange);
+        if (!location.has_value()) {
+            return {};
+        }
+        const auto target = data.ids_by_symbol.find(&instance.symbol);
+        return assertionInvocationStableId(*location, target == data.ids_by_symbol.end()
+                                                          ? std::string_view{}
+                                                          : std::string_view(target->second));
+    }
+
+    void collectAssertionInvocationSources(
+        std::vector<SnapshotAssertionSourceFact>& target,
+        const slang::ast::AssertionInstanceExpression& instance,
+        std::set<const slang::ast::AssertionExpr*>& active) {
+        const auto invocation_id = assertionInvocationId(instance);
+        std::vector<SnapshotAssertionSourceFact> body_sources;
+        if (!instance.isRecursiveProperty) {
+            collectAssertionSources(body_sources, instance.body, active);
+        }
+
+        std::unordered_map<std::string, std::vector<SnapshotAssertionSourceFact>> actuals_by_formal;
+        std::unordered_set<std::string> formal_ids;
+        for (const auto& [formal, actual] : instance.arguments) {
+            if (formal == nullptr) {
+                continue;
+            }
+            const auto formal_id = data.ids_by_symbol.find(formal);
+            if (formal_id == data.ids_by_symbol.end()) {
+                continue;
+            }
+            formal_ids.insert(formal_id->second);
+            auto& actual_sources = actuals_by_formal[formal_id->second];
+            std::visit(
+                [&](const auto* value) {
+                    if (value == nullptr) {
+                        return;
+                    }
+                    using Value = std::remove_cv_t<std::remove_pointer_t<decltype(value)>>;
+                    if constexpr (std::is_same_v<Value, slang::ast::AssertionExpr>) {
+                        collectAssertionSources(actual_sources, *value, active);
+                    }
+                    else if constexpr (std::is_same_v<Value, slang::ast::TimingControl>) {
+                        appendAssertionTimingSources(actual_sources, *value);
+                    }
+                    else {
+                        appendAssertionExpressionSource(actual_sources,
+                                                      *value,
+                                                      SnapshotConeSourceRole::Sampled);
+                    }
+                },
+                actual);
+        }
+
+        if (instance.isRecursiveProperty) {
+            const auto location = locationForSourceRange(source_manager, instance.sourceRange);
+            if (location.has_value()) {
+                appendAssertionSourceFact(target,
+                                          SnapshotAssertionSourceFact{
+                                              .location = *location,
+                                              .expression = "<recursive-assertion-invocation>",
+                                              .source_role = SnapshotConeSourceRole::Sampled,
+                                              .source_slice = SnapshotConeSliceFact{
+                                                  .precision = SnapshotConeSlicePrecision::Unresolved,
+                                                  .msb = {},
+                                                  .lsb = {}},
+                                              .source_symbol_ids = {},
+                                              .invocation_stable_id = invocation_id,
+                                              .invocation_formal_stable_id = {},
+                                              .unresolved = true});
+                ++data.assertion_invocation_partial_binding_fact_count;
+            }
+            return;
+        }
+
+        for (const auto& body_source : body_sources) {
+            std::vector<std::string> direct_ids;
+            std::vector<std::string> matched_formals;
+            for (const auto& symbol_id : body_source.source_symbol_ids) {
+                if (formal_ids.contains(symbol_id)) {
+                    matched_formals.push_back(symbol_id);
+                }
+                else {
+                    direct_ids.push_back(symbol_id);
+                }
+            }
+            if (matched_formals.empty()) {
+                // Slang materializes an assertion instance body with resolved
+                // actual symbols where possible. Preserve that AST result as
+                // an invocation expansion fact instead of attempting to map
+                // it back through formal names or source text.
+                auto expanded_source = body_source;
+                expanded_source.invocation_stable_id = invocation_id;
+                appendAssertionSourceFact(target, std::move(expanded_source));
+                ++data.assertion_invocation_expansion_fact_count;
+                continue;
+            }
+
+            if (!direct_ids.empty()) {
+                auto direct_source = body_source;
+                direct_source.source_symbol_ids = std::move(direct_ids);
+                appendAssertionSourceFact(target, std::move(direct_source));
+            }
+
+            for (const auto& formal_id : matched_formals) {
+                const auto actuals = actuals_by_formal.find(formal_id);
+                if (actuals == actuals_by_formal.end() || actuals->second.empty()) {
+                    auto unresolved = body_source;
+                    unresolved.source_symbol_ids.clear();
+                    unresolved.invocation_stable_id = invocation_id;
+                    unresolved.invocation_formal_stable_id = formal_id;
+                    unresolved.unresolved = true;
+                    appendAssertionSourceFact(target, std::move(unresolved));
+                    ++data.assertion_invocation_partial_binding_fact_count;
+                    continue;
+                }
+                for (auto actual_source : actuals->second) {
+                    if (actual_source.source_role == SnapshotConeSourceRole::Sampled) {
+                        actual_source.source_role = body_source.source_role;
+                        actual_source.control_origin = body_source.control_origin;
+                        actual_source.event_kind = body_source.event_kind;
+                    }
+                    actual_source.invocation_stable_id = invocation_id;
+                    actual_source.invocation_formal_stable_id = formal_id;
+                    appendAssertionSourceFact(target, std::move(actual_source));
+                    ++data.assertion_invocation_expansion_fact_count;
+                }
             }
         }
     }
@@ -5823,6 +5983,8 @@ struct SemanticIndexVisitor
                         .msb = {},
                         .lsb = {}},
                     .source_symbol_ids = {},
+                    .invocation_stable_id = {},
+                    .invocation_formal_stable_id = {},
                     .unresolved = true,
                 });
             }
@@ -5832,30 +5994,7 @@ struct SemanticIndexVisitor
             const auto& unwrapped = unwrapImplicitConversions(simple.expr);
             if (unwrapped.kind == slang::ast::ExpressionKind::AssertionInstance) {
                 const auto& instance = unwrapped.as<slang::ast::AssertionInstanceExpression>();
-                if (!instance.isRecursiveProperty) {
-                    recurse(instance.body);
-                }
-                for (const auto& [_, actual] : instance.arguments) {
-                    std::visit(
-                        [&](const auto* value) {
-                            if (value == nullptr) {
-                                return;
-                            }
-                            using Value = std::remove_cv_t<std::remove_pointer_t<decltype(value)>>;
-                            if constexpr (std::is_same_v<Value, slang::ast::AssertionExpr>) {
-                                recurse(*value);
-                            }
-                            else if constexpr (std::is_same_v<Value, slang::ast::TimingControl>) {
-                                appendAssertionTimingSources(target, *value);
-                            }
-                            else {
-                                appendAssertionExpressionSource(target,
-                                                              *value,
-                                                              SnapshotConeSourceRole::Sampled);
-                            }
-                        },
-                        actual);
-                }
+                collectAssertionInvocationSources(target, instance, active);
             }
             else {
                 appendAssertionExpressionSource(target, simple.expr, SnapshotConeSourceRole::Sampled);
@@ -6443,7 +6582,9 @@ void buildAssignmentEdges(SnapshotData& data) {
                     .control_origin = control_origin,
                     .event_kind = event_kind,
                     .source_slice = source_slice,
-                    .sink_slice = sink_slice});
+                    .sink_slice = sink_slice,
+                    .assertion_invocation_stable_id = {},
+                    .assertion_invocation_formal_stable_id = {}});
             };
             if (!direct_symbol_ids.empty()) {
                 for (const auto& source_id : direct_symbol_ids) {
@@ -6482,7 +6623,9 @@ void buildAssignmentEdges(SnapshotData& data) {
                 .expression = std::string(expression),
                 .source_role = role,
                 .control_origin = control_origin,
-                .event_kind = event_kind});
+                .event_kind = event_kind,
+                .assertion_invocation_stable_id = {},
+                .assertion_invocation_formal_stable_id = {}});
         };
 
         for (const auto& source : seed.data_sources) {
@@ -6584,6 +6727,8 @@ void buildAssertionObservationEdges(SnapshotData& data) {
                         .source_role = source.source_role,
                         .control_origin = source.control_origin,
                         .event_kind = source.event_kind,
+                        .assertion_invocation_stable_id = source.invocation_stable_id,
+                        .assertion_invocation_formal_stable_id = source.invocation_formal_stable_id,
                     });
                 };
 
@@ -6603,7 +6748,9 @@ void buildAssertionObservationEdges(SnapshotData& data) {
                                      std::to_string(source.location.range.start_character) + "\n" +
                                      std::to_string(static_cast<int>(source.source_role)) + "\n" +
                                      std::to_string(static_cast<int>(source.control_origin)) + "\n" +
-                                     std::to_string(static_cast<int>(source.event_kind));
+                                     std::to_string(static_cast<int>(source.event_kind)) + "\n" +
+                                     source.invocation_stable_id + "\n" +
+                                     source.invocation_formal_stable_id;
                     if (!emitted_edges.insert(key).second) {
                         continue;
                     }
@@ -6621,6 +6768,8 @@ void buildAssertionObservationEdges(SnapshotData& data) {
                         .event_kind = source.event_kind,
                         .source_slice = source.source_slice,
                         .sink_slice = SnapshotConeSliceFact{},
+                        .assertion_invocation_stable_id = source.invocation_stable_id,
+                        .assertion_invocation_formal_stable_id = source.invocation_formal_stable_id,
                     });
                 }
             }
@@ -6635,7 +6784,9 @@ void buildAssertionObservationEdges(SnapshotData& data) {
                             lhs.location.range.start_character,
                             lhs.source_role,
                             lhs.control_origin,
-                            lhs.event_kind) <
+                            lhs.event_kind,
+                            lhs.assertion_invocation_stable_id,
+                            lhs.assertion_invocation_formal_stable_id) <
                    std::tie(rhs.from_symbol_id,
                             rhs.to_symbol_id,
                             rhs.location.uri,
@@ -6643,7 +6794,9 @@ void buildAssertionObservationEdges(SnapshotData& data) {
                             rhs.location.range.start_character,
                             rhs.source_role,
                             rhs.control_origin,
-                            rhs.event_kind);
+                            rhs.event_kind,
+                            rhs.assertion_invocation_stable_id,
+                            rhs.assertion_invocation_formal_stable_id);
         });
     }
     std::sort(data.unresolved_cone_sources.begin(), data.unresolved_cone_sources.end(),
@@ -6654,14 +6807,18 @@ void buildAssertionObservationEdges(SnapshotData& data) {
                                   lhs.expression_location.range.start_character,
                                   lhs.source_role,
                                   lhs.control_origin,
-                                  lhs.event_kind) <
+                                  lhs.event_kind,
+                                  lhs.assertion_invocation_stable_id,
+                                  lhs.assertion_invocation_formal_stable_id) <
                          std::tie(rhs.from_symbol_id,
                                   rhs.expression_location.uri,
                                   rhs.expression_location.range.start_line,
                                   rhs.expression_location.range.start_character,
                                   rhs.source_role,
                                   rhs.control_origin,
-                                  rhs.event_kind);
+                                  rhs.event_kind,
+                                  rhs.assertion_invocation_stable_id,
+                                  rhs.assertion_invocation_formal_stable_id);
               });
 }
 

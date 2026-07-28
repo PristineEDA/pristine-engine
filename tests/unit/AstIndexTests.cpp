@@ -4252,6 +4252,62 @@ TEST_CASE("AstIndex binds named assertion actuals to declaration-order formals",
     CHECK_FALSE(rhs->unresolved);
 }
 
+TEST_CASE("AstIndex expands named assertion formals into invocation actual cone sources",
+          "[analysis][semantic][ast-index][cone][assertion][invocation][named]") {
+    auto output = buildGraphSource(
+        "module top(input logic clk, input logic a, input logic b);\n"
+        "  property p(logic lhs, logic rhs); @(posedge clk) lhs |-> rhs; endproperty\n"
+        "  assert property (p(.rhs(b), .lhs(a)));\nendmodule\n");
+    REQUIRE(output.data != nullptr);
+    CHECK(output.data->assertion_invocation_expansion_fact_count >= 2);
+    const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
+    std::set<std::string> assertion_source_names;
+    size_t invocation_edges = 0;
+    for (const auto& edge : view.cone_adjacency_index.edges) {
+        if (edge.kind != SnapshotConeEdgeKind::AssertionSample) {
+            continue;
+        }
+        const auto symbol = view.design_graph_symbols_by_id.find(edge.to_symbol_id);
+        if (symbol != view.design_graph_symbols_by_id.end()) {
+            assertion_source_names.insert(symbol->second.identity.name);
+        }
+        if (!edge.assertion_invocation_stable_id.empty()) {
+            ++invocation_edges;
+        }
+    }
+    CHECK(assertion_source_names.contains("a"));
+    CHECK(assertion_source_names.contains("b"));
+    CHECK(assertion_source_names.contains("clk"));
+    CHECK_FALSE(assertion_source_names.contains("lhs"));
+    CHECK_FALSE(assertion_source_names.contains("rhs"));
+    CHECK(invocation_edges >= 2);
+}
+
+TEST_CASE("AstIndex expands nested assertion invocation formals without proxy edges",
+          "[analysis][semantic][ast-index][cone][assertion][invocation][nested]") {
+    auto output = buildGraphSource(
+        "module top(input logic clk, input logic a);\n"
+        "  sequence repeated(logic value); value ##1 value; endsequence\n"
+        "  property p(logic lhs); @(posedge clk) repeated(lhs); endproperty\n"
+        "  assert property (p(a));\nendmodule\n");
+    REQUIRE(output.data != nullptr);
+    const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
+    std::set<std::string> assertion_source_names;
+    for (const auto& edge : view.cone_adjacency_index.edges) {
+        if (edge.kind != SnapshotConeEdgeKind::AssertionSample) {
+            continue;
+        }
+        const auto symbol = view.design_graph_symbols_by_id.find(edge.to_symbol_id);
+        if (symbol != view.design_graph_symbols_by_id.end()) {
+            assertion_source_names.insert(symbol->second.identity.name);
+        }
+    }
+    CHECK(assertion_source_names.contains("a"));
+    CHECK(assertion_source_names.contains("clk"));
+    CHECK_FALSE(assertion_source_names.contains("lhs"));
+    CHECK_FALSE(assertion_source_names.contains("value"));
+}
+
 TEST_CASE("AstIndex keeps unresolved assertion expressions as partial cone facts",
           "[analysis][semantic][ast-index][cone][assertion][unresolved][no-fallback]") {
     auto output = buildGraphSource(

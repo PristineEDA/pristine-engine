@@ -2724,4 +2724,50 @@ TEST_CASE("SemanticEngine invalidates default assertion context cone facts after
     CHECK(engine.queryCacheStats().graph_scanned_global_symbols == 0);
     CHECK(engine.queryCacheStats().cone_scanned_global_edges == 0);
 }
+
+TEST_CASE("SemanticEngine expands assertion invocation cone facts and invalidates them",
+          "[analysis][semantic-engine][cache][cone][assertion][invocation][affected-rebuild]") {
+    SemanticEngine engine;
+    constexpr std::string_view uri = "file:///workspace/assertion-invocation.sv";
+    engine.updateDocument(
+        uri,
+        "module top(input logic clk, input logic a, input logic b);\n"
+        "  property p(logic lhs, logic rhs); @(posedge clk) lhs |-> rhs; endproperty\n"
+        "  assert property (p(.rhs(b), .lhs(a)));\nendmodule\n",
+        SemanticEngineDocumentState{.version = 1, .is_open = true});
+
+    engine.resetQueryCacheStats();
+    const auto first = engine.backwardConeAt(uri, 2, 2);
+    REQUIRE_FALSE(first.unresolved);
+    CHECK(first.cone_assertion_invocation_edge_count >= 2);
+    const auto has_node = [](const SemanticConeTrace& trace, std::string_view name) {
+        return std::any_of(trace.nodes.begin(), trace.nodes.end(), [&](const SemanticConeNode& node) {
+            return node.name == name;
+        });
+    };
+    CHECK(has_node(first, "a"));
+    CHECK(has_node(first, "b"));
+    CHECK_FALSE(has_node(first, "lhs"));
+    CHECK_FALSE(has_node(first, "rhs"));
+    (void)engine.backwardConeAt(uri, 2, 2);
+    CHECK(engine.queryCacheStats().hits >= 1);
+
+    engine.updateDocument(
+        uri,
+        "module top(input logic clk, input logic c, input logic b);\n"
+        "  property p(logic lhs, logic rhs); @(posedge clk) lhs |-> rhs; endproperty\n"
+        "  assert property (p(.rhs(b), .lhs(c)));\nendmodule\n",
+        SemanticEngineDocumentState{.version = 2, .is_open = true});
+
+    const auto updated = engine.backwardConeAt(uri, 2, 2);
+    REQUIRE_FALSE(updated.unresolved);
+    CHECK(updated.generation > first.generation);
+    CHECK(updated.cone_assertion_invocation_edge_count >= 2);
+    CHECK(has_node(updated, "c"));
+    CHECK_FALSE(has_node(updated, "a"));
+    CHECK_FALSE(has_node(updated, "lhs"));
+    CHECK_FALSE(has_node(updated, "rhs"));
+    CHECK(engine.queryCacheStats().graph_scanned_global_symbols == 0);
+    CHECK(engine.queryCacheStats().cone_scanned_global_edges == 0);
+}
 } // namespace pristine::analysis

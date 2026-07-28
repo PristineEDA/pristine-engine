@@ -345,6 +345,11 @@ struct SnapshotAssertionSourceFact {
     SnapshotConeSliceKind slice_kind = SnapshotConeSliceKind::Whole;
     SnapshotConeSliceFact source_slice;
     std::vector<std::string> source_symbol_ids;
+    // Assertion formal-to-actual expansion is complete before provider
+    // queries. These identities preserve the source invocation without
+    // retaining AST pointers in the snapshot.
+    std::string invocation_stable_id;
+    std::string invocation_formal_stable_id;
     bool unresolved = false;
 };
 
@@ -416,6 +421,8 @@ struct SnapshotAssignmentEdge {
     SnapshotConeEventKind event_kind = SnapshotConeEventKind::None;
     SnapshotConeSliceFact source_slice;
     SnapshotConeSliceFact sink_slice;
+    std::string assertion_invocation_stable_id;
+    std::string assertion_invocation_formal_stable_id;
 };
 
 enum class SnapshotGraphEndpointKind { Port, Parameter, Instance, InterfacePort, ModportPort };
@@ -613,6 +620,8 @@ struct SnapshotConeAdjacencyEdge {
     SnapshotConeSliceFact source_slice;
     SnapshotConeSliceFact sink_slice;
     std::string generated_instance_id;
+    std::string assertion_invocation_stable_id;
+    std::string assertion_invocation_formal_stable_id;
 };
 
 struct SnapshotConeUnresolvedSourceFact {
@@ -624,6 +633,8 @@ struct SnapshotConeUnresolvedSourceFact {
     SnapshotConeSourceRole source_role = SnapshotConeSourceRole::Data;
     SnapshotConeControlOrigin control_origin = SnapshotConeControlOrigin::None;
     SnapshotConeEventKind event_kind = SnapshotConeEventKind::None;
+    std::string assertion_invocation_stable_id;
+    std::string assertion_invocation_formal_stable_id;
 };
 
 struct SnapshotConeRootSelectionFact {
@@ -750,6 +761,8 @@ struct SnapshotData {
         assertion_invocation_bindings_by_uri;
     size_t assertion_context_fact_count = 0;
     size_t assertion_invocation_binding_fact_count = 0;
+    size_t assertion_invocation_expansion_fact_count = 0;
+    size_t assertion_invocation_partial_binding_fact_count = 0;
     // Collected while slang AST primitive instances are alive; the design graph
     // builder merges these with assignment pins into its provider-facing view.
     std::vector<SnapshotSchematicCellPinFact> schematic_cell_pin_facts;

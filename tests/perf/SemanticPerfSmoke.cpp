@@ -275,6 +275,7 @@ int main() {
                                       event_cone.cone_event_control_edge_count == 0 ||
                                       event_cone.cone_timing_fact_lookup_count == 0 ||
                                       assertion_cone.cone_assertion_sample_edge_count == 0 ||
+                                      assertion_cone.cone_assertion_invocation_edge_count == 0 ||
                                       assertion_cone.cone_assertion_clock_edge_count == 0 ||
                                       default_assertion_cone.cone_assertion_default_clock_edge_count == 0 ||
                                       default_assertion_cone.cone_assertion_default_disable_edge_count == 0 ||
@@ -399,6 +400,8 @@ int main() {
                   << assertion_cone.cone_assertion_sample_edge_count << ","
                   << "\"assertionConeClockEdges\":"
                   << assertion_cone.cone_assertion_clock_edge_count << ","
+                  << "\"assertionConeInvocationEdges\":"
+                  << assertion_cone.cone_assertion_invocation_edge_count << ","
                   << "\"assertionDefaultConeClockEdges\":"
                   << default_assertion_cone.cone_assertion_default_clock_edge_count << ","
                   << "\"assertionDefaultConeDisableEdges\":"

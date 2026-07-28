@@ -431,6 +431,8 @@ struct SemanticConeTrace {
     size_t cone_assertion_abort_edge_count = 0;
     size_t cone_assertion_default_clock_edge_count = 0;
     size_t cone_assertion_default_disable_edge_count = 0;
+    size_t cone_assertion_invocation_edge_count = 0;
+    size_t cone_assertion_invocation_partial_binding_count = 0;
     size_t graph_build_scoped_symbol_candidates = 0;
     size_t graph_build_connection_reference_candidates = 0;
     bool unresolved = false;
