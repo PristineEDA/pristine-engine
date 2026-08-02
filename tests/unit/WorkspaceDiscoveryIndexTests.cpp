@@ -348,3 +348,140 @@ TEST_CASE("SemanticEngine workspace discovery respects configured index dirs and
     CHECK(hasDeclaration(reconfigured, "tb_top", "module"));
     CHECK_FALSE(hasDeclaration(reconfigured, "hidden", "module"));
 }
+
+TEST_CASE("WorkspaceDiscoveryIndex builds a complete URI-local identifier closure",
+          "[analysis][semantic][discovery][document-closure]") {
+    const auto index = semantic::buildWorkspaceDiscoveryIndex(
+        1,
+        {{.uri = "file:///workspace/pkg.sv",
+          .text = "package defs; typedef logic word_t; endpackage\n"},
+         {.uri = "file:///workspace/top.sv",
+          .text = "module top; import defs::*; word_t value; endmodule\n"},
+         {.uri = "file:///workspace/unrelated.sv",
+          .text = "module unrelated; endmodule\n"}});
+
+    const auto closure =
+        semantic::discoveryDocumentClosure(index, "file:///workspace/top.sv");
+    CHECK(closure.confidence == semantic::DiscoveryClosureConfidence::Complete);
+    CHECK(closure.uris == std::vector<std::string>{"file:///workspace/pkg.sv",
+                                                   "file:///workspace/top.sv"});
+    CHECK(closure.reasons.empty());
+    CHECK(closure.fingerprint != 0);
+}
+
+TEST_CASE("WorkspaceDiscoveryIndex marks missing includes incomplete before semantic build",
+          "[analysis][semantic][discovery][document-closure]") {
+    const auto index = semantic::buildWorkspaceDiscoveryIndex(
+        1,
+        {{.uri = "file:///workspace/top.sv",
+          .text = "`include \"missing.svh\"\nmodule top; endmodule\n"}});
+    const auto closure =
+        semantic::discoveryDocumentClosure(index, "file:///workspace/top.sv");
+    CHECK(closure.confidence == semantic::DiscoveryClosureConfidence::Incomplete);
+    REQUIRE(closure.reasons.size() == 1);
+    CHECK(closure.reasons.front().starts_with("missing-include:"));
+}
+
+TEST_CASE("WorkspaceDiscoveryIndex marks escaped identifiers incomplete",
+          "[analysis][semantic][discovery][document-closure]") {
+    const auto index = semantic::buildWorkspaceDiscoveryIndex(
+        1,
+        {{.uri = "file:///workspace/top.sv",
+          .text = "module \\escaped.name ; endmodule\n"}});
+    const auto closure =
+        semantic::discoveryDocumentClosure(index, "file:///workspace/top.sv");
+    CHECK(closure.confidence == semantic::DiscoveryClosureConfidence::Incomplete);
+    CHECK(std::find(closure.reasons.begin(), closure.reasons.end(), "escaped-identifier") !=
+          closure.reasons.end());
+}
+
+TEST_CASE("WorkspaceDiscoveryIndex marks macro token paste incomplete",
+          "[analysis][semantic][discovery][document-closure]") {
+    const auto index = semantic::buildWorkspaceDiscoveryIndex(
+        1,
+        {{.uri = "file:///workspace/top.sv",
+          .text = "`define JOIN(a,b) a``b\nmodule top; endmodule\n"}});
+    const auto closure =
+        semantic::discoveryDocumentClosure(index, "file:///workspace/top.sv");
+    CHECK(closure.confidence == semantic::DiscoveryClosureConfidence::Incomplete);
+    CHECK(std::find(closure.reasons.begin(), closure.reasons.end(), "macro-token-paste") !=
+          closure.reasons.end());
+}
+
+TEST_CASE("WorkspaceDiscoveryIndex document closure terminates include cycles",
+          "[analysis][semantic][discovery][document-closure][cycle]") {
+    const auto index = semantic::buildWorkspaceDiscoveryIndex(
+        1,
+        {{.uri = "file:///workspace/a.svh", .text = "`include \"b.svh\"\n"},
+         {.uri = "file:///workspace/b.svh", .text = "`include \"a.svh\"\n"}});
+    const auto closure = semantic::discoveryDocumentClosure(index, "file:///workspace/a.svh");
+    CHECK(closure.confidence == semantic::DiscoveryClosureConfidence::Complete);
+    CHECK(closure.uris == std::vector<std::string>{"file:///workspace/a.svh",
+                                                   "file:///workspace/b.svh"});
+}
+
+TEST_CASE("WorkspaceDiscoveryIndex document closure fingerprint ignores file enumeration order",
+          "[analysis][semantic][discovery][document-closure][deterministic]") {
+    std::vector<semantic::DiscoveryDocumentInput> documents{
+        {.uri = "file:///workspace/pkg.sv", .text = "package p; typedef logic t; endpackage\n"},
+        {.uri = "file:///workspace/top.sv", .text = "module top; import p::*; t x; endmodule\n"}};
+    auto reversed = documents;
+    std::reverse(reversed.begin(), reversed.end());
+    const auto first = semantic::buildWorkspaceDiscoveryIndex(1, documents);
+    const auto second = semantic::buildWorkspaceDiscoveryIndex(2, reversed);
+    const auto first_closure =
+        semantic::discoveryDocumentClosure(first, "file:///workspace/top.sv");
+    const auto second_closure =
+        semantic::discoveryDocumentClosure(second, "file:///workspace/top.sv");
+    CHECK(first_closure.uris == second_closure.uris);
+    CHECK(first_closure.fingerprint == second_closure.fingerprint);
+}
+
+TEST_CASE("WorkspaceDiscoveryIndex comments and strings do not add closure dependencies",
+          "[analysis][semantic][discovery][document-closure]") {
+    const auto index = semantic::buildWorkspaceDiscoveryIndex(
+        1,
+        {{.uri = "file:///workspace/child.sv", .text = "module child; endmodule\n"},
+         {.uri = "file:///workspace/top.sv",
+          .text = "module top; string s = \"child\"; // child ignored\nendmodule\n"}});
+    const auto closure =
+        semantic::discoveryDocumentClosure(index, "file:///workspace/top.sv");
+    CHECK(closure.confidence == semantic::DiscoveryClosureConfidence::Complete);
+    CHECK(closure.uris == std::vector<std::string>{"file:///workspace/top.sv"});
+}
+
+TEST_CASE("WorkspaceDiscoveryIndex local names do not expand a document closure",
+          "[analysis][semantic][discovery][document-closure][local-name]") {
+    const auto index = semantic::buildWorkspaceDiscoveryIndex(
+        1,
+        {{.uri = "file:///workspace/child.sv",
+          .text = "module child #(parameter int WIDTH = 1); endmodule\n"},
+         {.uri = "file:///workspace/top.sv",
+          .text = "module top #(parameter int WIDTH = 4); child #(.WIDTH(WIDTH)) u(); endmodule\n"},
+         {.uri = "file:///workspace/unrelated.sv",
+          .text = "module unrelated #(parameter int WIDTH = 8); endmodule\n"}});
+
+    const auto closure =
+        semantic::discoveryDocumentClosure(index, "file:///workspace/top.sv");
+    CHECK(closure.confidence == semantic::DiscoveryClosureConfidence::Complete);
+    CHECK(closure.uris == std::vector<std::string>{"file:///workspace/child.sv",
+                                                   "file:///workspace/top.sv"});
+}
+
+TEST_CASE("WorkspaceDiscoveryIndex package members remain visible closure candidates",
+          "[analysis][semantic][discovery][document-closure][package-member]") {
+    const auto index = semantic::buildWorkspaceDiscoveryIndex(
+        1,
+        {{.uri = "file:///workspace/defs.sv",
+          .text = "package defs; typedef logic word_t; endpackage\n"},
+         {.uri = "file:///workspace/top.sv",
+          .text = "module top; word_t value; endmodule\n"},
+         {.uri = "file:///workspace/unrelated.sv",
+          .text = "module unrelated; logic value; endmodule\n"}});
+
+    const auto closure =
+        semantic::discoveryDocumentClosure(index, "file:///workspace/top.sv");
+    CHECK(closure.confidence == semantic::DiscoveryClosureConfidence::Complete);
+    CHECK(closure.uris == std::vector<std::string>{"file:///workspace/defs.sv",
+                                                   "file:///workspace/top.sv"});
+}

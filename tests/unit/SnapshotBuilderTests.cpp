@@ -178,6 +178,90 @@ TEST_CASE("SnapshotBuilder reuses opened include buffers when included by anothe
           std::vector<std::string>{"file:///workspace/z_defs.svh"});
 }
 
+TEST_CASE("SnapshotBuilder reports completed phase metrics and progress",
+          "[analysis][semantic][snapshot-builder][control][metrics]") {
+    std::vector<std::string> phases;
+    SnapshotBuildInput input{
+        .generation = 21,
+        .documents = {{"file:///workspace/top.sv",
+                       SemanticEngineDocument{.uri = "file:///workspace/top.sv",
+                                              .text = "module top; logic value; endmodule\n"}}}};
+    input.control.report_progress = [&](std::string_view phase, int) {
+        phases.emplace_back(phase);
+    };
+
+    const auto output = SnapshotBuilder{}.build(std::move(input));
+    CHECK(output.status == SnapshotBuildStatus::Completed);
+    REQUIRE(output.data != nullptr);
+    CHECK(output.metrics.input_document_count == 1);
+    CHECK(output.metrics.syntax_tree_count == 1);
+    CHECK(output.metrics.total_micros >= 0);
+    CHECK(std::find(phases.begin(), phases.end(), "normalize") != phases.end());
+    CHECK(std::find(phases.begin(), phases.end(), "astIndex") != phases.end());
+    CHECK(phases.back() == "finalize");
+}
+
+TEST_CASE("SnapshotBuilder returns cancelled before assigning buffers",
+          "[analysis][semantic][snapshot-builder][control][cancel]") {
+    pristine::CancellationSource cancellation;
+    cancellation.cancel();
+    SnapshotBuildInput input{
+        .generation = 22,
+        .documents = {{"file:///workspace/top.sv",
+                       SemanticEngineDocument{.uri = "file:///workspace/top.sv",
+                                              .text = "module top; endmodule\n"}}}};
+    input.control.cancellation = cancellation.token();
+
+    const auto output = SnapshotBuilder{}.build(std::move(input));
+    CHECK(output.status == SnapshotBuildStatus::Cancelled);
+    CHECK(output.data == nullptr);
+    CHECK(output.metrics.cancellation_checkpoint == "normalize");
+    CHECK_FALSE(output.snapshot.has_shallow_ast);
+}
+
+TEST_CASE("SnapshotBuilder cancels between compilation and AstIndex commit",
+          "[analysis][semantic][snapshot-builder][control][cancel]") {
+    pristine::CancellationSource cancellation;
+    SnapshotBuildInput input{
+        .generation = 23,
+        .documents = {{"file:///workspace/top.sv",
+                       SemanticEngineDocument{.uri = "file:///workspace/top.sv",
+                                              .text = "module top; logic value; endmodule\n"}}}};
+    input.control.cancellation = cancellation.token();
+    input.control.report_progress = [&](std::string_view phase, int) {
+        if (phase == "astIndex") {
+            cancellation.cancel();
+        }
+    };
+
+    const auto output = SnapshotBuilder{}.build(std::move(input));
+    CHECK(output.status == SnapshotBuildStatus::Cancelled);
+    CHECK(output.data == nullptr);
+    CHECK(output.metrics.cancellation_checkpoint.starts_with("astIndex"));
+}
+
+TEST_CASE("SnapshotBuilder cancellation never exposes a partial semantic snapshot",
+          "[analysis][semantic][snapshot-builder][control][atomic]") {
+    pristine::CancellationSource cancellation;
+    SnapshotBuildInput input{
+        .generation = 24,
+        .documents = {{"file:///workspace/top.sv",
+                       SemanticEngineDocument{.uri = "file:///workspace/top.sv",
+                                              .text = "module top; logic a; assign a = 1'b0; endmodule\n"}}}};
+    input.control.cancellation = cancellation.token();
+    input.control.report_progress = [&](std::string_view phase, int) {
+        if (phase.starts_with("astIndex.")) {
+            cancellation.cancel();
+        }
+    };
+
+    const auto output = SnapshotBuilder{}.build(std::move(input));
+    CHECK(output.status == SnapshotBuildStatus::Cancelled);
+    CHECK(output.data == nullptr);
+    CHECK_FALSE(output.snapshot.has_shallow_ast);
+    CHECK_FALSE(output.snapshot.has_design_ast);
+}
+
 TEST_CASE("SnapshotBuilder enters design mode when build or top config is present",
           "[analysis][semantic][snapshot-builder]") {
     SnapshotBuildInput input{.generation = 14,

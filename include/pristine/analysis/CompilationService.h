@@ -171,6 +171,12 @@ struct PackageExport {
     ParseRange range;
 };
 
+struct LexicalIdentifierScan {
+    std::vector<std::string> names;
+    bool complete = true;
+    std::vector<std::string> reasons;
+};
+
 struct ParseResult {
     std::shared_ptr<slang::syntax::SyntaxTree> syntax_tree;
     std::vector<ParseDiagnostic> diagnostics;
@@ -200,6 +206,7 @@ public:
     [[nodiscard]] std::vector<MacroDefinition> macroDefinitions(std::string_view text) const;
     [[nodiscard]] std::vector<PackageImport> packageImports(std::string_view text) const;
     [[nodiscard]] std::vector<PackageExport> packageExports(std::string_view text) const;
+    [[nodiscard]] LexicalIdentifierScan lexicalIdentifiers(std::string_view text) const;
 };
 
 } // namespace pristine::analysis

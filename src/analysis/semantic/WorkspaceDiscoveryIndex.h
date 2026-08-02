@@ -32,8 +32,25 @@ struct DiscoveryFile {
     std::string uri;
     size_t byte_count = 0;
     std::vector<DiscoverySymbol> declarations;
+    std::vector<std::string> declared_visible_names;
     std::vector<std::string> referenced_top_level_names;
+    std::vector<std::string> referenced_visible_names;
     std::vector<std::string> included_uris;
+    bool closure_complete = true;
+    std::vector<std::string> closure_reasons;
+};
+
+enum class DiscoveryClosureConfidence {
+    Complete,
+    Incomplete,
+};
+
+struct DiscoveryDocumentClosure {
+    std::string root_uri;
+    std::vector<std::string> uris;
+    DiscoveryClosureConfidence confidence = DiscoveryClosureConfidence::Incomplete;
+    std::vector<std::string> reasons;
+    std::uint64_t fingerprint = 0;
 };
 
 struct WorkspaceDiscoveryIndex {
@@ -48,6 +65,7 @@ struct WorkspaceDiscoveryIndex {
     std::vector<DiscoverySymbol> macros;
     std::unordered_map<std::string, std::vector<DiscoverySymbol>> declarations_by_name;
     std::unordered_map<std::string, std::vector<std::string>> files_by_declaration;
+    std::unordered_map<std::string, std::vector<std::string>> files_by_visible_name;
     std::unordered_map<std::string, std::vector<std::string>> referenced_files_by_name;
     std::vector<std::string> messages;
 };
@@ -59,6 +77,11 @@ struct WorkspaceDiscoveryIndex {
 [[nodiscard]] std::vector<std::string> discoveryDependencyClosure(
     const WorkspaceDiscoveryIndex& index,
     std::optional<std::string_view> top_name = std::nullopt,
+    size_t max_files = 0);
+
+[[nodiscard]] DiscoveryDocumentClosure discoveryDocumentClosure(
+    const WorkspaceDiscoveryIndex& index,
+    std::string_view root_uri,
     size_t max_files = 0);
 
 } // namespace pristine::analysis::semantic

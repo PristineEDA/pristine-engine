@@ -1,0 +1,1 @@
+{"name":"closure type definition resolves struct variable","sources":[{"uri":"file:///golden/closure/top11.sv","text":"typedef struct packed { logic ready; } packet11_t; module top; packet11_t pkt; endmodule\n"}],"request":{"kind":"typeDefinition","uri":"file:///golden/closure/top11.sv","line":0,"character":74},"expected":{"count":1}}

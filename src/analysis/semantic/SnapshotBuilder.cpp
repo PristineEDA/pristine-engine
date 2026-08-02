@@ -331,7 +331,30 @@ SnapshotBuildInputSummary snapshotBuildInputSummary(const SnapshotBuildInput& in
 }
 
 SnapshotBuildOutput SnapshotBuilder::build(SnapshotBuildInput input) const {
+    SnapshotBuildOutput output;
+    const auto total_start = std::chrono::steady_clock::now();
+    const auto normalize_start = total_start;
     input = normalizeSnapshotBuildInput(std::move(input));
+    output.metrics.normalize_micros = std::chrono::duration_cast<std::chrono::microseconds>(
+                                          std::chrono::steady_clock::now() - normalize_start)
+                                          .count();
+    output.metrics.input_document_count = input.documents.size();
+    for (const auto& [_, document] : input.documents) {
+        output.metrics.input_byte_count += document.text.size();
+    }
+    std::string current_phase;
+    const auto checkpoint = [&](std::string_view phase, int percentage) {
+        current_phase = std::string(phase);
+        if (input.control.cancellation.cancellationRequested()) {
+            output.metrics.cancellation_checkpoint = std::string(phase);
+            throw pristine::OperationCancelled{};
+        }
+        if (input.control.report_progress) {
+            input.control.report_progress(phase, percentage);
+        }
+    };
+    try {
+    checkpoint("normalize", 5);
     PRISTINE_DEBUG_TRACE_SCOPE_LAZY("snapshotBuilder.build", [&] {
         const auto input_summary = snapshotBuildInputSummary(input);
         return std::to_string(input_summary.document_count) +
@@ -346,7 +369,6 @@ SnapshotBuildOutput SnapshotBuilder::build(SnapshotBuildInput input) const {
     const auto options = makeCompilationOptions(input.config);
     data->syntax_trees.reserve(input.documents.size());
 
-    SnapshotBuildOutput output;
     output.snapshot.generation = input.generation;
     output.snapshot.mode = input.config.build.has_value() || input.config.build_pattern.has_value() ||
                                    !input.config.top_modules.empty()
@@ -365,9 +387,12 @@ SnapshotBuildOutput SnapshotBuilder::build(SnapshotBuildInput input) const {
     std::unordered_map<std::string, slang::SourceBuffer> source_buffers_by_uri;
     source_buffers_by_uri.reserve(output.snapshot.document_uris.size());
     {
+        checkpoint("assignBuffers", 15);
+        const auto phase_start = std::chrono::steady_clock::now();
         PRISTINE_DEBUG_TRACE_SCOPE("snapshotBuilder.assignBuffers",
                                    std::to_string(output.snapshot.document_uris.size()) + " documents");
         for (const auto& uri : output.snapshot.document_uris) {
+            checkpoint("assignBuffers.document", 15);
             const auto document_it = input.documents.find(uri);
             if (document_it == input.documents.end()) {
                 continue;
@@ -381,12 +406,19 @@ SnapshotBuildOutput SnapshotBuilder::build(SnapshotBuildInput input) const {
             data->source_manager->addLineDirective(slang::SourceLocation(buffer.id, 0), 2, "source", 0);
             source_buffers_by_uri.emplace(uri, buffer);
         }
+        output.metrics.assign_buffers_micros =
+            std::chrono::duration_cast<std::chrono::microseconds>(
+                std::chrono::steady_clock::now() - phase_start)
+                .count();
     }
 
     {
+        checkpoint("syntaxFacts", 35);
+        const auto phase_start = std::chrono::steady_clock::now();
         PRISTINE_DEBUG_TRACE_SCOPE("snapshotBuilder.syntaxTrees",
                                    std::to_string(output.snapshot.document_uris.size()) + " documents");
         for (const auto& uri : output.snapshot.document_uris) {
+            checkpoint("syntaxFacts.document", 35);
             const auto document_it = input.documents.find(uri);
             if (document_it == input.documents.end()) {
                 continue;
@@ -430,13 +462,20 @@ SnapshotBuildOutput SnapshotBuilder::build(SnapshotBuildInput input) const {
                 data->syntax_trees.push_back(std::move(tree));
             }
         }
+        output.metrics.syntax_facts_micros =
+            std::chrono::duration_cast<std::chrono::microseconds>(
+                std::chrono::steady_clock::now() - phase_start)
+                .count();
+        output.metrics.syntax_tree_count = data->syntax_trees.size();
     }
 
+    checkpoint("preprocessorIndexes", 40);
     buildMacroUndefIndex(*data);
     buildVisibleMacroIndex(*data, output.affected_dependencies);
 
     if (!data->syntax_trees.empty()) {
-        try {
+            checkpoint("compilation", 50);
+            const auto compilation_start = std::chrono::steady_clock::now();
             PRISTINE_DEBUG_TRACE_SCOPE("snapshotBuilder.compilation",
                                        std::to_string(data->syntax_trees.size()) + " syntax trees");
             data->compilation = std::make_unique<slang::ast::Compilation>(options);
@@ -464,14 +503,26 @@ SnapshotBuildOutput SnapshotBuilder::build(SnapshotBuildInput input) const {
 
             output.snapshot.has_shallow_ast = true;
             output.snapshot.has_design_ast = output.snapshot.mode == SemanticEngineMode::Design;
+            output.metrics.compilation_micros =
+                std::chrono::duration_cast<std::chrono::microseconds>(
+                    std::chrono::steady_clock::now() - compilation_start)
+                    .count();
 
             {
+                checkpoint("astIndex", 75);
+                const auto phase_start = std::chrono::steady_clock::now();
                 PRISTINE_DEBUG_TRACE_SCOPE("snapshotBuilder.buildAstIndexes",
                                            std::to_string(input.documents.size()) + " documents");
-                buildAstIndexes(*data, input.documents);
+                buildAstIndexes(*data, input.documents, input.control);
+                output.metrics.ast_index_micros =
+                    std::chrono::duration_cast<std::chrono::microseconds>(
+                        std::chrono::steady_clock::now() - phase_start)
+                        .count();
             }
 
             {
+                checkpoint("dependencyEdges", 85);
+                const auto phase_start = std::chrono::steady_clock::now();
                 PRISTINE_DEBUG_TRACE_SCOPE_SIMPLE("snapshotBuilder.semanticDependencyEdges");
                 std::unordered_map<std::string, std::vector<std::string>> package_uris_by_name;
                 for (const auto& [_, symbol] : data->symbols_by_id) {
@@ -559,9 +610,15 @@ SnapshotBuildOutput SnapshotBuilder::build(SnapshotBuildInput input) const {
                         binding.interface_definition_location.uri,
                         binding.interface_type_location.uri);
                 }
+                output.metrics.dependency_edges_micros =
+                    std::chrono::duration_cast<std::chrono::microseconds>(
+                        std::chrono::steady_clock::now() - phase_start)
+                        .count();
             }
 
             {
+                checkpoint("semanticDiagnostics", 95);
+                const auto phase_start = std::chrono::steady_clock::now();
                 PRISTINE_DEBUG_TRACE_SCOPE_SIMPLE("snapshotBuilder.semanticDiagnostics");
                 for (const auto& diagnostic : data->compilation->getSemanticDiagnostics()) {
                     const auto uri = diagnosticUri(*data->source_manager, diagnostic);
@@ -577,16 +634,51 @@ SnapshotBuildOutput SnapshotBuilder::build(SnapshotBuildInput input) const {
                                                  .range = sourceRangeForDiagnostic(*data->source_manager, diagnostic),
                                                  .severity = toLspSeverity(severity)});
                 }
+                output.metrics.semantic_diagnostics_micros =
+                    std::chrono::duration_cast<std::chrono::microseconds>(
+                        std::chrono::steady_clock::now() - phase_start)
+                        .count();
             }
-        }
-        catch (...) {
-            output.snapshot.has_shallow_ast = false;
-            output.snapshot.has_design_ast = false;
-            data.reset();
-        }
     }
 
-    output.data = std::move(data);
+    {
+        checkpoint("finalize", 100);
+        const auto phase_start = std::chrono::steady_clock::now();
+        output.data = std::move(data);
+        output.status = SnapshotBuildStatus::Completed;
+        output.metrics.finalize_micros =
+            std::chrono::duration_cast<std::chrono::microseconds>(
+                std::chrono::steady_clock::now() - phase_start)
+                .count();
+    }
+    }
+    catch (const pristine::OperationCancelled& error) {
+        if (output.metrics.cancellation_checkpoint.empty()) {
+            output.metrics.cancellation_checkpoint = current_phase;
+        }
+        output.status = SnapshotBuildStatus::Cancelled;
+        output.error = error.what();
+        output.data.reset();
+        output.snapshot.has_shallow_ast = false;
+        output.snapshot.has_design_ast = false;
+    }
+    catch (const std::exception& error) {
+        output.status = SnapshotBuildStatus::Failed;
+        output.error = error.what();
+        output.data.reset();
+        output.snapshot.has_shallow_ast = false;
+        output.snapshot.has_design_ast = false;
+    }
+    catch (...) {
+        output.status = SnapshotBuildStatus::Failed;
+        output.error = "Unknown snapshot build failure";
+        output.data.reset();
+        output.snapshot.has_shallow_ast = false;
+        output.snapshot.has_design_ast = false;
+    }
+    output.metrics.total_micros = std::chrono::duration_cast<std::chrono::microseconds>(
+                                      std::chrono::steady_clock::now() - total_start)
+                                      .count();
     return output;
 }
 

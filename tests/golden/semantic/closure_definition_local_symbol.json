@@ -1,0 +1,1 @@
+{"name":"closure definition resolves local declaration","sources":[{"uri":"file:///golden/closure/top8.sv","text":"module top; logic source8; logic sink8; assign sink8 = source8; endmodule\n"}],"request":{"kind":"definition","uri":"file:///golden/closure/top8.sv","line":0,"character":56},"expected":{"count":1,"locations":[{"uri":"file:///golden/closure/top8.sv"}]}}

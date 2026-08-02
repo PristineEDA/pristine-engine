@@ -1,9 +1,11 @@
 #pragma once
 
+#include "pristine/Cancellation.h"
 #include "pristine/analysis/CompilationService.h"
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -27,6 +29,7 @@ namespace pristine::analysis {
 
 namespace semantic {
 class AffectedDependencyGraph;
+class DocumentSnapshotCache;
 class QueryCache;
 struct SnapshotData;
 }
@@ -34,6 +37,12 @@ struct SnapshotData;
 enum class SemanticEngineMode {
     Shallow,
     Design
+};
+
+struct SemanticRequestControl {
+    pristine::CancellationToken cancellation;
+    std::function<void(std::string_view phase, int percentage)> report_progress;
+    std::vector<std::string> closure_root_uris;
 };
 
 struct SemanticEngineConfig {
@@ -144,6 +153,7 @@ struct SemanticRenameResult {
 
 struct SemanticCompletionItem {
     std::string stable_id;
+    std::string snapshot_identity;
     std::string label;
     std::string detail;
     std::string documentation;
@@ -564,8 +574,37 @@ struct SemanticWorkspaceDiscoverySnapshot {
     std::vector<SemanticDiscoverySymbol> declarations;
     std::vector<std::string> top_candidates;
     std::unordered_map<std::string, std::vector<std::string>> closure_uris_by_name;
+    struct DocumentClosure {
+        std::vector<std::string> uris;
+        std::vector<std::string> reasons;
+        std::uint64_t fingerprint = 0;
+        bool complete = false;
+    };
+    std::unordered_map<std::string, DocumentClosure> document_closures_by_uri;
     std::vector<SemanticDiscoveryClosureMetric> closure_metrics;
     std::vector<std::string> messages;
+};
+
+struct SemanticSnapshotBuildStats {
+    std::string scope_kind;
+    std::string root_uri;
+    std::string snapshot_identity;
+    std::string closure_confidence;
+    std::string closure_reason;
+    std::string cancellation_checkpoint;
+    size_t input_document_count = 0;
+    size_t selected_document_count = 0;
+    std::int64_t normalize_micros = 0;
+    std::int64_t buffer_assignment_micros = 0;
+    std::int64_t syntax_preprocessor_micros = 0;
+    std::int64_t compilation_micros = 0;
+    std::int64_t ast_index_micros = 0;
+    std::int64_t dependency_edges_micros = 0;
+    std::int64_t semantic_diagnostics_micros = 0;
+    std::int64_t finalize_micros = 0;
+    std::int64_t total_micros = 0;
+    std::uint64_t cancelled_build_count = 0;
+    bool cache_hit = false;
 };
 
 struct SemanticQueryCacheStats {
@@ -623,6 +662,8 @@ public:
                         std::string_view text,
                         SemanticEngineDocumentState state = {});
     void removeDocument(std::string_view uri);
+    void setRequestControl(SemanticRequestControl control);
+    void clearRequestControl();
 
     [[nodiscard]] const SemanticEngineDocument* document(std::string_view uri) const;
     [[nodiscard]] size_t documentCount() const;
@@ -668,7 +709,8 @@ public:
                                                          int character,
                                                          std::string_view prefix = {}) const;
     [[nodiscard]] SemanticCompletionItem resolveCompletion(std::string_view stable_id,
-                                                           std::string_view label) const;
+                                                           std::string_view label,
+                                                           std::string_view snapshot_identity = {}) const;
     [[nodiscard]] SemanticSignatureHelpResult signatureHelpAt(std::string_view uri,
                                                               int line,
                                                               int character) const;
@@ -693,11 +735,25 @@ public:
     [[nodiscard]] SemanticWorkspaceSymbolResult workspaceSymbols(std::string_view query,
                                                                  size_t limit = 1000) const;
     [[nodiscard]] SemanticQueryCacheStats queryCacheStats() const;
+    [[nodiscard]] SemanticSnapshotBuildStats lastSnapshotBuildStats() const;
     void resetQueryCacheStats();
 
 private:
+    struct SnapshotSelection {
+        const SemanticEngineSnapshot* snapshot = nullptr;
+        const semantic::SnapshotData* data = nullptr;
+        std::string snapshot_identity;
+        bool closure = false;
+    };
+
     void rebuildDependenciesFor(std::string_view document_uri, std::string_view text);
     void rebuildSnapshot() const;
+    [[nodiscard]] SnapshotSelection snapshotForDocument(
+        std::string_view uri,
+        std::optional<std::string_view> workspace_candidate_prefix = std::nullopt) const;
+    [[nodiscard]] SnapshotSelection snapshotForIdentity(std::string_view identity) const;
+    [[nodiscard]] const SemanticWorkspaceDiscoverySnapshot& workspaceDiscoveryView() const;
+    void clearDocumentSnapshotCache();
     [[nodiscard]] std::vector<std::string> closureDocumentUrisFor(
         std::optional<std::string_view> module_name,
         const SemanticWorkspaceDiscoverySnapshot& discovery) const;
@@ -709,10 +765,15 @@ private:
     mutable std::unique_ptr<semantic::AffectedDependencyGraph> affected_dependencies_;
     mutable std::optional<SemanticEngineSnapshot> snapshot_;
     mutable std::unique_ptr<semantic::SnapshotData> snapshot_data_;
+    mutable std::string full_snapshot_identity_;
     mutable std::unique_ptr<semantic::QueryCache> query_cache_;
+    mutable std::unique_ptr<semantic::DocumentSnapshotCache> document_snapshot_cache_;
     mutable std::optional<SemanticWorkspaceDiscoverySnapshot> discovery_snapshot_cache_;
     mutable std::uint64_t discovery_cache_key_ = 0;
     mutable bool snapshot_dirty_ = true;
+    mutable SemanticRequestControl request_control_;
+    mutable SemanticSnapshotBuildStats last_snapshot_build_stats_;
+    mutable std::uint64_t cancelled_snapshot_build_count_ = 0;
     std::uint64_t generation_ = 0;
 };
 

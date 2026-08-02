@@ -41,6 +41,8 @@ public:
                         std::string_view text,
                         SemanticDocumentState state = {});
     void removeDocument(std::string_view uri);
+    void setSemanticRequestControl(SemanticRequestControl control);
+    void clearSemanticRequestControl();
 
     [[nodiscard]] const SemanticDocument* document(std::string_view uri) const;
     [[nodiscard]] std::vector<std::string> includedUris(std::string_view uri) const;
@@ -76,7 +78,8 @@ public:
                                                                int character,
                                                                std::string_view prefix = {}) const;
     [[nodiscard]] SemanticCompletionItem engineResolveCompletion(std::string_view stable_id,
-                                                                 std::string_view label) const;
+                                                                 std::string_view label,
+                                                                 std::string_view snapshot_identity = {}) const;
     [[nodiscard]] SemanticSignatureHelpResult engineSignatureHelpAt(std::string_view uri,
                                                                     int line,
                                                                     int character) const;

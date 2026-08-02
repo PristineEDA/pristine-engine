@@ -87,6 +87,22 @@ void appendDocumentSymbols(std::vector<DiscoverySymbol>& declarations,
     }
 }
 
+void appendTopLevelDocumentSymbolNames(std::vector<std::string>& names,
+                                       const std::vector<DocumentSymbol>& symbols) {
+    for (const auto& symbol : symbols) {
+        if (!symbol.name.empty()) {
+            names.push_back(symbol.name);
+        }
+        if (symbol.kind == 4) {
+            for (const auto& package_member : symbol.children) {
+                if (!package_member.name.empty()) {
+                    names.push_back(package_member.name);
+                }
+            }
+        }
+    }
+}
+
 void sortUniqueStrings(std::vector<std::string>& values) {
     std::sort(values.begin(), values.end());
     values.erase(std::unique(values.begin(), values.end()), values.end());
@@ -150,9 +166,9 @@ DiscoveryScanResult scanDiscoveryDocument(const DiscoveryDocumentInput& document
         }
     });
     scan("symbol", [&] {
-        appendDocumentSymbols(file.declarations,
-                              document.uri,
-                              compilation_service.documentSymbols(document.text, document.uri));
+        const auto symbols = compilation_service.documentSymbols(document.text, document.uri);
+        appendDocumentSymbols(file.declarations, document.uri, symbols);
+        appendTopLevelDocumentSymbolNames(file.declared_visible_names, symbols);
     });
     scan("macro", [&] {
         for (const auto& macro : compilation_service.macroDefinitions(document.text)) {
@@ -179,10 +195,19 @@ DiscoveryScanResult scanDiscoveryDocument(const DiscoveryDocumentInput& document
             }
         }
     });
+    scan("identifier", [&] {
+        auto identifiers = compilation_service.lexicalIdentifiers(document.text);
+        file.referenced_visible_names = std::move(identifiers.names);
+        file.closure_complete = identifiers.complete;
+        file.closure_reasons = std::move(identifiers.reasons);
+    });
 
     sortUniqueSymbols(file.declarations);
+    sortUniqueStrings(file.declared_visible_names);
     sortUniqueStrings(file.referenced_top_level_names);
+    sortUniqueStrings(file.referenced_visible_names);
     sortUniqueStrings(file.included_uris);
+    sortUniqueStrings(file.closure_reasons);
     sortUniqueSymbols(result.macros);
     sortUniqueStrings(result.messages);
     return result;
@@ -199,7 +224,14 @@ void appendDiscoveryScan(WorkspaceDiscoveryIndex& index, DiscoveryScanResult sca
                               file.declarations.end());
     for (const auto& declaration : file.declarations) {
         index.files_by_declaration[declaration.name].push_back(file.uri);
+        index.files_by_visible_name[declaration.name].push_back(file.uri);
         index.declarations_by_name[declaration.name].push_back(declaration);
+    }
+    for (const auto& name : file.declared_visible_names) {
+        index.files_by_visible_name[name].push_back(file.uri);
+    }
+    for (const auto& macro : scan.macros) {
+        index.files_by_visible_name[macro.name].push_back(file.uri);
     }
     for (const auto& reference : file.referenced_top_level_names) {
         index.referenced_files_by_name[reference].push_back(file.uri);
@@ -217,6 +249,9 @@ void finalizeDiscoveryIndex(WorkspaceDiscoveryIndex& index) {
         sortUniqueSymbols(symbols);
     }
     for (auto& [_, files] : index.files_by_declaration) {
+        sortUniqueStrings(files);
+    }
+    for (auto& [_, files] : index.files_by_visible_name) {
         sortUniqueStrings(files);
     }
     for (auto& [_, files] : index.referenced_files_by_name) {
@@ -270,115 +305,100 @@ WorkspaceDiscoveryIndex buildWorkspaceDiscoveryIndex(std::uint64_t generation,
         return index;
     }
 
-    CompilationService compilation_service;
-
     for (const auto& document : documents) {
-        DiscoveryFile file;
-        file.uri = document.uri;
-        file.byte_count = document.text.size();
-        ++index.file_count;
-        index.byte_count += file.byte_count;
-
-        try {
-            for (const auto& module : compilation_service.moduleDefinitions(document.text, document.uri)) {
-                file.declarations.push_back(DiscoverySymbol{.name = module.name,
-                                                            .kind = module.kind.empty() ? "module" : module.kind,
-                                                            .location = DiscoveryLocation{.uri = document.uri,
-                                                                                          .range = module.range}});
-                for (const auto& instance : module.instances) {
-                    appendReference(file.referenced_top_level_names, instance.module_name);
-                }
-            }
-        }
-        catch (const std::exception& error) {
-            index.messages.push_back("Discovery module scan failed for " + document.uri + ": " + error.what());
-        }
-        catch (...) {
-            index.messages.push_back("Discovery module scan failed for " + document.uri);
-        }
-
-        try {
-            appendDocumentSymbols(file.declarations,
-                                  document.uri,
-                                  compilation_service.documentSymbols(document.text, document.uri));
-        }
-        catch (const std::exception& error) {
-            index.messages.push_back("Discovery symbol scan failed for " + document.uri + ": " + error.what());
-        }
-        catch (...) {
-            index.messages.push_back("Discovery symbol scan failed for " + document.uri);
-        }
-
-        try {
-            for (const auto& macro : compilation_service.macroDefinitions(document.text)) {
-                index.macros.push_back(DiscoverySymbol{.name = macro.name,
-                                                       .kind = macro.function_like ? "macro-function" : "macro",
-                                                       .location = DiscoveryLocation{.uri = document.uri,
-                                                                                     .range = macro.range}});
-            }
-        }
-        catch (const std::exception& error) {
-            index.messages.push_back("Discovery macro scan failed for " + document.uri + ": " + error.what());
-        }
-        catch (...) {
-            index.messages.push_back("Discovery macro scan failed for " + document.uri);
-        }
-
-        try {
-            for (const auto& import : compilation_service.packageImports(document.text)) {
-                appendReference(file.referenced_top_level_names, import.package_name);
-            }
-        }
-        catch (const std::exception& error) {
-            index.messages.push_back("Discovery package import scan failed for " + document.uri + ": " + error.what());
-        }
-        catch (...) {
-            index.messages.push_back("Discovery package import scan failed for " + document.uri);
-        }
-
-        try {
-            for (const auto& export_reference : compilation_service.packageExports(document.text)) {
-                appendReference(file.referenced_top_level_names, export_reference.package_name);
-            }
-        }
-        catch (const std::exception& error) {
-            index.messages.push_back("Discovery package export scan failed for " + document.uri + ": " + error.what());
-        }
-        catch (...) {
-            index.messages.push_back("Discovery package export scan failed for " + document.uri);
-        }
-
-        try {
-            for (const auto& include : compilation_service.includeDirectives(document.text)) {
-                if (!include.target.empty()) {
-                    file.included_uris.push_back(joinFileUri(uriDirectory(document.uri), include.target));
-                }
-            }
-        }
-        catch (const std::exception& error) {
-            index.messages.push_back("Discovery include scan failed for " + document.uri + ": " + error.what());
-        }
-        catch (...) {
-            index.messages.push_back("Discovery include scan failed for " + document.uri);
-        }
-
-        sortUniqueSymbols(file.declarations);
-        sortUniqueStrings(file.referenced_top_level_names);
-        sortUniqueStrings(file.included_uris);
-        index.declarations.insert(index.declarations.end(), file.declarations.begin(), file.declarations.end());
-        for (const auto& declaration : file.declarations) {
-            index.files_by_declaration[declaration.name].push_back(file.uri);
-            index.declarations_by_name[declaration.name].push_back(declaration);
-        }
-        for (const auto& reference : file.referenced_top_level_names) {
-            index.referenced_files_by_name[reference].push_back(file.uri);
-        }
-        index.reference_count += file.referenced_top_level_names.size();
-        index.files.push_back(std::move(file));
+        appendDiscoveryScan(index, scanDiscoveryDocument(document));
     }
 
     finalizeDiscoveryIndex(index);
     return index;
+}
+
+DiscoveryDocumentClosure discoveryDocumentClosure(const WorkspaceDiscoveryIndex& index,
+                                                   std::string_view root_uri,
+                                                   size_t max_files) {
+    DiscoveryDocumentClosure result;
+    result.root_uri = std::string(root_uri);
+    std::set<std::string> selected;
+    std::deque<std::string> pending;
+
+    const auto find_file = [&](std::string_view uri) -> const DiscoveryFile* {
+        const auto it = std::lower_bound(index.files.begin(),
+                                         index.files.end(),
+                                         uri,
+                                         [](const DiscoveryFile& file, std::string_view value) {
+                                             return file.uri < value;
+                                         });
+        return it != index.files.end() && it->uri == uri ? &*it : nullptr;
+    };
+    const auto enqueue = [&](const std::string& uri) {
+        if (selected.insert(uri).second) {
+            pending.push_back(uri);
+        }
+    };
+
+    if (find_file(root_uri) == nullptr) {
+        result.reasons.push_back("root-document-not-indexed");
+        return result;
+    }
+    enqueue(result.root_uri);
+
+    while (!pending.empty()) {
+        const auto uri = std::move(pending.front());
+        pending.pop_front();
+        if (max_files != 0 && selected.size() > max_files) {
+            result.reasons.push_back("closure-file-limit");
+            break;
+        }
+        const auto* file = find_file(uri);
+        if (file == nullptr) {
+            result.reasons.push_back("missing-document:" + uri);
+            continue;
+        }
+        if (!file->closure_complete) {
+            result.reasons.insert(result.reasons.end(),
+                                  file->closure_reasons.begin(),
+                                  file->closure_reasons.end());
+        }
+        for (const auto& included_uri : file->included_uris) {
+            if (find_file(included_uri) == nullptr) {
+                result.reasons.push_back("missing-include:" + included_uri);
+            }
+            else {
+                enqueue(included_uri);
+            }
+        }
+        for (const auto& name : file->referenced_visible_names) {
+            if (const auto files = index.files_by_visible_name.find(name);
+                files != index.files_by_visible_name.end()) {
+                for (const auto& dependency_uri : files->second) {
+                    enqueue(dependency_uri);
+                }
+            }
+        }
+    }
+
+    result.uris.assign(selected.begin(), selected.end());
+    sortUniqueStrings(result.reasons);
+    result.confidence = result.reasons.empty() ? DiscoveryClosureConfidence::Complete
+                                               : DiscoveryClosureConfidence::Incomplete;
+    std::uint64_t fingerprint = 1469598103934665603ULL;
+    const auto append_hash = [&](std::string_view value) {
+        for (const auto byte : value) {
+            fingerprint ^= static_cast<unsigned char>(byte);
+            fingerprint *= 1099511628211ULL;
+        }
+        fingerprint ^= 0xffU;
+        fingerprint *= 1099511628211ULL;
+    };
+    append_hash(result.root_uri);
+    for (const auto& uri : result.uris) {
+        append_hash(uri);
+    }
+    for (const auto& reason : result.reasons) {
+        append_hash(reason);
+    }
+    result.fingerprint = fingerprint;
+    return result;
 }
 
 std::vector<std::string> discoveryDependencyClosure(const WorkspaceDiscoveryIndex& index,

@@ -252,9 +252,13 @@ jsonrpc::Json markdownDocumentation(std::string value) {
 }
 
 jsonrpc::Json semanticEngineCompletionData(const analysis::SemanticCompletionItem& item) {
-    return jsonrpc::Json{{"source", "semanticEngine"},
+    jsonrpc::Json result{{"source", "semanticEngine"},
                          {"stableId", item.stable_id},
                          {"label", item.label}};
+    if (!item.snapshot_identity.empty()) {
+        result["snapshotIdentity"] = item.snapshot_identity;
+    }
+    return result;
 }
 
 jsonrpc::Json toSemanticEngineCompletionItem(const analysis::SemanticCompletionItem& item) {
@@ -775,6 +779,8 @@ std::string backgroundDiagnosticsStateName(BackgroundDiagnosticsWorker::StateKin
         return "pending";
     case BackgroundDiagnosticsWorker::StateKind::Running:
         return "running";
+    case BackgroundDiagnosticsWorker::StateKind::Cancelled:
+        return "cancelled";
     case BackgroundDiagnosticsWorker::StateKind::StaleSkipped:
         return "staleSkipped";
     case BackgroundDiagnosticsWorker::StateKind::ClosedSkipped:
@@ -1135,68 +1141,87 @@ void ServerSession::bind(jsonrpc::JsonRpcServer& server) {
     server.registerRequestHandler("systemverilog/layout/close", [this](const jsonrpc::Json& params) {
         return handleLayoutClose(params);
     });
-    server.registerRequestHandler("textDocument/hover", [this](const jsonrpc::Json& params) {
-        return handleHover(params);
+    server.registerRequestHandler("textDocument/hover", [this](const jsonrpc::Json& params,
+                                                                const jsonrpc::RequestContext& context) {
+        return executeSemanticRequest(context, [this, &params]() { return handleHover(params); });
     });
-    server.registerRequestHandler("textDocument/definition", [this](const jsonrpc::Json& params) {
-        return handleDefinition(params);
+    server.registerRequestHandler("textDocument/definition", [this](const jsonrpc::Json& params,
+                                                                     const jsonrpc::RequestContext& context) {
+        return executeSemanticRequest(context, [this, &params]() { return handleDefinition(params); });
     });
-    server.registerRequestHandler("textDocument/typeDefinition", [this](const jsonrpc::Json& params) {
-        return handleTypeDefinition(params);
+    server.registerRequestHandler("textDocument/typeDefinition", [this](const jsonrpc::Json& params,
+                                                                         const jsonrpc::RequestContext& context) {
+        return executeSemanticRequest(context, [this, &params]() { return handleTypeDefinition(params); });
     });
-    server.registerRequestHandler("textDocument/implementation", [this](const jsonrpc::Json& params) {
-        return handleImplementation(params);
+    server.registerRequestHandler("textDocument/implementation", [this](const jsonrpc::Json& params,
+                                                                         const jsonrpc::RequestContext& context) {
+        return executeSemanticRequest(context, [this, &params]() { return handleImplementation(params); });
     });
-    server.registerRequestHandler("textDocument/documentHighlight", [this](const jsonrpc::Json& params) {
-        return handleDocumentHighlight(params);
+    server.registerRequestHandler("textDocument/documentHighlight", [this](const jsonrpc::Json& params,
+                                                                            const jsonrpc::RequestContext& context) {
+        return executeSemanticRequest(context, [this, &params]() { return handleDocumentHighlight(params); });
     });
     server.registerRequestHandler("textDocument/documentLink", [this](const jsonrpc::Json& params) {
         return handleDocumentLink(params);
     });
-    server.registerRequestHandler("textDocument/inlayHint", [this](const jsonrpc::Json& params) {
-        return handleInlayHint(params);
+    server.registerRequestHandler("textDocument/inlayHint", [this](const jsonrpc::Json& params,
+                                                                    const jsonrpc::RequestContext& context) {
+        return executeSemanticRequest(context, [this, &params]() { return handleInlayHint(params); });
     });
-    server.registerRequestHandler("textDocument/codeAction", [this](const jsonrpc::Json& params) {
-        return handleCodeAction(params);
+    server.registerRequestHandler("textDocument/codeAction", [this](const jsonrpc::Json& params,
+                                                                     const jsonrpc::RequestContext& context) {
+        return executeSemanticRequest(context, [this, &params]() { return handleCodeAction(params); });
     });
     server.registerRequestHandler("textDocument/foldingRange", [this](const jsonrpc::Json& params) {
         return handleFoldingRange(params);
     });
-    server.registerRequestHandler("textDocument/semanticTokens/full", [this](const jsonrpc::Json& params) {
-        return handleSemanticTokensFull(params);
+    server.registerRequestHandler("textDocument/semanticTokens/full", [this](const jsonrpc::Json& params,
+                                                                              const jsonrpc::RequestContext& context) {
+        return executeSemanticRequest(context, [this, &params]() { return handleSemanticTokensFull(params); });
     });
-    server.registerRequestHandler("textDocument/selectionRange", [this](const jsonrpc::Json& params) {
-        return handleSelectionRange(params);
+    server.registerRequestHandler("textDocument/selectionRange", [this](const jsonrpc::Json& params,
+                                                                         const jsonrpc::RequestContext& context) {
+        return executeSemanticRequest(context, [this, &params]() { return handleSelectionRange(params); });
     });
-    server.registerRequestHandler("textDocument/signatureHelp", [this](const jsonrpc::Json& params) {
-        return handleSignatureHelp(params);
+    server.registerRequestHandler("textDocument/signatureHelp", [this](const jsonrpc::Json& params,
+                                                                        const jsonrpc::RequestContext& context) {
+        return executeSemanticRequest(context, [this, &params]() { return handleSignatureHelp(params); });
     });
-    server.registerRequestHandler("textDocument/prepareCallHierarchy", [this](const jsonrpc::Json& params) {
-        return handlePrepareCallHierarchy(params);
+    server.registerRequestHandler("textDocument/prepareCallHierarchy", [this](const jsonrpc::Json& params,
+                                                                               const jsonrpc::RequestContext& context) {
+        return executeSemanticRequest(context, [this, &params]() { return handlePrepareCallHierarchy(params); });
     });
-    server.registerRequestHandler("callHierarchy/incomingCalls", [this](const jsonrpc::Json& params) {
-        return handleIncomingCalls(params);
+    server.registerRequestHandler("callHierarchy/incomingCalls", [this](const jsonrpc::Json& params,
+                                                                         const jsonrpc::RequestContext& context) {
+        return executeSemanticRequest(context, [this, &params]() { return handleIncomingCalls(params); });
     });
-    server.registerRequestHandler("callHierarchy/outgoingCalls", [this](const jsonrpc::Json& params) {
-        return handleOutgoingCalls(params);
+    server.registerRequestHandler("callHierarchy/outgoingCalls", [this](const jsonrpc::Json& params,
+                                                                         const jsonrpc::RequestContext& context) {
+        return executeSemanticRequest(context, [this, &params]() { return handleOutgoingCalls(params); });
     });
-    server.registerRequestHandler("textDocument/references", [this](const jsonrpc::Json& params) {
-        return handleReferences(params);
+    server.registerRequestHandler("textDocument/references", [this](const jsonrpc::Json& params,
+                                                                     const jsonrpc::RequestContext& context) {
+        return executeSemanticRequest(context, [this, &params]() { return handleReferences(params); });
     });
-    server.registerRequestHandler("workspace/symbol", [this](const jsonrpc::Json& params) {
-        return handleWorkspaceSymbol(params);
+    server.registerRequestHandler("workspace/symbol", [this](const jsonrpc::Json& params,
+                                                              const jsonrpc::RequestContext& context) {
+        return executeSemanticRequest(context, [this, &params]() { return handleWorkspaceSymbol(params); });
     });
-    server.registerRequestHandler("textDocument/completion", [this](const jsonrpc::Json& params) {
-        return handleCompletion(params);
+    server.registerRequestHandler("textDocument/completion", [this](const jsonrpc::Json& params,
+                                                                     const jsonrpc::RequestContext& context) {
+        return executeSemanticRequest(context, [this, &params]() { return handleCompletion(params); });
     });
-    server.registerRequestHandler("completionItem/resolve", [this](const jsonrpc::Json& params) {
-        return handleCompletionItemResolve(params);
+    server.registerRequestHandler("completionItem/resolve", [this](const jsonrpc::Json& params,
+                                                                    const jsonrpc::RequestContext& context) {
+        return executeSemanticRequest(context, [this, &params]() { return handleCompletionItemResolve(params); });
     });
-    server.registerRequestHandler("textDocument/prepareRename", [this](const jsonrpc::Json& params) {
-        return handlePrepareRename(params);
+    server.registerRequestHandler("textDocument/prepareRename", [this](const jsonrpc::Json& params,
+                                                                        const jsonrpc::RequestContext& context) {
+        return executeSemanticRequest(context, [this, &params]() { return handlePrepareRename(params); });
     });
-    server.registerRequestHandler("textDocument/rename", [this](const jsonrpc::Json& params) {
-        return handleRename(params);
+    server.registerRequestHandler("textDocument/rename", [this](const jsonrpc::Json& params,
+                                                                 const jsonrpc::RequestContext& context) {
+        return executeSemanticRequest(context, [this, &params]() { return handleRename(params); });
     });
     server.registerRequestHandler("shutdown", [this](const jsonrpc::Json& params) {
         return handleShutdown(params);
@@ -1223,6 +1248,58 @@ void ServerSession::bind(jsonrpc::JsonRpcServer& server) {
     server.registerNotificationHandler("exit", [this](const jsonrpc::Json& params) {
         handleExit(params);
     });
+}
+
+jsonrpc::Json ServerSession::executeSemanticRequest(const jsonrpc::RequestContext& context,
+                                                    std::function<jsonrpc::Json()> handler) {
+    context.cancellation.throwIfCancellationRequested();
+    if (context.work_done_token.has_value()) {
+        context.report_progress(jsonrpc::Json{{"kind", "begin"},
+                                              {"title", "SystemVerilog semantic analysis"},
+                                              {"cancellable", true},
+                                              {"percentage", 0}});
+    }
+    {
+        std::lock_guard semantic_lock(semantic_mutex_);
+        semantic_workspace_.setSemanticRequestControl(analysis::SemanticRequestControl{
+            .cancellation = context.cancellation,
+            .report_progress = [&context](std::string_view phase, int percentage) {
+                if (context.work_done_token.has_value()) {
+                    context.report_progress(jsonrpc::Json{{"kind", "report"},
+                                                          {"message", std::string(phase)},
+                                                          {"cancellable", true},
+                                                          {"percentage", percentage}});
+                }
+            },
+            .closure_root_uris = {}});
+    }
+    const auto clear_control = [this]() {
+        std::lock_guard semantic_lock(semantic_mutex_);
+        semantic_workspace_.clearSemanticRequestControl();
+    };
+    try {
+        auto result = handler();
+        context.cancellation.throwIfCancellationRequested();
+        clear_control();
+        if (context.work_done_token.has_value()) {
+            context.report_progress(jsonrpc::Json{{"kind", "end"}, {"message", "Completed"}});
+        }
+        return result;
+    }
+    catch (const pristine::OperationCancelled&) {
+        clear_control();
+        if (context.work_done_token.has_value()) {
+            context.report_progress(jsonrpc::Json{{"kind", "end"}, {"message", "Cancelled"}});
+        }
+        throw;
+    }
+    catch (...) {
+        clear_control();
+        if (context.work_done_token.has_value()) {
+            context.report_progress(jsonrpc::Json{{"kind", "end"}, {"message", "Failed"}});
+        }
+        throw;
+    }
 }
 
 jsonrpc::Json ServerSession::handleInitialize(const jsonrpc::Json& params) {
@@ -2244,6 +2321,7 @@ jsonrpc::Json ServerSession::handleCompletionItemResolve(const jsonrpc::Json& pa
     }
 
     const auto stable_id = jsonStringField(*data_it, "stableId");
+    const auto snapshot_identity = jsonStringField(*data_it, "snapshotIdentity").value_or("");
     const auto label = jsonStringField(*data_it, "label").value_or(item.value("label", ""));
     if (!stable_id.has_value()) {
         return item;
@@ -2251,7 +2329,7 @@ jsonrpc::Json ServerSession::handleCompletionItemResolve(const jsonrpc::Json& pa
     analysis::SemanticCompletionItem resolved;
     {
         std::lock_guard semantic_lock(semantic_mutex_);
-        resolved = semantic_workspace_.engineResolveCompletion(*stable_id, label);
+        resolved = semantic_workspace_.engineResolveCompletion(*stable_id, label, snapshot_identity);
     }
     if (resolved.unresolved) {
         return item;

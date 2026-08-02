@@ -22,6 +22,7 @@ public:
         Idle,
         Pending,
         Running,
+        Cancelled,
         StaleSkipped,
         ClosedSkipped,
         Published,
@@ -44,6 +45,7 @@ public:
         analysis::SemanticEngineConfig config;
         std::vector<std::filesystem::path> indexed_source_paths;
         std::vector<Document> open_documents;
+        pristine::CancellationToken cancellation;
     };
 
     struct PublishDecision {
@@ -105,6 +107,7 @@ private:
     std::condition_variable cv_;
     std::thread thread_;
     std::optional<Job> pending_job_;
+    pristine::CancellationSource active_cancellation_;
     std::uint64_t request_generation_ = 0;
     StateSnapshot state_;
     std::chrono::steady_clock::time_point job_started_at_{};

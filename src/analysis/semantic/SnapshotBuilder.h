@@ -2,8 +2,11 @@
 
 #include "AffectedDependencyGraph.h"
 #include "SignatureInlayProvider.h"
+#include "pristine/Cancellation.h"
 #include "pristine/analysis/SemanticEngine.h"
 
+#include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -871,6 +874,32 @@ struct SnapshotBuildInput {
     SemanticEngineConfig config;
     std::vector<std::string> dirty_document_uris;
     std::unordered_map<std::string, SemanticEngineDocument> documents;
+    struct Control {
+        pristine::CancellationToken cancellation;
+        std::function<void(std::string_view phase, int percentage)> report_progress;
+    } control;
+};
+
+enum class SnapshotBuildStatus {
+    Completed,
+    Cancelled,
+    Failed,
+};
+
+struct SnapshotBuildMetrics {
+    std::int64_t normalize_micros = 0;
+    std::int64_t assign_buffers_micros = 0;
+    std::int64_t syntax_facts_micros = 0;
+    std::int64_t compilation_micros = 0;
+    std::int64_t ast_index_micros = 0;
+    std::int64_t dependency_edges_micros = 0;
+    std::int64_t semantic_diagnostics_micros = 0;
+    std::int64_t finalize_micros = 0;
+    std::int64_t total_micros = 0;
+    size_t input_document_count = 0;
+    size_t input_byte_count = 0;
+    size_t syntax_tree_count = 0;
+    std::string cancellation_checkpoint;
 };
 
 struct SnapshotBuildInputSummary {
@@ -885,6 +914,9 @@ struct SnapshotBuildOutput {
     SemanticEngineSnapshot snapshot;
     std::unique_ptr<SnapshotData> data;
     AffectedDependencyGraph affected_dependencies;
+    SnapshotBuildStatus status = SnapshotBuildStatus::Failed;
+    SnapshotBuildMetrics metrics;
+    std::string error;
 };
 
 [[nodiscard]] constexpr std::string_view snapshotBuilderProviderName() {

@@ -71,6 +71,14 @@ void SemanticWorkspace::removeDocument(std::string_view uri) {
     rebuildReverseIncludes();
 }
 
+void SemanticWorkspace::setSemanticRequestControl(SemanticRequestControl control) {
+    semantic_engine_.setRequestControl(std::move(control));
+}
+
+void SemanticWorkspace::clearSemanticRequestControl() {
+    semantic_engine_.clearRequestControl();
+}
+
 const SemanticDocument* SemanticWorkspace::document(std::string_view uri) const {
     const auto document_it = documents_.find(withoutTrailingSlash(normalizeFileUri(uri)));
     if (document_it == documents_.end()) {
@@ -166,8 +174,9 @@ SemanticCompletionResult SemanticWorkspace::engineCompletionsAt(std::string_view
 }
 
 SemanticCompletionItem SemanticWorkspace::engineResolveCompletion(std::string_view stable_id,
-                                                                  std::string_view label) const {
-    return semantic_engine_.resolveCompletion(stable_id, label);
+                                                                   std::string_view label,
+                                                                   std::string_view snapshot_identity) const {
+    return semantic_engine_.resolveCompletion(stable_id, label, snapshot_identity);
 }
 
 SemanticSignatureHelpResult SemanticWorkspace::engineSignatureHelpAt(std::string_view uri,

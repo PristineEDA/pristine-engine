@@ -921,6 +921,53 @@ std::vector<PackageReferenceToken> tryCollectPackageReferences(std::string_view 
     return {};
 }
 
+LexicalIdentifierScan collectLexicalIdentifiers(std::string_view text) {
+    LexicalIdentifierScan result;
+    ScanState state{};
+    while (state.offset < text.size()) {
+        if (startsWith(text, state.offset, "//")) {
+            skipLineComment(text, state);
+            continue;
+        }
+        if (startsWith(text, state.offset, "/*")) {
+            skipBlockComment(text, state);
+            continue;
+        }
+        if (text[state.offset] == '"') {
+            skipStringLiteral(text, state);
+            continue;
+        }
+        if (text[state.offset] == '\\') {
+            result.complete = false;
+            result.reasons.push_back("escaped-identifier");
+            while (state.offset < text.size() &&
+                   text[state.offset] != ' ' && text[state.offset] != '\t' &&
+                   text[state.offset] != '\r' && text[state.offset] != '\n') {
+                advanceOne(text, state);
+            }
+            continue;
+        }
+        if (startsWith(text, state.offset, "``")) {
+            result.complete = false;
+            result.reasons.push_back("macro-token-paste");
+            advanceAscii(text, state);
+            advanceAscii(text, state);
+            continue;
+        }
+        if (auto identifier = tryReadIdentifier(text, state)) {
+            result.names.push_back(std::move(identifier->name));
+            continue;
+        }
+        advanceOne(text, state);
+    }
+    std::sort(result.names.begin(), result.names.end());
+    result.names.erase(std::unique(result.names.begin(), result.names.end()), result.names.end());
+    std::sort(result.reasons.begin(), result.reasons.end());
+    result.reasons.erase(std::unique(result.reasons.begin(), result.reasons.end()),
+                         result.reasons.end());
+    return result;
+}
+
 std::vector<PackageImport> tryCollectPackageImports(std::string_view text, ScanState& state) {
     auto references = tryCollectPackageReferences(text, state, "import");
     std::vector<PackageImport> result;
@@ -2077,6 +2124,10 @@ std::vector<PackageImport> CompilationService::packageImports(std::string_view t
 
 std::vector<PackageExport> CompilationService::packageExports(std::string_view text) const {
     return collectPackageExports(text);
+}
+
+LexicalIdentifierScan CompilationService::lexicalIdentifiers(std::string_view text) const {
+    return collectLexicalIdentifiers(text);
 }
 
 } // namespace pristine::analysis

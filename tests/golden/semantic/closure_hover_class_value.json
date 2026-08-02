@@ -1,0 +1,1 @@
+{"name":"closure hover resolves cross file class value","sources":[{"uri":"file:///golden/closure/class2.sv","text":"class packet2; int size; endclass\n"},{"uri":"file:///golden/closure/top2.sv","text":"module top; packet2 pkt; endmodule\n"}],"request":{"kind":"hover","uri":"file:///golden/closure/top2.sv","line":0,"character":21},"expected":{"contentsContains":["pkt"]}}

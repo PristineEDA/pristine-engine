@@ -57,6 +57,20 @@ def notify(process: subprocess.Popen[bytes], method: str, params: dict | None) -
     write_message(process, message)
 
 
+def cancel_request(process: subprocess.Popen[bytes], request_id: int, method: str, params: dict) -> None:
+    message = {"jsonrpc": "2.0", "id": request_id, "method": method, "params": params}
+    write_message(process, message)
+    notify(process, "$/cancelRequest", {"id": request_id})
+    while True:
+        response = read_message(process)
+        if response.get("id") != request_id:
+            continue
+        error = response.get("error")
+        if not isinstance(error, dict) or error.get("code") != -32800:
+            raise AssertionError(f"{method} cancellation returned unexpected response: {response}")
+        return
+
+
 def read_notification(process: subprocess.Popen[bytes], method: str, uri: str) -> dict:
     while True:
         message = read_message(process)
@@ -279,6 +293,12 @@ def main() -> int:
             assert capabilities["completionProvider"]["resolveProvider"] is True
 
             notify(process, "initialized", {})
+            cancel_request(
+                process,
+                900,
+                "workspace/symbol",
+                {"query": "", "workDoneToken": "cold-workspace-cancel"},
+            )
             notify(
                 process,
                 "textDocument/didOpen",

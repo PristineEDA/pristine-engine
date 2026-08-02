@@ -4330,6 +4330,7 @@ void insertSymbol(SnapshotData& data,
     if (!duplicate) {
         const auto kind_name = symbolKindName(symbol.kind);
         completions.push_back(SemanticCompletionItem{.stable_id = stable_id,
+                                                     .snapshot_identity = {},
                                                      .label = std::string(symbol.name),
                                                      .detail = completionDetailForSemanticKind(kind_name),
                                                      .documentation = {},
@@ -8605,30 +8606,44 @@ std::optional<SemanticLocation> declarationLocationForSymbol(
 }
 
 void buildAstIndexes(SnapshotData& data,
-                     const std::unordered_map<std::string, SemanticEngineDocument>& documents) {
+                     const std::unordered_map<std::string, SemanticEngineDocument>& documents,
+                     const SnapshotBuildInput::Control& control) {
     if (!data.compilation || !data.source_manager) {
         return;
     }
 
+    const auto checkpoint = [&](std::string_view phase) {
+        control.cancellation.throwIfCancellationRequested();
+        if (control.report_progress) {
+            control.report_progress(std::string("astIndex.") + std::string(phase), 75);
+        }
+    };
+
+    checkpoint("root");
     const auto& root = data.compilation->getRoot();
     {
+        checkpoint("collectSyntaxModuleCandidates");
         PRISTINE_DEBUG_TRACE_SCOPE_SIMPLE("astIndex.collectSyntaxModuleCandidates");
         collectSyntaxModuleCandidates(data, *data.source_manager, documents);
     }
     {
+        checkpoint("visitRoot");
         PRISTINE_DEBUG_TRACE_SCOPE_SIMPLE("astIndex.visitRoot");
         SemanticIndexVisitor visitor(data, *data.source_manager, documents);
         root.visit(visitor);
     }
     {
+        checkpoint("buildInactiveRegionIndex");
         PRISTINE_DEBUG_TRACE_SCOPE_SIMPLE("astIndex.buildInactiveRegionIndex");
         buildInactiveRegionIndex(data);
     }
     {
+        checkpoint("buildMacroInvocationIndex");
         PRISTINE_DEBUG_TRACE_SCOPE_SIMPLE("astIndex.buildMacroInvocationIndex");
         buildMacroInvocationIndex(data);
     }
     {
+        checkpoint("insertDefinitions");
         PRISTINE_DEBUG_TRACE_SCOPE_SIMPLE("astIndex.insertDefinitions");
         for (const auto* definition : data.compilation->getDefinitions()) {
             if (definition != nullptr) {
@@ -8637,14 +8652,17 @@ void buildAstIndexes(SnapshotData& data,
         }
     }
     {
+        checkpoint("upsertDefinitionSkeletons");
         PRISTINE_DEBUG_TRACE_SCOPE_SIMPLE("astIndex.upsertDefinitionSkeletons");
         upsertMissingAstModuleSignatureSkeletonsFromDefinitions(data, *data.source_manager, documents);
     }
     {
+        checkpoint("addMissingSignaturePortSymbols");
         PRISTINE_DEBUG_TRACE_SCOPE_SIMPLE("astIndex.addMissingSignaturePortSymbols");
         addMissingSignaturePortSymbols(data);
     }
     {
+        checkpoint("buildScopeVisibilityIndexes");
         PRISTINE_DEBUG_TRACE_SCOPE_SIMPLE("astIndex.buildScopeVisibilityIndexes");
         const auto visibility_start = std::chrono::steady_clock::now();
         buildScopeVisibilityIndexes(data, *data.source_manager);
@@ -8666,6 +8684,7 @@ void buildAstIndexes(SnapshotData& data,
         }
     }
     {
+        checkpoint("indexInstanceMemberCompletions");
         PRISTINE_DEBUG_TRACE_SCOPE_SIMPLE("astIndex.indexInstanceMemberCompletions");
         indexInstanceMemberCompletions(data, *data.source_manager);
         data.member_visibility_count = 0;
@@ -8674,77 +8693,96 @@ void buildAstIndexes(SnapshotData& data,
         }
     }
     {
+        checkpoint("updateModuleInstanceTargets");
         PRISTINE_DEBUG_TRACE_SCOPE_SIMPLE("astIndex.updateModuleInstanceTargets");
         updateModuleInstanceTargets(data);
     }
     {
+        checkpoint("sortModuleInstances");
         PRISTINE_DEBUG_TRACE_SCOPE_SIMPLE("astIndex.sortModuleInstances");
         sortModuleInstances(data);
     }
     {
+        checkpoint("attachInstancesToModuleDefinitions");
         PRISTINE_DEBUG_TRACE_SCOPE_SIMPLE("astIndex.attachInstancesToModuleDefinitions");
         attachInstancesToModuleDefinitions(data);
     }
     {
+        checkpoint("addDeclarationReferences");
         PRISTINE_DEBUG_TRACE_SCOPE_SIMPLE("astIndex.addDeclarationReferences");
         addDeclarationReferences(data);
     }
     {
+        checkpoint("addModuleInstantiationReferences");
         PRISTINE_DEBUG_TRACE_SCOPE_SIMPLE("astIndex.addModuleInstantiationReferences");
         addModuleInstantiationReferences(data, documents);
     }
     {
+        checkpoint("buildModuleCallEdgeIndex");
         PRISTINE_DEBUG_TRACE_SCOPE_SIMPLE("astIndex.buildModuleCallEdgeIndex");
         buildModuleCallEdgeIndex(data);
     }
     {
+        checkpoint("sortReferenceOccurrenceIndexes");
         PRISTINE_DEBUG_TRACE_SCOPE_SIMPLE("astIndex.sortReferenceOccurrenceIndexes");
         sortSnapshotIndexes(data);
     }
     {
+        checkpoint("buildAssignmentEdges");
         PRISTINE_DEBUG_TRACE_SCOPE_SIMPLE("astIndex.buildAssignmentEdges");
         buildAssignmentEdges(data);
     }
     {
+        checkpoint("buildAssertionObservationEdges");
         PRISTINE_DEBUG_TRACE_SCOPE_SIMPLE("astIndex.buildAssertionObservationEdges");
         buildAssertionObservationEdges(data);
     }
     {
+        checkpoint("buildSchematicCellPinFacts");
         PRISTINE_DEBUG_TRACE_SCOPE_SIMPLE("astIndex.buildSchematicCellPinFacts");
         buildSchematicCellPinFacts(data, *data.source_manager);
     }
     {
+        checkpoint("buildInterfaceModportBindingIndex");
         PRISTINE_DEBUG_TRACE_SCOPE_SIMPLE("astIndex.buildInterfaceModportBindingIndex");
         buildInterfaceModportBindingIndex(data, *data.source_manager);
     }
     {
+        checkpoint("buildTypeReferences");
         PRISTINE_DEBUG_TRACE_SCOPE_SIMPLE("astIndex.buildTypeReferences");
         buildTypeReferences(data, documents);
     }
     {
+        checkpoint("buildSameRangeReferenceAliasIndex");
         PRISTINE_DEBUG_TRACE_SCOPE_SIMPLE("astIndex.buildSameRangeReferenceAliasIndex");
         buildSameRangeReferenceAliasIndex(data);
     }
     {
+        checkpoint("sortSnapshotIndexes");
         PRISTINE_DEBUG_TRACE_SCOPE_SIMPLE("astIndex.sortSnapshotIndexes");
         sortSnapshotIndexes(data);
     }
     {
+        checkpoint("buildResolvedConnectionSliceFacts");
         PRISTINE_DEBUG_TRACE_SCOPE_SIMPLE("astIndex.buildResolvedConnectionSliceFacts");
         buildResolvedConnectionSliceFacts(data, *data.source_manager);
     }
     {
+        checkpoint("buildDesignGraphIndexes");
         PRISTINE_DEBUG_TRACE_SCOPE_SIMPLE("astIndex.buildDesignGraphIndexes");
         buildDesignGraphIndexes(data);
     }
     {
+        checkpoint("buildNavigationIndexes");
         PRISTINE_DEBUG_TRACE_SCOPE_SIMPLE("astIndex.buildNavigationIndexes");
         buildNavigationIndexes(data);
     }
     {
+        checkpoint("buildProviderLookupIndexes");
         PRISTINE_DEBUG_TRACE_SCOPE_SIMPLE("astIndex.buildProviderLookupIndexes");
         buildProviderLookupIndexes(data);
     }
+    checkpoint("complete");
 }
 
 std::optional<std::string> findDefinitionSymbolId(const SnapshotData& data,

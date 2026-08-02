@@ -13,6 +13,7 @@
 #include <atomic>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -21,6 +22,7 @@
 
 namespace pristine::jsonrpc {
 class JsonRpcServer;
+struct RequestContext;
 using Json = nlohmann::json;
 } // namespace pristine::jsonrpc
 
@@ -70,6 +72,8 @@ private:
     jsonrpc::Json handleCompletionItemResolve(const jsonrpc::Json& params);
     jsonrpc::Json handlePrepareRename(const jsonrpc::Json& params);
     jsonrpc::Json handleRename(const jsonrpc::Json& params);
+    jsonrpc::Json executeSemanticRequest(const jsonrpc::RequestContext& context,
+                                         std::function<jsonrpc::Json()> handler);
     jsonrpc::Json handleShutdown(const jsonrpc::Json& params);
     void handleInitialized(const jsonrpc::Json& params);
     void handleDidOpen(const jsonrpc::Json& params);

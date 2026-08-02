@@ -674,7 +674,9 @@ void runCompletionResolveFixture(SemanticEngine& engine, const nlohmann::json& f
                                    });
     REQUIRE(item != completions.items.end());
 
-    const auto resolved = engine.resolveCompletion(item->stable_id, item->label);
+    const auto resolved = engine.resolveCompletion(item->stable_id,
+                                                   item->label,
+                                                   item->snapshot_identity);
     CHECK(resolved.unresolved == expected.value("unresolved", false));
     if (expected.contains("detailContains")) {
         CHECK(resolved.detail.find(expected.at("detailContains").get<std::string>()) !=

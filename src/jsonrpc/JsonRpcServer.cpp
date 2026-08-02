@@ -3,6 +3,7 @@
 #include "pristine/transport/StdioTransport.h"
 
 #include <stdexcept>
+#include <thread>
 
 namespace pristine::jsonrpc {
 namespace {
@@ -11,6 +12,7 @@ constexpr int kParseError = -32700;
 constexpr int kInvalidRequest = -32600;
 constexpr int kMethodNotFound = -32601;
 constexpr int kInternalError = -32603;
+constexpr int kRequestCancelled = -32800;
 
 Json getParamsOrDefault(const Json& message) {
     auto params_it = message.find("params");
@@ -26,6 +28,10 @@ void JsonRpcServer::registerRequestHandler(std::string method, RequestHandler ha
     request_handlers_.insert_or_assign(std::move(method), std::move(handler));
 }
 
+void JsonRpcServer::registerRequestHandler(std::string method, ContextualRequestHandler handler) {
+    contextual_request_handlers_.insert_or_assign(std::move(method), std::move(handler));
+}
+
 void JsonRpcServer::registerNotificationHandler(std::string method, NotificationHandler handler) {
     notification_handlers_.insert_or_assign(std::move(method), std::move(handler));
 }
@@ -35,26 +41,53 @@ int JsonRpcServer::run(transport::MessageTransport& transport) {
         std::lock_guard lock(write_mutex_);
         active_transport_ = &transport;
     }
-    while (!stop_requested_) {
+    {
+        std::lock_guard lock(queue_mutex_);
+        queue_.clear();
+        cancellation_states_.clear();
+        input_closed_ = false;
+    }
+    stop_requested_.store(false, std::memory_order_release);
+    exit_code_.store(0, std::memory_order_release);
+
+    std::thread dispatcher([this, &transport]() { dispatchLoop(transport); });
+    while (!stop_requested_.load(std::memory_order_acquire)) {
         auto payload = transport.read();
         if (!payload.has_value()) {
             break;
         }
+        enqueueIncoming(transport, payload.value());
 
-        handleIncoming(transport, payload.value());
+        try {
+            const auto message = Json::parse(payload.value());
+            const auto method_it = message.find("method");
+            if (method_it != message.end() && method_it->is_string() &&
+                method_it->get_ref<const std::string&>() == "exit") {
+                break;
+            }
+        }
+        catch (...) {
+        }
     }
+
+    {
+        std::lock_guard lock(queue_mutex_);
+        input_closed_ = true;
+    }
+    queue_cv_.notify_all();
+    dispatcher.join();
 
     {
         std::lock_guard lock(write_mutex_);
         active_transport_ = nullptr;
     }
 
-    return exit_code_;
+    return exit_code_.load(std::memory_order_acquire);
 }
 
 void JsonRpcServer::requestStop(int exit_code) {
-    stop_requested_ = true;
-    exit_code_ = exit_code;
+    stop_requested_.store(true, std::memory_order_release);
+    exit_code_.store(exit_code, std::memory_order_release);
 }
 
 void JsonRpcServer::sendNotification(std::string method, Json params) {
@@ -66,8 +99,34 @@ void JsonRpcServer::sendNotification(std::string method, Json params) {
     active_transport_->write(makeNotification(std::move(method), std::move(params)).dump());
 }
 
-void JsonRpcServer::handleIncoming(transport::MessageTransport& transport,
-                                   const std::string& payload) {
+std::optional<std::string> JsonRpcServer::requestKey(const Json& id) {
+    if (id.is_string()) {
+        return std::string("s:") + id.get<std::string>();
+    }
+    if (id.is_number_integer() || id.is_number_unsigned()) {
+        return std::string("n:") + id.dump();
+    }
+    return std::nullopt;
+}
+
+void JsonRpcServer::cancelRequest(const Json& params) {
+    const auto id_it = params.find("id");
+    if (id_it == params.end()) {
+        return;
+    }
+    const auto key = requestKey(*id_it);
+    if (!key.has_value()) {
+        return;
+    }
+    std::lock_guard lock(queue_mutex_);
+    const auto state_it = cancellation_states_.find(*key);
+    if (state_it != cancellation_states_.end()) {
+        state_it->second.cancel();
+    }
+}
+
+void JsonRpcServer::enqueueIncoming(transport::MessageTransport& transport,
+                                    const std::string& payload) {
     Json message;
     try {
         message = Json::parse(payload);
@@ -101,20 +160,116 @@ void JsonRpcServer::handleIncoming(transport::MessageTransport& transport,
 
     const auto& method = method_it->get_ref<const std::string&>();
     const Json params = getParamsOrDefault(message);
+    if (!has_id && method == "$/cancelRequest") {
+        cancelRequest(params);
+        return;
+    }
 
+    QueuedMessage queued{.message = std::move(message), .cancellation = {}, .request_key = {}};
     if (has_id) {
-        auto handler_it = request_handlers_.find(method);
-        if (handler_it == request_handlers_.end()) {
-            auto response =
-                makeErrorResponse(message_id, kMethodNotFound, "Method not found: " + method)
-                    .dump();
+        const auto key = requestKey(message_id);
+        if (!key.has_value()) {
+            auto response = makeErrorResponse(message_id, kInvalidRequest, "Request id must be a string or integer")
+                                .dump();
             std::lock_guard lock(write_mutex_);
             transport.write(response);
             return;
         }
+        queued.request_key = *key;
+        queued.cancellation = pristine::CancellationSource{};
+        std::lock_guard lock(queue_mutex_);
+        if (cancellation_states_.contains(*key)) {
+            auto response = makeErrorResponse(message_id, kInvalidRequest, "Duplicate request id").dump();
+            std::lock_guard write_lock(write_mutex_);
+            transport.write(response);
+            return;
+        }
+        cancellation_states_.emplace(*key, queued.cancellation);
+        queue_.push_back(std::move(queued));
+        queue_cv_.notify_one();
+        return;
+    }
+
+    {
+        std::lock_guard lock(queue_mutex_);
+        queue_.push_back(std::move(queued));
+    }
+    queue_cv_.notify_one();
+}
+
+void JsonRpcServer::dispatchLoop(transport::MessageTransport& transport) {
+    while (true) {
+        QueuedMessage queued;
+        {
+            std::unique_lock lock(queue_mutex_);
+            queue_cv_.wait(lock, [this]() { return input_closed_ || !queue_.empty(); });
+            if (queue_.empty()) {
+                return;
+            }
+            queued = std::move(queue_.front());
+            queue_.pop_front();
+        }
+        dispatchIncoming(transport, std::move(queued));
+        if (stop_requested_.load(std::memory_order_acquire)) {
+            std::lock_guard lock(queue_mutex_);
+            for (auto& pending : queue_) {
+                pending.cancellation.cancel();
+            }
+        }
+    }
+}
+
+void JsonRpcServer::dispatchIncoming(transport::MessageTransport& transport,
+                                     QueuedMessage queued) {
+    const auto& message = queued.message;
+    const auto method_it = message.find("method");
+    const bool has_id = message.contains("id");
+    const Json message_id = has_id ? message.at("id") : Json(nullptr);
+    const auto& method = method_it->get_ref<const std::string&>();
+    const Json params = getParamsOrDefault(message);
+
+    if (has_id) {
+        auto handler_it = request_handlers_.find(method);
+        auto contextual_it = contextual_request_handlers_.find(method);
+        if (handler_it == request_handlers_.end() && contextual_it == contextual_request_handlers_.end()) {
+            auto response =
+                makeErrorResponse(message_id, kMethodNotFound, "Method not found: " + method)
+                    .dump();
+            {
+                std::lock_guard queue_lock(queue_mutex_);
+                cancellation_states_.erase(queued.request_key);
+            }
+            {
+                std::lock_guard lock(write_mutex_);
+                transport.write(response);
+            }
+            return;
+        }
 
         try {
-            auto response = makeResponse(message_id, handler_it->second(params)).dump();
+            RequestContext context{
+                .id = message_id,
+                .cancellation = queued.cancellation.token(),
+                .work_done_token = std::nullopt,
+                .report_progress = [](Json) {}};
+            if (const auto token_it = params.find("workDoneToken"); token_it != params.end() &&
+                (token_it->is_string() || token_it->is_number_integer() || token_it->is_number_unsigned())) {
+                context.work_done_token = *token_it;
+                context.report_progress = [this, token = *token_it](Json value) {
+                    sendNotification("$/progress", Json{{"token", token}, {"value", std::move(value)}});
+                };
+            }
+            context.cancellation.throwIfCancellationRequested();
+            Json result = contextual_it != contextual_request_handlers_.end()
+                              ? contextual_it->second(params, context)
+                              : handler_it->second(params);
+            context.cancellation.throwIfCancellationRequested();
+            auto response = makeResponse(message_id, std::move(result)).dump();
+            std::lock_guard lock(write_mutex_);
+            transport.write(response);
+        }
+        catch (const pristine::OperationCancelled& exception) {
+            auto response = makeErrorResponse(message_id, kRequestCancelled, exception.what()).dump();
             std::lock_guard lock(write_mutex_);
             transport.write(response);
         }
@@ -122,6 +277,10 @@ void JsonRpcServer::handleIncoming(transport::MessageTransport& transport,
             auto response = makeErrorResponse(message_id, kInternalError, exception.what()).dump();
             std::lock_guard lock(write_mutex_);
             transport.write(response);
+        }
+        {
+            std::lock_guard lock(queue_mutex_);
+            cancellation_states_.erase(queued.request_key);
         }
         return;
     }

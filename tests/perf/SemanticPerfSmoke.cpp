@@ -107,6 +107,7 @@ int main() {
                                   pristine::analysis::SemanticEngineDocumentState{.version = 1});
         }
         const auto end_index = Clock::now();
+        emitStatus("documents-indexed", "documents=" + std::to_string(workspace_size));
 
         const auto target_index = workspace_size == 100 ? 42 : 420;
         const auto target_uri = "file:///perf/unit_" + std::to_string(target_index) + ".sv";
@@ -117,24 +118,34 @@ int main() {
         const auto start_hover = Clock::now();
         const auto hover = engine.hoverAt(target_uri, 1, 10);
         const auto end_hover = Clock::now();
+        const auto hover_snapshot = engine.lastSnapshotBuildStats();
+        emitStatus("hover-complete", "documents=" + std::to_string(workspace_size));
 
         const auto start_completion = Clock::now();
         const auto completion = engine.completionsAt(target_uri, 1, 12, "sig_");
         const auto end_completion = Clock::now();
+        const auto completion_snapshot = engine.lastSnapshotBuildStats();
         const auto start_completion_warm = Clock::now();
         const auto completion_warm = engine.completionsAt(target_uri, 1, 12, "sig_");
         const auto end_completion_warm = Clock::now();
+        const auto completion_warm_snapshot = engine.lastSnapshotBuildStats();
+        emitStatus("completion-complete", "documents=" + std::to_string(workspace_size));
         long long completion_resolve_micros = 0;
+        bool completion_resolve_unresolved = true;
         if (!completion.items.empty()) {
             const auto start_completion_resolve = Clock::now();
-            (void)engine.resolveCompletion(completion.items.front().stable_id,
-                                           completion.items.front().label);
+            const auto resolved = engine.resolveCompletion(completion.items.front().stable_id,
+                                                           completion.items.front().label,
+                                                           completion.items.front().snapshot_identity);
+            completion_resolve_unresolved = resolved.unresolved;
             completion_resolve_micros = elapsedMicros(start_completion_resolve, Clock::now());
         }
 
         const auto start_workspace_completion = Clock::now();
         const auto workspace_completion = engine.completionsAt(target_uri, 4, 6, "unit");
         const auto workspace_completion_micros = elapsedMicros(start_workspace_completion, Clock::now());
+        emitStatus("workspace-completion-complete",
+                   "documents=" + std::to_string(workspace_size));
 
         const auto start_query = Clock::now();
         const auto references = engine.referencesAt(target_uri, 1, 10, true);
@@ -142,6 +153,7 @@ int main() {
         const auto start_query_warm = Clock::now();
         const auto references_warm = engine.referencesAt(target_uri, 1, 10, true);
         const auto end_query_warm = Clock::now();
+        emitStatus("references-complete", "documents=" + std::to_string(workspace_size));
         const auto start_highlight = Clock::now();
         const auto highlights = engine.documentHighlightsAt(target_uri, 1, 10);
         const auto end_highlight = Clock::now();
@@ -172,6 +184,7 @@ int main() {
                                                                             .end_line = 12,
                                                       .end_character = 0});
         const auto end_inlay_warm = Clock::now();
+        emitStatus("signature-inlay-complete", "documents=" + std::to_string(workspace_size));
 
         const auto start_macro_definition = Clock::now();
         const auto macro_definition = engine.definitionsAt(target_uri, 10, 31);
@@ -188,6 +201,7 @@ int main() {
         const auto start_semantic_tokens = Clock::now();
         const auto semantic_tokens = engine.semanticTokens(target_uri);
         const auto end_semantic_tokens = Clock::now();
+        emitStatus("macro-navigation-complete", "documents=" + std::to_string(workspace_size));
 
         const auto target_module_name = std::string("unit_") + std::to_string(target_index);
 
@@ -195,6 +209,7 @@ int main() {
         const auto hierarchy = engine.moduleHierarchy(target_module_name, 4);
         const auto end_hierarchy = Clock::now();
         const auto hierarchy_warm = engine.moduleHierarchy(target_module_name, 4);
+        emitStatus("hierarchy-complete", "documents=" + std::to_string(workspace_size));
 
         const auto start_call_hierarchy = Clock::now();
         const auto call_prepare = engine.prepareCallHierarchy(target_uri, 0, 8);
@@ -203,11 +218,13 @@ int main() {
             call_outgoing = engine.outgoingCalls(call_prepare.items.front());
         }
         const auto end_call_hierarchy = Clock::now();
+        emitStatus("call-hierarchy-complete", "documents=" + std::to_string(workspace_size));
 
         const auto start_schematic = Clock::now();
         const auto schematic = engine.schematic(target_module_name, 4);
         const auto end_schematic = Clock::now();
         const auto schematic_warm = engine.schematic(target_module_name, 4);
+        emitStatus("schematic-complete", "documents=" + std::to_string(workspace_size));
 
         const auto start_cone = Clock::now();
         const auto cone = engine.backwardConeAt(target_uri, 3, 10);
@@ -229,6 +246,7 @@ int main() {
         const auto default_assertion_cone = engine.backwardConeAt(target_uri, 22, 2);
         const auto end_default_assertion_cone = Clock::now();
         const auto default_assertion_cone_warm = engine.backwardConeAt(target_uri, 22, 2);
+        emitStatus("cone-complete", "documents=" + std::to_string(workspace_size));
 
         const auto start_code_action = Clock::now();
         const auto code_actions = engine.codeActionsAt(
@@ -238,11 +256,20 @@ int main() {
                                            .end_line = 11,
                                            .end_character = 0});
         const auto end_code_action = Clock::now();
+        emitStatus("code-action-complete", "documents=" + std::to_string(workspace_size));
         const auto cache_stats = engine.queryCacheStats();
 
         completion_contract_failed = completion_contract_failed || completion.unresolved ||
                                      completion_warm.unresolved || completion.items.empty() ||
                                      completion_warm.items.empty() ||
+                                     completion_resolve_unresolved ||
+                                     hover_snapshot.scope_kind != "documentClosure" ||
+                                     hover_snapshot.selected_document_count >=
+                                         static_cast<size_t>(workspace_size) ||
+                                     completion_snapshot.scope_kind != "documentClosure" ||
+                                     completion_snapshot.selected_document_count >=
+                                         static_cast<size_t>(workspace_size) ||
+                                     !completion_warm_snapshot.cache_hit ||
                                      completion.scanned_global_symbol_count != 0 ||
                                      workspace_completion.unresolved ||
                                      workspace_completion.items.empty() ||
@@ -293,10 +320,39 @@ int main() {
                   << "\"didOpenMicros\":" << elapsedMicros(start_index, end_index) << ","
                   << "\"didChangeMicros\":0,"
                   << "\"hoverMicros\":" << elapsedMicros(start_hover, end_hover) << ","
+                  << "\"hoverSnapshotScope\":\"" << hover_snapshot.scope_kind << "\","
+                  << "\"hoverSnapshotInputDocuments\":"
+                  << hover_snapshot.input_document_count << ","
+                  << "\"hoverSnapshotSelectedDocuments\":"
+                  << hover_snapshot.selected_document_count << ","
+                  << "\"hoverSnapshotNormalizeMicros\":"
+                  << hover_snapshot.normalize_micros << ","
+                  << "\"hoverSnapshotAssignBuffersMicros\":"
+                  << hover_snapshot.buffer_assignment_micros << ","
+                  << "\"hoverSnapshotSyntaxFactsMicros\":"
+                  << hover_snapshot.syntax_preprocessor_micros << ","
+                  << "\"hoverSnapshotCompilationMicros\":"
+                  << hover_snapshot.compilation_micros << ","
+                  << "\"hoverSnapshotAstIndexMicros\":"
+                  << hover_snapshot.ast_index_micros << ","
+                  << "\"hoverSnapshotDependencyEdgesMicros\":"
+                  << hover_snapshot.dependency_edges_micros << ","
+                  << "\"hoverSnapshotDiagnosticsMicros\":"
+                  << hover_snapshot.semantic_diagnostics_micros << ","
+                  << "\"hoverSnapshotFinalizeMicros\":"
+                  << hover_snapshot.finalize_micros << ","
                   << "\"completionMicros\":" << elapsedMicros(start_completion, end_completion) << ","
+                  << "\"completionSnapshotSelectedDocuments\":"
+                  << completion_snapshot.selected_document_count << ","
+                  << "\"completionSnapshotCacheHit\":"
+                  << (completion_snapshot.cache_hit ? "true" : "false") << ","
+                  << "\"completionWarmSnapshotCacheHit\":"
+                  << (completion_warm_snapshot.cache_hit ? "true" : "false") << ","
                   << "\"completionWarmMicros\":"
                   << elapsedMicros(start_completion_warm, end_completion_warm) << ","
                   << "\"completionResolveMicros\":" << completion_resolve_micros << ","
+                  << "\"completionResolveUnresolved\":"
+                  << (completion_resolve_unresolved ? "true" : "false") << ","
                   << "\"workspaceCompletionMicros\":" << workspace_completion_micros << ","
                   << "\"referenceMicros\":" << elapsedMicros(start_query, end_query) << ","
                   << "\"referenceWarmMicros\":" << elapsedMicros(start_query_warm, end_query_warm) << ","

@@ -4,6 +4,7 @@
 #include "pristine/analysis/SourceUtil.h"
 #include "../analysis/semantic/DebugTrace.h"
 
+#include <algorithm>
 #include <chrono>
 #include <fstream>
 #include <iterator>
@@ -44,6 +45,9 @@ void BackgroundDiagnosticsWorker::schedule(Job job) {
         if (stop_requested_) {
             return;
         }
+        active_cancellation_.cancel();
+        active_cancellation_ = pristine::CancellationSource{};
+        job.cancellation = active_cancellation_.token();
         job.request_generation = ++request_generation_;
         job_started_at_ = std::chrono::steady_clock::now();
         state_.request_generation = job.request_generation;
@@ -58,6 +62,7 @@ void BackgroundDiagnosticsWorker::stop() {
     {
         std::lock_guard lock(mutex_);
         stop_requested_ = true;
+        active_cancellation_.cancel();
         pending_job_.reset();
         ++request_generation_;
         setStateLocked(StateKind::Idle, "stopped");
@@ -146,7 +151,16 @@ void BackgroundDiagnosticsWorker::loop() {
 
         try {
             PRISTINE_DEBUG_TRACE_SCOPE_SIMPLE("server.backgroundDiagnostics");
-            std::this_thread::sleep_for(debounce_);
+            {
+                std::unique_lock lock(mutex_);
+                cv_.wait_for(lock, debounce_, [this, &job]() {
+                    return stop_requested_ || job.request_generation != request_generation_;
+                });
+                if (stop_requested_) {
+                    return;
+                }
+            }
+            job.cancellation.throwIfCancellationRequested();
             if (!isCurrentJob(job.request_generation, "stale-before-build")) {
                 continue;
             }
@@ -164,10 +178,24 @@ void BackgroundDiagnosticsWorker::loop() {
             analysis::SemanticWorkspace background_workspace;
             background_workspace.configureSemanticEngine(job.config);
             background_workspace.setWorkspaceRoot(job.workspace_root_uri);
+            std::vector<std::string> closure_root_uris;
+            closure_root_uris.reserve(job.open_documents.size());
+            for (const auto& document : job.open_documents) {
+                closure_root_uris.push_back(document.uri);
+            }
+            std::sort(closure_root_uris.begin(), closure_root_uris.end());
+            closure_root_uris.erase(
+                std::unique(closure_root_uris.begin(), closure_root_uris.end()),
+                closure_root_uris.end());
+            background_workspace.setSemanticRequestControl(analysis::SemanticRequestControl{
+                .cancellation = job.cancellation,
+                .report_progress = {},
+                .closure_root_uris = std::move(closure_root_uris)});
 
             bool stale = false;
             setState(StateKind::Running, "index-source-paths");
             for (const auto& path : job.indexed_source_paths) {
+                job.cancellation.throwIfCancellationRequested();
                 const auto text = readFileText(path);
                 if (text.has_value()) {
                     background_workspace.updateDocument(analysis::pathToFileUri(path), *text);
@@ -183,6 +211,7 @@ void BackgroundDiagnosticsWorker::loop() {
 
             setState(StateKind::Running, "open-documents");
             for (const auto& document : job.open_documents) {
+                job.cancellation.throwIfCancellationRequested();
                 background_workspace.updateDocument(document.uri,
                                                     document.text,
                                                     analysis::SemanticDocumentState{
@@ -200,6 +229,7 @@ void BackgroundDiagnosticsWorker::loop() {
             }
 
             for (const auto& document : job.open_documents) {
+                job.cancellation.throwIfCancellationRequested();
                 setState(StateKind::Running, "diagnostics", document.uri);
                 if (!isCurrentJob(job.request_generation, "stale-before-publish")) {
                     break;
@@ -207,6 +237,7 @@ void BackgroundDiagnosticsWorker::loop() {
 
                 auto diagnostics = background_workspace.engineDiagnosticsFor(document.uri);
                 auto inactive_regions = background_workspace.engineInactiveRegions(document.uri);
+                job.cancellation.throwIfCancellationRequested();
 
                 if (!isCurrentJob(job.request_generation, "stale-after-diagnostics")) {
                     break;
@@ -235,6 +266,11 @@ void BackgroundDiagnosticsWorker::loop() {
             if (job.open_documents.empty()) {
                 setState(StateKind::Idle, "no-open-documents");
             }
+        }
+        catch (const pristine::OperationCancelled&) {
+            setState(StateKind::Cancelled, "cancelled", {}, "superseded-or-stopped");
+            analysis::semantic::debugTraceInstant("server.backgroundDiagnostics.cancelled",
+                                                  "superseded-or-stopped");
         }
         catch (const std::exception& error) {
             setState(StateKind::Failed, "exception", {}, error.what());

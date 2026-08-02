@@ -128,4 +128,59 @@ TEST_CASE("BackgroundDiagnosticsWorker exposes pending running and idle state sn
     worker.stop();
 }
 
+TEST_CASE("BackgroundDiagnosticsWorker superseding job cancels the old publication",
+          "[server][diagnostics][background][cancel]") {
+    std::mutex mutex;
+    std::condition_variable cv;
+    std::vector<std::string> published_uris;
+    BackgroundDiagnosticsWorker worker(
+        [&](std::string uri, BackgroundDiagnosticsWorker::PublishPayload) {
+            {
+                std::lock_guard lock(mutex);
+                published_uris.push_back(std::move(uri));
+            }
+            cv.notify_all();
+        },
+        [](const BackgroundDiagnosticsWorker::Document&, std::uint64_t) {
+            return BackgroundDiagnosticsWorker::PublishDecision{.publish = true};
+        },
+        std::chrono::milliseconds(100));
+
+    auto old_job = singleDocumentJob("module old_top; endmodule\n");
+    old_job.open_documents.front().uri = "file:///workspace/old.sv";
+    worker.schedule(std::move(old_job));
+    auto new_job = singleDocumentJob("module new_top; endmodule\n");
+    new_job.open_documents.front().uri = "file:///workspace/new.sv";
+    worker.schedule(std::move(new_job));
+
+    {
+        std::unique_lock lock(mutex);
+        REQUIRE(cv.wait_for(lock, std::chrono::seconds(5), [&]() {
+            return !published_uris.empty();
+        }));
+    }
+    REQUIRE(worker.waitUntilIdle(std::chrono::seconds(5)));
+    CHECK(published_uris == std::vector<std::string>{"file:///workspace/new.sv"});
+    CHECK(worker.stateSnapshot().request_generation == 2);
+    worker.stop();
+}
+
+TEST_CASE("BackgroundDiagnosticsWorker stop interrupts debounce and joins promptly",
+          "[server][diagnostics][background][cancel][lifecycle]") {
+    BackgroundDiagnosticsWorker worker(
+        [](std::string, BackgroundDiagnosticsWorker::PublishPayload) {},
+        [](const BackgroundDiagnosticsWorker::Document&, std::uint64_t) {
+            return BackgroundDiagnosticsWorker::PublishDecision{.publish = true};
+        },
+        std::chrono::seconds(5));
+    worker.schedule(singleDocumentJob("module top; endmodule\n"));
+
+    const auto started = std::chrono::steady_clock::now();
+    worker.stop();
+    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - started);
+    CHECK(elapsed < std::chrono::seconds(1));
+    CHECK(worker.stateSnapshot().state == BackgroundDiagnosticsWorker::StateKind::Idle);
+}
+
 } // namespace pristine::server

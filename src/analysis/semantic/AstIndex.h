@@ -94,7 +94,8 @@ struct ReferenceOccurrenceLookup {
 }
 
 void buildAstIndexes(SnapshotData& data,
-                     const std::unordered_map<std::string, SemanticEngineDocument>& documents);
+                     const std::unordered_map<std::string, SemanticEngineDocument>& documents,
+                     const SnapshotBuildInput::Control& control = {});
 
 [[nodiscard]] AstIndexView buildAstIndexView(const SnapshotData* data,
                                              std::uint64_t generation);

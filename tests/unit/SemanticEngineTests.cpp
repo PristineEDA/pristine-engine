@@ -2770,4 +2770,246 @@ TEST_CASE("SemanticEngine expands assertion invocation cone facts and invalidate
     CHECK(engine.queryCacheStats().graph_scanned_global_symbols == 0);
     CHECK(engine.queryCacheStats().cone_scanned_global_edges == 0);
 }
+
+TEST_CASE("SemanticEngine document hover builds only the complete dependency closure",
+          "[analysis][semantic-engine][document-closure][hover]") {
+    SemanticEngine engine;
+    engine.updateDocument("file:///workspace/child.sv",
+                          "module child; endmodule\n",
+                          SemanticEngineDocumentState{.version = 1});
+    engine.updateDocument("file:///workspace/top.sv",
+                          "module top; child u_child(); endmodule\n",
+                          SemanticEngineDocumentState{.version = 1, .is_open = true});
+    engine.updateDocument("file:///workspace/unrelated.sv",
+                          "module unrelated; endmodule\n",
+                          SemanticEngineDocumentState{.version = 1});
+
+    const auto hover = engine.hoverAt("file:///workspace/top.sv", 0, 8);
+    CHECK_FALSE(hover.unresolved);
+    const auto stats = engine.lastSnapshotBuildStats();
+    CHECK(stats.scope_kind == "documentClosure");
+    CHECK(stats.closure_confidence == "complete");
+    CHECK(stats.input_document_count == 3);
+    CHECK(stats.selected_document_count == 2);
+    CHECK_FALSE(stats.cache_hit);
+}
+
+TEST_CASE("SemanticEngine reuses a warm document closure snapshot",
+          "[analysis][semantic-engine][document-closure][cache]") {
+    SemanticEngine engine;
+    engine.updateDocument("file:///workspace/top.sv",
+                          "module top; logic value; endmodule\n",
+                          SemanticEngineDocumentState{.version = 1, .is_open = true});
+    engine.updateDocument("file:///workspace/other.sv",
+                          "module other; endmodule\n",
+                          SemanticEngineDocumentState{.version = 1});
+
+    (void)engine.hoverAt("file:///workspace/top.sv", 0, 8);
+    const auto cold = engine.lastSnapshotBuildStats();
+    (void)engine.hoverAt("file:///workspace/top.sv", 0, 8);
+    const auto warm = engine.lastSnapshotBuildStats();
+    CHECK(cold.scope_kind == "documentClosure");
+    CHECK_FALSE(cold.cache_hit);
+    CHECK(warm.cache_hit);
+    CHECK(warm.snapshot_identity == cold.snapshot_identity);
+}
+
+TEST_CASE("SemanticEngine incomplete include closure selects full snapshot before query",
+          "[analysis][semantic-engine][document-closure][fallback]") {
+    SemanticEngine engine;
+    engine.updateDocument("file:///workspace/top.sv",
+                          "`include \"missing.svh\"\nmodule top; endmodule\n",
+                          SemanticEngineDocumentState{.version = 1, .is_open = true});
+    engine.updateDocument("file:///workspace/other.sv",
+                          "module other; endmodule\n",
+                          SemanticEngineDocumentState{.version = 1});
+
+    (void)engine.hoverAt("file:///workspace/top.sv", 1, 8);
+    const auto stats = engine.lastSnapshotBuildStats();
+    CHECK(stats.scope_kind == "full");
+    CHECK(stats.selected_document_count == 2);
+}
+
+TEST_CASE("SemanticEngine cancelled full build preserves atomic dirty state",
+          "[analysis][semantic-engine][snapshot][cancel][atomic]") {
+    SemanticEngine engine;
+    engine.updateDocument("file:///workspace/top.sv",
+                          "module top; logic value; endmodule\n",
+                          SemanticEngineDocumentState{.version = 1});
+    CHECK(engine.snapshot().generation == engine.generation());
+    engine.updateDocument("file:///workspace/top.sv",
+                          "module top; logic changed; endmodule\n",
+                          SemanticEngineDocumentState{.version = 2});
+    pristine::CancellationSource cancellation;
+    cancellation.cancel();
+    engine.setRequestControl(SemanticRequestControl{.cancellation = cancellation.token()});
+
+    CHECK_THROWS_AS(engine.snapshot(), pristine::OperationCancelled);
+    CHECK(engine.snapshotDirty());
+    CHECK(engine.lastSnapshotBuildStats().cancelled_build_count >= 1);
+    engine.clearRequestControl();
+    CHECK(engine.snapshot().generation == engine.generation());
+    CHECK_FALSE(engine.snapshotDirty());
+}
+
+TEST_CASE("SemanticEngine cancelled closure build is not cached",
+          "[analysis][semantic-engine][document-closure][cancel][atomic]") {
+    SemanticEngine engine;
+    engine.updateDocument("file:///workspace/top.sv",
+                          "module top; logic value; endmodule\n",
+                          SemanticEngineDocumentState{.version = 1, .is_open = true});
+    engine.updateDocument("file:///workspace/other.sv",
+                          "module other; endmodule\n",
+                          SemanticEngineDocumentState{.version = 1});
+    pristine::CancellationSource cancellation;
+    engine.setRequestControl(SemanticRequestControl{
+        .cancellation = cancellation.token(),
+        .report_progress = [&](std::string_view phase, int) {
+            if (phase == "astIndex") {
+                cancellation.cancel();
+            }
+        }});
+    CHECK_THROWS_AS(engine.hoverAt("file:///workspace/top.sv", 0, 8),
+                    pristine::OperationCancelled);
+    engine.clearRequestControl();
+
+    (void)engine.hoverAt("file:///workspace/top.sv", 0, 8);
+    const auto stats = engine.lastSnapshotBuildStats();
+    CHECK(stats.scope_kind == "documentClosure");
+    CHECK_FALSE(stats.cache_hit);
+    CHECK(stats.cancelled_build_count >= 1);
+}
+
+TEST_CASE("SemanticEngine completion closure includes only prefix candidate files",
+          "[analysis][semantic-engine][document-closure][completion]") {
+    SemanticEngine engine;
+    engine.updateDocument("file:///workspace/alpha.sv",
+                          "module alpha; endmodule\n",
+                          SemanticEngineDocumentState{.version = 1});
+    engine.updateDocument("file:///workspace/beta.sv",
+                          "module beta; endmodule\n",
+                          SemanticEngineDocumentState{.version = 1});
+    engine.updateDocument("file:///workspace/top.sv",
+                          "module top;\n  alp\nendmodule\n",
+                          SemanticEngineDocumentState{.version = 1, .is_open = true});
+
+    const auto completion = engine.completionsAt("file:///workspace/top.sv", 1, 5, "alp");
+    CHECK(std::any_of(completion.items.begin(), completion.items.end(), [](const auto& item) {
+        return item.label == "alpha";
+    }));
+    const auto stats = engine.lastSnapshotBuildStats();
+    CHECK(stats.scope_kind == "documentClosure");
+    CHECK(stats.selected_document_count == 2);
+}
+
+TEST_CASE("SemanticEngine completion resolve rejects an evicted closure identity",
+          "[analysis][semantic-engine][document-closure][completion][lru]") {
+    SemanticEngine engine;
+    for (int index = 0; index < 5; ++index) {
+        const auto uri = "file:///workspace/m" + std::to_string(index) + ".sv";
+        engine.updateDocument(uri,
+                              "module m" + std::to_string(index) + ";\n  logic signal" +
+                                  std::to_string(index) + ";\n  sig\nendmodule\n",
+                              SemanticEngineDocumentState{.version = 1, .is_open = true});
+    }
+
+    std::optional<SemanticCompletionItem> first_item;
+    for (int index = 0; index < 5; ++index) {
+        const auto uri = "file:///workspace/m" + std::to_string(index) + ".sv";
+        const auto completion = engine.completionsAt(uri, 2, 5, "sig");
+        REQUIRE_FALSE(completion.items.empty());
+        if (index == 0) {
+            first_item = completion.items.front();
+            const auto resolved = engine.resolveCompletion(first_item->stable_id,
+                                                           first_item->label,
+                                                           first_item->snapshot_identity);
+            CHECK_FALSE(resolved.unresolved);
+        }
+    }
+    REQUIRE(first_item.has_value());
+    const auto stale = engine.resolveCompletion(first_item->stable_id,
+                                                first_item->label,
+                                                first_item->snapshot_identity);
+    CHECK(stale.unresolved);
+}
+
+TEST_CASE("SemanticEngine keeps full snapshot identity independent from closure telemetry",
+          "[analysis][semantic-engine][document-closure][completion][identity]") {
+    SemanticEngine engine;
+    engine.updateDocument("file:///workspace/alpha.sv",
+                          "module alpha(input logic clk); endmodule\n",
+                          SemanticEngineDocumentState{.version = 1});
+    engine.updateDocument("file:///workspace/beta.sv",
+                          "module beta; endmodule\n",
+                          SemanticEngineDocumentState{.version = 1});
+    engine.updateDocument("file:///workspace/top.sv",
+                          "module top;\n  alp\nendmodule\n",
+                          SemanticEngineDocumentState{.version = 1, .is_open = true});
+
+    (void)engine.referencesAt("file:///workspace/top.sv", 0, 8, true);
+    CHECK(engine.lastSnapshotBuildStats().scope_kind == "full");
+    (void)engine.hoverAt("file:///workspace/top.sv", 0, 8);
+    CHECK(engine.lastSnapshotBuildStats().scope_kind == "documentClosure");
+
+    const auto completion = engine.completionsAt("file:///workspace/top.sv", 1, 5, "");
+    const auto item = std::find_if(completion.items.begin(), completion.items.end(), [](const auto& value) {
+        return value.label == "alpha";
+    });
+    REQUIRE(item != completion.items.end());
+    CHECK_FALSE(item->snapshot_identity.empty());
+    const auto resolved = engine.resolveCompletion(item->stable_id,
+                                                   item->label,
+                                                   item->snapshot_identity);
+    CHECK_FALSE(resolved.unresolved);
+    CHECK_FALSE(resolved.documentation.empty());
+}
+
+TEST_CASE("SemanticEngine global references remain on the full snapshot path",
+          "[analysis][semantic-engine][document-closure][classification]") {
+    SemanticEngine engine;
+    engine.updateDocument("file:///workspace/defs.sv",
+                          "package defs; typedef logic word_t; endpackage\n",
+                          SemanticEngineDocumentState{.version = 1});
+    engine.updateDocument("file:///workspace/top.sv",
+                          "module top; import defs::*; word_t value; endmodule\n",
+                          SemanticEngineDocumentState{.version = 1, .is_open = true});
+    engine.updateDocument("file:///workspace/other.sv",
+                          "module other; endmodule\n",
+                          SemanticEngineDocumentState{.version = 1});
+
+    (void)engine.hoverAt("file:///workspace/top.sv", 0, 8);
+    CHECK(engine.lastSnapshotBuildStats().scope_kind == "documentClosure");
+    (void)engine.referencesAt("file:///workspace/top.sv", 0, 8, true);
+    CHECK(engine.lastSnapshotBuildStats().scope_kind == "full");
+    CHECK(engine.lastSnapshotBuildStats().selected_document_count == 3);
+}
+
+TEST_CASE("SemanticEngine unions background document closure roots into one cached snapshot",
+          "[analysis][semantic-engine][document-closure][background-union]") {
+    SemanticEngine engine;
+    engine.updateDocument("file:///workspace/a.sv",
+                          "module a; logic value_a; endmodule\n",
+                          SemanticEngineDocumentState{.version = 1, .is_open = true});
+    engine.updateDocument("file:///workspace/b.sv",
+                          "module b; logic value_b; endmodule\n",
+                          SemanticEngineDocumentState{.version = 1, .is_open = true});
+    engine.updateDocument("file:///workspace/unrelated.sv",
+                          "module unrelated; endmodule\n",
+                          SemanticEngineDocumentState{.version = 1});
+    engine.setRequestControl(SemanticRequestControl{
+        .closure_root_uris = {"file:///workspace/b.sv", "file:///workspace/a.sv"}});
+
+    (void)engine.hoverAt("file:///workspace/a.sv", 0, 8);
+    const auto first = engine.lastSnapshotBuildStats();
+    (void)engine.hoverAt("file:///workspace/b.sv", 0, 8);
+    const auto second = engine.lastSnapshotBuildStats();
+
+    CHECK(first.scope_kind == "documentClosure");
+    CHECK(first.selected_document_count == 2);
+    CHECK_FALSE(first.cache_hit);
+    CHECK(second.cache_hit);
+    CHECK(second.snapshot_identity == first.snapshot_identity);
+    engine.clearRequestControl();
+}
+
 } // namespace pristine::analysis

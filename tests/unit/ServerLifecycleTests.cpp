@@ -6,6 +6,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <deque>
 #include <filesystem>
@@ -95,6 +96,78 @@ private:
     size_t minimum_outputs_ = 0;
     std::chrono::milliseconds timeout_ = std::chrono::seconds(1);
     mutable std::mutex outputs_mutex_;
+    std::vector<std::string> outputs_;
+};
+
+class ActiveCancellationTransport final : public transport::MessageTransport {
+public:
+    explicit ActiveCancellationTransport(std::atomic_bool& handler_started) :
+        handler_started_(handler_started) {}
+
+    std::optional<std::string> read() override {
+        switch (read_index_++) {
+        case 0:
+            return R"({"jsonrpc":"2.0","id":"slow","method":"test/slow","params":{}})";
+        case 1:
+            while (!handler_started_.load(std::memory_order_acquire)) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+            return R"({"jsonrpc":"2.0","method":"$/cancelRequest","params":{"id":"slow"}})";
+        default:
+            return std::nullopt;
+        }
+    }
+
+    void write(std::string_view payload) override {
+        std::lock_guard lock(mutex_);
+        outputs_.emplace_back(payload);
+    }
+
+    std::vector<std::string> outputs() const {
+        std::lock_guard lock(mutex_);
+        return outputs_;
+    }
+
+private:
+    std::atomic_bool& handler_started_;
+    size_t read_index_ = 0;
+    mutable std::mutex mutex_;
+    std::vector<std::string> outputs_;
+};
+
+class QueuedCancellationTransport final : public transport::MessageTransport {
+public:
+    explicit QueuedCancellationTransport(std::atomic_bool& release_first) :
+        release_first_(release_first) {}
+
+    std::optional<std::string> read() override {
+        switch (read_index_++) {
+        case 0:
+            return R"({"jsonrpc":"2.0","id":1,"method":"test/block","params":{}})";
+        case 1:
+            return R"({"jsonrpc":"2.0","id":2,"method":"test/queued","params":{}})";
+        case 2:
+            return R"({"jsonrpc":"2.0","method":"$/cancelRequest","params":{"id":2}})";
+        default:
+            release_first_.store(true, std::memory_order_release);
+            return std::nullopt;
+        }
+    }
+
+    void write(std::string_view payload) override {
+        std::lock_guard lock(mutex_);
+        outputs_.emplace_back(payload);
+    }
+
+    std::vector<std::string> outputs() const {
+        std::lock_guard lock(mutex_);
+        return outputs_;
+    }
+
+private:
+    std::atomic_bool& release_first_;
+    size_t read_index_ = 0;
+    mutable std::mutex mutex_;
     std::vector<std::string> outputs_;
 };
 
@@ -206,6 +279,97 @@ private:
 };
 
 } // namespace
+
+TEST_CASE("JsonRpcServer cancels an active contextual request", "[jsonrpc][cancellation]") {
+    jsonrpc::JsonRpcServer server;
+    std::atomic_bool handler_started = false;
+    server.registerRequestHandler(
+        "test/slow",
+        [&](const jsonrpc::Json&, const jsonrpc::RequestContext& context) -> jsonrpc::Json {
+            handler_started.store(true, std::memory_order_release);
+            while (!context.cancellation.cancellationRequested()) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+            context.cancellation.throwIfCancellationRequested();
+            return nullptr;
+        });
+    ActiveCancellationTransport transport(handler_started);
+
+    CHECK(server.run(transport) == 0);
+    REQUIRE(transport.outputs().size() == 1);
+    const auto response = jsonrpc::Json::parse(transport.outputs().front());
+    CHECK(response.at("id") == "slow");
+    CHECK(response.at("error").at("code") == -32800);
+}
+
+TEST_CASE("JsonRpcServer cancels a queued numeric request without invoking it",
+          "[jsonrpc][cancellation]") {
+    jsonrpc::JsonRpcServer server;
+    std::atomic_bool release_first = false;
+    std::atomic_int queued_invocations = 0;
+    server.registerRequestHandler("test/block", [&](const jsonrpc::Json&) -> jsonrpc::Json {
+        while (!release_first.load(std::memory_order_acquire)) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        return "done";
+    });
+    server.registerRequestHandler(
+        "test/queued",
+        [&](const jsonrpc::Json&, const jsonrpc::RequestContext&) -> jsonrpc::Json {
+            ++queued_invocations;
+            return "unexpected";
+        });
+    QueuedCancellationTransport transport(release_first);
+
+    CHECK(server.run(transport) == 0);
+    CHECK(queued_invocations.load() == 0);
+    REQUIRE(transport.outputs().size() == 2);
+    const auto second = jsonrpc::Json::parse(transport.outputs().at(1));
+    CHECK(second.at("id") == 2);
+    CHECK(second.at("error").at("code") == -32800);
+}
+
+TEST_CASE("JsonRpcServer ignores cancellation for an unknown request id",
+          "[jsonrpc][cancellation]") {
+    jsonrpc::JsonRpcServer server;
+    server.registerRequestHandler("test/value", [](const jsonrpc::Json&) {
+        return jsonrpc::Json("ok");
+    });
+    ScriptedTransport transport{
+        R"({"jsonrpc":"2.0","method":"$/cancelRequest","params":{"id":"missing"}})",
+        R"({"jsonrpc":"2.0","id":"value","method":"test/value","params":{}})"};
+
+    CHECK(server.run(transport) == 0);
+    REQUIRE(transport.outputs().size() == 1);
+    const auto response = jsonrpc::Json::parse(transport.outputs().front());
+    CHECK(response.at("result") == "ok");
+}
+
+TEST_CASE("JsonRpcServer reports progress with the client supplied token",
+          "[jsonrpc][progress]") {
+    jsonrpc::JsonRpcServer server;
+    server.registerRequestHandler(
+        "test/progress",
+        [](const jsonrpc::Json&, const jsonrpc::RequestContext& context) -> jsonrpc::Json {
+            REQUIRE(context.work_done_token.has_value());
+            context.report_progress(jsonrpc::Json{{"kind", "begin"}, {"title", "Semantic build"}});
+            context.report_progress(jsonrpc::Json{{"kind", "end"}});
+            return "done";
+        });
+    ScriptedTransport transport{
+        R"({"jsonrpc":"2.0","id":1,"method":"test/progress","params":{"workDoneToken":"build-1"}})"};
+
+    CHECK(server.run(transport) == 0);
+    REQUIRE(transport.outputs().size() == 3);
+    const auto begin = jsonrpc::Json::parse(transport.outputs().at(0));
+    const auto end = jsonrpc::Json::parse(transport.outputs().at(1));
+    const auto response = jsonrpc::Json::parse(transport.outputs().at(2));
+    CHECK(begin.at("method") == "$/progress");
+    CHECK(begin.at("params").at("token") == "build-1");
+    CHECK(begin.at("params").at("value").at("kind") == "begin");
+    CHECK(end.at("params").at("value").at("kind") == "end");
+    CHECK(response.at("result") == "done");
+}
 
 TEST_CASE("ServerSession handles initialize-shutdown-exit", "[server][lifecycle]") {
     jsonrpc::JsonRpcServer rpc_server;
