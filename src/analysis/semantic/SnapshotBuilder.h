@@ -267,6 +267,8 @@ enum class SnapshotConeControlOrigin {
     AssertionAbort,
     AssertionDefaultClock,
     AssertionDefaultDisable,
+    AssertionConditional,
+    AssertionCase,
 };
 enum class SnapshotConeEventKind {
     None,
@@ -333,6 +335,54 @@ struct SnapshotConeEventControlFact {
     bool unresolved = false;
 };
 
+// The assertion AST is lowered into an ordered temporal path while it is
+// alive. Providers receive only these value facts and never reconstruct
+// property operators, delays, or repetition bounds from text.
+enum class SnapshotAssertionTemporalRelation {
+    None,
+    SequenceDelay,
+    ConsecutiveRepeat,
+    NonconsecutiveRepeat,
+    GotoRepeat,
+    NextTime,
+    SNextTime,
+    Always,
+    SAlways,
+    Eventually,
+    SEventually,
+    And,
+    Or,
+    Intersect,
+    Throughout,
+    Within,
+    Iff,
+    Until,
+    SUntil,
+    UntilWith,
+    SUntilWith,
+    Implies,
+    OverlappedImplication,
+    NonOverlappedImplication,
+    OverlappedFollowedBy,
+    NonOverlappedFollowedBy,
+    FirstMatch,
+    Strong,
+    Weak,
+    AcceptOn,
+    RejectOn,
+    SyncAcceptOn,
+    SyncRejectOn,
+    ConditionalBranch,
+    CaseBranch,
+};
+
+struct SnapshotAssertionTemporalFact {
+    SnapshotAssertionTemporalRelation relation = SnapshotAssertionTemporalRelation::None;
+    SemanticLocation location;
+    std::optional<std::int64_t> min_cycles;
+    std::optional<std::int64_t> max_cycles;
+};
+
 // Concurrent and immediate assertions are materialized while the assertion
 // AST is alive. The synthetic observation id is a normal value-type cone root;
 // providers never reparse a property specification to recover sampled signals.
@@ -345,6 +395,7 @@ struct SnapshotAssertionSourceFact {
     SnapshotConeSliceKind slice_kind = SnapshotConeSliceKind::Whole;
     SnapshotConeSliceFact source_slice;
     std::vector<std::string> source_symbol_ids;
+    std::vector<SnapshotAssertionTemporalFact> temporal_path;
     // Assertion formal-to-actual expansion is complete before provider
     // queries. These identities preserve the source invocation without
     // retaining AST pointers in the snapshot.
@@ -421,6 +472,7 @@ struct SnapshotAssignmentEdge {
     SnapshotConeEventKind event_kind = SnapshotConeEventKind::None;
     SnapshotConeSliceFact source_slice;
     SnapshotConeSliceFact sink_slice;
+    std::vector<SnapshotAssertionTemporalFact> assertion_temporal_path;
     std::string assertion_invocation_stable_id;
     std::string assertion_invocation_formal_stable_id;
 };
@@ -620,6 +672,7 @@ struct SnapshotConeAdjacencyEdge {
     SnapshotConeSliceFact source_slice;
     SnapshotConeSliceFact sink_slice;
     std::string generated_instance_id;
+    std::vector<SnapshotAssertionTemporalFact> assertion_temporal_path;
     std::string assertion_invocation_stable_id;
     std::string assertion_invocation_formal_stable_id;
 };
@@ -633,9 +686,24 @@ struct SnapshotConeUnresolvedSourceFact {
     SnapshotConeSourceRole source_role = SnapshotConeSourceRole::Data;
     SnapshotConeControlOrigin control_origin = SnapshotConeControlOrigin::None;
     SnapshotConeEventKind event_kind = SnapshotConeEventKind::None;
+    std::vector<SnapshotAssertionTemporalFact> assertion_temporal_path;
     std::string assertion_invocation_stable_id;
     std::string assertion_invocation_formal_stable_id;
 };
+
+inline std::string assertionTemporalPathKey(
+    const std::vector<SnapshotAssertionTemporalFact>& temporal_path) {
+    std::string key;
+    for (const auto& step : temporal_path) {
+        key += std::to_string(static_cast<int>(step.relation));
+        key += "@" + step.location.uri + ":" +
+               std::to_string(step.location.range.start_line) + ":" +
+               std::to_string(step.location.range.start_character);
+        key += "[" + (step.min_cycles.has_value() ? std::to_string(*step.min_cycles) : "?") +
+               ":" + (step.max_cycles.has_value() ? std::to_string(*step.max_cycles) : "*") + "]\n";
+    }
+    return key;
+}
 
 struct SnapshotConeRootSelectionFact {
     std::string symbol_id;
@@ -681,6 +749,8 @@ struct SnapshotConeAdjacencyIndex {
     std::unordered_map<std::string, std::vector<SnapshotConeRootSelectionFact>> root_selections_by_uri;
     std::unordered_map<std::string, std::vector<SnapshotConeUnresolvedSourceFact>>
         unresolved_sources_by_from_symbol_id;
+    // Temporal paths remain side-indexed so legacy graph edge construction is
+    // not widened with query-only assertion metadata.
 };
 
 struct SnapshotTypeReference {
@@ -755,6 +825,8 @@ struct SnapshotData {
     std::unordered_map<std::string, std::vector<SnapshotAssertionObservationFact>>
         assertion_observations_by_uri;
     size_t assertion_observation_fact_count = 0;
+    size_t assertion_temporal_fact_count = 0;
+    size_t assertion_temporal_partial_fact_count = 0;
     std::unordered_map<std::string, SnapshotAssertionContextFact>
         assertion_context_by_observation_id;
     std::unordered_map<std::string, std::vector<SnapshotAssertionInvocationBindingFact>>

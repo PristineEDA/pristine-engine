@@ -2476,6 +2476,38 @@ TEST_CASE("ServerSession returns local backward cone data for a selected signal"
     CHECK(has_edge(mid_id, b_id));
 }
 
+TEST_CASE("ServerSession exposes indexed assertion temporal cone metadata",
+          "[server][cone][assertion][temporal]") {
+    jsonrpc::JsonRpcServer rpc_server;
+    ServerSession session{"pristine-engine", kTestServerVersion};
+    session.bind(rpc_server);
+
+    ScriptedTransport transport{
+        R"({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}})",
+        R"({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///workspace/assertion-temporal.sv","languageId":"systemverilog","version":1,"text":"module top(input logic clk, input logic choose, input logic a, input logic b);\n  assert property (@(posedge clk) if (choose) a else b);\nendmodule\n"}}})",
+        R"({"jsonrpc":"2.0","id":2,"method":"systemverilog/backwardCone","params":{"textDocument":{"uri":"file:///workspace/assertion-temporal.sv"},"position":{"line":1,"character":2}}})"};
+
+    CHECK(rpc_server.run(transport) == 0);
+    const auto cone_response = findResponse(transport, 2);
+    REQUIRE(cone_response.has_value());
+    const auto& result = cone_response->at("result");
+    REQUIRE(result.contains("coneAssertionTemporalEdges"));
+    CHECK(result.at("coneAssertionTemporalEdges").get<size_t>() == 3);
+    const auto selector = std::find_if(result.at("edges").begin(), result.at("edges").end(),
+                                       [](const jsonrpc::Json& edge) {
+                                           return edge.at("expression") == "choose" &&
+                                                  edge.value("sourceRole", "") == "control" &&
+                                                  edge.value("controlOrigin", "") ==
+                                                      "assertionConditional";
+                                       });
+    REQUIRE(selector != result.at("edges").end());
+    REQUIRE(selector->contains("temporalPath"));
+    CHECK(std::any_of(selector->at("temporalPath").begin(), selector->at("temporalPath").end(),
+                      [](const jsonrpc::Json& step) {
+                          return step.at("relation") == "conditionalBranch";
+                      }));
+}
+
 TEST_CASE("ServerSession handles standard call hierarchy", "[server][hierarchy]") {
     jsonrpc::JsonRpcServer rpc_server;
     ServerSession session{"pristine-engine", kTestServerVersion};

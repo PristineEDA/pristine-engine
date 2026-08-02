@@ -4100,6 +4100,101 @@ TEST_CASE("AstIndex lowers concurrent assertion sampling, clocking, and disable 
                    SnapshotConeControlOrigin::AssertionDisable));
 }
 
+TEST_CASE("AstIndex records temporal delay, repetition, and implication paths for assertion samples",
+          "[analysis][semantic][ast-index][cone][assertion][temporal][delay][repetition]") {
+    auto output = buildGraphSource(
+        "module top(input logic clk, input logic a, input logic b, input logic c);\n"
+        "  assert property (@(posedge clk) a ##[1:2] b[*2] |=> c);\nendmodule\n");
+    REQUIRE(output.data != nullptr);
+    CHECK(output.data->assertion_temporal_fact_count >= 3);
+    const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
+    const auto edge = std::find_if(view.cone_adjacency_index.edges.begin(),
+                                   view.cone_adjacency_index.edges.end(),
+                                   [&](const auto& candidate) {
+                                       const auto symbol =
+                                           view.design_graph_symbols_by_id.find(candidate.to_symbol_id);
+                                       return candidate.kind == SnapshotConeEdgeKind::AssertionSample &&
+                                              candidate.source_role == SnapshotConeSourceRole::Sampled &&
+                                              symbol != view.design_graph_symbols_by_id.end() &&
+                                              symbol->second.identity.name == "b";
+                                   });
+    REQUIRE(edge != view.cone_adjacency_index.edges.end());
+    REQUIRE_FALSE(edge->assertion_temporal_path.empty());
+    CHECK(std::any_of(edge->assertion_temporal_path.begin(), edge->assertion_temporal_path.end(), [](const auto& fact) {
+        return fact.relation == SnapshotAssertionTemporalRelation::SequenceDelay &&
+               fact.min_cycles == 1 && fact.max_cycles == 2;
+    }));
+    CHECK(std::any_of(edge->assertion_temporal_path.begin(), edge->assertion_temporal_path.end(), [](const auto& fact) {
+        return fact.relation == SnapshotAssertionTemporalRelation::ConsecutiveRepeat &&
+               fact.min_cycles == 2 && fact.max_cycles == 2;
+    }));
+    CHECK(std::any_of(edge->assertion_temporal_path.begin(), edge->assertion_temporal_path.end(), [](const auto& fact) {
+        return fact.relation == SnapshotAssertionTemporalRelation::NonOverlappedImplication;
+    }));
+}
+
+TEST_CASE("AstIndex keeps assertion conditional guards out of sampled sources",
+          "[analysis][semantic][ast-index][cone][assertion][conditional][roles]") {
+    auto output = buildGraphSource(
+        "module top(input logic clk, input logic choose, input logic a, input logic b);\n"
+        "  assert property (@(posedge clk) if (choose) a else b);\nendmodule\n");
+    REQUIRE(output.data != nullptr);
+    const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
+    const auto control = std::find_if(view.cone_adjacency_index.edges.begin(),
+                                      view.cone_adjacency_index.edges.end(),
+                                      [&](const auto& candidate) {
+                                          const auto symbol =
+                                              view.design_graph_symbols_by_id.find(candidate.to_symbol_id);
+                                          return candidate.kind == SnapshotConeEdgeKind::AssertionSample &&
+                                                 candidate.source_role == SnapshotConeSourceRole::Control &&
+                                                 candidate.control_origin ==
+                                                     SnapshotConeControlOrigin::AssertionConditional &&
+                                                 symbol != view.design_graph_symbols_by_id.end() &&
+                                                 symbol->second.identity.name == "choose";
+                                      });
+    REQUIRE(control != view.cone_adjacency_index.edges.end());
+    CHECK_FALSE(std::any_of(view.cone_adjacency_index.edges.begin(),
+                            view.cone_adjacency_index.edges.end(),
+                            [&](const auto& candidate) {
+                                const auto symbol =
+                                    view.design_graph_symbols_by_id.find(candidate.to_symbol_id);
+                                return candidate.kind == SnapshotConeEdgeKind::AssertionSample &&
+                                       candidate.source_role == SnapshotConeSourceRole::Sampled &&
+                                       symbol != view.design_graph_symbols_by_id.end() &&
+                                       symbol->second.identity.name == "choose";
+                            }));
+    REQUIRE_FALSE(control->assertion_temporal_path.empty());
+    CHECK(std::any_of(control->assertion_temporal_path.begin(), control->assertion_temporal_path.end(), [](const auto& fact) {
+        return fact.relation == SnapshotAssertionTemporalRelation::ConditionalBranch;
+    }));
+}
+
+TEST_CASE("AstIndex records assertion case selectors and matches as controls",
+          "[analysis][semantic][ast-index][cone][assertion][case][roles]") {
+    auto output = buildGraphSource(
+        "module top(input logic clk, input logic choose, input logic a, input logic b);\n"
+        "  assert property (@(posedge clk) case (choose) 1'b0: a; default: b; endcase);\nendmodule\n");
+    REQUIRE(output.data != nullptr);
+    const auto view = buildAstIndexView(output.data.get(), output.snapshot.generation);
+    const auto selector = std::find_if(view.cone_adjacency_index.edges.begin(),
+                                       view.cone_adjacency_index.edges.end(),
+                                       [&](const auto& candidate) {
+                                           const auto symbol =
+                                               view.design_graph_symbols_by_id.find(candidate.to_symbol_id);
+                                           return candidate.kind == SnapshotConeEdgeKind::AssertionSample &&
+                                                  candidate.source_role == SnapshotConeSourceRole::Control &&
+                                                  candidate.control_origin ==
+                                                      SnapshotConeControlOrigin::AssertionCase &&
+                                                  symbol != view.design_graph_symbols_by_id.end() &&
+                                                  symbol->second.identity.name == "choose";
+                                       });
+    REQUIRE(selector != view.cone_adjacency_index.edges.end());
+    REQUIRE_FALSE(selector->assertion_temporal_path.empty());
+    CHECK(std::any_of(selector->assertion_temporal_path.begin(), selector->assertion_temporal_path.end(), [](const auto& fact) {
+        return fact.relation == SnapshotAssertionTemporalRelation::CaseBranch;
+    }));
+}
+
 TEST_CASE("AstIndex applies default clocking and disable as scoped assertion facts",
           "[analysis][semantic][ast-index][cone][assertion][default-context]") {
     auto output = buildGraphSource(

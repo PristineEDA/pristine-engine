@@ -854,6 +854,53 @@ TEST_CASE("DesignGraphProvider reports unresolved ternary control facts without 
     }));
 }
 
+TEST_CASE("DesignGraphProvider projects assertion temporal paths from indexed adjacency facts",
+          "[analysis][semantic][design-graph-provider][cone][assertion][temporal]") {
+    auto context = simpleDesignContext();
+    const auto sample = symbol("symbol|sample", "sample", 1, 8, 14);
+    const auto observed = symbol("symbol|observed", "observed", 2, 8, 16);
+    context.symbols_by_id = {{"symbol|sample", DesignGraphSymbol{.identity = sample}},
+                             {"symbol|observed", DesignGraphSymbol{.identity = observed}}};
+    setConeEdges(context,
+                 {SnapshotConeAdjacencyEdge{.from_symbol_id = "symbol|observed",
+                                            .to_symbol_id = "symbol|sample",
+                                            .location = SemanticLocation{
+                                                .uri = "file:///workspace/assertion.sv",
+                                                .range = rangeAt(4, 2, 26)},
+                                            .expression_location = SemanticLocation{
+                                                .uri = "file:///workspace/assertion.sv",
+                                                .range = rangeAt(4, 12, 18)},
+                                            .expression = "sample",
+                                            .kind = SnapshotConeEdgeKind::AssertionSample,
+                                            .source_role = SnapshotConeSourceRole::Sampled,
+                                            .assertion_temporal_path = {
+                                                SnapshotAssertionTemporalFact{
+                                                    .relation = SnapshotAssertionTemporalRelation::NonOverlappedImplication,
+                                                    .location = SemanticLocation{
+                                                        .uri = "file:///workspace/assertion.sv",
+                                                        .range = rangeAt(4, 2, 26)}},
+                                                SnapshotAssertionTemporalFact{
+                                                    .relation = SnapshotAssertionTemporalRelation::SequenceDelay,
+                                                    .location = SemanticLocation{
+                                                        .uri = "file:///workspace/assertion.sv",
+                                                        .range = rangeAt(4, 2, 26)},
+                                      .min_cycles = 1,
+                                                    .max_cycles = 2}}}});
+
+    const auto trace = backwardCone(context,
+                                    "file:///workspace/assertion.sv",
+                                    SemanticLookupResult{.generation = 9, .symbol = observed},
+                                    2000);
+
+    REQUIRE(trace.edges.size() == 1);
+    CHECK(trace.cone_assertion_temporal_edge_count == 1);
+    REQUIRE(trace.edges.front().temporal_path.size() == 2);
+    CHECK(trace.edges.front().temporal_path[0].relation == "nonOverlappedImplication");
+    CHECK(trace.edges.front().temporal_path[1].relation == "sequenceDelay");
+    CHECK(trace.edges.front().temporal_path[1].min_cycles == 1);
+    CHECK(trace.edges.front().temporal_path[1].max_cycles == 2);
+}
+
 TEST_CASE("DesignGraphProvider retains distinct ternary control and branch-data edges",
           "[analysis][semantic][design-graph-provider][cone][ternary][roles]") {
     auto context = simpleDesignContext();

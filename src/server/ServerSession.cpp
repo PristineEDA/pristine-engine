@@ -687,6 +687,17 @@ jsonrpc::Json toConeEdgeJson(const analysis::SemanticConeEdge& edge) {
     if (edge.source_range.has_value()) result["sourceRange"] = toRangeJson(*edge.source_range);
     if (edge.source_slice.has_value()) result["sourceSlice"] = toConeSliceJson(*edge.source_slice);
     if (edge.sink_slice.has_value()) result["sinkSlice"] = toConeSliceJson(*edge.sink_slice);
+    if (!edge.temporal_path.empty()) {
+        jsonrpc::Json temporal_path = jsonrpc::Json::array();
+        for (const auto& step : edge.temporal_path) {
+            jsonrpc::Json temporal{{"relation", step.relation},
+                                   {"range", toRangeJson(step.location.range)}};
+            if (step.min_cycles.has_value()) temporal["minCycles"] = *step.min_cycles;
+            if (step.max_cycles.has_value()) temporal["maxCycles"] = *step.max_cycles;
+            temporal_path.push_back(std::move(temporal));
+        }
+        result["temporalPath"] = std::move(temporal_path);
+    }
     return result;
 }
 
@@ -1522,6 +1533,13 @@ jsonrpc::Json ServerSession::handleBackwardCone(const jsonrpc::Json& params) {
     if (trace.cone_assertion_invocation_partial_binding_count > 0) {
         result["coneAssertionInvocationPartialBindings"] =
             trace.cone_assertion_invocation_partial_binding_count;
+    }
+    if (trace.cone_assertion_temporal_edge_count > 0) {
+        result["coneAssertionTemporalEdges"] = trace.cone_assertion_temporal_edge_count;
+    }
+    if (trace.cone_assertion_temporal_partial_fact_count > 0) {
+        result["coneAssertionTemporalPartialFacts"] =
+            trace.cone_assertion_temporal_partial_fact_count;
     }
     result["coneSliceFacts"] = trace.cone_slice_fact_count;
     if (trace.cone_exact_slice_edge_count > 0) {

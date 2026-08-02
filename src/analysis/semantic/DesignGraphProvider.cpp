@@ -135,6 +135,10 @@ std::string coneControlOriginLabel(SnapshotConeControlOrigin origin) {
         return "assertionDisable";
     case SnapshotConeControlOrigin::AssertionAbort:
         return "assertionAbort";
+    case SnapshotConeControlOrigin::AssertionConditional:
+        return "assertionConditional";
+    case SnapshotConeControlOrigin::AssertionCase:
+        return "assertionCase";
     case SnapshotConeControlOrigin::AssertionDefaultClock:
         return "assertionDefaultClock";
     case SnapshotConeControlOrigin::AssertionDefaultDisable:
@@ -165,6 +169,60 @@ std::string coneEventKindLabel(SnapshotConeEventKind kind) {
         return "unsupported";
     }
     return {};
+}
+
+std::string assertionTemporalRelationLabel(SnapshotAssertionTemporalRelation relation) {
+    switch (relation) {
+    case SnapshotAssertionTemporalRelation::None: return {};
+    case SnapshotAssertionTemporalRelation::SequenceDelay: return "sequenceDelay";
+    case SnapshotAssertionTemporalRelation::ConsecutiveRepeat: return "consecutiveRepeat";
+    case SnapshotAssertionTemporalRelation::NonconsecutiveRepeat: return "nonconsecutiveRepeat";
+    case SnapshotAssertionTemporalRelation::GotoRepeat: return "gotoRepeat";
+    case SnapshotAssertionTemporalRelation::NextTime: return "nextTime";
+    case SnapshotAssertionTemporalRelation::SNextTime: return "sNextTime";
+    case SnapshotAssertionTemporalRelation::Always: return "always";
+    case SnapshotAssertionTemporalRelation::SAlways: return "sAlways";
+    case SnapshotAssertionTemporalRelation::Eventually: return "eventually";
+    case SnapshotAssertionTemporalRelation::SEventually: return "sEventually";
+    case SnapshotAssertionTemporalRelation::And: return "and";
+    case SnapshotAssertionTemporalRelation::Or: return "or";
+    case SnapshotAssertionTemporalRelation::Intersect: return "intersect";
+    case SnapshotAssertionTemporalRelation::Throughout: return "throughout";
+    case SnapshotAssertionTemporalRelation::Within: return "within";
+    case SnapshotAssertionTemporalRelation::Iff: return "iff";
+    case SnapshotAssertionTemporalRelation::Until: return "until";
+    case SnapshotAssertionTemporalRelation::SUntil: return "sUntil";
+    case SnapshotAssertionTemporalRelation::UntilWith: return "untilWith";
+    case SnapshotAssertionTemporalRelation::SUntilWith: return "sUntilWith";
+    case SnapshotAssertionTemporalRelation::Implies: return "implies";
+    case SnapshotAssertionTemporalRelation::OverlappedImplication: return "overlappedImplication";
+    case SnapshotAssertionTemporalRelation::NonOverlappedImplication: return "nonOverlappedImplication";
+    case SnapshotAssertionTemporalRelation::OverlappedFollowedBy: return "overlappedFollowedBy";
+    case SnapshotAssertionTemporalRelation::NonOverlappedFollowedBy: return "nonOverlappedFollowedBy";
+    case SnapshotAssertionTemporalRelation::FirstMatch: return "firstMatch";
+    case SnapshotAssertionTemporalRelation::Strong: return "strong";
+    case SnapshotAssertionTemporalRelation::Weak: return "weak";
+    case SnapshotAssertionTemporalRelation::AcceptOn: return "acceptOn";
+    case SnapshotAssertionTemporalRelation::RejectOn: return "rejectOn";
+    case SnapshotAssertionTemporalRelation::SyncAcceptOn: return "syncAcceptOn";
+    case SnapshotAssertionTemporalRelation::SyncRejectOn: return "syncRejectOn";
+    case SnapshotAssertionTemporalRelation::ConditionalBranch: return "conditionalBranch";
+    case SnapshotAssertionTemporalRelation::CaseBranch: return "caseBranch";
+    }
+    return {};
+}
+
+std::vector<SemanticConeTemporalStep> semanticTemporalPath(
+    const std::vector<SnapshotAssertionTemporalFact>& temporal_path) {
+    std::vector<SemanticConeTemporalStep> result;
+    result.reserve(temporal_path.size());
+    for (const auto& step : temporal_path) {
+        result.push_back(SemanticConeTemporalStep{.relation = assertionTemporalRelationLabel(step.relation),
+                                                  .location = step.location,
+                                                  .min_cycles = step.min_cycles,
+                                                  .max_cycles = step.max_cycles});
+    }
+    return result;
 }
 
 std::string coneSliceKindLabel(SnapshotConeSliceKind kind) {
@@ -1223,6 +1281,9 @@ SemanticConeTrace backwardCone(const DesignGraphContext& context,
             for (const auto& source : unresolved_sources->second) {
                 trace.partial = true;
                 ++trace.cone_unresolved_source_fact_count;
+                if (!source.assertion_temporal_path.empty()) {
+                    ++trace.cone_assertion_temporal_partial_fact_count;
+                }
                 if (is_connection_edge(source.kind)) {
                     ++trace.cone_unresolved_connection_fact_count;
                 }
@@ -1279,6 +1340,7 @@ SemanticConeTrace backwardCone(const DesignGraphContext& context,
                                    coneControlOriginLabel(edge.control_origin) + "\n" +
                                    coneEventKindLabel(edge.event_kind) + "\n" +
                                    coneSliceKindLabel(edge.slice_kind) + "\n" +
+                                  assertionTemporalPathKey(edge.assertion_temporal_path) + "\n" +
                                   coneSliceKey(edge.source_slice) + "\n" +
                                   coneSliceKey(edge.sink_slice);
             if (node_available && emitted_edges.insert(edge_key).second) {
@@ -1297,7 +1359,9 @@ SemanticConeTrace backwardCone(const DesignGraphContext& context,
                                                        .event_kind = coneEventKindLabel(edge.event_kind),
                                                        .source_range = edge.expression_location.range,
                                                        .source_slice = coneSlice(edge.source_slice),
-                                                       .sink_slice = coneSlice(edge.sink_slice)});
+                                                       .sink_slice = coneSlice(edge.sink_slice),
+                                                       .temporal_path =
+                                                           semanticTemporalPath(edge.assertion_temporal_path)});
                 if (edge.kind == SnapshotConeEdgeKind::PrimitiveCell) {
                     if (edge.source_role == SnapshotConeSourceRole::Control) {
                         ++trace.cone_primitive_control_edge_count;
@@ -1308,6 +1372,9 @@ SemanticConeTrace backwardCone(const DesignGraphContext& context,
                 }
                 if (edge.kind == SnapshotConeEdgeKind::AssertionSample) {
                     ++trace.cone_assertion_sample_edge_count;
+                    if (!edge.assertion_temporal_path.empty()) {
+                        ++trace.cone_assertion_temporal_edge_count;
+                    }
                     if (!edge.assertion_invocation_stable_id.empty()) {
                         ++trace.cone_assertion_invocation_edge_count;
                     }

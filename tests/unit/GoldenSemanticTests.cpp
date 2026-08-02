@@ -1089,6 +1089,14 @@ void runBackwardConeFixture(SemanticEngine& engine, const nlohmann::json& fixtur
         CHECK(result.cone_primitive_control_edge_count ==
               expected.at("primitiveControlEdgeCount").get<size_t>());
     }
+    if (expected.contains("assertionTemporalEdgeCount")) {
+        CHECK(result.cone_assertion_temporal_edge_count ==
+              expected.at("assertionTemporalEdgeCount").get<size_t>());
+    }
+    if (expected.contains("assertionTemporalPartialFactCount")) {
+        CHECK(result.cone_assertion_temporal_partial_fact_count ==
+              expected.at("assertionTemporalPartialFactCount").get<size_t>());
+    }
     if (expected.contains("unresolvedSourceFactCount")) {
         CHECK(result.cone_unresolved_source_fact_count == expected.at("unresolvedSourceFactCount").get<size_t>());
     }
@@ -1143,6 +1151,18 @@ void runBackwardConeFixture(SemanticEngine& engine, const nlohmann::json& fixtur
             CAPTURE(origin);
             CHECK(std::any_of(result.edges.begin(), result.edges.end(), [&](const SemanticConeEdge& edge) {
                 return edge.control_origin == origin;
+            }));
+        }
+    }
+    if (expected.contains("temporalRelations")) {
+        for (const auto& expected_relation : expected.at("temporalRelations")) {
+            const auto relation = expected_relation.get<std::string>();
+            CAPTURE(relation);
+            CHECK(std::any_of(result.edges.begin(), result.edges.end(), [&](const SemanticConeEdge& edge) {
+                return std::any_of(edge.temporal_path.begin(), edge.temporal_path.end(),
+                                   [&](const SemanticConeTemporalStep& step) {
+                                       return step.relation == relation;
+                                   });
             }));
         }
     }

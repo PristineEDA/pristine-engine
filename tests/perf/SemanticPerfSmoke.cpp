@@ -277,6 +277,7 @@ int main() {
                                       assertion_cone.cone_assertion_sample_edge_count == 0 ||
                                       assertion_cone.cone_assertion_invocation_edge_count == 0 ||
                                       assertion_cone.cone_assertion_clock_edge_count == 0 ||
+                                      assertion_cone.cone_assertion_temporal_edge_count == 0 ||
                                       default_assertion_cone.cone_assertion_default_clock_edge_count == 0 ||
                                       default_assertion_cone.cone_assertion_default_disable_edge_count == 0 ||
                                       cache_stats.graph_scanned_global_symbols != 0 ||
@@ -402,6 +403,10 @@ int main() {
                   << assertion_cone.cone_assertion_clock_edge_count << ","
                   << "\"assertionConeInvocationEdges\":"
                   << assertion_cone.cone_assertion_invocation_edge_count << ","
+                  << "\"assertionConeTemporalEdges\":"
+                  << assertion_cone.cone_assertion_temporal_edge_count << ","
+                  << "\"assertionConeTemporalPartialFacts\":"
+                  << assertion_cone.cone_assertion_temporal_partial_fact_count << ","
                   << "\"assertionDefaultConeClockEdges\":"
                   << default_assertion_cone.cone_assertion_default_clock_edge_count << ","
                   << "\"assertionDefaultConeDisableEdges\":"

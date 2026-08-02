@@ -1,0 +1,18 @@
+{
+  "name": "backward cone retains assertion delay repetition and implication provenance",
+  "sources": [
+    {
+      "uri": "file:///golden/assertion/temporal-delay.sv",
+      "text": "module top(input logic clk, input logic a, input logic b, input logic c);\n  assert property (@(posedge clk) a ##[1:2] b[*2] |=> c);\nendmodule\n"
+    }
+  ],
+  "request": { "kind": "backwardCone", "uri": "file:///golden/assertion/temporal-delay.sv", "line": 1, "character": 2 },
+  "expected": {
+    "edgeKinds": ["assertionSample"],
+    "sourceRoles": ["sampled", "clock"],
+    "controlOrigins": ["assertionClock"],
+    "expressions": ["clk", "a", "b", "c"],
+    "assertionTemporalEdgeCount": 3,
+    "temporalRelations": ["sequenceDelay", "consecutiveRepeat", "nonOverlappedImplication"]
+  }
+}

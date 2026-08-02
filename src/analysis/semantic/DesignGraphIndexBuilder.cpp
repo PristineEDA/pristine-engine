@@ -407,6 +407,7 @@ void appendInterfaceMemberConeEdges(const SnapshotDesignGraphBindingIndex& bindi
                                                      .kind = SnapshotConeEdgeKind::InterfaceMember,
                                                      .source_role = SnapshotConeSourceRole::Data,
                                                      .control_origin = SnapshotConeControlOrigin::None,
+                                                     .assertion_temporal_path = {},
                                                      .assertion_invocation_stable_id = {},
                                                      .assertion_invocation_formal_stable_id = {}});
             };
@@ -430,6 +431,7 @@ void appendInterfaceMemberConeEdges(const SnapshotDesignGraphBindingIndex& bindi
                                                       .source_slice = {},
                                                       .sink_slice = {},
                                                       .generated_instance_id = fact.generated_instance_id,
+                                                      .assertion_temporal_path = {},
                                                       .assertion_invocation_stable_id = {},
                                                       .assertion_invocation_formal_stable_id = {}});
             };
@@ -640,6 +642,7 @@ void appendPrimitiveCellConeEdges(const SnapshotDesignGraphBindingIndex& binding
                                               .source_slice = source.net_slice,
                                               .sink_slice = sink.net_slice,
                                               .generated_instance_id = {},
+                                              .assertion_temporal_path = {},
                                               .assertion_invocation_stable_id = {},
                                               .assertion_invocation_formal_stable_id = {}});
     };
@@ -659,6 +662,7 @@ void appendPrimitiveCellConeEdges(const SnapshotDesignGraphBindingIndex& binding
                                              .kind = SnapshotConeEdgeKind::PrimitiveCell,
                                              .source_role = role,
                                              .control_origin = origin,
+                                             .assertion_temporal_path = {},
                                              .assertion_invocation_stable_id = {},
                                              .assertion_invocation_formal_stable_id = {}});
     };
@@ -854,25 +858,25 @@ void buildDesignGraphIndexes(SnapshotData& data) {
     auto& adjacency = data.cone_adjacency_index;
     for (const auto& [_, edges] : data.assignment_edges_by_uri) {
         for (const auto& edge : edges) {
-            appendEdge(adjacency,
-                       SnapshotConeAdjacencyEdge{.from_symbol_id = edge.from_symbol_id,
-                                                  .to_symbol_id = edge.to_symbol_id,
-                                                  .location = edge.location,
-                                                  .target_location = edge.target_location,
-                                                  .expression_location = edge.expression_location,
-                                                  .expression = edge.expression,
-                                                  .kind = edge.kind,
-                                                  .source_role = edge.source_role,
-                                                  .slice_kind = edge.slice_kind,
-                                                  .control_origin = edge.control_origin,
-                                                  .event_kind = edge.event_kind,
-                                                  .source_slice = edge.source_slice,
-                                                  .sink_slice = edge.sink_slice,
-                                                  .generated_instance_id = {},
-                                                  .assertion_invocation_stable_id =
-                                                      edge.assertion_invocation_stable_id,
-                                                  .assertion_invocation_formal_stable_id =
-                                                      edge.assertion_invocation_formal_stable_id});
+            SnapshotConeAdjacencyEdge adjacency_edge{
+                .from_symbol_id = edge.from_symbol_id,
+                .to_symbol_id = edge.to_symbol_id,
+                .location = edge.location,
+                .target_location = edge.target_location,
+                .expression_location = edge.expression_location,
+                .expression = edge.expression,
+                .kind = edge.kind,
+                .source_role = edge.source_role,
+                .slice_kind = edge.slice_kind,
+                .control_origin = edge.control_origin,
+                .event_kind = edge.event_kind,
+                .source_slice = edge.source_slice,
+                .sink_slice = edge.sink_slice,
+                .generated_instance_id = {},
+                .assertion_temporal_path = edge.assertion_temporal_path,
+                .assertion_invocation_stable_id = edge.assertion_invocation_stable_id,
+                .assertion_invocation_formal_stable_id = edge.assertion_invocation_formal_stable_id};
+            appendEdge(adjacency, std::move(adjacency_edge));
         }
     }
     for (const auto& source : data.unresolved_cone_sources) {
@@ -938,6 +942,7 @@ void buildDesignGraphIndexes(SnapshotData& data) {
                                                          .kind = connection.kind,
                                                          .source_role = SnapshotConeSourceRole::Data,
                                                          .control_origin = SnapshotConeControlOrigin::None,
+                                                         .assertion_temporal_path = {},
                                                          .assertion_invocation_stable_id = {},
                                                          .assertion_invocation_formal_stable_id = {}});
                 };
@@ -971,6 +976,7 @@ void buildDesignGraphIndexes(SnapshotData& data) {
                                                               .source_slice = source_slice,
                                                               .sink_slice = sink_slice,
                                                               .generated_instance_id = instance.instance_stable_id,
+                                                              .assertion_temporal_path = {},
                                                               .assertion_invocation_stable_id = {},
                                                               .assertion_invocation_formal_stable_id = {}});
                     };

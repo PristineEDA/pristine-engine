@@ -1,0 +1,18 @@
+{
+  "name": "backward cone retains assertion case selectors as typed controls",
+  "sources": [
+    {
+      "uri": "file:///golden/assertion/case.sv",
+      "text": "module top(input logic clk, input logic choose, input logic a, input logic b);\n  assert property (@(posedge clk) case (choose) 1'b0: a; default: b; endcase);\nendmodule\n"
+    }
+  ],
+  "request": { "kind": "backwardCone", "uri": "file:///golden/assertion/case.sv", "line": 1, "character": 2 },
+  "expected": {
+    "edgeKinds": ["assertionSample"],
+    "sourceRoles": ["sampled", "clock", "control"],
+    "controlOrigins": ["assertionClock", "assertionCase"],
+    "expressions": ["clk", "choose", "a", "b"],
+    "assertionTemporalEdgeCount": 3,
+    "temporalRelations": ["caseBranch"]
+  }
+}
