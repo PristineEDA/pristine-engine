@@ -71,8 +71,12 @@ Json makeInitializeResult(std::string_view server_name, std::string_view server_
                        Json::array({"namespace", "type", "class", "enum", "interface",
                                 "function", "variable", "parameter", "enumMember"})},
                       {"tokenModifiers", Json::array()}}},
-                  {"full", true},
-                  {"range", false}}},
+                  {"full", Json{{"delta", true}}},
+                  {"range", true}}},
+              {"diagnosticProvider",
+               Json{{"identifier", "pristine"},
+                    {"interFileDependencies", true},
+                    {"workspaceDiagnostics", false}}},
               {"selectionRangeProvider", true},
               {"signatureHelpProvider",
                Json{{"triggerCharacters", Json::array({"(", ","})},
@@ -120,6 +124,21 @@ InitializeParams parseInitializeParams(const Json& params) {
 
     const auto capabilities_it = params.find("capabilities");
     if (capabilities_it != params.end() && capabilities_it->is_object()) {
+        const auto text_document_it = capabilities_it->find("textDocument");
+        if (text_document_it != capabilities_it->end() && text_document_it->is_object()) {
+            const auto diagnostic_it = text_document_it->find("diagnostic");
+            result.pull_diagnostics_supported = diagnostic_it != text_document_it->end() &&
+                                                diagnostic_it->is_object();
+        }
+        const auto workspace_it = capabilities_it->find("workspace");
+        if (workspace_it != capabilities_it->end() && workspace_it->is_object()) {
+            const auto diagnostics_it = workspace_it->find("diagnostics");
+            if (diagnostics_it != workspace_it->end() && diagnostics_it->is_object()) {
+                const auto refresh_it = diagnostics_it->find("refreshSupport");
+                result.diagnostic_refresh_supported = refresh_it != diagnostics_it->end() &&
+                                                      refresh_it->is_boolean() && refresh_it->get<bool>();
+            }
+        }
         const auto experimental_it = capabilities_it->find("experimental");
         if (experimental_it != capabilities_it->end() && experimental_it->is_object()) {
             const auto inactive_it = experimental_it->find("inactiveRegions");
@@ -239,6 +258,21 @@ FoldingRangeParams parseFoldingRangeParams(const Json& params) {
 
 SemanticTokensParams parseSemanticTokensParams(const Json& params) {
     return SemanticTokensParams{.text_document = parseTextDocumentIdentifier(params.at("textDocument"))};
+}
+
+SemanticTokensRangeParams parseSemanticTokensRangeParams(const Json& params) {
+    return SemanticTokensRangeParams{.text_document = parseTextDocumentIdentifier(params.at("textDocument")),
+                                     .range = parseRange(params.at("range"))};
+}
+
+SemanticTokensDeltaParams parseSemanticTokensDeltaParams(const Json& params) {
+    return SemanticTokensDeltaParams{.text_document = parseTextDocumentIdentifier(params.at("textDocument")),
+                                     .previous_result_id = params.at("previousResultId").get<std::string>()};
+}
+
+TextDocumentDiagnosticParams parseTextDocumentDiagnosticParams(const Json& params) {
+    return TextDocumentDiagnosticParams{.text_document = parseTextDocumentIdentifier(params.at("textDocument")),
+                                        .previous_result_id = parseOptionalString(params, "previousResultId")};
 }
 
 SelectionRangeParams parseSelectionRangeParams(const Json& params) {

@@ -24,6 +24,8 @@ add_executable(
 	unit/SyntaxDocumentCacheTests.cpp
 	unit/WaveformProviderTests.cpp
 	unit/ServerLifecycleTests.cpp
+	unit/SemanticTokenServiceTests.cpp
+	unit/VersionedDocumentResultStoreTests.cpp
 	unit/WorkspaceDiscoveryIndexTests.cpp)
 target_link_libraries(pristine_unit_tests PRIVATE pristine_core Catch2::Catch2WithMain)
 target_compile_definitions(pristine_unit_tests

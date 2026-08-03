@@ -5,6 +5,7 @@
 #include "pristine/analysis/SyntaxDocumentCache.h"
 #include "pristine/document/DocumentStore.h"
 #include "pristine/layout/LayoutPipeService.h"
+#include "pristine/server/VersionedDocumentResultStore.h"
 #include "pristine/waveform/WaveformPipeService.h"
 #include "pristine/workspace/WorkspaceManager.h"
 
@@ -60,7 +61,14 @@ private:
     jsonrpc::Json handleInlayHint(const jsonrpc::Json& params);
     jsonrpc::Json handleCodeAction(const jsonrpc::Json& params);
     jsonrpc::Json handleFoldingRange(const jsonrpc::Json& params);
-    jsonrpc::Json handleSemanticTokensFull(const jsonrpc::Json& params);
+    jsonrpc::Json handleDocumentDiagnostic(const jsonrpc::Json& params,
+                                           const pristine::CancellationToken& cancellation);
+    jsonrpc::Json handleSemanticTokensFull(const jsonrpc::Json& params,
+                                           const pristine::CancellationToken& cancellation);
+    jsonrpc::Json handleSemanticTokensRange(const jsonrpc::Json& params,
+                                            const pristine::CancellationToken& cancellation);
+    jsonrpc::Json handleSemanticTokensDelta(const jsonrpc::Json& params,
+                                            const pristine::CancellationToken& cancellation);
     jsonrpc::Json handleSelectionRange(const jsonrpc::Json& params);
     jsonrpc::Json handleSignatureHelp(const jsonrpc::Json& params);
     jsonrpc::Json handlePrepareCallHierarchy(const jsonrpc::Json& params);
@@ -96,6 +104,8 @@ private:
     void scheduleSemanticDiagnosticsPublish(bool allow_cold_snapshot_build = true);
     void stopBackgroundDiagnostics();
     void clearDiagnostics(std::string_view uri);
+    void requestDiagnosticRefresh();
+    void handleDiagnosticRefreshResponse();
     const std::vector<analysis::DocumentSymbol>& cachedDocumentSymbols(const document::TextDocument& document);
     void invalidateSyntaxCache(std::string_view uri);
 
@@ -104,10 +114,15 @@ private:
     bool initialized_ = false;
     bool shutdown_requested_ = false;
     bool inactive_regions_supported_ = false;
+    bool pull_diagnostics_supported_ = false;
+    bool diagnostic_refresh_supported_ = false;
+    bool diagnostic_refresh_outstanding_ = false;
+    bool diagnostic_refresh_pending_ = false;
     jsonrpc::JsonRpcServer* server_ = nullptr;
     analysis::CompilationService compilation_service_;
     analysis::SyntaxDocumentCache syntax_cache_;
     analysis::SemanticWorkspace semantic_workspace_;
+    VersionedDocumentResultStore document_result_store_;
     waveform::WaveformPipeService waveform_service_;
     layout::LayoutPipeService layout_service_;
     document::DocumentStore document_store_;

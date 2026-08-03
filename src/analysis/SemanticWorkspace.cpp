@@ -190,8 +190,9 @@ SemanticInlayHintResult SemanticWorkspace::engineInlayHints(std::string_view uri
     return semantic_engine_.inlayHints(uri, range);
 }
 
-SemanticTokenResult SemanticWorkspace::engineSemanticTokens(std::string_view uri) const {
-    return semantic_engine_.semanticTokens(uri);
+SemanticTokenResult SemanticWorkspace::engineSemanticTokens(std::string_view uri,
+                                                             std::optional<ParseRange> range) const {
+    return semantic_engine_.semanticTokens(uri, range);
 }
 
 SemanticSelectionRangeResult SemanticWorkspace::engineSelectionRangesAt(std::string_view uri,

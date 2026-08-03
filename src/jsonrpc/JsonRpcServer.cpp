@@ -45,6 +45,8 @@ int JsonRpcServer::run(transport::MessageTransport& transport) {
         std::lock_guard lock(queue_mutex_);
         queue_.clear();
         cancellation_states_.clear();
+        pending_server_requests_.clear();
+        next_server_request_id_ = 1;
         input_closed_ = false;
     }
     stop_requested_.store(false, std::memory_order_release);
@@ -72,6 +74,7 @@ int JsonRpcServer::run(transport::MessageTransport& transport) {
 
     {
         std::lock_guard lock(queue_mutex_);
+        pending_server_requests_.clear();
         input_closed_ = true;
     }
     queue_cv_.notify_all();
@@ -109,6 +112,40 @@ std::optional<std::string> JsonRpcServer::requestKey(const Json& id) {
     return std::nullopt;
 }
 
+Json JsonRpcServer::sendRequest(std::string method,
+                                Json params,
+                                ServerResponseHandler response_handler) {
+    Json id;
+    std::string key;
+    {
+        std::lock_guard lock(queue_mutex_);
+        id = next_server_request_id_++;
+        key = *requestKey(id);
+        pending_server_requests_.insert_or_assign(
+            key,
+            PendingServerRequest{.method = method, .response_handler = std::move(response_handler)});
+    }
+
+    try {
+        std::lock_guard lock(write_mutex_);
+        if (!active_transport_) {
+            throw std::runtime_error("Cannot send a request when no transport is active");
+        }
+        active_transport_->write(makeRequest(id, std::move(method), std::move(params)).dump());
+    }
+    catch (...) {
+        std::lock_guard lock(queue_mutex_);
+        pending_server_requests_.erase(key);
+        throw;
+    }
+    return id;
+}
+
+size_t JsonRpcServer::pendingServerRequestCount() {
+    std::lock_guard lock(queue_mutex_);
+    return pending_server_requests_.size();
+}
+
 void JsonRpcServer::cancelRequest(const Json& params) {
     const auto id_it = params.find("id");
     if (id_it == params.end()) {
@@ -123,6 +160,37 @@ void JsonRpcServer::cancelRequest(const Json& params) {
     if (state_it != cancellation_states_.end()) {
         state_it->second.cancel();
     }
+}
+
+bool JsonRpcServer::consumeServerResponse(const Json& message) {
+    const auto id_it = message.find("id");
+    if (id_it == message.end()) {
+        return false;
+    }
+    const auto key = requestKey(*id_it);
+    if (!key.has_value()) {
+        return false;
+    }
+
+    ServerResponseHandler handler;
+    {
+        std::lock_guard lock(queue_mutex_);
+        const auto pending = pending_server_requests_.find(*key);
+        if (pending == pending_server_requests_.end()) {
+            return false;
+        }
+        handler = std::move(pending->second.response_handler);
+        pending_server_requests_.erase(pending);
+    }
+    if (handler) {
+        try {
+            handler(message);
+        }
+        catch (...) {
+            // A client response cannot invalidate the serial request dispatcher.
+        }
+    }
+    return true;
 }
 
 void JsonRpcServer::enqueueIncoming(transport::MessageTransport& transport,
@@ -151,9 +219,9 @@ void JsonRpcServer::enqueueIncoming(transport::MessageTransport& transport,
 
     if (method_it == message.end() || !method_it->is_string()) {
         if (has_id) {
-            auto response = makeErrorResponse(message_id, kInvalidRequest, "Missing method").dump();
-            std::lock_guard lock(write_mutex_);
-            transport.write(response);
+            // Responses to server-originated requests have an id but no method.
+            // Unknown responses are intentionally ignored per JSON-RPC.
+            consumeServerResponse(message);
         }
         return;
     }
@@ -304,6 +372,13 @@ Json JsonRpcServer::makeResponse(const Json& id, Json result) {
 
 Json JsonRpcServer::makeNotification(std::string method, Json params) {
     return Json{{"jsonrpc", "2.0"}, {"method", std::move(method)}, {"params", std::move(params)}};
+}
+
+Json JsonRpcServer::makeRequest(Json id, std::string method, Json params) {
+    return Json{{"jsonrpc", "2.0"},
+                {"id", std::move(id)},
+                {"method", std::move(method)},
+                {"params", std::move(params)}};
 }
 
 Json JsonRpcServer::makeErrorResponse(const Json& id, int code, std::string message) {

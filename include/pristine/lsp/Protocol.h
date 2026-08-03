@@ -124,6 +124,21 @@ struct SemanticTokensParams {
 	TextDocumentIdentifier text_document;
 };
 
+struct SemanticTokensRangeParams {
+    TextDocumentIdentifier text_document;
+    Range range;
+};
+
+struct SemanticTokensDeltaParams {
+    TextDocumentIdentifier text_document;
+    std::string previous_result_id;
+};
+
+struct TextDocumentDiagnosticParams {
+    TextDocumentIdentifier text_document;
+    std::optional<std::string> previous_result_id;
+};
+
 struct SelectionRangeParams {
 	TextDocumentIdentifier text_document;
 	std::vector<Position> positions;
@@ -198,6 +213,8 @@ struct InitializeParams {
     std::optional<std::string> root_uri;
     std::optional<std::string> root_path;
     bool inactive_regions_supported = false;
+    bool pull_diagnostics_supported = false;
+    bool diagnostic_refresh_supported = false;
 };
 
 Json makeInitializeResult(std::string_view server_name, std::string_view server_version);
@@ -218,6 +235,9 @@ InlayHintParams parseInlayHintParams(const Json& params);
 CodeActionParams parseCodeActionParams(const Json& params);
 FoldingRangeParams parseFoldingRangeParams(const Json& params);
 SemanticTokensParams parseSemanticTokensParams(const Json& params);
+SemanticTokensRangeParams parseSemanticTokensRangeParams(const Json& params);
+SemanticTokensDeltaParams parseSemanticTokensDeltaParams(const Json& params);
+TextDocumentDiagnosticParams parseTextDocumentDiagnosticParams(const Json& params);
 SelectionRangeParams parseSelectionRangeParams(const Json& params);
 SignatureHelpParams parseSignatureHelpParams(const Json& params);
 CallHierarchyPrepareParams parseCallHierarchyPrepareParams(const Json& params);

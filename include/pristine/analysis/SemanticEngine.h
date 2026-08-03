@@ -719,7 +719,8 @@ public:
                                                               int line,
                                                               int character) const;
     [[nodiscard]] SemanticInlayHintResult inlayHints(std::string_view uri, ParseRange range) const;
-    [[nodiscard]] SemanticTokenResult semanticTokens(std::string_view uri) const;
+    [[nodiscard]] SemanticTokenResult semanticTokens(std::string_view uri,
+                                                      std::optional<ParseRange> range = std::nullopt) const;
     [[nodiscard]] SemanticSelectionRangeResult selectionRangesAt(std::string_view uri,
                                                                  int line,
                                                                  int character) const;

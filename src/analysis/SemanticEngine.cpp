@@ -1661,13 +1661,14 @@ SemanticInlayHintResult SemanticEngine::inlayHints(std::string_view uri, ParseRa
     return finish(semantic::inlayHints(context, range));
 }
 
-SemanticTokenResult SemanticEngine::semanticTokens(std::string_view uri) const {
+SemanticTokenResult SemanticEngine::semanticTokens(std::string_view uri,
+                                                   std::optional<ParseRange> range) const {
     const auto document_uri = withoutTrailingSlash(normalizeFileUri(uri));
     const auto selection = snapshotForDocument(document_uri);
     const auto& current_snapshot = *selection.snapshot;
     const auto* data = selection.data;
     const auto context = navigationContextFor(data, current_snapshot, document_uri);
-    auto result = semantic::semanticTokens(context);
+    auto result = semantic::semanticTokens(context, range);
     query_cache_->recordNavigationScan(0, 0, 0, result.scanned_occurrence_count, 0);
     return result;
 }

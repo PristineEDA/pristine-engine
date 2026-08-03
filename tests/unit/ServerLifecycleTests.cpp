@@ -415,7 +415,11 @@ TEST_CASE("ServerSession handles initialize-shutdown-exit", "[server][lifecycle]
               "resolveProvider") == false);
     CHECK(initialize_response.at("result").at("capabilities").at("foldingRangeProvider") == true);
     CHECK(initialize_response.at("result").at("capabilities").at("semanticTokensProvider").at(
-              "full") == true);
+              "full").at("delta") == true);
+    CHECK(initialize_response.at("result").at("capabilities").at("semanticTokensProvider").at(
+              "range") == true);
+    CHECK(initialize_response.at("result").at("capabilities").at("diagnosticProvider").at(
+              "identifier") == "pristine");
     CHECK(initialize_response.at("result").at("capabilities").at("selectionRangeProvider") == true);
     CHECK(initialize_response.at("result").at("capabilities").at("signatureHelpProvider").at(
               "triggerCharacters").at(0) == "(");

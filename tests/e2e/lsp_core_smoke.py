@@ -44,6 +44,10 @@ def request(process: subprocess.Popen[bytes], request_id: int, method: str, para
 
     while True:
         response = read_message(process)
+        if response.get("method") == "workspace/diagnostic/refresh" and "id" in response:
+            assert response.get("params") == {}
+            write_message(process, {"jsonrpc": "2.0", "id": response["id"], "result": None})
+            continue
         if response.get("id") == request_id:
             if "error" in response:
                 raise AssertionError(f"{method} failed: {response['error']}")
@@ -88,6 +92,135 @@ def read_notification(process: subprocess.Popen[bytes], method: str, uri: str) -
         params = message.get("params", {})
         if params.get("uri") == uri:
             return message
+
+
+def run_pull_diagnostic_and_token_smoke(server_path: pathlib.Path, root: pathlib.Path) -> None:
+    uri = (root / "rtl" / "pull_tokens.sv").resolve().as_uri()
+    original_text = "module pull_tokens; logic value; endmodule\n"
+    changed_text = "module pull_tokens; logic changed; logic extra; endmodule\n"
+    process = subprocess.Popen(
+        [str(server_path), "--stdio"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    try:
+        initialize = request(
+            process,
+            101,
+            "initialize",
+            {
+                "processId": None,
+                "rootUri": root.resolve().as_uri(),
+                "capabilities": {
+                    "textDocument": {"diagnostic": {}},
+                    "workspace": {"diagnostics": {"refreshSupport": True}},
+                },
+            },
+        )
+        capabilities = initialize["result"]["capabilities"]
+        assert capabilities["diagnosticProvider"] == {
+            "identifier": "pristine",
+            "interFileDependencies": True,
+            "workspaceDiagnostics": False,
+        }
+        assert capabilities["semanticTokensProvider"]["full"] == {"delta": True}
+        assert capabilities["semanticTokensProvider"]["range"] is True
+        notify(process, "initialized", {})
+        notify(
+            process,
+            "textDocument/didOpen",
+            {
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "systemverilog",
+                    "version": 1,
+                    "text": original_text,
+                }
+            },
+        )
+
+        diagnostic_full = request(
+            process,
+            102,
+            "textDocument/diagnostic",
+            {"textDocument": {"uri": uri}},
+        )["result"]
+        assert diagnostic_full["kind"] == "full"
+        diagnostic_id = diagnostic_full["resultId"]
+        diagnostic_unchanged = request(
+            process,
+            103,
+            "textDocument/diagnostic",
+            {"textDocument": {"uri": uri}, "previousResultId": diagnostic_id},
+        )["result"]
+        assert diagnostic_unchanged == {"kind": "unchanged", "resultId": diagnostic_id}
+
+        token_full = request(
+            process,
+            104,
+            "textDocument/semanticTokens/full",
+            {"textDocument": {"uri": uri}},
+        )["result"]
+        assert isinstance(token_full["resultId"], str)
+        assert len(token_full["data"]) % 5 == 0
+        token_range = request(
+            process,
+            105,
+            "textDocument/semanticTokens/range",
+            {
+                "textDocument": {"uri": uri},
+                "range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 40}},
+            },
+        )["result"]
+        assert "data" in token_range and "resultId" not in token_range
+
+        notify(
+            process,
+            "textDocument/didChange",
+            {
+                "textDocument": {"uri": uri, "version": 2},
+                "contentChanges": [{"text": changed_text}],
+            },
+        )
+        token_delta = request(
+            process,
+            106,
+            "textDocument/semanticTokens/full/delta",
+            {"textDocument": {"uri": uri}, "previousResultId": token_full["resultId"]},
+        )["result"]
+        assert isinstance(token_delta["resultId"], str)
+        if "edits" in token_delta:
+            reconstructed = list(token_full["data"])
+            for edit in reversed(token_delta["edits"]):
+                start = edit["start"]
+                delete_count = edit["deleteCount"]
+                replacement = edit.get("data", [])
+                reconstructed[start : start + delete_count] = replacement
+            current_full = request(
+                process,
+                107,
+                "textDocument/semanticTokens/full",
+                {"textDocument": {"uri": uri}},
+            )["result"]
+            assert reconstructed == current_full["data"]
+        else:
+            assert token_delta["data"]
+
+        unknown_delta = request(
+            process,
+            108,
+            "textDocument/semanticTokens/full/delta",
+            {"textDocument": {"uri": uri}, "previousResultId": "forged-result-id"},
+        )["result"]
+        assert "data" in unknown_delta and "edits" not in unknown_delta
+
+        request(process, 109, "shutdown", None)
+        notify(process, "exit", None)
+        assert process.wait(timeout=5) == 0
+    finally:
+        if process.poll() is None:
+            process.kill()
 
 
 def main() -> int:
@@ -292,7 +425,9 @@ def main() -> int:
             assert capabilities["inlayHintProvider"]["resolveProvider"] is False
             assert capabilities["codeActionProvider"]["resolveProvider"] is False
             assert capabilities["foldingRangeProvider"] is True
-            assert capabilities["semanticTokensProvider"]["full"] is True
+            assert capabilities["semanticTokensProvider"]["full"] == {"delta": True}
+            assert capabilities["semanticTokensProvider"]["range"] is True
+            assert capabilities["diagnosticProvider"]["identifier"] == "pristine"
             assert capabilities["selectionRangeProvider"] is True
             assert capabilities["signatureHelpProvider"]["triggerCharacters"] == ["(", ","]
             assert capabilities["callHierarchyProvider"] is True
@@ -1105,6 +1240,8 @@ def main() -> int:
             stderr = process.stderr.read().decode("utf-8", errors="replace") if process.stderr else ""
             if process.returncode not in (0, None) and stderr:
                 print(stderr, file=sys.stderr)
+
+        run_pull_diagnostic_and_token_smoke(server_path, root)
 
     return 0
 

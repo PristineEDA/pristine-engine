@@ -250,7 +250,9 @@ add_library(
   src/layout/LayoutSource.cpp
   src/lsp/Protocol.cpp
   src/server/BackgroundDiagnosticsWorker.cpp
+  src/server/SemanticTokenService.cpp
   src/server/ServerSession.cpp
+  src/server/VersionedDocumentResultStore.cpp
   src/transport/StdioTransport.cpp
   src/waveform/WaveformBinaryProtocol.cpp
   src/waveform/FstWaveformSource.cpp

@@ -84,6 +84,11 @@ bool positionLess(int left_line, int left_character, int right_line, int right_c
            (left_line == right_line && left_character < right_character);
 }
 
+bool rangesIntersect(const ParseRange& lhs, const ParseRange& rhs) {
+    return positionLess(lhs.start_line, lhs.start_character, rhs.end_line, rhs.end_character) &&
+           positionLess(rhs.start_line, rhs.start_character, lhs.end_line, lhs.end_character);
+}
+
 bool rangeEndBeforePosition(const ParseRange& range, int line, int character) {
     return positionLess(range.end_line, range.end_character, line, character) ||
            (range.end_line == line && range.end_character == character);
@@ -493,7 +498,7 @@ SemanticRenameResult renameAt(const NavigationContext& context,
     return result;
 }
 
-SemanticTokenResult semanticTokens(const NavigationContext& context) {
+SemanticTokenResult semanticTokens(const NavigationContext& context, std::optional<ParseRange> range) {
     SemanticTokenResult result;
     result.generation = context.generation;
     if (!context.snapshot_available) {
@@ -508,6 +513,9 @@ SemanticTokenResult semanticTokens(const NavigationContext& context) {
         return result;
     }
     for (const auto& reference : context.occurrence_index->occurrences) {
+        if (range.has_value() && !rangesIntersect(reference.location.range, *range)) {
+            continue;
+        }
         ++result.scanned_occurrence_count;
         auto token_type = std::string("variable");
         if (const auto target = context.targets_by_id->find(reference.stable_id);

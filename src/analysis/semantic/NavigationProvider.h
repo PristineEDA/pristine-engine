@@ -63,7 +63,8 @@ struct NavigationContext {
                                              std::string_view new_name,
                                              size_t max_locations);
 
-[[nodiscard]] SemanticTokenResult semanticTokens(const NavigationContext& context);
+[[nodiscard]] SemanticTokenResult semanticTokens(const NavigationContext& context,
+                                                 std::optional<ParseRange> range = std::nullopt);
 
 [[nodiscard]] SemanticSelectionRangeResult selectionRangesAt(const NavigationContext& context,
                                                              int line,

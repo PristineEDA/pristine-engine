@@ -6,6 +6,7 @@
 #include "pristine/layout/LayoutSource.h"
 #include "pristine/lsp/Protocol.h"
 #include "pristine/server/BackgroundDiagnosticsWorker.h"
+#include "pristine/server/SemanticTokenService.h"
 #include "pristine/waveform/FstWaveformSource.h"
 #include "../analysis/semantic/DebugTrace.h"
 
@@ -100,72 +101,6 @@ jsonrpc::Json toInlayHintJson(const analysis::SemanticInlayHint& hint) {
     return result;
 }
 
-std::optional<int> semanticTokenTypeForSymbolKind(int symbol_kind) {
-    switch (symbol_kind) {
-        case 2:
-        case 26:
-            return 1;
-        case 3:
-        case 4:
-            return 0;
-        case 5:
-            return 2;
-        case 10:
-            return 3;
-        case 11:
-            return 4;
-        case 12:
-            return 5;
-        case 13:
-        case 19:
-            return 6;
-        case 14:
-            return 7;
-        case 22:
-            return 8;
-        default:
-            return std::nullopt;
-    }
-}
-
-std::optional<int> semanticTokenTypeForName(std::string_view token_type) {
-    if (token_type == "namespace") {
-        return 0;
-    }
-    if (token_type == "type") {
-        return 1;
-    }
-    if (token_type == "class") {
-        return 2;
-    }
-    if (token_type == "enum") {
-        return 3;
-    }
-    if (token_type == "interface") {
-        return 4;
-    }
-    if (token_type == "function") {
-        return 5;
-    }
-    if (token_type == "variable") {
-        return 6;
-    }
-    if (token_type == "parameter") {
-        return 7;
-    }
-    if (token_type == "enumMember") {
-        return 8;
-    }
-    return std::nullopt;
-}
-
-struct SemanticToken {
-    int line = 0;
-    int character = 0;
-    int length = 0;
-    int type = 0;
-};
-
 void collectFoldingRanges(jsonrpc::Json& result, const std::vector<analysis::DocumentSymbol>& symbols) {
     for (const auto& symbol : symbols) {
         if (symbol.range.end_line > symbol.range.start_line) {
@@ -177,63 +112,6 @@ void collectFoldingRanges(jsonrpc::Json& result, const std::vector<analysis::Doc
         }
         collectFoldingRanges(result, symbol.children);
     }
-}
-
-void collectSemanticTokens(std::vector<SemanticToken>& result,
-                           const std::vector<analysis::DocumentSymbol>& symbols) {
-    for (const auto& symbol : symbols) {
-        const auto token_type = semanticTokenTypeForSymbolKind(symbol.kind);
-        const auto& range = symbol.selection_range;
-        if (token_type.has_value() && range.start_line == range.end_line &&
-            range.end_character > range.start_character) {
-            result.push_back(SemanticToken{.line = range.start_line,
-                                           .character = range.start_character,
-                                           .length = range.end_character - range.start_character,
-                                           .type = *token_type});
-        }
-        collectSemanticTokens(result, symbol.children);
-    }
-}
-
-jsonrpc::Json toSemanticTokensJson(std::vector<SemanticToken> tokens) {
-    std::sort(tokens.begin(), tokens.end(), [](const SemanticToken& lhs, const SemanticToken& rhs) {
-        if (lhs.line != rhs.line) {
-            return lhs.line < rhs.line;
-        }
-        if (lhs.character != rhs.character) {
-            return lhs.character < rhs.character;
-        }
-        if (lhs.length != rhs.length) {
-            return lhs.length < rhs.length;
-        }
-        return lhs.type < rhs.type;
-    });
-    tokens.erase(std::unique(tokens.begin(), tokens.end(), [](const SemanticToken& lhs,
-                                                             const SemanticToken& rhs) {
-                     return lhs.line == rhs.line && lhs.character == rhs.character &&
-                            lhs.length == rhs.length && lhs.type == rhs.type;
-                 }),
-                 tokens.end());
-
-    jsonrpc::Json data = jsonrpc::Json::array();
-    int previous_line = 0;
-    int previous_character = 0;
-    bool first = true;
-    for (const auto& token : tokens) {
-        const auto delta_line = first ? token.line : token.line - previous_line;
-        const auto delta_character = first || delta_line != 0 ? token.character
-                                                             : token.character - previous_character;
-        data.push_back(delta_line);
-        data.push_back(delta_character);
-        data.push_back(token.length);
-        data.push_back(token.type);
-        data.push_back(0);
-        previous_line = token.line;
-        previous_character = token.character;
-        first = false;
-    }
-
-    return jsonrpc::Json{{"data", std::move(data)}};
 }
 
 std::optional<std::string> jsonStringField(const jsonrpc::Json& object, std::string_view key) {
@@ -1177,7 +1055,28 @@ void ServerSession::bind(jsonrpc::JsonRpcServer& server) {
     });
     server.registerRequestHandler("textDocument/semanticTokens/full", [this](const jsonrpc::Json& params,
                                                                               const jsonrpc::RequestContext& context) {
-        return executeSemanticRequest(context, [this, &params]() { return handleSemanticTokensFull(params); });
+        return executeSemanticRequest(context, [this, &params, &context]() {
+            return handleSemanticTokensFull(params, context.cancellation);
+        });
+    });
+    server.registerRequestHandler("textDocument/semanticTokens/range", [this](const jsonrpc::Json& params,
+                                                                               const jsonrpc::RequestContext& context) {
+        return executeSemanticRequest(context, [this, &params, &context]() {
+            return handleSemanticTokensRange(params, context.cancellation);
+        });
+    });
+    server.registerRequestHandler("textDocument/semanticTokens/full/delta",
+                                  [this](const jsonrpc::Json& params,
+                                         const jsonrpc::RequestContext& context) {
+                                      return executeSemanticRequest(context, [this, &params, &context]() {
+                                          return handleSemanticTokensDelta(params, context.cancellation);
+                                      });
+                                  });
+    server.registerRequestHandler("textDocument/diagnostic", [this](const jsonrpc::Json& params,
+                                                                      const jsonrpc::RequestContext& context) {
+        return executeSemanticRequest(context, [this, &params, &context]() {
+            return handleDocumentDiagnostic(params, context.cancellation);
+        });
     });
     server.registerRequestHandler("textDocument/selectionRange", [this](const jsonrpc::Json& params,
                                                                          const jsonrpc::RequestContext& context) {
@@ -1306,6 +1205,11 @@ jsonrpc::Json ServerSession::handleInitialize(const jsonrpc::Json& params) {
     PRISTINE_DEBUG_TRACE_SCOPE_SIMPLE("server.initialize");
     const auto initialize_params = lsp::parseInitializeParams(params);
     inactive_regions_supported_ = initialize_params.inactive_regions_supported;
+    pull_diagnostics_supported_ = initialize_params.pull_diagnostics_supported;
+    diagnostic_refresh_supported_ = initialize_params.diagnostic_refresh_supported;
+    diagnostic_refresh_outstanding_ = false;
+    diagnostic_refresh_pending_ = false;
+    document_result_store_.clear();
     workspace_manager_.initialize(initialize_params);
     {
         std::lock_guard semantic_lock(semantic_mutex_);
@@ -2079,7 +1983,64 @@ jsonrpc::Json ServerSession::handleFoldingRange(const jsonrpc::Json& params) {
     return result;
 }
 
-jsonrpc::Json ServerSession::handleSemanticTokensFull(const jsonrpc::Json& params) {
+jsonrpc::Json ServerSession::handleDocumentDiagnostic(const jsonrpc::Json& params,
+                                                      const pristine::CancellationToken& cancellation) {
+    if (!initialized_) {
+        throw std::runtime_error("textDocument/diagnostic received before initialize");
+    }
+
+    const auto diagnostic = lsp::parseTextDocumentDiagnosticParams(params);
+    const auto* document = document_store_.find(diagnostic.text_document.uri);
+    if (!document) {
+        return jsonrpc::Json{{"kind", "full"},
+                             {"resultId", "pristine-diagnostics-v1-closed"},
+                             {"items", jsonrpc::Json::array()}};
+    }
+
+    const auto makeMetadata = [&](std::uint64_t generation) {
+        return DocumentResultMetadata{.document_version = document->version,
+                                      .semantic_generation = generation,
+                                      .snapshot_identity = "semantic-" + std::to_string(generation)};
+    };
+
+    std::uint64_t generation = 0;
+    {
+        std::lock_guard semantic_lock(semantic_mutex_);
+        generation = semantic_workspace_.engineGeneration();
+    }
+    auto metadata = makeMetadata(generation);
+    auto result = document_result_store_.currentDiagnostics(document->uri, metadata);
+    if (!result.has_value()) {
+        std::vector<analysis::SemanticEngineDiagnostic> engine_diagnostics;
+        {
+            std::lock_guard semantic_lock(semantic_mutex_);
+            engine_diagnostics = semantic_workspace_.engineDiagnosticsFor(document->uri);
+            generation = semantic_workspace_.engineGeneration();
+        }
+        cancellation.throwIfCancellationRequested();
+        jsonrpc::Json items = jsonrpc::Json::array();
+        for (const auto& item : engine_diagnostics) {
+            items.push_back(makeDiagnosticJson(item.range,
+                                               item.severity,
+                                               item.code,
+                                               server_name_,
+                                               item.message));
+        }
+        metadata = makeMetadata(generation);
+        result = document_result_store_.storeDiagnostics(document->uri, std::move(items), std::move(metadata));
+    }
+    cancellation.throwIfCancellationRequested();
+    if (diagnostic.previous_result_id.has_value() &&
+        *diagnostic.previous_result_id == result->result_id) {
+        return jsonrpc::Json{{"kind", "unchanged"}, {"resultId", result->result_id}};
+    }
+    return jsonrpc::Json{{"kind", "full"},
+                         {"resultId", result->result_id},
+                         {"items", result->items}};
+}
+
+jsonrpc::Json ServerSession::handleSemanticTokensFull(const jsonrpc::Json& params,
+                                                       const pristine::CancellationToken& cancellation) {
     if (!initialized_) {
         throw std::runtime_error("textDocument/semanticTokens/full received before initialize");
     }
@@ -2087,37 +2048,106 @@ jsonrpc::Json ServerSession::handleSemanticTokensFull(const jsonrpc::Json& param
     const auto semantic_tokens = lsp::parseSemanticTokensParams(params);
     const auto* document = document_store_.find(semantic_tokens.text_document.uri);
     if (!document) {
-        return jsonrpc::Json{{"data", jsonrpc::Json::array()}};
+        return SemanticTokenService::fullResponse("pristine-semantic-tokens-v1-closed", {});
+    }
+
+    const auto makeMetadata = [&](std::uint64_t generation) {
+        return DocumentResultMetadata{.document_version = document->version,
+                                      .semantic_generation = generation,
+                                      .snapshot_identity = "semantic-" + std::to_string(generation)};
+    };
+    std::uint64_t generation = 0;
+    {
+        std::lock_guard semantic_lock(semantic_mutex_);
+        generation = semantic_workspace_.engineGeneration();
+    }
+    auto metadata = makeMetadata(generation);
+    if (const auto cached = document_result_store_.currentSemanticTokens(document->uri, metadata);
+        cached.has_value()) {
+        return SemanticTokenService::fullResponse(cached->result_id, cached->data);
     }
 
     analysis::SemanticTokenResult engine_tokens;
     {
         std::lock_guard semantic_lock(semantic_mutex_);
         engine_tokens = semantic_workspace_.engineSemanticTokens(document->uri);
+        generation = semantic_workspace_.engineGeneration();
     }
-    if (!engine_tokens.unresolved && !engine_tokens.tokens.empty()) {
-        std::vector<SemanticToken> tokens;
-        for (const auto& token : engine_tokens.tokens) {
-            const auto token_type = semanticTokenTypeForName(token.token_type);
-            if (!token_type.has_value() ||
-                token.location.range.start_line != token.location.range.end_line ||
-                token.location.range.end_character <= token.location.range.start_character) {
-                continue;
-            }
-            tokens.push_back(SemanticToken{.line = token.location.range.start_line,
-                                           .character = token.location.range.start_character,
-                                           .length = token.location.range.end_character -
-                                                     token.location.range.start_character,
-                                           .type = *token_type});
-        }
-        if (!tokens.empty()) {
-            return toSemanticTokensJson(std::move(tokens));
-        }
+    cancellation.throwIfCancellationRequested();
+    auto stored = document_result_store_.storeSemanticTokens(document->uri,
+                                                              SemanticTokenService::encode(engine_tokens),
+                                                              makeMetadata(generation));
+    return SemanticTokenService::fullResponse(stored.result_id, stored.data);
+}
+
+jsonrpc::Json ServerSession::handleSemanticTokensRange(const jsonrpc::Json& params,
+                                                        const pristine::CancellationToken& cancellation) {
+    if (!initialized_) {
+        throw std::runtime_error("textDocument/semanticTokens/range received before initialize");
+    }
+    const auto semantic_tokens = lsp::parseSemanticTokensRangeParams(params);
+    const auto* document = document_store_.find(semantic_tokens.text_document.uri);
+    if (!document) {
+        return SemanticTokenService::rangeResponse({});
+    }
+    analysis::SemanticTokenResult engine_tokens;
+    {
+        std::lock_guard semantic_lock(semantic_mutex_);
+        engine_tokens = semantic_workspace_.engineSemanticTokens(
+            document->uri,
+            analysis::ParseRange{.start_line = semantic_tokens.range.start.line,
+                                 .start_character = semantic_tokens.range.start.character,
+                                 .end_line = semantic_tokens.range.end.line,
+                                 .end_character = semantic_tokens.range.end.character});
+    }
+    cancellation.throwIfCancellationRequested();
+    return SemanticTokenService::rangeResponse(SemanticTokenService::encode(engine_tokens));
+}
+
+jsonrpc::Json ServerSession::handleSemanticTokensDelta(const jsonrpc::Json& params,
+                                                        const pristine::CancellationToken& cancellation) {
+    if (!initialized_) {
+        throw std::runtime_error("textDocument/semanticTokens/full/delta received before initialize");
+    }
+    const auto request = lsp::parseSemanticTokensDeltaParams(params);
+    const auto* document = document_store_.find(request.text_document.uri);
+    if (!document) {
+        return SemanticTokenService::fullResponse("pristine-semantic-tokens-v1-closed", {});
     }
 
-    std::vector<SemanticToken> tokens;
-    collectSemanticTokens(tokens, cachedDocumentSymbols(*document));
-    return toSemanticTokensJson(std::move(tokens));
+    const auto makeMetadata = [&](std::uint64_t generation) {
+        return DocumentResultMetadata{.document_version = document->version,
+                                      .semantic_generation = generation,
+                                      .snapshot_identity = "semantic-" + std::to_string(generation)};
+    };
+    std::uint64_t generation = 0;
+    {
+        std::lock_guard semantic_lock(semantic_mutex_);
+        generation = semantic_workspace_.engineGeneration();
+    }
+    auto current = document_result_store_.currentSemanticTokens(document->uri, makeMetadata(generation));
+    if (!current.has_value()) {
+        analysis::SemanticTokenResult engine_tokens;
+        {
+            std::lock_guard semantic_lock(semantic_mutex_);
+            engine_tokens = semantic_workspace_.engineSemanticTokens(document->uri);
+            generation = semantic_workspace_.engineGeneration();
+        }
+        cancellation.throwIfCancellationRequested();
+        current = document_result_store_.storeSemanticTokens(document->uri,
+                                                              SemanticTokenService::encode(engine_tokens),
+                                                              makeMetadata(generation));
+    }
+    cancellation.throwIfCancellationRequested();
+    const auto previous = document_result_store_.semanticTokensForResultId(document->uri,
+                                                                            request.previous_result_id);
+    if (!previous.has_value() ||
+        previous->legend_version != current->legend_version) {
+        return SemanticTokenService::fullResponse(current->result_id, current->data);
+    }
+    return SemanticTokenService::deltaResponse(
+        current->result_id,
+        SemanticTokenService::singleDelta(previous->data, current->data));
 }
 
 jsonrpc::Json ServerSession::handleSelectionRange(const jsonrpc::Json& params) {
@@ -2525,6 +2555,7 @@ void ServerSession::handleDidClose(const jsonrpc::Json& params) {
     }
 
     const auto did_close = lsp::parseDidCloseTextDocumentParams(params);
+    document_result_store_.clearUri(did_close.text_document.uri);
     clearDiagnostics(did_close.text_document.uri);
     clearInactiveRegions(did_close.text_document.uri);
     {
@@ -2588,6 +2619,7 @@ void ServerSession::handleDidChangeWatchedFiles(const jsonrpc::Json& params) {
                                                                .dirty = false,
                                                                .invalidate_dependents = true});
     }
+    requestDiagnosticRefresh();
 }
 
 void ServerSession::handleExit(const jsonrpc::Json&) {
@@ -2671,6 +2703,12 @@ void ServerSession::publishDiagnostics(std::string_view uri) {
         return;
     }
 
+    if (pull_diagnostics_supported_) {
+        scheduleSemanticDiagnosticsPublish(true);
+        requestDiagnosticRefresh();
+        return;
+    }
+
     std::string document_uri;
     std::string document_text;
     {
@@ -2736,6 +2774,11 @@ void ServerSession::publishDiagnostics(std::string_view uri) {
 void ServerSession::publishDiagnostics(std::string_view uri,
                                        std::vector<analysis::SemanticEngineDiagnostic> diagnostics) {
     if (!server_) {
+        return;
+    }
+
+    if (pull_diagnostics_supported_) {
+        requestDiagnosticRefresh();
         return;
     }
 
@@ -2842,13 +2885,62 @@ void ServerSession::stopBackgroundDiagnostics() {
 }
 
 void ServerSession::clearDiagnostics(std::string_view uri) {
+    document_result_store_.clearUri(uri);
     if (!server_) {
+        return;
+    }
+    if (pull_diagnostics_supported_) {
+        requestDiagnosticRefresh();
         return;
     }
 
     server_->sendNotification("textDocument/publishDiagnostics",
                               jsonrpc::Json{{"uri", std::string(uri)},
                                             {"diagnostics", jsonrpc::Json::array()}});
+}
+
+void ServerSession::requestDiagnosticRefresh() {
+    if (!server_ || !pull_diagnostics_supported_ || !diagnostic_refresh_supported_) {
+        return;
+    }
+
+    bool should_send = false;
+    {
+        std::lock_guard state_lock(state_mutex_);
+        if (diagnostic_refresh_outstanding_) {
+            diagnostic_refresh_pending_ = true;
+            return;
+        }
+        diagnostic_refresh_outstanding_ = true;
+        should_send = true;
+    }
+    if (!should_send) {
+        return;
+    }
+    try {
+        (void)server_->sendRequest("workspace/diagnostic/refresh",
+                                   jsonrpc::Json::object(),
+                                   [this](const jsonrpc::Json&) { handleDiagnosticRefreshResponse(); });
+    }
+    catch (...) {
+        std::lock_guard state_lock(state_mutex_);
+        diagnostic_refresh_outstanding_ = false;
+    }
+}
+
+void ServerSession::handleDiagnosticRefreshResponse() {
+    bool should_send = false;
+    {
+        std::lock_guard state_lock(state_mutex_);
+        diagnostic_refresh_outstanding_ = false;
+        if (diagnostic_refresh_pending_) {
+            diagnostic_refresh_pending_ = false;
+            should_send = true;
+        }
+    }
+    if (should_send) {
+        requestDiagnosticRefresh();
+    }
 }
 
 } // namespace pristine::server
