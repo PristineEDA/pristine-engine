@@ -2275,12 +2275,12 @@ jsonrpc::Json ServerSession::handleCompletion(const jsonrpc::Json& params) {
     const auto completion = lsp::parseCompletionParams(params);
     const auto* document = document_store_.find(completion.text_document.uri);
     if (!document) {
-        return jsonrpc::Json::array();
+        return jsonrpc::Json{{"isIncomplete", false}, {"items", jsonrpc::Json::array()}};
     }
 
     const auto prefix = compilation_service_.completionPrefix(document->text, completion.position.line,
                                                               completion.position.character);
-    jsonrpc::Json result = jsonrpc::Json::array();
+    jsonrpc::Json items = jsonrpc::Json::array();
     std::set<std::string> emitted_labels;
     analysis::SemanticCompletionResult engine_completions;
     {
@@ -2291,13 +2291,15 @@ jsonrpc::Json ServerSession::handleCompletion(const jsonrpc::Json& params) {
                                                                      prefix);
     }
     if (engine_completions.unresolved) {
-        return result;
+        return jsonrpc::Json{{"isIncomplete", engine_completions.is_incomplete},
+                             {"items", std::move(items)}};
     }
     for (const auto& item : engine_completions.items) {
-        appendCompletionItem(result, emitted_labels, toSemanticEngineCompletionItem(item));
+        appendCompletionItem(items, emitted_labels, toSemanticEngineCompletionItem(item));
     }
 
-    return result;
+    return jsonrpc::Json{{"isIncomplete", engine_completions.is_incomplete},
+                         {"items", std::move(items)}};
 }
 
 jsonrpc::Json ServerSession::handleCompletionItemResolve(const jsonrpc::Json& params) {

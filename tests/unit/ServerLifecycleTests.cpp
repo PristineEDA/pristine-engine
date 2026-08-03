@@ -201,6 +201,16 @@ std::optional<jsonrpc::Json> findResponse(const WaitingTransport& transport, int
     return std::nullopt;
 }
 
+const jsonrpc::Json& completionItems(const jsonrpc::Json& response) {
+    const auto& result = response.at("result");
+    REQUIRE(result.is_object());
+    REQUIRE(result.contains("isIncomplete"));
+    REQUIRE(result.at("isIncomplete").is_boolean());
+    REQUIRE(result.contains("items"));
+    REQUIRE(result.at("items").is_array());
+    return result.at("items");
+}
+
 std::vector<jsonrpc::Json> findNotifications(const ScriptedTransport& transport,
                                              std::string_view method) {
     std::vector<jsonrpc::Json> result;
@@ -1871,7 +1881,7 @@ TEST_CASE("ServerSession handles Tier 1 LSP navigation and completion", "[server
 
     const auto completion_response = parseOutput(transport, 5);
     CHECK(completion_response.at("id") == 5);
-    const auto& completions = completion_response.at("result");
+    const auto& completions = completionItems(completion_response);
     CHECK(std::any_of(completions.begin(), completions.end(), [](const jsonrpc::Json& item) {
         return item.at("label") == "child" && item.at("data").at("source") == "semanticEngine";
     }));
@@ -2025,10 +2035,11 @@ TEST_CASE("ServerSession prefers scoped semantic completions", "[server][lsp-cor
     CHECK(rpc_server.run(transport) == 0);
     const auto completion_response = findResponse(transport, 2);
     REQUIRE(completion_response.has_value());
-    REQUIRE_FALSE(completion_response->at("result").empty());
-    CHECK(completion_response->at("result").at(0).at("label") == "ready");
-    CHECK((completion_response->at("result").at(0).at("detail") == "Variable" ||
-           completion_response->at("result").at(0).at("detail") == "Instance"));
+    const auto& items = completionItems(*completion_response);
+    REQUIRE_FALSE(items.empty());
+    CHECK(items.at(0).at("label") == "ready");
+    CHECK((items.at(0).at("detail") == "Variable" ||
+           items.at(0).at("detail") == "Instance"));
 }
 
 TEST_CASE("ServerSession resolves completion items lazily", "[server][lsp-core]") {
@@ -2045,24 +2056,19 @@ TEST_CASE("ServerSession resolves completion items lazily", "[server][lsp-core]"
     CHECK(rpc_server.run(transport) == 0);
     const auto completion_response = findResponse(transport, 2);
     REQUIRE(completion_response.has_value());
-    const auto& completions = completion_response->at("result");
+    const auto& completions = completionItems(*completion_response);
     const auto child_it = std::find_if(completions.begin(), completions.end(), [](const jsonrpc::Json& item) {
         return item.at("label") == "child";
     });
     REQUIRE(child_it != completions.end());
 
-    jsonrpc::JsonRpcServer resolve_server;
-    ServerSession resolve_session{"pristine-engine", kTestServerVersion};
-    resolve_session.bind(resolve_server);
     ScriptedTransport resolve_transport{
-        R"({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}})",
-        R"({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///workspace/resolve-completion.sv","languageId":"systemverilog","version":1,"text":"module child(input logic clk, output logic rst_n); endmodule\nmodule top;\n  child child_i();\nendmodule\n"}}})",
         jsonrpc::Json{{"jsonrpc", "2.0"},
                       {"id", 2},
                       {"method", "completionItem/resolve"},
                       {"params", *child_it}}.dump()};
 
-    CHECK(resolve_server.run(resolve_transport) == 0);
+    CHECK(rpc_server.run(resolve_transport) == 0);
     const auto resolve_response = findResponse(resolve_transport, 2);
     REQUIRE(resolve_response.has_value());
     const auto& item = resolve_response->at("result");
@@ -2091,14 +2097,14 @@ TEST_CASE("ServerSession returns context-aware completion items", "[server][lsp-
 
     const auto package_completion_response = findResponse(transport, 2);
     REQUIRE(package_completion_response.has_value());
-    const auto& package_items = package_completion_response->at("result");
+    const auto& package_items = completionItems(*package_completion_response);
     REQUIRE_FALSE(package_items.empty());
     CHECK(package_items.at(0).at("label") == "WIDTH");
     CHECK(package_items.at(0).at("data").at("source") == "semanticEngine");
 
     const auto port_completion_response = findResponse(transport, 3);
     REQUIRE(port_completion_response.has_value());
-    const auto& port_items = port_completion_response->at("result");
+    const auto& port_items = completionItems(*port_completion_response);
     REQUIRE_FALSE(port_items.empty());
     CHECK(port_items.at(0).at("label") == "rst_n");
     CHECK(port_items.at(0).at("detail") == "output logic rst_n");
@@ -2114,14 +2120,13 @@ TEST_CASE("ServerSession returns macro completions and resolves macro documentat
     ScriptedTransport transport{
         R"({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}})",
         R"({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///workspace/macro-completion.sv","languageId":"systemverilog","version":1,"text":"`define LOCAL_FLAG 1\n`define LOCAL_ADD(a, b) ((a) + (b))\nmodule top;\n  logic ready;\n  assign ready = `LOC\nendmodule\n"}}})",
-        R"({"jsonrpc":"2.0","id":2,"method":"textDocument/completion","params":{"textDocument":{"uri":"file:///workspace/macro-completion.sv"},"position":{"line":4,"character":21},"context":{"triggerKind":1}}})",
-        R"json({"jsonrpc":"2.0","id":3,"method":"completionItem/resolve","params":{"label":"LOCAL_ADD","kind":3,"detail":"Macro function","data":{"source":"semanticEngine","stableId":"completion-macro:file:///workspace/macro-completion.sv:LOCAL_ADD:1:8:1:0","label":"LOCAL_ADD"}}})json"};
+        R"({"jsonrpc":"2.0","id":2,"method":"textDocument/completion","params":{"textDocument":{"uri":"file:///workspace/macro-completion.sv"},"position":{"line":4,"character":21},"context":{"triggerKind":1}}})"};
 
     CHECK(rpc_server.run(transport) == 0);
 
     const auto completion_response = findResponse(transport, 2);
     REQUIRE(completion_response.has_value());
-    const auto& items = completion_response->at("result");
+    const auto& items = completionItems(*completion_response);
     REQUIRE(items.size() == 2);
     CHECK(items.at(0).at("label") == "LOCAL_FLAG");
     CHECK(items.at(0).at("detail") == "Macro");
@@ -2129,7 +2134,14 @@ TEST_CASE("ServerSession returns macro completions and resolves macro documentat
     CHECK(items.at(1).at("label") == "LOCAL_ADD");
     CHECK(items.at(1).at("kind") == 3);
 
-    const auto resolve_response = findResponse(transport, 3);
+    ScriptedTransport resolve_transport{
+        jsonrpc::Json{{"jsonrpc", "2.0"},
+                      {"id", 3},
+                      {"method", "completionItem/resolve"},
+                      {"params", items.at(1)}}.dump()};
+    CHECK(rpc_server.run(resolve_transport) == 0);
+
+    const auto resolve_response = findResponse(resolve_transport, 3);
     REQUIRE(resolve_response.has_value());
     const auto& resolved = resolve_response->at("result");
     CHECK(resolved.at("detail") == "Macro function LOCAL_ADD(a, b)");
@@ -2153,7 +2165,7 @@ TEST_CASE("ServerSession prioritizes module completions in instantiation context
     CHECK(rpc_server.run(transport) == 0);
     const auto completion_response = findResponse(transport, 2);
     REQUIRE(completion_response.has_value());
-    const auto& items = completion_response->at("result");
+    const auto& items = completionItems(*completion_response);
     REQUIRE(items.size() >= 2);
     CHECK(items.at(0).at("label") == "child");
     CHECK(items.at(0).at("detail").get<std::string>().find("child(") != std::string::npos);
@@ -2174,7 +2186,7 @@ TEST_CASE("ServerSession excludes already connected named ports from completion"
     CHECK(rpc_server.run(transport) == 0);
     const auto completion_response = findResponse(transport, 2);
     REQUIRE(completion_response.has_value());
-    const auto& items = completion_response->at("result");
+    const auto& items = completionItems(*completion_response);
     CHECK(std::none_of(items.begin(), items.end(), [](const jsonrpc::Json& item) {
         return item.at("label") == "clk";
     }));
@@ -2432,7 +2444,7 @@ TEST_CASE("ServerSession resolves SemanticEngine completion items", "[server][co
     CHECK(rpc_server.run(transport) == 0);
     const auto completion_response = findResponse(transport, 2);
     REQUIRE(completion_response.has_value());
-    const auto& items = completion_response->at("result");
+    const auto& items = completionItems(*completion_response);
     const auto item_it = std::find_if(items.begin(), items.end(), [](const jsonrpc::Json& item) {
         return item.at("label") == "rst_n";
     });

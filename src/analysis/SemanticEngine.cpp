@@ -7,6 +7,7 @@
 #include "semantic/DebugTrace.h"
 #include "semantic/DesignGraphProvider.h"
 #include "semantic/DiagnosticProvider.h"
+#include "semantic/DocumentClosurePlanner.h"
 #include "semantic/NavigationProvider.h"
 #include "semantic/QueryCache.h"
 #include "semantic/SignatureInlayProvider.h"
@@ -1021,6 +1022,7 @@ SemanticEngine::SnapshotSelection SemanticEngine::snapshotForDocument(
         return SnapshotSelection{.snapshot = &full_snapshot,
                                  .data = snapshot_data_.get(),
                                  .snapshot_identity = full_snapshot_identity_,
+                                 .selected_document_count = documents_.size(),
                                  .closure = false};
     };
 
@@ -1037,64 +1039,17 @@ SemanticEngine::SnapshotSelection SemanticEngine::snapshotForDocument(
     closure_roots.erase(std::unique(closure_roots.begin(), closure_roots.end()),
                         closure_roots.end());
 
-    std::vector<std::string> closure_uris;
-    bool complete = true;
-    std::vector<std::string> reasons;
-    std::uint64_t closure_fingerprint = 1469598103934665603ull;
-    std::string closure_root_key;
-    for (const auto& root : closure_roots) {
-        if (!closure_root_key.empty()) {
-            closure_root_key.push_back('\n');
-        }
-        closure_root_key.append(root);
-        const auto closure_it = discovery.document_closures_by_uri.find(root);
-        if (closure_it == discovery.document_closures_by_uri.end()) {
-            complete = false;
-            reasons.push_back("closure-not-discovered:" + root);
-            continue;
-        }
-        if (!closure_it->second.complete || closure_it->second.uris.empty()) {
-            complete = false;
-            reasons.insert(reasons.end(),
-                           closure_it->second.reasons.begin(),
-                           closure_it->second.reasons.end());
-            if (closure_it->second.uris.empty()) {
-                reasons.push_back("closure-empty:" + root);
-            }
-            continue;
-        }
-        closure_uris.insert(closure_uris.end(),
-                            closure_it->second.uris.begin(),
-                            closure_it->second.uris.end());
-        hashCombine(closure_fingerprint, closure_it->second.fingerprint);
-        hashCombine(closure_fingerprint, hashString(root));
-    }
-    for (const auto& top_module : config_.top_modules) {
-        const auto top_closure = discovery.closure_uris_by_name.find(top_module);
-        if (top_closure == discovery.closure_uris_by_name.end() || top_closure->second.empty()) {
-            complete = false;
-            reasons.push_back("configured-top-not-discovered:" + top_module);
-            continue;
-        }
-        closure_uris.insert(closure_uris.end(),
-                            top_closure->second.begin(),
-                            top_closure->second.end());
-    }
+    const auto base_plan = semantic::planDocumentClosure(discovery, closure_roots, config_.top_modules);
+    std::optional<semantic::WorkspaceCompletionPlan> workspace_plan;
     if (workspace_candidate_prefix.has_value()) {
-        for (const auto& declaration : discovery.declarations) {
-            if (workspace_candidate_prefix->empty() ||
-                declaration.name.starts_with(*workspace_candidate_prefix)) {
-                closure_uris.push_back(declaration.location.uri);
-            }
-        }
+        workspace_plan = semantic::planWorkspaceCompletionClosure(
+            discovery, closure_roots, config_.top_modules, *workspace_candidate_prefix);
     }
-    std::sort(closure_uris.begin(), closure_uris.end());
-    closure_uris.erase(std::unique(closure_uris.begin(), closure_uris.end()), closure_uris.end());
-    std::sort(reasons.begin(), reasons.end());
-    reasons.erase(std::unique(reasons.begin(), reasons.end()), reasons.end());
-    if (!complete || closure_uris.empty()) {
+    const auto& closure_plan = workspace_plan.has_value() ? workspace_plan->closure : base_plan;
+    const auto closure_uris = closure_plan.uris;
+    if (!closure_plan.complete || closure_uris.empty()) {
         std::string reason;
-        for (const auto& value : reasons) {
+        for (const auto& value : closure_plan.reasons) {
             if (!reason.empty()) {
                 reason.append("; ");
             }
@@ -1102,25 +1057,30 @@ SemanticEngine::SnapshotSelection SemanticEngine::snapshotForDocument(
         }
         return full_selection(reason.empty() ? "document-closure-incomplete" : reason);
     }
-    if (closure_uris.size() >= documents_.size()) {
+    if (!workspace_candidate_prefix.has_value() && closure_uris.size() >= documents_.size()) {
         return full_selection("document-closure-covers-workspace");
     }
 
-    for (const auto& closure_uri : closure_uris) {
-        hashCombine(closure_fingerprint, hashString(closure_uri));
-    }
     std::uint64_t cache_key = discovery.cache_key;
-    hashCombine(cache_key, closure_fingerprint);
-    hashCombine(cache_key, hashString(closure_root_key));
+    hashCombine(cache_key, closure_plan.fingerprint);
+    hashCombine(cache_key, hashString(closure_plan.root_key));
     if (workspace_candidate_prefix.has_value()) {
         hashCombine(cache_key, hashString(*workspace_candidate_prefix));
+        hashCombine(cache_key, hashString(semantic::kWorkspaceCompletionPolicyVersion));
     }
+    const auto scope_kind = workspace_candidate_prefix.has_value() ? "workspaceCompletionClosure"
+                                                                    : "documentClosure";
+    const auto closure_confidence = workspace_plan.has_value() && workspace_plan->incomplete
+                                        ? "complete-with-capped-candidates"
+                                        : "complete";
     if (auto* cached = document_snapshot_cache_->find(cache_key)) {
-        last_snapshot_build_stats_.scope_kind = "documentClosure";
-        last_snapshot_build_stats_.root_uri = closure_root_key;
+        last_snapshot_build_stats_.scope_kind = scope_kind;
+        last_snapshot_build_stats_.root_uri = closure_plan.root_key;
         last_snapshot_build_stats_.snapshot_identity = cached->identity;
-        last_snapshot_build_stats_.closure_confidence = "complete";
-        last_snapshot_build_stats_.closure_reason.clear();
+        last_snapshot_build_stats_.closure_confidence = closure_confidence;
+        last_snapshot_build_stats_.closure_reason = closure_plan.reasons.empty()
+                                                        ? std::string{}
+                                                        : closure_plan.reasons.front();
         last_snapshot_build_stats_.input_document_count = documents_.size();
         last_snapshot_build_stats_.selected_document_count = closure_uris.size();
         last_snapshot_build_stats_.cache_hit = true;
@@ -1128,6 +1088,13 @@ SemanticEngine::SnapshotSelection SemanticEngine::snapshotForDocument(
         return SnapshotSelection{.snapshot = &cached->snapshot,
                                  .data = cached->data.get(),
                                  .snapshot_identity = cached->identity,
+                                 .completion_plan_fingerprint = closure_plan.fingerprint,
+                                 .planned_workspace_candidate_count = workspace_plan.has_value()
+                                                                          ? workspace_plan->planned_candidate_count
+                                                                          : 0,
+                                 .selected_document_count = closure_uris.size(),
+                                 .workspace_completion_incomplete = workspace_plan.has_value() &&
+                                                                    workspace_plan->incomplete,
                                  .closure = true};
     }
 
@@ -1155,15 +1122,19 @@ SemanticEngine::SnapshotSelection SemanticEngine::snapshotForDocument(
     const auto expected_fingerprint =
         discoveryCacheKeyFor(generation_, workspace_root_uri_, config_, documents_);
     auto output = semantic::SnapshotBuilder{}.build(std::move(input));
-    const auto identity = snapshotIdentity("closure", generation_, closure_fingerprint);
-    const auto closure_reason = reasons.empty() ? std::string{} : reasons.front();
+    const auto identity = snapshotIdentity(workspace_candidate_prefix.has_value() ? "workspaceCompletion"
+                                                                                   : "closure",
+                                           generation_,
+                                           closure_plan.fingerprint);
+    const auto closure_reason = closure_plan.reasons.empty() ? std::string{}
+                                                              : closure_plan.reasons.front();
     if (output.status == semantic::SnapshotBuildStatus::Cancelled) {
         ++cancelled_snapshot_build_count_;
         last_snapshot_build_stats_ = snapshotBuildStats(output,
-                                                        "documentClosure",
-                                                        closure_root_key,
+                                                        scope_kind,
+                                                        closure_plan.root_key,
                                                         identity,
-                                                        "complete",
+                                                        closure_confidence,
                                                         closure_reason,
                                                         closure_uris.size(),
                                                         cancelled_snapshot_build_count_);
@@ -1172,10 +1143,10 @@ SemanticEngine::SnapshotSelection SemanticEngine::snapshotForDocument(
     }
     if (output.status != semantic::SnapshotBuildStatus::Completed) {
         last_snapshot_build_stats_ = snapshotBuildStats(output,
-                                                        "documentClosure",
-                                                        closure_root_key,
+                                                        scope_kind,
+                                                        closure_plan.root_key,
                                                         identity,
-                                                        "complete",
+                                                        closure_confidence,
                                                         closure_reason,
                                                         closure_uris.size(),
                                                         cancelled_snapshot_build_count_);
@@ -1191,18 +1162,21 @@ SemanticEngine::SnapshotSelection SemanticEngine::snapshotForDocument(
     }
 
     last_snapshot_build_stats_ = snapshotBuildStats(output,
-                                                    "documentClosure",
-                                                    closure_root_key,
+                                                    scope_kind,
+                                                    closure_plan.root_key,
                                                     identity,
-                                                    "complete",
+                                                    closure_confidence,
                                                     closure_reason,
                                                     closure_uris.size(),
                                                     cancelled_snapshot_build_count_);
     last_snapshot_build_stats_.input_document_count = documents_.size();
     traceSnapshotBuildStats("semantic.documentClosureSnapshot.build", last_snapshot_build_stats_);
+    if (closure_uris.size() == documents_.size()) {
+        *affected_dependencies_ = std::move(output.affected_dependencies);
+    }
     semantic::DocumentSnapshotCache::Entry entry;
     entry.key = cache_key;
-    entry.root_uri = closure_root_key;
+    entry.root_uri = closure_plan.root_key;
     entry.identity = identity;
     entry.snapshot = std::move(output.snapshot);
     entry.data = std::move(output.data);
@@ -1210,6 +1184,13 @@ SemanticEngine::SnapshotSelection SemanticEngine::snapshotForDocument(
     return SnapshotSelection{.snapshot = &stored.snapshot,
                              .data = stored.data.get(),
                              .snapshot_identity = stored.identity,
+                             .completion_plan_fingerprint = closure_plan.fingerprint,
+                             .planned_workspace_candidate_count = workspace_plan.has_value()
+                                                                      ? workspace_plan->planned_candidate_count
+                                                                      : 0,
+                             .selected_document_count = closure_uris.size(),
+                             .workspace_completion_incomplete = workspace_plan.has_value() &&
+                                                                workspace_plan->incomplete,
                              .closure = true};
 }
 
@@ -1487,17 +1468,24 @@ SemanticCompletionResult SemanticEngine::completionsAt(std::string_view uri,
                                                      document_uri,
                                                      line,
                                                      character,
-                                                     prefix)) {
+                                                     prefix,
+                                                     selection.completion_plan_fingerprint)) {
         return *cached;
     }
 
     const auto finish = [&](SemanticCompletionResult value) {
+        value.planned_workspace_candidate_count = selection.planned_workspace_candidate_count;
+        value.emitted_workspace_candidate_count = value.items.size();
+        value.selected_document_count = selection.selected_document_count;
+        value.is_incomplete = value.is_incomplete || value.truncated ||
+                             selection.workspace_completion_incomplete;
         query_cache_->storeCompletions(current_snapshot.generation,
                                        document_uri,
                                        line,
                                        character,
                                        prefix,
-                                       value);
+                                       value,
+                                       selection.completion_plan_fingerprint);
         return value;
     };
     const auto* data = selection.data;
@@ -1549,6 +1537,13 @@ SemanticCompletionResult SemanticEngine::completionsAt(std::string_view uri,
 SemanticCompletionItem SemanticEngine::resolveCompletion(std::string_view stable_id,
                                                          std::string_view label,
                                                          std::string_view snapshot_identity) const {
+    if (snapshot_identity.empty()) {
+        SemanticCompletionItem unresolved;
+        unresolved.stable_id = std::string(stable_id);
+        unresolved.label = std::string(label);
+        unresolved.unresolved = true;
+        return unresolved;
+    }
     const auto selection = snapshotForIdentity(snapshot_identity);
     if (selection.snapshot == nullptr || selection.data == nullptr) {
         SemanticCompletionItem unresolved;

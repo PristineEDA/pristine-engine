@@ -1154,7 +1154,9 @@ TEST_CASE("SemanticEngine resolves typed member completion documentation",
                                          });
     REQUIRE(completion != completions.items.end());
 
-    const auto resolved = engine.resolveCompletion(completion->stable_id, completion->label);
+    const auto resolved = engine.resolveCompletion(completion->stable_id,
+                                                   completion->label,
+                                                   completion->snapshot_identity);
 
     REQUIRE_FALSE(resolved.unresolved);
     CHECK(resolved.documentation.find("**Variable** `status_ready`") != std::string::npos);
@@ -1308,7 +1310,9 @@ TEST_CASE("SemanticEngine provides AST-backed macro completions and resolve docs
     CHECK(completion->documentation.find("Parameters") != std::string::npos);
     CHECK(completion->stable_id.rfind("completion-macro:", 0) == 0);
     engine.resetQueryCacheStats();
-    const auto resolved = engine.resolveCompletion(completion->stable_id, completion->label);
+    const auto resolved = engine.resolveCompletion(completion->stable_id,
+                                                   completion->label,
+                                                   completion->snapshot_identity);
     CHECK_FALSE(resolved.unresolved);
     CHECK(resolved.documentation.find("((lhs) + (rhs))") != std::string::npos);
     const auto stats = engine.queryCacheStats();
@@ -2493,6 +2497,98 @@ TEST_CASE("SemanticEngine workspace completion uses a deterministic AST prefix i
     CHECK(forward_labels.front() == "unit_0");
 }
 
+TEST_CASE("SemanticEngine bounds wide workspace completion without selecting the full snapshot",
+          "[analysis][semantic-engine][completion][workspace-closure][cap]") {
+    SemanticEngine engine;
+    for (int index = 0; index < 160; ++index) {
+        const auto suffix = index < 10 ? "00" + std::to_string(index)
+                           : index < 100 ? "0" + std::to_string(index)
+                                         : std::to_string(index);
+        engine.updateDocument("file:///workspace/wide_" + suffix + ".sv",
+                              "module wide_" + suffix + "; endmodule\n",
+                              SemanticEngineDocumentState{.version = 1});
+    }
+    engine.updateDocument("file:///workspace/top.sv",
+                          "module top;\n"
+                          "  wid\n"
+                          "endmodule\n",
+                          SemanticEngineDocumentState{.version = 1, .is_open = true});
+
+    const auto cold = engine.completionsAt("file:///workspace/top.sv", 1, 5, "wid");
+    const auto cold_stats = engine.lastSnapshotBuildStats();
+    REQUIRE_FALSE(cold.unresolved);
+    CHECK(cold.is_incomplete);
+    CHECK(cold.planned_workspace_candidate_count == 128);
+    CHECK(cold.selected_document_count <= 129);
+    CHECK(cold_stats.scope_kind == "workspaceCompletionClosure");
+    CHECK(cold_stats.selected_document_count <= 129);
+    CHECK(cold_stats.selected_document_count < cold_stats.input_document_count);
+    CHECK(cold.scanned_global_symbol_count == 0);
+    REQUIRE_FALSE(cold.items.empty());
+    CHECK(cold.items.front().label == "wide_000");
+
+    const auto resolved = engine.resolveCompletion(cold.items.front().stable_id,
+                                                   cold.items.front().label,
+                                                   cold.items.front().snapshot_identity);
+    CHECK_FALSE(resolved.unresolved);
+
+    const auto warm = engine.completionsAt("file:///workspace/top.sv", 1, 5, "wid");
+    CHECK(engine.lastSnapshotBuildStats().cache_hit);
+    CHECK(warm.selected_document_count == cold.selected_document_count);
+}
+
+TEST_CASE("SemanticEngine applies the short workspace completion candidate cap",
+          "[analysis][semantic-engine][completion][workspace-closure][short-cap]") {
+    SemanticEngine engine;
+    for (int index = 0; index < 80; ++index) {
+        engine.updateDocument("file:///workspace/m" + std::to_string(index) + ".sv",
+                              "module m" + std::to_string(index) + "; endmodule\n",
+                              SemanticEngineDocumentState{.version = 1});
+    }
+    engine.updateDocument("file:///workspace/top.sv",
+                          "module top;\n"
+                          "  m\n"
+                          "endmodule\n",
+                          SemanticEngineDocumentState{.version = 1, .is_open = true});
+
+    const auto result = engine.completionsAt("file:///workspace/top.sv", 1, 3, "m");
+    const auto stats = engine.lastSnapshotBuildStats();
+    REQUIRE_FALSE(result.unresolved);
+    CHECK(result.is_incomplete);
+    CHECK(result.planned_workspace_candidate_count == 64);
+    CHECK(result.selected_document_count <= 65);
+    CHECK(stats.scope_kind == "workspaceCompletionClosure");
+    CHECK(stats.selected_document_count < stats.input_document_count);
+    CHECK(result.scanned_global_symbol_count == 0);
+}
+
+TEST_CASE("SemanticEngine skips incomplete workspace candidates without forcing a full snapshot",
+          "[analysis][semantic-engine][completion][workspace-closure][incomplete-candidate]") {
+    SemanticEngine engine;
+    engine.updateDocument("file:///workspace/partial.sv",
+                          "`include \"missing.svh\"\nmodule partial; endmodule\n",
+                          SemanticEngineDocumentState{.version = 1});
+    engine.updateDocument("file:///workspace/ready.sv",
+                          "module ready; endmodule\n",
+                          SemanticEngineDocumentState{.version = 1});
+    engine.updateDocument("file:///workspace/top.sv",
+                          "module top;\n"
+                          "  p\n"
+                          "endmodule\n",
+                          SemanticEngineDocumentState{.version = 1, .is_open = true});
+
+    const auto result = engine.completionsAt("file:///workspace/top.sv", 1, 3, "p");
+    const auto stats = engine.lastSnapshotBuildStats();
+    REQUIRE_FALSE(result.unresolved);
+    CHECK(result.is_incomplete);
+    CHECK(stats.scope_kind == "workspaceCompletionClosure");
+    CHECK(stats.selected_document_count < stats.input_document_count);
+    CHECK(std::none_of(result.items.begin(), result.items.end(), [](const auto& item) {
+        return item.label == "partial";
+    }));
+    CHECK(result.scanned_global_symbol_count == 0);
+}
+
 TEST_CASE("SemanticEngine completion keeps AST import visibility during recoverable trailing edits",
           "[analysis][semantic-engine][completion][visibility][recovery]") {
     SemanticEngine engine;
@@ -2898,7 +2994,7 @@ TEST_CASE("SemanticEngine completion closure includes only prefix candidate file
         return item.label == "alpha";
     }));
     const auto stats = engine.lastSnapshotBuildStats();
-    CHECK(stats.scope_kind == "documentClosure");
+    CHECK(stats.scope_kind == "workspaceCompletionClosure");
     CHECK(stats.selected_document_count == 2);
 }
 
@@ -2931,6 +3027,49 @@ TEST_CASE("SemanticEngine completion resolve rejects an evicted closure identity
                                                 first_item->label,
                                                 first_item->snapshot_identity);
     CHECK(stale.unresolved);
+}
+
+TEST_CASE("SemanticEngine resolves closure-backed class and interface type definitions",
+          "[analysis][semantic-engine][type-definition][closure]") {
+    SemanticEngine engine;
+    engine.updateDocument("file:///workspace/packet.sv",
+                          "class packet; int value; endclass\n",
+                          SemanticEngineDocumentState{.version = 1});
+    engine.updateDocument("file:///workspace/bus.sv",
+                          "interface bus_if; logic ready; endinterface\n",
+                          SemanticEngineDocumentState{.version = 1});
+    engine.updateDocument("file:///workspace/top.sv",
+                          "module top; packet pkt; bus_if bus(); endmodule\n",
+                          SemanticEngineDocumentState{.version = 1, .is_open = true});
+
+    const auto class_definition = engine.typeDefinitionsAt("file:///workspace/top.sv", 0, 12);
+    CAPTURE(engine.lastSnapshotBuildStats().scope_kind);
+    CAPTURE(engine.lastSnapshotBuildStats().selected_document_count);
+    REQUIRE_FALSE(class_definition.unresolved);
+    REQUIRE(class_definition.locations.size() == 1);
+    CHECK(class_definition.locations.front().uri == "file:///workspace/packet.sv");
+
+    const auto interface_definition = engine.typeDefinitionsAt("file:///workspace/top.sv", 0, 24);
+    REQUIRE_FALSE(interface_definition.unresolved);
+    REQUIRE(interface_definition.locations.size() == 1);
+    CHECK(interface_definition.locations.front().uri == "file:///workspace/bus.sv");
+}
+
+TEST_CASE("SemanticEngine rejects a completion resolve without its snapshot identity",
+          "[analysis][semantic-engine][completion][resolve][no-fallback]") {
+    SemanticEngine engine;
+    engine.updateDocument("file:///workspace/top.sv",
+                          "module top; logic ready; initial rea; endmodule\n",
+                          SemanticEngineDocumentState{.version = 1, .is_open = true});
+    const auto completion = engine.completionsAt("file:///workspace/top.sv", 0, 40, "rea");
+    const auto item = std::find_if(completion.items.begin(), completion.items.end(), [](const auto& value) {
+        return value.label == "ready";
+    });
+    REQUIRE(item != completion.items.end());
+
+    const auto resolved = engine.resolveCompletion(item->stable_id, item->label);
+    CHECK(resolved.unresolved);
+    CHECK(resolved.documentation.empty());
 }
 
 TEST_CASE("SemanticEngine keeps full snapshot identity independent from closure telemetry",

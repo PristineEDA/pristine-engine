@@ -504,8 +504,10 @@ std::optional<SemanticCompletionResult> QueryCache::completions(std::uint64_t ge
                                                                 std::string_view uri,
                                                                 int line,
                                                                 int character,
-                                                                std::string_view prefix) const {
-    const auto found = completions_by_key_.find(completionKey(uri, line, character, prefix));
+                                                                std::string_view prefix,
+                                                                std::uint64_t plan_fingerprint) const {
+    const auto found = completions_by_key_.find(
+        completionKey(uri, line, character, prefix, plan_fingerprint));
     if (found == completions_by_key_.end() || found->second.generation != generation) {
         recordMiss();
         return std::nullopt;
@@ -519,12 +521,13 @@ void QueryCache::storeCompletions(std::uint64_t generation,
                                   int line,
                                   int character,
                                   std::string_view prefix,
-                                  SemanticCompletionResult result) {
+                                  SemanticCompletionResult result,
+                                  std::uint64_t plan_fingerprint) {
     CompletionEntry entry;
     entry.generation = generation;
     entry.sequence = nextSequence();
     entry.result = std::move(result);
-    completions_by_key_.insert_or_assign(completionKey(uri, line, character, prefix),
+    completions_by_key_.insert_or_assign(completionKey(uri, line, character, prefix, plan_fingerprint),
                                          std::move(entry));
     recordStore();
     evictOldestEntries(completions_by_key_);
@@ -756,12 +759,14 @@ std::string QueryCache::renameKey(std::string_view uri,
 std::string QueryCache::completionKey(std::string_view uri,
                                       int line,
                                       int character,
-                                      std::string_view prefix) {
+                                      std::string_view prefix,
+                                      std::uint64_t plan_fingerprint) {
     return QueryCacheKeyBuilder("completion")
         .field("uri", uri)
         .integer("line", line)
         .integer("character", character)
         .field("prefix", prefix)
+        .field("planFingerprint", std::to_string(plan_fingerprint))
         .str();
 }
 

@@ -10,9 +10,12 @@
     "kind": "hover",
     "uri": "file:///golden/semantic/hover-param-port.sv",
     "line": 0,
-    "character": 62
+    "character": 64
   },
   "expected": {
-    "unresolved": true
+    "contentsContains": [
+      "data",
+      "logic"
+    ]
   }
 }

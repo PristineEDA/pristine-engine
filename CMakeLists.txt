@@ -16,6 +16,11 @@ option(PRISTINE_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" ON)
 
 if(MSVC)
   add_compile_options(/EHsc /utf-8)
+  # clang-cl can compile dependency translation units that share a target PDB in
+  # parallel. Serialize those PDB writes so clean Release builds are reliable.
+  if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+    add_compile_options(/FS)
+  endif()
 endif()
 
 include(GNUInstallDirs)
@@ -229,6 +234,7 @@ add_library(
   src/analysis/semantic/DesignGraphIndexBuilder.cpp
   src/analysis/semantic/DesignGraphProvider.cpp
   src/analysis/semantic/DiagnosticProvider.cpp
+  src/analysis/semantic/DocumentClosurePlanner.cpp
   src/analysis/semantic/NavigationProvider.cpp
   src/analysis/semantic/QueryCache.cpp
   src/analysis/semantic/SignatureInlayProvider.cpp

@@ -633,8 +633,21 @@ void runCompletionFixture(SemanticEngine& engine, const nlohmann::json& fixture)
                                              request.value("prefix", ""));
     CAPTURE(result.messages,
             result.scanned_candidate_count,
-            result.scanned_global_symbol_count);
+            result.scanned_global_symbol_count,
+            result.is_incomplete,
+            result.planned_workspace_candidate_count,
+            result.selected_document_count);
     CHECK(result.unresolved == expected.value("unresolved", false));
+    if (expected.contains("isIncomplete")) {
+        CHECK(result.is_incomplete == expected.at("isIncomplete").get<bool>());
+    }
+    if (expected.contains("plannedWorkspaceCandidates")) {
+        CHECK(result.planned_workspace_candidate_count ==
+              expected.at("plannedWorkspaceCandidates").get<size_t>());
+    }
+    if (expected.contains("selectedDocumentsAtMost")) {
+        CHECK(result.selected_document_count <= expected.at("selectedDocumentsAtMost").get<size_t>());
+    }
     if (expected.contains("labels")) {
         for (const auto& expected_label : expected.at("labels")) {
             const auto label = expected_label.get<std::string>();

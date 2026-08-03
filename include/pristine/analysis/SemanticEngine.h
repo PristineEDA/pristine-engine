@@ -169,12 +169,16 @@ struct SemanticCompletionResult {
     size_t scanned_candidate_count = 0;
     size_t scanned_scope_candidate_count = 0;
     size_t scanned_workspace_candidate_count = 0;
+    size_t planned_workspace_candidate_count = 0;
+    size_t emitted_workspace_candidate_count = 0;
+    size_t selected_document_count = 0;
     size_t scanned_global_symbol_count = 0;
     size_t scope_visibility_count = 0;
     size_t package_visibility_count = 0;
     size_t member_visibility_count = 0;
     size_t callable_visibility_count = 0;
     std::int64_t scope_visibility_build_micros = 0;
+    bool is_incomplete = false;
     bool unresolved = false;
     bool truncated = false;
 };
@@ -743,6 +747,10 @@ private:
         const SemanticEngineSnapshot* snapshot = nullptr;
         const semantic::SnapshotData* data = nullptr;
         std::string snapshot_identity;
+        std::uint64_t completion_plan_fingerprint = 0;
+        size_t planned_workspace_candidate_count = 0;
+        size_t selected_document_count = 0;
+        bool workspace_completion_incomplete = false;
         bool closure = false;
     };
 

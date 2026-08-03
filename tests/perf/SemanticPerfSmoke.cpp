@@ -144,6 +144,12 @@ int main() {
         const auto start_workspace_completion = Clock::now();
         const auto workspace_completion = engine.completionsAt(target_uri, 4, 6, "unit");
         const auto workspace_completion_micros = elapsedMicros(start_workspace_completion, Clock::now());
+        const auto workspace_completion_snapshot = engine.lastSnapshotBuildStats();
+        const auto start_workspace_completion_warm = Clock::now();
+        const auto workspace_completion_warm = engine.completionsAt(target_uri, 4, 6, "unit");
+        const auto workspace_completion_warm_micros =
+            elapsedMicros(start_workspace_completion_warm, Clock::now());
+        const auto workspace_completion_warm_snapshot = engine.lastSnapshotBuildStats();
         emitStatus("workspace-completion-complete",
                    "documents=" + std::to_string(workspace_size));
 
@@ -266,14 +272,22 @@ int main() {
                                      hover_snapshot.scope_kind != "documentClosure" ||
                                      hover_snapshot.selected_document_count >=
                                          static_cast<size_t>(workspace_size) ||
-                                     completion_snapshot.scope_kind != "documentClosure" ||
+                                     completion_snapshot.scope_kind != "workspaceCompletionClosure" ||
                                      completion_snapshot.selected_document_count >=
                                          static_cast<size_t>(workspace_size) ||
                                      !completion_warm_snapshot.cache_hit ||
                                      completion.scanned_global_symbol_count != 0 ||
                                      workspace_completion.unresolved ||
                                      workspace_completion.items.empty() ||
+                                     workspace_completion_snapshot.scope_kind !=
+                                         "workspaceCompletionClosure" ||
+                                     workspace_completion_snapshot.selected_document_count > 129 ||
+                                     workspace_completion.selected_document_count !=
+                                         workspace_completion_snapshot.selected_document_count ||
+                                     workspace_completion_warm.unresolved ||
+                                     !workspace_completion_warm_snapshot.cache_hit ||
                                      workspace_completion.scanned_global_symbol_count != 0 ||
+                                     (workspace_size > 128 && !workspace_completion.is_incomplete) ||
                                      signature.unresolved || signature_warm.unresolved ||
                                      signature.label.empty() || signature_warm.label != signature.label ||
                                      signature.scanned_global_symbol_count != 0 ||
@@ -307,8 +321,73 @@ int main() {
                                       assertion_cone.cone_assertion_temporal_edge_count == 0 ||
                                       default_assertion_cone.cone_assertion_default_clock_edge_count == 0 ||
                                       default_assertion_cone.cone_assertion_default_disable_edge_count == 0 ||
-                                      cache_stats.graph_scanned_global_symbols != 0 ||
+                                     cache_stats.graph_scanned_global_symbols != 0 ||
                                      cache_stats.cone_scanned_global_edges != 0;
+
+        const bool workspace_completion_contract_passed =
+            !workspace_completion.unresolved && !workspace_completion.items.empty() &&
+            workspace_completion_snapshot.scope_kind == "workspaceCompletionClosure" &&
+            workspace_completion_snapshot.selected_document_count <= 129 &&
+            workspace_completion.selected_document_count ==
+                workspace_completion_snapshot.selected_document_count &&
+            !workspace_completion_warm.unresolved &&
+            workspace_completion_warm_snapshot.cache_hit &&
+            workspace_completion.scanned_global_symbol_count == 0 &&
+            (workspace_size <= 128 || workspace_completion.is_incomplete);
+        const bool document_completion_contract_passed =
+            !completion.unresolved && !completion_warm.unresolved && !completion.items.empty() &&
+            !completion_warm.items.empty() && !completion_resolve_unresolved &&
+            hover_snapshot.scope_kind == "documentClosure" &&
+            hover_snapshot.selected_document_count < static_cast<size_t>(workspace_size) &&
+            completion_snapshot.scope_kind == "workspaceCompletionClosure" &&
+            completion_snapshot.selected_document_count < static_cast<size_t>(workspace_size) &&
+            completion_warm_snapshot.cache_hit && completion.scanned_global_symbol_count == 0;
+        const bool invocation_contract_passed =
+            !signature.unresolved && !signature_warm.unresolved && !signature.label.empty() &&
+            signature_warm.label == signature.label && signature.scanned_global_symbol_count == 0 &&
+            !inlay.unresolved && !inlay_warm.unresolved &&
+            inlay.scanned_global_symbol_count == 0 && !macro_definition.locations.empty() &&
+            !macro_expand.actions.empty();
+        const bool navigation_contract_passed =
+            !references.unresolved && !references_warm.unresolved &&
+            references.locations.size() == references_warm.locations.size() && !highlights.unresolved &&
+            !call_prepare.unresolved && !call_prepare.items.empty() && !call_outgoing.unresolved &&
+            cache_stats.call_hierarchy_scanned_modules == 0;
+        const bool graph_contract_passed =
+            !hierarchy_warm.unresolved && !schematic_warm.unresolved &&
+            schematic.schematic_connection_fact_lookup_count != 0 &&
+            schematic.schematic_source_part_scan_count != 0 &&
+            schematic.schematic_cell_pin_fact_lookup_count != 0 &&
+            schematic.schematic_cell_pin_scan_count != 0 && cache_stats.schematic_entries != 0 &&
+            cache_stats.graph_scanned_global_symbols == 0;
+        const bool cone_contract_passed =
+            !cone_warm.unresolved && !ternary_cone.unresolved && !ternary_cone_warm.unresolved &&
+            !event_cone.unresolved && !event_cone_warm.unresolved && !assertion_cone.unresolved &&
+            !assertion_cone_warm.unresolved && !default_assertion_cone.unresolved &&
+            !default_assertion_cone_warm.unresolved && cone.nodes.size() >= 2 &&
+            cache_stats.cone_adjacency_scanned_edges != 0 &&
+            ternary_cone.cone_control_edge_count != 0 &&
+            ternary_cone.cone_ternary_control_edge_count != 0 &&
+            event_cone.cone_event_control_edge_count != 0 && event_cone.cone_timing_fact_lookup_count != 0 &&
+            assertion_cone.cone_assertion_sample_edge_count != 0 &&
+            assertion_cone.cone_assertion_invocation_edge_count != 0 &&
+            assertion_cone.cone_assertion_clock_edge_count != 0 &&
+            assertion_cone.cone_assertion_temporal_edge_count != 0 &&
+            default_assertion_cone.cone_assertion_default_clock_edge_count != 0 &&
+            default_assertion_cone.cone_assertion_default_disable_edge_count != 0 &&
+            cache_stats.cone_scanned_global_edges == 0;
+        if (!document_completion_contract_passed || !workspace_completion_contract_passed ||
+            !invocation_contract_passed || !navigation_contract_passed || !graph_contract_passed ||
+            !cone_contract_passed) {
+            emitStatus("completion-contract-failed",
+                       "documents=" + std::to_string(workspace_size) +
+                           " document=" + (document_completion_contract_passed ? "pass" : "fail") +
+                           " workspace=" + (workspace_completion_contract_passed ? "pass" : "fail") +
+                           " invocation=" + (invocation_contract_passed ? "pass" : "fail") +
+                           " navigation=" + (navigation_contract_passed ? "pass" : "fail") +
+                           " graph=" + (graph_contract_passed ? "pass" : "fail") +
+                           " cone=" + (cone_contract_passed ? "pass" : "fail"));
+        }
 
         if (!first_baseline) {
             std::cout << ",";
@@ -342,8 +421,9 @@ int main() {
                   << "\"hoverSnapshotFinalizeMicros\":"
                   << hover_snapshot.finalize_micros << ","
                   << "\"completionMicros\":" << elapsedMicros(start_completion, end_completion) << ","
-                  << "\"completionSnapshotSelectedDocuments\":"
-                  << completion_snapshot.selected_document_count << ","
+                    << "\"completionSnapshotSelectedDocuments\":"
+                    << completion_snapshot.selected_document_count << ","
+                    << "\"completionSnapshotScope\":\"" << completion_snapshot.scope_kind << "\","
                   << "\"completionSnapshotCacheHit\":"
                   << (completion_snapshot.cache_hit ? "true" : "false") << ","
                   << "\"completionWarmSnapshotCacheHit\":"
@@ -354,6 +434,16 @@ int main() {
                   << "\"completionResolveUnresolved\":"
                   << (completion_resolve_unresolved ? "true" : "false") << ","
                   << "\"workspaceCompletionMicros\":" << workspace_completion_micros << ","
+                  << "\"workspaceCompletionWarmMicros\":"
+                  << workspace_completion_warm_micros << ","
+                  << "\"workspaceCompletionSnapshotSelectedDocuments\":"
+                  << workspace_completion_snapshot.selected_document_count << ","
+                  << "\"workspaceCompletionSnapshotScope\":\""
+                  << workspace_completion_snapshot.scope_kind << "\","
+                    << "\"workspaceCompletionWarmSnapshotCacheHit\":"
+                    << (workspace_completion_warm_snapshot.cache_hit ? "true" : "false") << ","
+                    << "\"workspaceCompletionWarmUnresolved\":"
+                    << (workspace_completion_warm.unresolved ? "true" : "false") << ","
                   << "\"referenceMicros\":" << elapsedMicros(start_query, end_query) << ","
                   << "\"referenceWarmMicros\":" << elapsedMicros(start_query_warm, end_query_warm) << ","
                   << "\"documentHighlightMicros\":" << elapsedMicros(start_highlight, end_highlight) << ","
@@ -403,15 +493,39 @@ int main() {
                   << (completion.unresolved || completion_warm.unresolved || completion.items.empty() ||
                               completion_warm.items.empty() || completion.scanned_global_symbol_count != 0
                               || workspace_completion.unresolved || workspace_completion.items.empty() ||
+                              workspace_completion_snapshot.scope_kind != "workspaceCompletionClosure"
+                              || workspace_completion_snapshot.selected_document_count > 129
+                              || workspace_completion_warm.unresolved ||
+                              !workspace_completion_warm_snapshot.cache_hit ||
                               workspace_completion.scanned_global_symbol_count != 0
                           ? "false"
                           : "true")
                   << ","
                   << "\"workspaceCompletionCount\":" << workspace_completion.items.size() << ","
+                  << "\"workspaceCompletionIsIncomplete\":"
+                  << (workspace_completion.is_incomplete ? "true" : "false") << ","
+                  << "\"workspaceCompletionPlannedCandidates\":"
+                  << workspace_completion.planned_workspace_candidate_count << ","
+                  << "\"workspaceCompletionSelectedDocuments\":"
+                  << workspace_completion.selected_document_count << ","
                   << "\"workspaceCompletionScannedCandidates\":"
                   << workspace_completion.scanned_candidate_count << ","
-                  << "\"workspaceCompletionScannedWorkspaceCandidates\":"
-                  << workspace_completion.scanned_workspace_candidate_count << ","
+                    << "\"workspaceCompletionScannedWorkspaceCandidates\":"
+                    << workspace_completion.scanned_workspace_candidate_count << ","
+                    << "\"workspaceCompletionScannedGlobalSymbols\":"
+                    << workspace_completion.scanned_global_symbol_count << ","
+                    << "\"workspaceCompletionContractPassed\":"
+                    << (workspace_completion_contract_passed ? "true" : "false") << ","
+                    << "\"documentCompletionContractPassed\":"
+                    << (document_completion_contract_passed ? "true" : "false") << ","
+                    << "\"invocationContractPassed\":"
+                    << (invocation_contract_passed ? "true" : "false") << ","
+                    << "\"navigationContractPassed\":"
+                    << (navigation_contract_passed ? "true" : "false") << ","
+                    << "\"graphContractPassed\":"
+                    << (graph_contract_passed ? "true" : "false") << ","
+                    << "\"coneContractPassed\":"
+                    << (cone_contract_passed ? "true" : "false") << ","
                   << "\"inlayHintCount\":" << inlay.hints.size() << ","
                   << "\"signatureScannedInvocations\":"
                   << signature.scanned_invocation_count << ","

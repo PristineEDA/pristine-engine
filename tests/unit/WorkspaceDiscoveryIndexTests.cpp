@@ -1,4 +1,5 @@
 #include "pristine/analysis/SemanticEngine.h"
+#include "../../src/analysis/semantic/DocumentClosurePlanner.h"
 #include "../../src/analysis/semantic/WorkspaceDiscoveryIndex.h"
 
 #include <catch2/catch_test_macros.hpp>
@@ -29,6 +30,17 @@ const SemanticDiscoveryClosureMetric* closureMetricFor(const SemanticWorkspaceDi
                                         return metric.root_name == root_name;
                                     });
     return found == discovery.closure_metrics.end() ? nullptr : &*found;
+}
+
+void addCompleteClosure(SemanticWorkspaceDiscoverySnapshot& discovery,
+                        std::string uri,
+                        std::vector<std::string> uris) {
+    std::sort(uris.begin(), uris.end());
+    discovery.document_closures_by_uri.emplace(
+        std::move(uri),
+        SemanticWorkspaceDiscoverySnapshot::DocumentClosure{.uris = std::move(uris),
+                                                             .fingerprint = 1,
+                                                             .complete = true});
 }
 
 } // namespace
@@ -191,6 +203,280 @@ TEST_CASE("WorkspaceDiscoveryIndex parallel shallow scan is deterministic",
         CHECK(second.declarations[index].name == first.declarations[index].name);
         CHECK(second.declarations[index].location.uri == first.declarations[index].location.uri);
     }
+}
+
+TEST_CASE("DocumentClosurePlanner bounds workspace completion declarations deterministically",
+          "[analysis][semantic][document-closure][completion]") {
+    SemanticWorkspaceDiscoverySnapshot discovery;
+    addCompleteClosure(discovery, "file:///workspace/top.sv", {"file:///workspace/top.sv"});
+    for (int index = 0; index < 130; ++index) {
+        const auto uri = "file:///workspace/alpha_" + std::to_string(index) + ".sv";
+        discovery.declarations.push_back(
+            SemanticDiscoverySymbol{.name = "alpha_" + std::to_string(index),
+                                    .kind = "module",
+                                    .location = SemanticLocation{.uri = uri}});
+        addCompleteClosure(discovery, uri, {uri});
+    }
+
+    const auto short_prefix = semantic::planWorkspaceCompletionClosure(
+        discovery, {"file:///workspace/top.sv"}, {}, "a");
+    CHECK(short_prefix.closure.complete);
+    CHECK(short_prefix.matched_candidate_count == 130);
+    CHECK(short_prefix.planned_candidate_count == 64);
+    CHECK(short_prefix.skipped_candidate_count == 66);
+    CHECK(short_prefix.closure.uris.size() == 65);
+    CHECK(short_prefix.incomplete);
+
+    const auto long_prefix = semantic::planWorkspaceCompletionClosure(
+        discovery, {"file:///workspace/top.sv"}, {}, "al");
+    CHECK(long_prefix.closure.complete);
+    CHECK(long_prefix.matched_candidate_count == 130);
+    CHECK(long_prefix.planned_candidate_count == 128);
+    CHECK(long_prefix.skipped_candidate_count == 2);
+    CHECK(long_prefix.closure.uris.size() == 129);
+    CHECK(long_prefix.incomplete);
+}
+
+TEST_CASE("DocumentClosurePlanner skips incomplete and over-cap candidate closures",
+          "[analysis][semantic][document-closure][completion]") {
+    SemanticWorkspaceDiscoverySnapshot discovery;
+    addCompleteClosure(discovery, "file:///workspace/top.sv", {"file:///workspace/top.sv"});
+    for (int index = 0; index < 128; ++index) {
+        const auto root_uri = "file:///workspace/pkg_" + std::to_string(index) + ".sv";
+        discovery.declarations.push_back(
+            SemanticDiscoverySymbol{.name = "pkg_" + std::to_string(index),
+                                    .kind = "package",
+                                    .location = SemanticLocation{.uri = root_uri}});
+        std::vector<std::string> closure{root_uri};
+        closure.push_back("file:///workspace/inc_" + std::to_string(index) + ".svh");
+        closure.push_back("file:///workspace/impl_" + std::to_string(index) + ".sv");
+        addCompleteClosure(discovery, root_uri, std::move(closure));
+    }
+    discovery.declarations.push_back(
+        SemanticDiscoverySymbol{.name = "pkg_missing",
+                                .kind = "package",
+                                .location = SemanticLocation{.uri = "file:///workspace/missing.sv"}});
+
+    const auto plan = semantic::planWorkspaceCompletionClosure(
+        discovery, {"file:///workspace/top.sv"}, {}, "pkg");
+    CHECK(plan.closure.complete);
+    CHECK(plan.incomplete);
+    CHECK(plan.planned_candidate_count == 128);
+    CHECK(plan.skipped_candidate_count > 0);
+    CHECK(plan.added_document_count <= semantic::kWorkspaceCompletionAdditionalDocumentLimit);
+    CHECK(plan.closure.uris.size() <= semantic::kWorkspaceCompletionAdditionalDocumentLimit + 1);
+    CHECK(plan.closure.fingerprint != 0);
+}
+
+TEST_CASE("DocumentClosurePlanner canonicalizes document closure roots and fingerprints",
+          "[analysis][semantic][document-closure][canonical]") {
+    SemanticWorkspaceDiscoverySnapshot discovery;
+    addCompleteClosure(discovery, "file:///workspace/a.sv", {"file:///workspace/a.sv"});
+    addCompleteClosure(discovery, "file:///workspace/b.sv", {"file:///workspace/b.sv"});
+
+    const auto first = semantic::planDocumentClosure(
+        discovery, {"file:///workspace/b.sv", "file:///workspace/a.sv", "file:///workspace/a.sv"}, {});
+    const auto second =
+        semantic::planDocumentClosure(discovery, {"file:///workspace/a.sv", "file:///workspace/b.sv"}, {});
+    CHECK(first.complete);
+    CHECK(first.root_key == "file:///workspace/a.sv\nfile:///workspace/b.sv");
+    CHECK(first.uris == std::vector<std::string>{"file:///workspace/a.sv", "file:///workspace/b.sv"});
+    CHECK(first.fingerprint == second.fingerprint);
+}
+
+TEST_CASE("DocumentClosurePlanner records a missing base root",
+          "[analysis][semantic][document-closure][missing-root]") {
+    SemanticWorkspaceDiscoverySnapshot discovery;
+    const auto plan = semantic::planDocumentClosure(discovery, {"file:///workspace/missing.sv"}, {});
+    CHECK_FALSE(plan.complete);
+    CHECK(plan.uris.empty());
+    CHECK(plan.reasons == std::vector<std::string>{"closure-not-discovered:file:///workspace/missing.sv"});
+    CHECK(plan.fingerprint != 0);
+}
+
+TEST_CASE("DocumentClosurePlanner includes configured top closures",
+          "[analysis][semantic][document-closure][configured-top]") {
+    SemanticWorkspaceDiscoverySnapshot discovery;
+    addCompleteClosure(discovery, "file:///workspace/open.sv", {"file:///workspace/open.sv"});
+    discovery.closure_uris_by_name["configured_top"] = {"file:///workspace/child.sv",
+                                                         "file:///workspace/configured.sv"};
+
+    const auto plan = semantic::planDocumentClosure(
+        discovery, {"file:///workspace/open.sv"}, {"configured_top"});
+    CHECK(plan.complete);
+    CHECK(plan.uris == std::vector<std::string>{"file:///workspace/child.sv",
+                                                 "file:///workspace/configured.sv",
+                                                 "file:///workspace/open.sv"});
+}
+
+TEST_CASE("DocumentClosurePlanner records missing configured top closures",
+          "[analysis][semantic][document-closure][configured-top]") {
+    SemanticWorkspaceDiscoverySnapshot discovery;
+    addCompleteClosure(discovery, "file:///workspace/open.sv", {"file:///workspace/open.sv"});
+
+    const auto plan = semantic::planDocumentClosure(
+        discovery, {"file:///workspace/open.sv"}, {"missing_top"});
+    CHECK_FALSE(plan.complete);
+    CHECK(plan.reasons == std::vector<std::string>{"configured-top-not-discovered:missing_top"});
+}
+
+TEST_CASE("DocumentClosurePlanner accepts exactly the short candidate cap",
+          "[analysis][semantic][document-closure][completion][short-cap]") {
+    SemanticWorkspaceDiscoverySnapshot discovery;
+    addCompleteClosure(discovery, "file:///workspace/top.sv", {"file:///workspace/top.sv"});
+    for (size_t index = 0; index < semantic::kShortWorkspaceCompletionCandidateLimit; ++index) {
+        const auto uri = "file:///workspace/a" + std::to_string(index) + ".sv";
+        discovery.declarations.push_back(
+            SemanticDiscoverySymbol{.name = "a" + std::to_string(index), .location = {.uri = uri}});
+        addCompleteClosure(discovery, uri, {uri});
+    }
+
+    const auto plan =
+        semantic::planWorkspaceCompletionClosure(discovery, {"file:///workspace/top.sv"}, {}, "a");
+    CHECK_FALSE(plan.incomplete);
+    CHECK(plan.planned_candidate_count == semantic::kShortWorkspaceCompletionCandidateLimit);
+    CHECK(plan.skipped_candidate_count == 0);
+}
+
+TEST_CASE("DocumentClosurePlanner accepts exactly the long candidate cap",
+          "[analysis][semantic][document-closure][completion][long-cap]") {
+    SemanticWorkspaceDiscoverySnapshot discovery;
+    addCompleteClosure(discovery, "file:///workspace/top.sv", {"file:///workspace/top.sv"});
+    for (size_t index = 0; index < semantic::kLongWorkspaceCompletionCandidateLimit; ++index) {
+        const auto uri = "file:///workspace/ab" + std::to_string(index) + ".sv";
+        discovery.declarations.push_back(
+            SemanticDiscoverySymbol{.name = "ab" + std::to_string(index), .location = {.uri = uri}});
+        addCompleteClosure(discovery, uri, {uri});
+    }
+
+    const auto plan =
+        semantic::planWorkspaceCompletionClosure(discovery, {"file:///workspace/top.sv"}, {}, "ab");
+    CHECK_FALSE(plan.incomplete);
+    CHECK(plan.planned_candidate_count == semantic::kLongWorkspaceCompletionCandidateLimit);
+    CHECK(plan.skipped_candidate_count == 0);
+}
+
+TEST_CASE("DocumentClosurePlanner applies the short cap to an empty prefix",
+          "[analysis][semantic][document-closure][completion][empty-prefix]") {
+    SemanticWorkspaceDiscoverySnapshot discovery;
+    addCompleteClosure(discovery, "file:///workspace/top.sv", {"file:///workspace/top.sv"});
+    for (size_t index = 0; index <= semantic::kShortWorkspaceCompletionCandidateLimit; ++index) {
+        const auto uri = "file:///workspace/any" + std::to_string(index) + ".sv";
+        discovery.declarations.push_back(
+            SemanticDiscoverySymbol{.name = "any" + std::to_string(index), .location = {.uri = uri}});
+        addCompleteClosure(discovery, uri, {uri});
+    }
+
+    const auto plan =
+        semantic::planWorkspaceCompletionClosure(discovery, {"file:///workspace/top.sv"}, {}, "");
+    CHECK(plan.incomplete);
+    CHECK(plan.matched_candidate_count == semantic::kShortWorkspaceCompletionCandidateLimit + 1);
+    CHECK(plan.planned_candidate_count == semantic::kShortWorkspaceCompletionCandidateLimit);
+}
+
+TEST_CASE("DocumentClosurePlanner deduplicates repeated candidate facts",
+          "[analysis][semantic][document-closure][completion][dedupe]") {
+    SemanticWorkspaceDiscoverySnapshot discovery;
+    addCompleteClosure(discovery, "file:///workspace/top.sv", {"file:///workspace/top.sv"});
+    const auto candidate = SemanticDiscoverySymbol{.name = "child",
+                                                    .kind = "Definition",
+                                                    .location = {.uri = "file:///workspace/child.sv"}};
+    discovery.declarations = {candidate, candidate};
+    addCompleteClosure(discovery, "file:///workspace/child.sv", {"file:///workspace/child.sv"});
+
+    const auto plan =
+        semantic::planWorkspaceCompletionClosure(discovery, {"file:///workspace/top.sv"}, {}, "child");
+    CHECK(plan.matched_candidate_count == 1);
+    CHECK(plan.planned_candidate_count == 1);
+    CHECK(plan.added_document_count == 1);
+}
+
+TEST_CASE("DocumentClosurePlanner does not charge the base document twice",
+          "[analysis][semantic][document-closure][completion][base-dedupe]") {
+    SemanticWorkspaceDiscoverySnapshot discovery;
+    addCompleteClosure(discovery, "file:///workspace/top.sv", {"file:///workspace/top.sv"});
+    discovery.declarations.push_back(
+        SemanticDiscoverySymbol{.name = "top", .location = {.uri = "file:///workspace/top.sv"}});
+
+    const auto plan =
+        semantic::planWorkspaceCompletionClosure(discovery, {"file:///workspace/top.sv"}, {}, "top");
+    CHECK_FALSE(plan.incomplete);
+    CHECK(plan.added_document_count == 0);
+    CHECK(plan.closure.uris == std::vector<std::string>{"file:///workspace/top.sv"});
+}
+
+TEST_CASE("DocumentClosurePlanner marks a missing candidate closure incomplete",
+          "[analysis][semantic][document-closure][completion][missing-candidate]") {
+    SemanticWorkspaceDiscoverySnapshot discovery;
+    addCompleteClosure(discovery, "file:///workspace/top.sv", {"file:///workspace/top.sv"});
+    discovery.declarations.push_back(
+        SemanticDiscoverySymbol{.name = "child", .location = {.uri = "file:///workspace/child.sv"}});
+
+    const auto plan =
+        semantic::planWorkspaceCompletionClosure(discovery, {"file:///workspace/top.sv"}, {}, "child");
+    CHECK(plan.closure.complete);
+    CHECK(plan.incomplete);
+    CHECK(plan.planned_candidate_count == 1);
+    CHECK(plan.skipped_candidate_count == 1);
+    CHECK(plan.closure.uris == std::vector<std::string>{"file:///workspace/top.sv"});
+}
+
+TEST_CASE("DocumentClosurePlanner marks an incomplete candidate closure incomplete",
+          "[analysis][semantic][document-closure][completion][incomplete-candidate]") {
+    SemanticWorkspaceDiscoverySnapshot discovery;
+    addCompleteClosure(discovery, "file:///workspace/top.sv", {"file:///workspace/top.sv"});
+    discovery.declarations.push_back(
+        SemanticDiscoverySymbol{.name = "child", .location = {.uri = "file:///workspace/child.sv"}});
+    discovery.document_closures_by_uri.emplace(
+        "file:///workspace/child.sv",
+        SemanticWorkspaceDiscoverySnapshot::DocumentClosure{
+            .uris = {"file:///workspace/child.sv"}, .reasons = {"missing:child.svh"}, .complete = false});
+
+    const auto plan =
+        semantic::planWorkspaceCompletionClosure(discovery, {"file:///workspace/top.sv"}, {}, "child");
+    CHECK(plan.incomplete);
+    CHECK(plan.skipped_candidate_count == 1);
+    CHECK(plan.closure.reasons ==
+          std::vector<std::string>{"workspace-candidate-closure-incomplete:file:///workspace/child.sv"});
+}
+
+TEST_CASE("DocumentClosurePlanner skips candidate closures that exceed the document budget",
+          "[analysis][semantic][document-closure][completion][document-cap]") {
+    SemanticWorkspaceDiscoverySnapshot discovery;
+    addCompleteClosure(discovery, "file:///workspace/top.sv", {"file:///workspace/top.sv"});
+    discovery.declarations.push_back(
+        SemanticDiscoverySymbol{.name = "large", .location = {.uri = "file:///workspace/large.sv"}});
+    std::vector<std::string> large_closure;
+    for (size_t index = 0; index <= semantic::kWorkspaceCompletionAdditionalDocumentLimit; ++index) {
+        large_closure.push_back("file:///workspace/large_" + std::to_string(index) + ".sv");
+    }
+    addCompleteClosure(discovery, "file:///workspace/large.sv", std::move(large_closure));
+
+    const auto plan =
+        semantic::planWorkspaceCompletionClosure(discovery, {"file:///workspace/top.sv"}, {}, "large");
+    CHECK(plan.incomplete);
+    CHECK(plan.added_document_count == 0);
+    CHECK(plan.skipped_candidate_count == 1);
+    CHECK(plan.closure.uris == std::vector<std::string>{"file:///workspace/top.sv"});
+}
+
+TEST_CASE("DocumentClosurePlanner preserves a base failure instead of planning candidates",
+          "[analysis][semantic][document-closure][completion][base-incomplete]") {
+    SemanticWorkspaceDiscoverySnapshot discovery;
+    discovery.document_closures_by_uri.emplace(
+        "file:///workspace/top.sv",
+        SemanticWorkspaceDiscoverySnapshot::DocumentClosure{
+            .uris = {"file:///workspace/top.sv"}, .reasons = {"missing:top.svh"}, .complete = false});
+    discovery.declarations.push_back(
+        SemanticDiscoverySymbol{.name = "child", .location = {.uri = "file:///workspace/child.sv"}});
+    addCompleteClosure(discovery, "file:///workspace/child.sv", {"file:///workspace/child.sv"});
+
+    const auto plan =
+        semantic::planWorkspaceCompletionClosure(discovery, {"file:///workspace/top.sv"}, {}, "child");
+    CHECK_FALSE(plan.closure.complete);
+    CHECK_FALSE(plan.incomplete);
+    CHECK(plan.matched_candidate_count == 0);
+    CHECK(plan.planned_candidate_count == 0);
 }
 
 TEST_CASE("SemanticEngine maintains a lightweight workspace discovery snapshot",

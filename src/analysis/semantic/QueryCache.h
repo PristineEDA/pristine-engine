@@ -182,13 +182,15 @@ public:
         std::string_view uri,
         int line,
         int character,
-        std::string_view prefix) const;
+        std::string_view prefix,
+        std::uint64_t plan_fingerprint = 0) const;
     void storeCompletions(std::uint64_t generation,
                           std::string_view uri,
                           int line,
                           int character,
                           std::string_view prefix,
-                          SemanticCompletionResult result);
+                          SemanticCompletionResult result,
+                          std::uint64_t plan_fingerprint = 0);
 
     [[nodiscard]] std::optional<SemanticSignatureHelpResult> signatureHelp(
         std::uint64_t generation,
@@ -347,7 +349,8 @@ private:
     [[nodiscard]] static std::string completionKey(std::string_view uri,
                                                    int line,
                                                    int character,
-                                                   std::string_view prefix);
+                                                   std::string_view prefix,
+                                                   std::uint64_t plan_fingerprint);
     [[nodiscard]] static std::string moduleQueryKey(std::optional<std::string_view> module_name,
                                                     int max_depth);
     [[nodiscard]] static std::string rangeKey(std::string_view uri, ParseRange range);

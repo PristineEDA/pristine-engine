@@ -1,0 +1,1 @@
+{"name":"parameterized packed port hover exposes data22 type metadata","sources":[{"uri":"file:///golden/hover/param22.sv","text":"module top #(parameter int WIDTH = 8) (input logic [WIDTH-1:0] data22);\nendmodule\n"}],"request":{"kind":"hover","uri":"file:///golden/hover/param22.sv","line":0,"character":64},"expected":{"contentsContains":["data22","logic"]}}

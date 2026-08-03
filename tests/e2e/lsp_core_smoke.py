@@ -50,6 +50,15 @@ def request(process: subprocess.Popen[bytes], request_id: int, method: str, para
             return response
 
 
+def completion_items(result: object) -> list[dict]:
+    assert isinstance(result, dict)
+    assert isinstance(result.get("isIncomplete"), bool)
+    items = result.get("items")
+    assert isinstance(items, list)
+    assert all(isinstance(item, dict) for item in items)
+    return items
+
+
 def notify(process: subprocess.Popen[bytes], method: str, params: dict | None) -> None:
     message = {"jsonrpc": "2.0", "method": method}
     if params is not None:
@@ -646,6 +655,7 @@ def main() -> int:
                     "context": {"triggerKind": 1},
                 },
             )["result"]
+            completions = completion_items(completions)
             labels = {item["label"] for item in completions}
             assert "child" in labels
             assert "child_i" in labels
@@ -673,6 +683,7 @@ def main() -> int:
                     "context": {"triggerKind": 1},
                 },
             )["result"]
+            port_completions = completion_items(port_completions)
             rst_completion = next(item for item in port_completions if item["label"] == "rst_n")
             assert rst_completion["data"]["source"] == "semanticEngine"
             resolved_port = request(
@@ -694,6 +705,7 @@ def main() -> int:
                     "context": {"triggerKind": 1},
                 },
             )["result"]
+            module_context_completions = completion_items(module_context_completions)
             module_context_labels = {item["label"] for item in module_context_completions}
             assert "chard" in module_context_labels
             assert "chip" in module_context_labels
@@ -708,6 +720,7 @@ def main() -> int:
                     "context": {"triggerKind": 2, "triggerCharacter": "."},
                 },
             )["result"]
+            filtered_port_completions = completion_items(filtered_port_completions)
             filtered_labels = {item["label"] for item in filtered_port_completions}
             assert "clk" not in filtered_labels
             assert "rst_n" in filtered_labels
@@ -723,6 +736,7 @@ def main() -> int:
                     "context": {"triggerKind": 1},
                 },
             )["result"]
+            macro_completions = completion_items(macro_completions)
             feature_completion = next(item for item in macro_completions if item["label"] == "FEATURE")
             assert feature_completion["detail"] == "Macro"
             assert feature_completion["data"]["source"] == "semanticEngine"

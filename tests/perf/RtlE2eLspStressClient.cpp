@@ -848,6 +848,19 @@ void collectSyntaxCacheMetrics(const lsp::json::Object& response, Metrics& metri
     metrics.syntax_cache_entries = integerValue(response, "syntaxCacheEntries");
 }
 
+const lsp::json::Array& completionItems(const lsp::json::Value& result) {
+    if (!result.isObject()) {
+        throw std::runtime_error("completion response result is not an object");
+    }
+    const auto& completion = result.object();
+    const auto* incomplete = completion.find("isIncomplete");
+    const auto* items = completion.find("items");
+    if (incomplete == nullptr || !incomplete->isBoolean() || items == nullptr || !items->isArray()) {
+        throw std::runtime_error("completion response is not a CompletionList");
+    }
+    return items->array();
+}
+
 void collectHierarchyMetrics(const lsp::json::Value& result, Metrics& metrics, bool warm) {
     if (!result.isObject()) {
         throw std::runtime_error("moduleHierarchy response result is not an object");
@@ -1449,7 +1462,8 @@ int main(int argc, char** argv) {
             "textDocument/completion",
             hoverParams(opened_source.uri, completion_line, completion_character));
         metrics.completion_cold_micros = elapsedMicros(start, Clock::now());
-        metrics.completion_item_count = completion_cold.isArray() ? completion_cold.array().size() : 0;
+        const auto& completion_cold_items = completionItems(completion_cold);
+        metrics.completion_item_count = completion_cold_items.size();
         writeOperation(operation_log,
                        "textDocument/completion:cold",
                        metrics.completion_cold_micros,
@@ -1458,11 +1472,11 @@ int main(int argc, char** argv) {
                    "completion:cold:end",
                    std::to_string(metrics.completion_cold_micros) + "us");
 
-        if (completion_cold.isArray() && !completion_cold.array().empty()) {
+        if (!completion_cold_items.empty()) {
             writeStage(operation_log, "completion:resolve:begin");
             start = Clock::now();
             auto completion_resolve = client.request("completionItem/resolve",
-                                                     completion_cold.array().front());
+                                                     completion_cold_items.front());
             metrics.completion_resolve_micros = elapsedMicros(start, Clock::now());
             writeOperation(operation_log,
                            "completionItem/resolve",

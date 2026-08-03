@@ -321,6 +321,32 @@ std::vector<SemanticLocation> visibleTypeDefinitionLocationsByName(
     return locations;
 }
 
+std::vector<SemanticLocation> uniqueCrossDocumentClassOrInterfaceTypeDefinitionLocations(
+    const SnapshotData& data,
+    std::string_view reference_uri,
+    std::string_view name) {
+    std::vector<SemanticLocation> locations;
+    for (const auto& [_, symbol] : data.symbols_by_id) {
+        const auto& identity = symbol.identity;
+        if (identity.location.uri == reference_uri || identity.name != name) {
+            continue;
+        }
+        const bool is_class = identity.kind == "ClassType";
+        const bool is_interface = identity.kind == "Interface" ||
+                                  (symbol.symbol != nullptr &&
+                                   symbol.symbol->kind == slang::ast::SymbolKind::Definition &&
+                                   symbol.symbol->as<slang::ast::DefinitionSymbol>().definitionKind ==
+                                       slang::ast::DefinitionKind::Interface);
+        if (!is_class && !is_interface) {
+            continue;
+        }
+        locations.push_back(identity.location);
+    }
+    std::sort(locations.begin(), locations.end(), locationLess);
+    locations.erase(std::unique(locations.begin(), locations.end(), sameLocation), locations.end());
+    return locations;
+}
+
 std::string directionName(slang::ast::ArgumentDirection direction) {
     switch (direction) {
         case slang::ast::ArgumentDirection::In:
@@ -7883,6 +7909,30 @@ bool addInterfacePortTypeReferences(SnapshotData& data,
     return inserted;
 }
 
+bool isInterfaceDefinitionSymbol(const SnapshotIndexedSymbol& indexed) {
+    return indexed.symbol != nullptr && indexed.symbol->kind == slang::ast::SymbolKind::Definition &&
+           indexed.symbol->as<slang::ast::DefinitionSymbol>().definitionKind ==
+               slang::ast::DefinitionKind::Interface;
+}
+
+void addInterfaceInstanceTypeReferences(SnapshotData& data) {
+    for (const auto& [uri, instances] : data.module_instances_by_uri) {
+        for (const auto& instance : instances) {
+            if (instance.target_stable_id.empty()) {
+                continue;
+            }
+            const auto target = data.symbols_by_id.find(instance.target_stable_id);
+            if (target == data.symbols_by_id.end() || !isInterfaceDefinitionSymbol(target->second)) {
+                continue;
+            }
+            appendTypeReference(data,
+                                SemanticLocation{.uri = uri, .range = instance.module_selection_range},
+                                instance.module_name,
+                                {target->second.identity.location});
+        }
+    }
+}
+
 void addTypeReferenceForSymbol(SnapshotData& data,
                                const slang::SourceManager& source_manager,
                                const std::unordered_map<std::string, SemanticEngineDocument>& documents,
@@ -7943,6 +7993,15 @@ void addTypeReferenceForSymbol(SnapshotData& data,
                                                                       reference_location->uri,
                                                                       lookup_name,
                                                                       qualified_package);
+        if (named_definitions.empty() && !qualified_package.has_value()) {
+            auto cross_document_definitions = uniqueCrossDocumentClassOrInterfaceTypeDefinitionLocations(
+                data,
+                reference_location->uri,
+                lookup_name);
+            if (cross_document_definitions.size() == 1) {
+                named_definitions = std::move(cross_document_definitions);
+            }
+        }
         definitions.insert(definitions.end(), named_definitions.begin(), named_definitions.end());
     }
     appendTypeReference(data, *reference_location, std::move(type_name), std::move(definitions));
@@ -7960,6 +8019,7 @@ void buildTypeReferences(SnapshotData& data,
         }
         addTypeReferenceForSymbol(data, *data.source_manager, documents, *indexed_symbol.symbol);
     }
+    addInterfaceInstanceTypeReferences(data);
     for (auto& [_, references] : data.type_references_by_uri) {
         std::sort(references.begin(), references.end(), [](const auto& lhs, const auto& rhs) {
             return locationLess(lhs.reference, rhs.reference);
