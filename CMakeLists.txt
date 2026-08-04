@@ -237,6 +237,7 @@ add_library(
   src/analysis/semantic/DocumentClosurePlanner.cpp
   src/analysis/semantic/NavigationProvider.cpp
   src/analysis/semantic/QueryCache.cpp
+  src/analysis/semantic/SemanticSnapshotCache.cpp
   src/analysis/semantic/SignatureInlayProvider.cpp
   src/analysis/semantic/SnapshotBuilder.cpp
   src/analysis/semantic/WorkspaceDiscoveryIndex.cpp

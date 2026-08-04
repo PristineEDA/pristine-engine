@@ -49,6 +49,12 @@ void appendReason(std::vector<std::string>& reasons, std::string reason) {
     reasons.push_back(std::move(reason));
 }
 
+bool containsAny(const std::vector<std::string>& values, const std::set<std::string>& needles) {
+    return std::any_of(values.begin(), values.end(), [&](const std::string& value) {
+        return needles.contains(value);
+    });
+}
+
 void finalize(DocumentClosurePlan& plan) {
     sortAndDedupe(plan.uris);
     sortAndDedupe(plan.reasons);
@@ -229,6 +235,123 @@ WorkspaceCompletionPlan planWorkspaceCompletionClosure(
     hashCombine(plan.closure.fingerprint, plan.added_document_count);
     hashCombine(plan.closure.fingerprint, plan.incomplete ? 1ull : 0ull);
     return plan;
+}
+
+ReferenceCandidatePlan planReferenceCandidateClosure(
+    const SemanticWorkspaceDiscoverySnapshot& discovery,
+    std::vector<std::string> roots,
+    const std::vector<std::string>& configured_top_modules,
+    const ReferenceSearchSeed& seed) {
+    ReferenceCandidatePlan result;
+    result.closure = planDocumentClosure(discovery, std::move(roots), configured_top_modules);
+    result.confidence = "complete";
+    if (!result.closure.complete) {
+        result.requires_full_snapshot = true;
+        result.confidence = "incomplete-base-closure";
+        return result;
+    }
+    if (!discovery.reference_candidate_incomplete_reasons.empty()) {
+        result.closure.reasons.insert(result.closure.reasons.end(),
+                                      discovery.reference_candidate_incomplete_reasons.begin(),
+                                      discovery.reference_candidate_incomplete_reasons.end());
+        appendReason(result.closure.reasons, "reference-candidate-index-incomplete");
+        finalize(result.closure);
+        result.requires_full_snapshot = true;
+        result.confidence = "incomplete-discovery";
+        return result;
+    }
+    if (!seed.complete || seed.stable_id.empty() || seed.spellings.empty()) {
+        result.closure.reasons.insert(result.closure.reasons.end(), seed.reasons.begin(), seed.reasons.end());
+        appendReason(result.closure.reasons, "reference-search-seed-incomplete");
+        finalize(result.closure);
+        result.requires_full_snapshot = true;
+        result.confidence = "incomplete-seed";
+        return result;
+    }
+
+    std::set<std::string> selected(result.closure.uris.begin(), result.closure.uris.end());
+    std::set<std::string> candidate_roots;
+    std::set<std::string> spellings(seed.spellings.begin(), seed.spellings.end());
+    candidate_roots.insert(seed.declaration_uri);
+    for (const auto& spelling : spellings) {
+        const auto postings = discovery.reference_candidate_uris_by_name.find(spelling);
+        if (postings != discovery.reference_candidate_uris_by_name.end()) {
+            candidate_roots.insert(postings->second.begin(), postings->second.end());
+        }
+    }
+
+    // Expand macro propagation transitively. Incomplete macro bodies are a full-snapshot preselection,
+    // never a provider-side name recovery.
+    std::set<std::string> relevant_macro_names;
+    bool expanded = true;
+    while (expanded) {
+        expanded = false;
+        for (const auto& definition : discovery.macro_definitions) {
+            if (!containsAny(definition.body_identifiers, spellings) &&
+                !containsAny(definition.body_identifiers, relevant_macro_names)) {
+                continue;
+            }
+            if (!definition.complete) {
+                result.closure.reasons.insert(result.closure.reasons.end(),
+                                               definition.reasons.begin(),
+                                               definition.reasons.end());
+                appendReason(result.closure.reasons, "reference-macro-body-incomplete:" + definition.name);
+                finalize(result.closure);
+                result.requires_full_snapshot = true;
+                result.confidence = "incomplete-macro-propagation";
+                return result;
+            }
+            candidate_roots.insert(definition.uri);
+            if (relevant_macro_names.insert(definition.name).second) {
+                expanded = true;
+            }
+        }
+    }
+    for (const auto& macro_name : relevant_macro_names) {
+        const auto invocations = discovery.macro_invocation_uris_by_name.find(macro_name);
+        if (invocations != discovery.macro_invocation_uris_by_name.end()) {
+            candidate_roots.insert(invocations->second.begin(), invocations->second.end());
+        }
+    }
+
+    result.candidate_document_count = candidate_roots.size();
+    for (const auto& root : candidate_roots) {
+        if (root.empty()) {
+            continue;
+        }
+        const auto closure = discovery.document_closures_by_uri.find(root);
+        if (closure == discovery.document_closures_by_uri.end() || !closure->second.complete ||
+            closure->second.uris.empty()) {
+            appendReason(result.closure.reasons, "reference-candidate-closure-incomplete:" + root);
+            if (closure != discovery.document_closures_by_uri.end()) {
+                result.closure.reasons.insert(result.closure.reasons.end(),
+                                               closure->second.reasons.begin(),
+                                               closure->second.reasons.end());
+            }
+            finalize(result.closure);
+            result.requires_full_snapshot = true;
+            result.confidence = "incomplete-candidate-closure";
+            return result;
+        }
+        selected.insert(closure->second.uris.begin(), closure->second.uris.end());
+    }
+
+    result.closure.uris.assign(selected.begin(), selected.end());
+    result.closure.complete = !result.closure.uris.empty();
+    result.selected_document_count = result.closure.uris.size();
+    if (discovery.file_count != 0 && result.selected_document_count >= discovery.file_count) {
+        result.requires_full_snapshot = true;
+        result.confidence = "candidate-closure-covers-workspace";
+    }
+    finalize(result.closure);
+    hashCombine(result.closure.fingerprint, kReferenceCandidatePolicyVersion);
+    hashCombine(result.closure.fingerprint, seed.stable_id);
+    for (const auto& spelling : spellings) {
+        hashCombine(result.closure.fingerprint, spelling);
+    }
+    hashCombine(result.closure.fingerprint, result.candidate_document_count);
+    hashCombine(result.closure.fingerprint, result.requires_full_snapshot ? 1ull : 0ull);
+    return result;
 }
 
 } // namespace pristine::analysis::semantic

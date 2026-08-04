@@ -29,8 +29,10 @@ namespace pristine::analysis {
 
 namespace semantic {
 class AffectedDependencyGraph;
-class DocumentSnapshotCache;
 class QueryCache;
+class SemanticSnapshotCache;
+struct DocumentClosurePlan;
+struct ReferenceCandidatePlan;
 struct SnapshotData;
 }
 
@@ -112,6 +114,11 @@ struct SemanticReferenceResult {
     std::vector<std::string> messages;
     size_t scanned_occurrence_count = 0;
     size_t scanned_implementation_edge_count = 0;
+    size_t candidate_document_count = 0;
+    size_t selected_document_count = 0;
+    std::string snapshot_scope;
+    std::string plan_confidence;
+    std::uint64_t plan_fingerprint = 0;
     bool unresolved = false;
     bool truncated = false;
 };
@@ -147,6 +154,11 @@ struct SemanticRenameResult {
     std::vector<std::string> messages;
     size_t scanned_occurrence_count = 0;
     size_t scanned_implementation_edge_count = 0;
+    size_t candidate_document_count = 0;
+    size_t selected_document_count = 0;
+    std::string snapshot_scope;
+    std::string plan_confidence;
+    std::uint64_t plan_fingerprint = 0;
     bool unresolved = false;
     bool truncated = false;
 };
@@ -578,6 +590,18 @@ struct SemanticWorkspaceDiscoverySnapshot {
     std::vector<SemanticDiscoverySymbol> declarations;
     std::vector<std::string> top_candidates;
     std::unordered_map<std::string, std::vector<std::string>> closure_uris_by_name;
+    // Internal planning data. It may select a snapshot input but never produces LSP answers.
+    std::unordered_map<std::string, std::vector<std::string>> reference_candidate_uris_by_name;
+    std::unordered_map<std::string, std::vector<std::string>> macro_invocation_uris_by_name;
+    struct MacroDefinition {
+        std::string name;
+        std::string uri;
+        std::vector<std::string> body_identifiers;
+        bool complete = true;
+        std::vector<std::string> reasons;
+    };
+    std::vector<MacroDefinition> macro_definitions;
+    std::vector<std::string> reference_candidate_incomplete_reasons;
     struct DocumentClosure {
         std::vector<std::string> uris;
         std::vector<std::string> reasons;
@@ -611,6 +635,14 @@ struct SemanticSnapshotBuildStats {
     bool cache_hit = false;
 };
 
+struct SemanticCompletionResolveTelemetry {
+    std::string scope_kind;
+    std::int64_t lookup_micros = 0;
+    std::uint64_t identity_hits = 0;
+    std::uint64_t identity_misses = 0;
+    std::uint64_t snapshot_build_delta = 0;
+};
+
 struct SemanticQueryCacheStats {
     std::uint64_t hits = 0;
     std::uint64_t misses = 0;
@@ -620,6 +652,8 @@ struct SemanticQueryCacheStats {
     std::uint64_t inlay_scanned_invocations = 0;
     std::uint64_t macro_scanned_visible_definitions = 0;
     std::uint64_t completion_resolve_scanned_facts = 0;
+    std::uint64_t completion_resolve_identity_hits = 0;
+    std::uint64_t completion_resolve_identity_misses = 0;
     std::uint64_t diagnostic_lookup_scanned_facts = 0;
     std::uint64_t reference_lookup_scanned_occurrences = 0;
     std::uint64_t call_hierarchy_scanned_edges = 0;
@@ -741,6 +775,7 @@ public:
                                                                  size_t limit = 1000) const;
     [[nodiscard]] SemanticQueryCacheStats queryCacheStats() const;
     [[nodiscard]] SemanticSnapshotBuildStats lastSnapshotBuildStats() const;
+    [[nodiscard]] SemanticCompletionResolveTelemetry lastCompletionResolveTelemetry() const;
     void resetQueryCacheStats();
 
 private:
@@ -755,12 +790,25 @@ private:
         bool closure = false;
     };
 
+    struct ReferenceSnapshotSelection {
+        SnapshotSelection snapshot;
+        std::string target_stable_id;
+        size_t candidate_document_count = 0;
+        size_t selected_document_count = 0;
+        std::string scope_kind;
+        std::string confidence;
+        std::uint64_t plan_fingerprint = 0;
+    };
+
     void rebuildDependenciesFor(std::string_view document_uri, std::string_view text);
     void rebuildSnapshot() const;
     [[nodiscard]] SnapshotSelection snapshotForDocument(
         std::string_view uri,
         std::optional<std::string_view> workspace_candidate_prefix = std::nullopt) const;
-    [[nodiscard]] SnapshotSelection snapshotForIdentity(std::string_view identity) const;
+    [[nodiscard]] SnapshotSelection findSnapshotForIdentity(std::string_view identity) const;
+    [[nodiscard]] ReferenceSnapshotSelection snapshotForReferenceQuery(std::string_view uri,
+                                                                        int line,
+                                                                        int character) const;
     [[nodiscard]] const SemanticWorkspaceDiscoverySnapshot& workspaceDiscoveryView() const;
     void clearDocumentSnapshotCache();
     [[nodiscard]] std::vector<std::string> closureDocumentUrisFor(
@@ -776,12 +824,14 @@ private:
     mutable std::unique_ptr<semantic::SnapshotData> snapshot_data_;
     mutable std::string full_snapshot_identity_;
     mutable std::unique_ptr<semantic::QueryCache> query_cache_;
-    mutable std::unique_ptr<semantic::DocumentSnapshotCache> document_snapshot_cache_;
+    mutable std::unique_ptr<semantic::SemanticSnapshotCache> semantic_snapshot_cache_;
     mutable std::optional<SemanticWorkspaceDiscoverySnapshot> discovery_snapshot_cache_;
     mutable std::uint64_t discovery_cache_key_ = 0;
     mutable bool snapshot_dirty_ = true;
     mutable SemanticRequestControl request_control_;
     mutable SemanticSnapshotBuildStats last_snapshot_build_stats_;
+    mutable SemanticCompletionResolveTelemetry last_completion_resolve_telemetry_;
+    mutable std::uint64_t completed_snapshot_build_count_ = 0;
     mutable std::uint64_t cancelled_snapshot_build_count_ = 0;
     std::uint64_t generation_ = 0;
 };

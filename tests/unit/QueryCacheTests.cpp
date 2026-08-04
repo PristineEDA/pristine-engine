@@ -147,6 +147,66 @@ TEST_CASE("QueryCache keeps diagnostics entries outside visible query eviction",
     CHECK(cache.diagnostics(1, "file:///b.sv").has_value());
 }
 
+TEST_CASE("QueryCache scopes references and rename entries to candidate-plan identity",
+          "[analysis][semantic][query-cache][reference-closure]") {
+    QueryCache cache;
+    SemanticReferenceResult first_references;
+    first_references.generation = 7;
+    first_references.snapshot_scope = "referenceClosure";
+    cache.storeReferences(7,
+                          "file:///workspace/top.sv",
+                          2,
+                          8,
+                          true,
+                          first_references,
+                          101,
+                          "symbol:first",
+                          "referenceClosure");
+
+    SemanticReferenceResult second_references;
+    second_references.generation = 7;
+    second_references.snapshot_scope = "full";
+    cache.storeReferences(7,
+                          "file:///workspace/top.sv",
+                          2,
+                          8,
+                          true,
+                          second_references,
+                          202,
+                          "symbol:second",
+                          "full");
+
+    const auto first_hit = cache.references(7,
+                                            "file:///workspace/top.sv",
+                                            2,
+                                            8,
+                                            true,
+                                            101,
+                                            "symbol:first",
+                                            "referenceClosure");
+    REQUIRE(first_hit.has_value());
+    CHECK(first_hit->snapshot_scope == "referenceClosure");
+    const auto second_hit = cache.references(7,
+                                             "file:///workspace/top.sv",
+                                             2,
+                                             8,
+                                             true,
+                                             202,
+                                             "symbol:second",
+                                             "full");
+    REQUIRE(second_hit.has_value());
+    CHECK(second_hit->snapshot_scope == "full");
+    CHECK_FALSE(cache.references(7,
+                                 "file:///workspace/top.sv",
+                                 2,
+                                 8,
+                                 true,
+                                 101,
+                                 "symbol:second",
+                                 "referenceClosure")
+                    .has_value());
+}
+
 TEST_CASE("QueryCache snapshots and resets counters without clearing entries",
           "[analysis][semantic][query-cache]") {
     QueryCache cache;

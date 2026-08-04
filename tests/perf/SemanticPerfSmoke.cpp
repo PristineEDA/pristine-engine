@@ -132,6 +132,7 @@ int main() {
         emitStatus("completion-complete", "documents=" + std::to_string(workspace_size));
         long long completion_resolve_micros = 0;
         bool completion_resolve_unresolved = true;
+        pristine::analysis::SemanticCompletionResolveTelemetry completion_resolve_telemetry;
         if (!completion.items.empty()) {
             const auto start_completion_resolve = Clock::now();
             const auto resolved = engine.resolveCompletion(completion.items.front().stable_id,
@@ -139,6 +140,7 @@ int main() {
                                                            completion.items.front().snapshot_identity);
             completion_resolve_unresolved = resolved.unresolved;
             completion_resolve_micros = elapsedMicros(start_completion_resolve, Clock::now());
+            completion_resolve_telemetry = engine.lastCompletionResolveTelemetry();
         }
 
         const auto start_workspace_completion = Clock::now();
@@ -156,6 +158,7 @@ int main() {
         const auto start_query = Clock::now();
         const auto references = engine.referencesAt(target_uri, 1, 10, true);
         const auto end_query = Clock::now();
+        const auto reference_snapshot = engine.lastSnapshotBuildStats();
         const auto start_query_warm = Clock::now();
         const auto references_warm = engine.referencesAt(target_uri, 1, 10, true);
         const auto end_query_warm = Clock::now();
@@ -269,6 +272,7 @@ int main() {
                                      completion_warm.unresolved || completion.items.empty() ||
                                      completion_warm.items.empty() ||
                                      completion_resolve_unresolved ||
+                                     completion_resolve_telemetry.snapshot_build_delta != 0 ||
                                      hover_snapshot.scope_kind != "documentClosure" ||
                                      hover_snapshot.selected_document_count >=
                                          static_cast<size_t>(workspace_size) ||
@@ -296,6 +300,11 @@ int main() {
                                      macro_definition.locations.empty() || macro_expand.actions.empty() ||
                                      references.unresolved || references_warm.unresolved ||
                                      references.locations.size() != references_warm.locations.size() ||
+                                     references.snapshot_scope != "referenceClosure" ||
+                                     references.selected_document_count >= static_cast<size_t>(workspace_size) ||
+                                     rename.unresolved ||
+                                     rename.snapshot_scope != references.snapshot_scope ||
+                                     rename.plan_fingerprint != references.plan_fingerprint ||
                                      highlights.unresolved ||
                                      call_prepare.unresolved || call_prepare.items.empty() ||
                                      call_outgoing.unresolved || cache_stats.call_hierarchy_scanned_modules != 0 ||
@@ -433,6 +442,14 @@ int main() {
                   << "\"completionResolveMicros\":" << completion_resolve_micros << ","
                   << "\"completionResolveUnresolved\":"
                   << (completion_resolve_unresolved ? "true" : "false") << ","
+                  << "\"completionResolveIdentityHits\":"
+                  << completion_resolve_telemetry.identity_hits << ","
+                  << "\"completionResolveIdentityMisses\":"
+                  << completion_resolve_telemetry.identity_misses << ","
+                  << "\"completionResolveSnapshotBuildDelta\":"
+                  << completion_resolve_telemetry.snapshot_build_delta << ","
+                  << "\"completionResolveLookupMicros\":"
+                  << completion_resolve_telemetry.lookup_micros << ","
                   << "\"workspaceCompletionMicros\":" << workspace_completion_micros << ","
                   << "\"workspaceCompletionWarmMicros\":"
                   << workspace_completion_warm_micros << ","
@@ -446,6 +463,13 @@ int main() {
                     << (workspace_completion_warm.unresolved ? "true" : "false") << ","
                   << "\"referenceMicros\":" << elapsedMicros(start_query, end_query) << ","
                   << "\"referenceWarmMicros\":" << elapsedMicros(start_query_warm, end_query_warm) << ","
+                  << "\"referenceSnapshotScope\":\"" << references.snapshot_scope << "\","
+                  << "\"referencePlanConfidence\":\"" << references.plan_confidence << "\","
+                  << "\"referencePlanFingerprint\":" << references.plan_fingerprint << ","
+                  << "\"referencePlanCandidateDocuments\":" << references.candidate_document_count << ","
+                  << "\"referencePlanSelectedDocuments\":" << references.selected_document_count << ","
+                  << "\"referenceSnapshotSelectedDocuments\":"
+                  << reference_snapshot.selected_document_count << ","
                   << "\"documentHighlightMicros\":" << elapsedMicros(start_highlight, end_highlight) << ","
                   << "\"renameMicros\":" << elapsedMicros(start_rename, end_rename) << ","
                   << "\"signatureHelpMicros\":" << elapsedMicros(start_signature, end_signature) << ","

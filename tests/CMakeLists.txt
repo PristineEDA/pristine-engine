@@ -16,6 +16,7 @@ add_executable(
 	unit/NavigationProviderTests.cpp
 	unit/ProviderCompletenessMatrixTests.cpp
 	unit/QueryCacheTests.cpp
+	unit/ReferenceClosurePlannerTests.cpp
 	unit/SemanticEngineTests.cpp
 	unit/SignatureInlayProviderTests.cpp
 	unit/SnapshotBuilderTests.cpp

@@ -10,12 +10,14 @@
 #include "semantic/DocumentClosurePlanner.h"
 #include "semantic/NavigationProvider.h"
 #include "semantic/QueryCache.h"
+#include "semantic/SemanticSnapshotCache.h"
 #include "semantic/SignatureInlayProvider.h"
 #include "semantic/SnapshotBuilder.h"
 #include "semantic/WorkspaceDiscoveryIndex.h"
 #include "pristine/analysis/SourceUtil.h"
 
 #include <algorithm>
+#include <cassert>
 #include <chrono>
 #include <functional>
 #include <memory>
@@ -24,66 +26,6 @@
 #include <utility>
 
 namespace pristine::analysis {
-
-namespace semantic {
-
-class DocumentSnapshotCache {
-public:
-    struct Entry {
-        std::uint64_t key = 0;
-        std::uint64_t last_used = 0;
-        std::string root_uri;
-        std::string identity;
-        SemanticEngineSnapshot snapshot;
-        std::unique_ptr<SnapshotData> data;
-    };
-
-    Entry* find(std::uint64_t key) {
-        const auto found = std::find_if(entries_.begin(), entries_.end(), [&](const Entry& entry) {
-            return entry.key == key;
-        });
-        if (found == entries_.end()) {
-            return nullptr;
-        }
-        found->last_used = ++clock_;
-        return &*found;
-    }
-
-    Entry* findIdentity(std::string_view identity) {
-        const auto found = std::find_if(entries_.begin(), entries_.end(), [&](const Entry& entry) {
-            return entry.identity == identity;
-        });
-        if (found == entries_.end()) {
-            return nullptr;
-        }
-        found->last_used = ++clock_;
-        return &*found;
-    }
-
-    Entry& insert(Entry entry) {
-        entry.last_used = ++clock_;
-        if (entries_.size() >= 4) {
-            const auto oldest = std::min_element(entries_.begin(), entries_.end(), [](const Entry& lhs,
-                                                                                     const Entry& rhs) {
-                return lhs.last_used < rhs.last_used;
-            });
-            entries_.erase(oldest);
-        }
-        entries_.push_back(std::move(entry));
-        return entries_.back();
-    }
-
-    void clear() {
-        entries_.clear();
-        clock_ = 0;
-    }
-
-private:
-    std::vector<Entry> entries_;
-    std::uint64_t clock_ = 0;
-};
-
-} // namespace semantic
 
 namespace {
 
@@ -598,7 +540,7 @@ ClosureDesignGraphSnapshot buildClosureDesignGraphSnapshot(
 SemanticEngine::SemanticEngine()
     : affected_dependencies_(std::make_unique<semantic::AffectedDependencyGraph>()),
       query_cache_(std::make_unique<semantic::QueryCache>()),
-      document_snapshot_cache_(std::make_unique<semantic::DocumentSnapshotCache>()) {}
+      semantic_snapshot_cache_(std::make_unique<semantic::SemanticSnapshotCache>()) {}
 
 SemanticEngine::~SemanticEngine() = default;
 
@@ -614,6 +556,10 @@ SemanticQueryCacheStats SemanticEngine::queryCacheStats() const {
                                        stats.macro_scanned_visible_definitions,
                                    .completion_resolve_scanned_facts =
                                        stats.completion_resolve_scanned_facts,
+                                   .completion_resolve_identity_hits =
+                                       stats.completion_resolve_identity_hits,
+                                   .completion_resolve_identity_misses =
+                                       stats.completion_resolve_identity_misses,
                                    .diagnostic_lookup_scanned_facts =
                                        stats.diagnostic_lookup_scanned_facts,
                                    .reference_lookup_scanned_occurrences =
@@ -662,8 +608,12 @@ SemanticSnapshotBuildStats SemanticEngine::lastSnapshotBuildStats() const {
     return last_snapshot_build_stats_;
 }
 
+SemanticCompletionResolveTelemetry SemanticEngine::lastCompletionResolveTelemetry() const {
+    return last_completion_resolve_telemetry_;
+}
+
 void SemanticEngine::clearDocumentSnapshotCache() {
-    document_snapshot_cache_->clear();
+    semantic_snapshot_cache_->clear();
 }
 
 void SemanticEngine::clear() {
@@ -866,6 +816,19 @@ SemanticWorkspaceDiscoverySnapshot SemanticEngine::workspaceDiscovery() const {
     result.macro_count = discovery_index.macro_count;
     result.reference_count = discovery_index.reference_count;
     result.messages = discovery_index.messages;
+    result.reference_candidate_uris_by_name = discovery_index.reference_candidate_uris_by_name;
+    result.macro_invocation_uris_by_name = discovery_index.macro_invocation_uris_by_name;
+    result.reference_candidate_incomplete_reasons =
+        discovery_index.reference_candidate_incomplete_reasons;
+    result.macro_definitions.reserve(discovery_index.macro_definitions.size());
+    for (const auto& definition : discovery_index.macro_definitions) {
+        result.macro_definitions.push_back(SemanticWorkspaceDiscoverySnapshot::MacroDefinition{
+            .name = definition.name,
+            .uri = definition.uri,
+            .body_identifiers = definition.body_identifiers,
+            .complete = definition.complete,
+            .reasons = definition.reasons});
+    }
     result.declarations.reserve(discovery_index.declarations.size());
     for (const auto& declaration : discovery_index.declarations) {
         result.declarations.push_back(SemanticDiscoverySymbol{.name = declaration.name,
@@ -1073,7 +1036,7 @@ SemanticEngine::SnapshotSelection SemanticEngine::snapshotForDocument(
     const auto closure_confidence = workspace_plan.has_value() && workspace_plan->incomplete
                                         ? "complete-with-capped-candidates"
                                         : "complete";
-    if (auto* cached = document_snapshot_cache_->find(cache_key)) {
+    if (auto* cached = semantic_snapshot_cache_->find(cache_key)) {
         last_snapshot_build_stats_.scope_kind = scope_kind;
         last_snapshot_build_stats_.root_uri = closure_plan.root_key;
         last_snapshot_build_stats_.snapshot_identity = cached->identity;
@@ -1174,13 +1137,18 @@ SemanticEngine::SnapshotSelection SemanticEngine::snapshotForDocument(
     if (closure_uris.size() == documents_.size()) {
         *affected_dependencies_ = std::move(output.affected_dependencies);
     }
-    semantic::DocumentSnapshotCache::Entry entry;
+    semantic::SemanticSnapshotCache::Entry entry;
     entry.key = cache_key;
+    entry.generation = generation_;
+    entry.config_discovery_fingerprint = discovery.cache_key;
+    entry.closure_fingerprint = closure_plan.fingerprint;
+    entry.scope_kind = scope_kind;
     entry.root_uri = closure_plan.root_key;
     entry.identity = identity;
     entry.snapshot = std::move(output.snapshot);
     entry.data = std::move(output.data);
-    auto& stored = document_snapshot_cache_->insert(std::move(entry));
+    auto& stored = semantic_snapshot_cache_->insert(std::move(entry));
+    ++completed_snapshot_build_count_;
     return SnapshotSelection{.snapshot = &stored.snapshot,
                              .data = stored.data.get(),
                              .snapshot_identity = stored.identity,
@@ -1194,16 +1162,12 @@ SemanticEngine::SnapshotSelection SemanticEngine::snapshotForDocument(
                              .closure = true};
 }
 
-SemanticEngine::SnapshotSelection SemanticEngine::snapshotForIdentity(
+SemanticEngine::SnapshotSelection SemanticEngine::findSnapshotForIdentity(
     std::string_view identity) const {
     if (identity.empty()) {
-        const auto& full_snapshot = snapshot();
-        return SnapshotSelection{.snapshot = &full_snapshot,
-                                 .data = snapshot_data_.get(),
-                                 .snapshot_identity = full_snapshot_identity_,
-                                 .closure = false};
+        return {};
     }
-    if (auto* cached = document_snapshot_cache_->findIdentity(identity)) {
+    if (auto* cached = semantic_snapshot_cache_->findIdentity(identity)) {
         return SnapshotSelection{.snapshot = &cached->snapshot,
                                  .data = cached->data.get(),
                                  .snapshot_identity = cached->identity,
@@ -1217,6 +1181,201 @@ SemanticEngine::SnapshotSelection SemanticEngine::snapshotForIdentity(
                                  .closure = false};
     }
     return {};
+}
+
+SemanticEngine::ReferenceSnapshotSelection SemanticEngine::snapshotForReferenceQuery(
+    std::string_view uri,
+    int line,
+    int character) const {
+    const auto document_uri = withoutTrailingSlash(normalizeFileUri(uri));
+    ReferenceSnapshotSelection result;
+    const auto base = snapshotForDocument(document_uri);
+    result.snapshot = base;
+    result.scope_kind = base.closure ? "documentClosure" : "full";
+    result.selected_document_count = base.selected_document_count;
+    result.confidence = base.closure ? "complete-base-closure" : "full-base-closure";
+    if (base.snapshot == nullptr || base.data == nullptr) {
+        result.confidence = "snapshot-unavailable";
+        return result;
+    }
+
+    const auto base_context = navigationContextFor(base.data, *base.snapshot, document_uri);
+    const auto lookup = semantic::lookupAt(base_context, line, character);
+    if (!lookup.symbol.has_value()) {
+        result.confidence = "target-unresolved";
+        return result;
+    }
+
+    semantic::ReferenceSearchSeed seed;
+    seed.stable_id = lookup.symbol->stable_id;
+    seed.declaration_uri = lookup.symbol->location.uri;
+    seed.spellings.push_back(lookup.symbol->name);
+    if (const auto aliases = base.data->reference_aliases_by_id.find(seed.stable_id);
+        aliases != base.data->reference_aliases_by_id.end()) {
+        seed.alias_stable_ids = aliases->second;
+        for (const auto& alias_id : aliases->second) {
+            if (const auto target = base.data->navigation_targets_by_id.find(alias_id);
+                target != base.data->navigation_targets_by_id.end()) {
+                seed.spellings.push_back(target->second.identity.name);
+            }
+        }
+    }
+    std::sort(seed.spellings.begin(), seed.spellings.end());
+    seed.spellings.erase(std::unique(seed.spellings.begin(), seed.spellings.end()), seed.spellings.end());
+    if (seed.declaration_uri.empty() || seed.spellings.empty()) {
+        seed.complete = false;
+        seed.reasons.push_back("reference-search-seed-missing-source-location-or-spelling");
+    }
+
+    const auto& discovery = workspaceDiscoveryView();
+    std::vector<std::string> roots{document_uri};
+    if (!request_control_.closure_root_uris.empty()) {
+        roots = request_control_.closure_root_uris;
+        for (auto& root : roots) {
+            root = withoutTrailingSlash(normalizeFileUri(root));
+        }
+    }
+    auto plan = semantic::planReferenceCandidateClosure(discovery, roots, config_.top_modules, seed);
+    result.target_stable_id = seed.stable_id;
+    result.candidate_document_count = plan.candidate_document_count;
+    result.selected_document_count = plan.selected_document_count;
+    result.confidence = plan.confidence;
+    result.plan_fingerprint = plan.closure.fingerprint;
+
+    const auto full_selection = [&](std::string_view reason) {
+        const auto& full_snapshot = snapshot();
+        last_snapshot_build_stats_.root_uri = document_uri;
+        last_snapshot_build_stats_.closure_confidence = "full";
+        last_snapshot_build_stats_.closure_reason = std::string(reason);
+        result.snapshot = SnapshotSelection{.snapshot = &full_snapshot,
+                                            .data = snapshot_data_.get(),
+                                            .snapshot_identity = full_snapshot_identity_,
+                                            .selected_document_count = documents_.size(),
+                                            .closure = false};
+        result.scope_kind = "full";
+        result.selected_document_count = documents_.size();
+    };
+    if (plan.requires_full_snapshot || !plan.closure.complete || plan.closure.uris.empty()) {
+        full_selection(plan.confidence);
+        return result;
+    }
+
+    std::uint64_t cache_key = discovery.cache_key;
+    hashCombine(cache_key, plan.closure.fingerprint);
+    hashCombine(cache_key, hashString(semantic::kReferenceCandidatePolicyVersion));
+    hashCombine(cache_key, hashString(seed.stable_id));
+    if (auto* cached = semantic_snapshot_cache_->find(cache_key)) {
+        result.snapshot = SnapshotSelection{.snapshot = &cached->snapshot,
+                                            .data = cached->data.get(),
+                                            .snapshot_identity = cached->identity,
+                                            .selected_document_count = plan.selected_document_count,
+                                            .closure = true};
+        result.scope_kind = "referenceClosure";
+        last_snapshot_build_stats_.scope_kind = result.scope_kind;
+        last_snapshot_build_stats_.root_uri = plan.closure.root_key;
+        last_snapshot_build_stats_.snapshot_identity = cached->identity;
+        last_snapshot_build_stats_.closure_confidence = plan.confidence;
+        last_snapshot_build_stats_.input_document_count = documents_.size();
+        last_snapshot_build_stats_.selected_document_count = plan.selected_document_count;
+        last_snapshot_build_stats_.cache_hit = true;
+        return result;
+    }
+
+    semantic::SnapshotBuildInput input;
+    input.generation = generation_;
+    input.config = config_;
+    input.control.cancellation = request_control_.cancellation;
+    input.control.report_progress = request_control_.report_progress;
+    const std::set<std::string> selected(plan.closure.uris.begin(), plan.closure.uris.end());
+    for (const auto& dirty_uri : dirtyDocumentUris()) {
+        if (selected.contains(dirty_uri)) {
+            input.dirty_document_uris.push_back(dirty_uri);
+        }
+    }
+    for (const auto& selected_uri : plan.closure.uris) {
+        const auto document = documents_.find(selected_uri);
+        if (document == documents_.end()) {
+            full_selection("reference-candidate-document-missing:" + selected_uri);
+            return result;
+        }
+        input.documents.emplace(selected_uri, document->second);
+    }
+
+    const auto expected_generation = generation_;
+    const auto expected_fingerprint = discoveryCacheKeyFor(generation_, workspace_root_uri_, config_, documents_);
+    auto output = semantic::SnapshotBuilder{}.build(std::move(input));
+    const auto identity = snapshotIdentity("referenceClosure", generation_, plan.closure.fingerprint);
+    const auto closure_reason = plan.closure.reasons.empty() ? std::string{} : plan.closure.reasons.front();
+    if (output.status == semantic::SnapshotBuildStatus::Cancelled) {
+        ++cancelled_snapshot_build_count_;
+        last_snapshot_build_stats_ = snapshotBuildStats(output,
+                                                        "referenceClosure",
+                                                        plan.closure.root_key,
+                                                        identity,
+                                                        plan.confidence,
+                                                        closure_reason,
+                                                        plan.selected_document_count,
+                                                        cancelled_snapshot_build_count_);
+        last_snapshot_build_stats_.input_document_count = documents_.size();
+        throw pristine::OperationCancelled{};
+    }
+    if (output.status != semantic::SnapshotBuildStatus::Completed) {
+        last_snapshot_build_stats_ = snapshotBuildStats(output,
+                                                        "referenceClosure",
+                                                        plan.closure.root_key,
+                                                        identity,
+                                                        plan.confidence,
+                                                        closure_reason,
+                                                        plan.selected_document_count,
+                                                        cancelled_snapshot_build_count_);
+        last_snapshot_build_stats_.input_document_count = documents_.size();
+        throw std::runtime_error(output.error.empty() ? "Reference candidate snapshot build failed"
+                                                       : output.error);
+    }
+    const auto current_fingerprint = discoveryCacheKeyFor(generation_, workspace_root_uri_, config_, documents_);
+    if (generation_ != expected_generation || current_fingerprint != expected_fingerprint) {
+        ++cancelled_snapshot_build_count_;
+        throw pristine::OperationCancelled{};
+    }
+
+    last_snapshot_build_stats_ = snapshotBuildStats(output,
+                                                    "referenceClosure",
+                                                    plan.closure.root_key,
+                                                    identity,
+                                                    plan.confidence,
+                                                    closure_reason,
+                                                    plan.selected_document_count,
+                                                    cancelled_snapshot_build_count_);
+    last_snapshot_build_stats_.input_document_count = documents_.size();
+    semantic::SemanticSnapshotCache::Entry entry;
+    entry.key = cache_key;
+    entry.generation = generation_;
+    entry.config_discovery_fingerprint = discovery.cache_key;
+    entry.closure_fingerprint = plan.closure.fingerprint;
+    entry.scope_kind = "referenceClosure";
+    entry.root_uri = plan.closure.root_key;
+    entry.identity = identity;
+    entry.snapshot = std::move(output.snapshot);
+    entry.data = std::move(output.data);
+    auto& stored = semantic_snapshot_cache_->insert(std::move(entry));
+    ++completed_snapshot_build_count_;
+    result.snapshot = SnapshotSelection{.snapshot = &stored.snapshot,
+                                        .data = stored.data.get(),
+                                        .snapshot_identity = stored.identity,
+                                        .selected_document_count = plan.selected_document_count,
+                                        .closure = true};
+    result.scope_kind = "referenceClosure";
+
+    const auto verification_context = navigationContextFor(stored.data.get(), stored.snapshot, document_uri);
+    const auto verification = semantic::lookupAt(verification_context, line, character);
+    if (!verification.symbol.has_value() || verification.symbol->stable_id != seed.stable_id) {
+#ifndef NDEBUG
+        assert(false && "reference candidate snapshot must preserve the source-backed target identity");
+#endif
+        result.confidence = "candidate-target-consistency-failure";
+        full_selection(result.confidence);
+    }
+    return result;
 }
 
 std::vector<std::string> SemanticEngine::closureDocumentUrisFor(
@@ -1301,26 +1460,53 @@ SemanticReferenceResult SemanticEngine::referencesAt(std::string_view uri,
                                                      int line,
                                                      int character,
                                                      bool include_declaration) const {
-    const auto& current_snapshot = snapshot();
     const auto document_uri = withoutTrailingSlash(normalizeFileUri(uri));
+    const auto reference_selection = snapshotForReferenceQuery(document_uri, line, character);
+    if (reference_selection.snapshot.snapshot == nullptr || reference_selection.snapshot.data == nullptr) {
+        return SemanticReferenceResult{.generation = generation_,
+                                       .locations = {},
+                                       .occurrences = {},
+                                       .messages = {"reference snapshot is unavailable"},
+                                       .scanned_occurrence_count = 0,
+                                       .scanned_implementation_edge_count = 0,
+                                       .candidate_document_count = reference_selection.candidate_document_count,
+                                       .selected_document_count = reference_selection.selected_document_count,
+                                       .snapshot_scope = reference_selection.scope_kind,
+                                       .plan_confidence = reference_selection.confidence,
+                                       .plan_fingerprint = reference_selection.plan_fingerprint,
+                                       .unresolved = true,
+                                       .truncated = false};
+    }
+    const auto& current_snapshot = *reference_selection.snapshot.snapshot;
     if (const auto cached = query_cache_->references(current_snapshot.generation,
                                                      document_uri,
                                                      line,
                                                      character,
-                                                     include_declaration)) {
+                                                     include_declaration,
+                                                     reference_selection.plan_fingerprint,
+                                                     reference_selection.target_stable_id,
+                                                     reference_selection.scope_kind)) {
         return *cached;
     }
 
     const auto finish = [&](SemanticReferenceResult value) {
+        value.candidate_document_count = reference_selection.candidate_document_count;
+        value.selected_document_count = reference_selection.selected_document_count;
+        value.snapshot_scope = reference_selection.scope_kind;
+        value.plan_confidence = reference_selection.confidence;
+        value.plan_fingerprint = reference_selection.plan_fingerprint;
         query_cache_->storeReferences(current_snapshot.generation,
                                       document_uri,
                                       line,
                                       character,
                                       include_declaration,
-                                      value);
+                                      value,
+                                      reference_selection.plan_fingerprint,
+                                      reference_selection.target_stable_id,
+                                      reference_selection.scope_kind);
         return value;
     };
-    const auto context = navigationContextFor(snapshotData(), current_snapshot, document_uri);
+    const auto context = navigationContextFor(reference_selection.snapshot.data, current_snapshot, document_uri);
     auto result = semantic::referencesAt(context,
                                          line,
                                          character,
@@ -1431,18 +1617,43 @@ SemanticRenameResult SemanticEngine::renameAt(std::string_view uri,
                                               int line,
                                               int character,
                                               std::string_view new_name) const {
-    const auto& current_snapshot = snapshot();
     const auto document_uri = withoutTrailingSlash(normalizeFileUri(uri));
+    const auto reference_selection = snapshotForReferenceQuery(document_uri, line, character);
+    if (reference_selection.snapshot.snapshot == nullptr || reference_selection.snapshot.data == nullptr) {
+        return SemanticRenameResult{.generation = generation_,
+                                    .edits = {},
+                                    .messages = {"rename snapshot is unavailable"},
+                                    .scanned_occurrence_count = 0,
+                                    .scanned_implementation_edge_count = 0,
+                                    .candidate_document_count = reference_selection.candidate_document_count,
+                                    .selected_document_count = reference_selection.selected_document_count,
+                                    .snapshot_scope = reference_selection.scope_kind,
+                                    .plan_confidence = reference_selection.confidence,
+                                    .plan_fingerprint = reference_selection.plan_fingerprint,
+                                    .unresolved = true,
+                                    .truncated = false};
+    }
+    const auto& current_snapshot = *reference_selection.snapshot.snapshot;
     if (const auto cached = query_cache_->rename(current_snapshot.generation,
                                                 document_uri,
                                                 line,
                                                 character,
-                                                new_name)) {
+                                                new_name,
+                                                reference_selection.plan_fingerprint,
+                                                reference_selection.target_stable_id,
+                                                reference_selection.scope_kind)) {
         return *cached;
     }
 
-    const auto context = navigationContextFor(snapshotData(), current_snapshot, document_uri);
+    const auto context = navigationContextFor(reference_selection.snapshot.data,
+                                              current_snapshot,
+                                              document_uri);
     auto result = semantic::renameAt(context, line, character, new_name, kMaxSemanticLocations);
+    result.candidate_document_count = reference_selection.candidate_document_count;
+    result.selected_document_count = reference_selection.selected_document_count;
+    result.snapshot_scope = reference_selection.scope_kind;
+    result.plan_confidence = reference_selection.confidence;
+    result.plan_fingerprint = reference_selection.plan_fingerprint;
     query_cache_->recordNavigationScan(result.scanned_occurrence_count,
                                        0,
                                        result.scanned_implementation_edge_count,
@@ -1453,7 +1664,10 @@ SemanticRenameResult SemanticEngine::renameAt(std::string_view uri,
                               line,
                               character,
                               new_name,
-                              result);
+                              result,
+                              reference_selection.plan_fingerprint,
+                              reference_selection.target_stable_id,
+                              reference_selection.scope_kind);
     return result;
 }
 
@@ -1537,30 +1751,46 @@ SemanticCompletionResult SemanticEngine::completionsAt(std::string_view uri,
 SemanticCompletionItem SemanticEngine::resolveCompletion(std::string_view stable_id,
                                                          std::string_view label,
                                                          std::string_view snapshot_identity) const {
+    const auto build_count_before = completed_snapshot_build_count_;
+    const auto started = std::chrono::steady_clock::now();
+    const auto finish = [&](SemanticCompletionItem value, bool identity_hit, std::string_view scope_kind) {
+        last_completion_resolve_telemetry_.scope_kind = std::string(scope_kind);
+        last_completion_resolve_telemetry_.lookup_micros =
+            std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - started)
+                .count();
+        last_completion_resolve_telemetry_.identity_hits = identity_hit ? 1U : 0U;
+        last_completion_resolve_telemetry_.identity_misses = identity_hit ? 0U : 1U;
+        last_completion_resolve_telemetry_.snapshot_build_delta =
+            completed_snapshot_build_count_ - build_count_before;
+        query_cache_->recordCompletionResolveIdentityLookup(identity_hit);
+        return value;
+    };
     if (snapshot_identity.empty()) {
         SemanticCompletionItem unresolved;
         unresolved.stable_id = std::string(stable_id);
         unresolved.label = std::string(label);
         unresolved.unresolved = true;
-        return unresolved;
+        return finish(std::move(unresolved), false, "missing");
     }
-    const auto selection = snapshotForIdentity(snapshot_identity);
+    const auto selection = findSnapshotForIdentity(snapshot_identity);
     if (selection.snapshot == nullptr || selection.data == nullptr) {
         SemanticCompletionItem unresolved;
         unresolved.stable_id = std::string(stable_id);
         unresolved.snapshot_identity = std::string(snapshot_identity);
         unresolved.label = std::string(label);
         unresolved.unresolved = true;
-        return unresolved;
+        return finish(std::move(unresolved), false, "missing");
     }
     const auto& current_snapshot = *selection.snapshot;
     const auto* data = selection.data;
     const auto ast_index = semantic::buildAstIndexView(data, current_snapshot.generation);
     if (data == nullptr) {
-        auto unresolved =
-            semantic::resolveCompletionItem(stable_id, label, semantic::CompletionResolveContext{});
+        SemanticCompletionItem unresolved;
+        unresolved.stable_id = std::string(stable_id);
+        unresolved.label = std::string(label);
+        unresolved.unresolved = true;
         unresolved.snapshot_identity = std::string(snapshot_identity);
-        return unresolved;
+        return finish(std::move(unresolved), false, selection.closure ? "closure" : "full");
     }
 
     semantic::CompletionResolveContext context;
@@ -1568,7 +1798,7 @@ SemanticCompletionItem SemanticEngine::resolveCompletion(std::string_view stable
     query_cache_->recordCompletionResolveFactLookup(1);
     auto result = semantic::resolveCompletionItem(stable_id, label, context);
     result.snapshot_identity = selection.snapshot_identity;
-    return result;
+    return finish(std::move(result), true, selection.closure ? "closure" : "full");
 }
 
 SemanticSignatureHelpResult SemanticEngine::signatureHelpAt(std::string_view uri,
@@ -2043,6 +2273,7 @@ void SemanticEngine::rebuildSnapshot() const {
     snapshot_data_ = std::move(output.data);
     full_snapshot_identity_ = identity;
     snapshot_dirty_ = false;
+    ++completed_snapshot_build_count_;
 }
 
 } // namespace pristine::analysis

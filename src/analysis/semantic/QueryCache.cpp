@@ -102,6 +102,8 @@ void QueryCache::resetStats() {
     inlay_scanned_invocations_ = 0;
     macro_scanned_visible_definitions_ = 0;
     completion_resolve_scanned_facts_ = 0;
+    completion_resolve_identity_hits_ = 0;
+    completion_resolve_identity_misses_ = 0;
     diagnostic_lookup_scanned_facts_ = 0;
     reference_lookup_scanned_occurrences_ = 0;
     call_hierarchy_scanned_edges_ = 0;
@@ -154,6 +156,8 @@ QueryCache::Stats QueryCache::stats() const {
     result.inlay_scanned_invocations = inlay_scanned_invocations_;
     result.macro_scanned_visible_definitions = macro_scanned_visible_definitions_;
     result.completion_resolve_scanned_facts = completion_resolve_scanned_facts_;
+    result.completion_resolve_identity_hits = completion_resolve_identity_hits_;
+    result.completion_resolve_identity_misses = completion_resolve_identity_misses_;
     result.diagnostic_lookup_scanned_facts = diagnostic_lookup_scanned_facts_;
     result.reference_lookup_scanned_occurrences = reference_lookup_scanned_occurrences_;
     result.call_hierarchy_scanned_edges = call_hierarchy_scanned_edges_;
@@ -233,6 +237,15 @@ void QueryCache::recordCompletionResolveFactLookup(size_t count) {
     completion_resolve_scanned_facts_ += count;
 }
 
+void QueryCache::recordCompletionResolveIdentityLookup(bool hit) {
+    if (hit) {
+        ++completion_resolve_identity_hits_;
+    }
+    else {
+        ++completion_resolve_identity_misses_;
+    }
+}
+
 void QueryCache::recordDiagnosticLookupFacts(size_t count) {
     diagnostic_lookup_scanned_facts_ += count;
 }
@@ -289,8 +302,12 @@ std::optional<SemanticReferenceResult> QueryCache::references(std::uint64_t gene
                                                               std::string_view uri,
                                                               int line,
                                                               int character,
-                                                              bool include_declaration) const {
-    const auto found = references_by_key_.find(referencesKey(uri, line, character, include_declaration));
+                                                              bool include_declaration,
+                                                              std::uint64_t plan_fingerprint,
+                                                              std::string_view target_stable_id,
+                                                              std::string_view scope_kind) const {
+    const auto found = references_by_key_.find(
+        referencesKey(uri, line, character, include_declaration, plan_fingerprint, target_stable_id, scope_kind));
     if (found == references_by_key_.end() || found->second.generation != generation) {
         recordMiss();
         return std::nullopt;
@@ -304,13 +321,17 @@ void QueryCache::storeReferences(std::uint64_t generation,
                                  int line,
                                  int character,
                                  bool include_declaration,
-                                 SemanticReferenceResult result) {
+                                 SemanticReferenceResult result,
+                                 std::uint64_t plan_fingerprint,
+                                 std::string_view target_stable_id,
+                                 std::string_view scope_kind) {
     ReferencesEntry entry;
     entry.generation = generation;
     entry.sequence = nextSequence();
     entry.result = std::move(result);
-    references_by_key_.insert_or_assign(referencesKey(uri, line, character, include_declaration),
-                                        std::move(entry));
+    references_by_key_.insert_or_assign(
+        referencesKey(uri, line, character, include_declaration, plan_fingerprint, target_stable_id, scope_kind),
+        std::move(entry));
     recordStore();
     evictOldestEntries(references_by_key_);
 }
@@ -475,8 +496,12 @@ std::optional<SemanticRenameResult> QueryCache::rename(std::uint64_t generation,
                                                        std::string_view uri,
                                                        int line,
                                                        int character,
-                                                       std::string_view new_name) const {
-    const auto found = rename_by_key_.find(renameKey(uri, line, character, new_name));
+                                                       std::string_view new_name,
+                                                       std::uint64_t plan_fingerprint,
+                                                       std::string_view target_stable_id,
+                                                       std::string_view scope_kind) const {
+    const auto found = rename_by_key_.find(
+        renameKey(uri, line, character, new_name, plan_fingerprint, target_stable_id, scope_kind));
     if (found == rename_by_key_.end() || found->second.generation != generation) {
         recordMiss();
         return std::nullopt;
@@ -490,12 +515,17 @@ void QueryCache::storeRename(std::uint64_t generation,
                              int line,
                              int character,
                              std::string_view new_name,
-                             SemanticRenameResult result) {
+                             SemanticRenameResult result,
+                             std::uint64_t plan_fingerprint,
+                             std::string_view target_stable_id,
+                             std::string_view scope_kind) {
     RenameEntry entry;
     entry.generation = generation;
     entry.sequence = nextSequence();
     entry.result = std::move(result);
-    rename_by_key_.insert_or_assign(renameKey(uri, line, character, new_name), std::move(entry));
+    rename_by_key_.insert_or_assign(
+        renameKey(uri, line, character, new_name, plan_fingerprint, target_stable_id, scope_kind),
+        std::move(entry));
     recordStore();
     evictOldestEntries(rename_by_key_);
 }
@@ -735,24 +765,36 @@ std::string QueryCache::positionKey(std::string_view uri, int line, int characte
 std::string QueryCache::referencesKey(std::string_view uri,
                                       int line,
                                       int character,
-                                      bool include_declaration) {
+                                      bool include_declaration,
+                                      std::uint64_t plan_fingerprint,
+                                      std::string_view target_stable_id,
+                                      std::string_view scope_kind) {
     return QueryCacheKeyBuilder("references")
         .field("uri", uri)
         .integer("line", line)
         .integer("character", character)
         .boolean("includeDeclaration", include_declaration)
+        .field("planFingerprint", std::to_string(plan_fingerprint))
+        .field("targetStableId", target_stable_id)
+        .field("scopeKind", scope_kind)
         .str();
 }
 
 std::string QueryCache::renameKey(std::string_view uri,
                                   int line,
                                   int character,
-                                  std::string_view new_name) {
+                                  std::string_view new_name,
+                                  std::uint64_t plan_fingerprint,
+                                  std::string_view target_stable_id,
+                                  std::string_view scope_kind) {
     return QueryCacheKeyBuilder("rename")
         .field("uri", uri)
         .integer("line", line)
         .integer("character", character)
         .field("newName", new_name)
+        .field("planFingerprint", std::to_string(plan_fingerprint))
+        .field("targetStableId", target_stable_id)
+        .field("scopeKind", scope_kind)
         .str();
 }
 

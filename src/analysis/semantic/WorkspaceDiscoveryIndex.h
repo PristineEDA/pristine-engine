@@ -36,8 +36,17 @@ struct DiscoveryFile {
     std::vector<std::string> referenced_top_level_names;
     std::vector<std::string> referenced_visible_names;
     std::vector<std::string> included_uris;
+    std::vector<std::string> macro_invocations;
     bool closure_complete = true;
     std::vector<std::string> closure_reasons;
+};
+
+struct DiscoveryMacroDefinition {
+    std::string name;
+    std::string uri;
+    std::vector<std::string> body_identifiers;
+    bool complete = true;
+    std::vector<std::string> reasons;
 };
 
 enum class DiscoveryClosureConfidence {
@@ -67,6 +76,11 @@ struct WorkspaceDiscoveryIndex {
     std::unordered_map<std::string, std::vector<std::string>> files_by_declaration;
     std::unordered_map<std::string, std::vector<std::string>> files_by_visible_name;
     std::unordered_map<std::string, std::vector<std::string>> referenced_files_by_name;
+    // These postings only plan a candidate snapshot. Providers never answer from them.
+    std::unordered_map<std::string, std::vector<std::string>> reference_candidate_uris_by_name;
+    std::unordered_map<std::string, std::vector<std::string>> macro_invocation_uris_by_name;
+    std::vector<DiscoveryMacroDefinition> macro_definitions;
+    std::vector<std::string> reference_candidate_incomplete_reasons;
     std::vector<std::string> messages;
 };
 

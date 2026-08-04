@@ -2531,6 +2531,10 @@ TEST_CASE("SemanticEngine bounds wide workspace completion without selecting the
                                                    cold.items.front().label,
                                                    cold.items.front().snapshot_identity);
     CHECK_FALSE(resolved.unresolved);
+    const auto resolve_telemetry = engine.lastCompletionResolveTelemetry();
+    CHECK(resolve_telemetry.identity_hits == 1);
+    CHECK(resolve_telemetry.identity_misses == 0);
+    CHECK(resolve_telemetry.snapshot_build_delta == 0);
 
     const auto warm = engine.completionsAt("file:///workspace/top.sv", 1, 5, "wid");
     CHECK(engine.lastSnapshotBuildStats().cache_hit);
@@ -3070,6 +3074,10 @@ TEST_CASE("SemanticEngine rejects a completion resolve without its snapshot iden
     const auto resolved = engine.resolveCompletion(item->stable_id, item->label);
     CHECK(resolved.unresolved);
     CHECK(resolved.documentation.empty());
+    const auto telemetry = engine.lastCompletionResolveTelemetry();
+    CHECK(telemetry.identity_hits == 0);
+    CHECK(telemetry.identity_misses == 1);
+    CHECK(telemetry.snapshot_build_delta == 0);
 }
 
 TEST_CASE("SemanticEngine keeps full snapshot identity independent from closure telemetry",
@@ -3086,7 +3094,7 @@ TEST_CASE("SemanticEngine keeps full snapshot identity independent from closure 
                           SemanticEngineDocumentState{.version = 1, .is_open = true});
 
     (void)engine.referencesAt("file:///workspace/top.sv", 0, 8, true);
-    CHECK(engine.lastSnapshotBuildStats().scope_kind == "full");
+    CHECK(engine.lastSnapshotBuildStats().scope_kind == "referenceClosure");
     (void)engine.hoverAt("file:///workspace/top.sv", 0, 8);
     CHECK(engine.lastSnapshotBuildStats().scope_kind == "documentClosure");
 
@@ -3103,7 +3111,7 @@ TEST_CASE("SemanticEngine keeps full snapshot identity independent from closure 
     CHECK_FALSE(resolved.documentation.empty());
 }
 
-TEST_CASE("SemanticEngine global references remain on the full snapshot path",
+TEST_CASE("SemanticEngine global references use a complete candidate closure",
           "[analysis][semantic-engine][document-closure][classification]") {
     SemanticEngine engine;
     engine.updateDocument("file:///workspace/defs.sv",
@@ -3118,9 +3126,68 @@ TEST_CASE("SemanticEngine global references remain on the full snapshot path",
 
     (void)engine.hoverAt("file:///workspace/top.sv", 0, 8);
     CHECK(engine.lastSnapshotBuildStats().scope_kind == "documentClosure");
-    (void)engine.referencesAt("file:///workspace/top.sv", 0, 8, true);
+    const auto references = engine.referencesAt("file:///workspace/top.sv", 0, 8, true);
+    CHECK_FALSE(references.unresolved);
+    CHECK(references.snapshot_scope == "referenceClosure");
+    CHECK(references.plan_confidence == "complete");
+    CHECK(references.selected_document_count < 3);
+    CHECK(engine.lastSnapshotBuildStats().scope_kind == "referenceClosure");
+    CHECK(engine.lastSnapshotBuildStats().selected_document_count < 3);
+}
+
+TEST_CASE("SemanticEngine reference closure keeps complete cross-file locations without unrelated files",
+          "[analysis][semantic-engine][reference-closure][rename]") {
+    SemanticEngine engine;
+    engine.updateDocument("file:///workspace/defs.sv",
+                          "package defs; int unique_value; endpackage\n",
+                          SemanticEngineDocumentState{.version = 1});
+    engine.updateDocument("file:///workspace/a.sv",
+                          "module a; import defs::*; initial unique_value = 1; endmodule\n",
+                          SemanticEngineDocumentState{.version = 1, .is_open = true});
+    engine.updateDocument("file:///workspace/b.sv",
+                          "module b; import defs::*; initial unique_value = 2; endmodule\n",
+                          SemanticEngineDocumentState{.version = 1});
+    for (int index = 0; index < 4; ++index) {
+        engine.updateDocument("file:///workspace/unrelated_" + std::to_string(index) + ".sv",
+                              "module unrelated_" + std::to_string(index) + "; endmodule\n",
+                              SemanticEngineDocumentState{.version = 1});
+    }
+
+    const auto references = engine.referencesAt("file:///workspace/a.sv", 0, 40, true);
+    REQUIRE_FALSE(references.unresolved);
+    CHECK(references.snapshot_scope == "referenceClosure");
+    CHECK(references.plan_confidence == "complete");
+    CHECK(references.candidate_document_count >= 3);
+    CHECK(references.selected_document_count < engine.documentCount());
+    CHECK(references.locations.size() == 3);
+
+    const auto rename = engine.renameAt("file:///workspace/a.sv", 0, 40, "renamed_value");
+    REQUIRE_FALSE(rename.unresolved);
+    CHECK(rename.snapshot_scope == references.snapshot_scope);
+    CHECK(rename.plan_fingerprint == references.plan_fingerprint);
+    CHECK(rename.selected_document_count == references.selected_document_count);
+    CHECK(rename.edits.size() == references.locations.size());
+    CHECK(engine.queryCacheStats().scanned_global_symbols == 0);
+}
+
+TEST_CASE("SemanticEngine preselects a full reference snapshot for incomplete discovery",
+          "[analysis][semantic-engine][reference-closure][incomplete]") {
+    SemanticEngine engine;
+    engine.updateDocument("file:///workspace/defs.sv",
+                          "package defs; int value; endpackage\n",
+                          SemanticEngineDocumentState{.version = 1});
+    engine.updateDocument("file:///workspace/top.sv",
+                          "module top; import defs::*; initial value = 1; endmodule\n",
+                          SemanticEngineDocumentState{.version = 1, .is_open = true});
+    engine.updateDocument("file:///workspace/token_paste.sv",
+                          "`define JOIN(a,b) a``b\nmodule token_paste; endmodule\n",
+                          SemanticEngineDocumentState{.version = 1});
+
+    const auto references = engine.referencesAt("file:///workspace/top.sv", 0, 38, true);
+    CHECK_FALSE(references.unresolved);
+    CHECK(references.snapshot_scope == "full");
+    CHECK(references.plan_confidence == "incomplete-discovery");
     CHECK(engine.lastSnapshotBuildStats().scope_kind == "full");
-    CHECK(engine.lastSnapshotBuildStats().selected_document_count == 3);
 }
 
 TEST_CASE("SemanticEngine unions background document closure roots into one cached snapshot",

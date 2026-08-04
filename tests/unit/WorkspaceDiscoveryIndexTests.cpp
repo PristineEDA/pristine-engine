@@ -268,6 +268,87 @@ TEST_CASE("DocumentClosurePlanner skips incomplete and over-cap candidate closur
     CHECK(plan.closure.fingerprint != 0);
 }
 
+TEST_CASE("WorkspaceDiscoveryIndex records deterministic reference postings and macro propagation",
+          "[analysis][semantic][discovery][reference-closure][macro]") {
+    const auto index = semantic::buildWorkspaceDiscoveryIndex(
+        31,
+        {semantic::DiscoveryDocumentInput{.uri = "file:///workspace/defs.svh",
+                                          .text = "`define READ_VALUE unique_value\n"},
+         semantic::DiscoveryDocumentInput{.uri = "file:///workspace/a.sv",
+                                          .text = "module a; int unique_value; endmodule\n"},
+         semantic::DiscoveryDocumentInput{.uri = "file:///workspace/b.sv",
+                                          .text = "module b; initial unique_value = 1; endmodule\n"},
+         semantic::DiscoveryDocumentInput{.uri = "file:///workspace/c.sv",
+                                          .text = "`include \"defs.svh\"\nmodule c; initial `READ_VALUE = 2; endmodule\n"}});
+
+    REQUIRE(index.reference_candidate_uris_by_name.contains("unique_value"));
+    CHECK(index.reference_candidate_uris_by_name.at("unique_value") ==
+          std::vector<std::string>{"file:///workspace/a.sv",
+                                   "file:///workspace/b.sv",
+                                   "file:///workspace/defs.svh"});
+    REQUIRE(index.macro_invocation_uris_by_name.contains("READ_VALUE"));
+    CHECK(index.macro_invocation_uris_by_name.at("READ_VALUE") ==
+          std::vector<std::string>{"file:///workspace/c.sv"});
+    REQUIRE(index.macro_definitions.size() == 1);
+    CHECK(index.macro_definitions.front().body_identifiers == std::vector<std::string>{"unique_value"});
+}
+
+TEST_CASE("DocumentClosurePlanner expands complete reference candidates without a cap",
+          "[analysis][semantic][document-closure][reference]") {
+    SemanticWorkspaceDiscoverySnapshot discovery;
+    discovery.file_count = 8;
+    addCompleteClosure(discovery, "file:///workspace/top.sv", {"file:///workspace/top.sv"});
+    addCompleteClosure(discovery, "file:///workspace/defs.sv", {"file:///workspace/defs.sv"});
+    addCompleteClosure(discovery, "file:///workspace/a.sv", {"file:///workspace/a.sv"});
+    addCompleteClosure(discovery, "file:///workspace/b.sv", {"file:///workspace/b.sv"});
+    addCompleteClosure(discovery, "file:///workspace/macro-use.sv", {"file:///workspace/macro-use.sv"});
+    discovery.reference_candidate_uris_by_name.emplace(
+        "unique_value",
+        std::vector<std::string>{"file:///workspace/a.sv", "file:///workspace/b.sv"});
+    discovery.macro_invocation_uris_by_name.emplace(
+        "READ_VALUE", std::vector<std::string>{"file:///workspace/macro-use.sv"});
+    discovery.macro_definitions.push_back(SemanticWorkspaceDiscoverySnapshot::MacroDefinition{
+        .name = "READ_VALUE",
+        .uri = "file:///workspace/defs.sv",
+        .body_identifiers = {"unique_value"}});
+
+    const auto plan = semantic::planReferenceCandidateClosure(
+        discovery,
+        {"file:///workspace/top.sv"},
+        {},
+        semantic::ReferenceSearchSeed{.stable_id = "symbol:unique_value",
+                                      .declaration_uri = "file:///workspace/a.sv",
+                                      .spellings = {"unique_value"}});
+
+    CHECK_FALSE(plan.requires_full_snapshot);
+    CHECK(plan.confidence == "complete");
+    CHECK(plan.candidate_document_count == 4);
+    CHECK(plan.selected_document_count == 5);
+    CHECK(plan.closure.uris == std::vector<std::string>{"file:///workspace/a.sv",
+                                                        "file:///workspace/b.sv",
+                                                        "file:///workspace/defs.sv",
+                                                        "file:///workspace/macro-use.sv",
+                                                        "file:///workspace/top.sv"});
+}
+
+TEST_CASE("DocumentClosurePlanner forces full reference selection for incomplete discovery",
+          "[analysis][semantic][document-closure][reference][incomplete]") {
+    SemanticWorkspaceDiscoverySnapshot discovery;
+    addCompleteClosure(discovery, "file:///workspace/top.sv", {"file:///workspace/top.sv"});
+    discovery.reference_candidate_incomplete_reasons.push_back("macro-token-paste");
+
+    const auto plan = semantic::planReferenceCandidateClosure(
+        discovery,
+        {"file:///workspace/top.sv"},
+        {},
+        semantic::ReferenceSearchSeed{.stable_id = "symbol:value",
+                                      .declaration_uri = "file:///workspace/top.sv",
+                                      .spellings = {"value"}});
+
+    CHECK(plan.requires_full_snapshot);
+    CHECK(plan.confidence == "incomplete-discovery");
+}
+
 TEST_CASE("DocumentClosurePlanner canonicalizes document closure roots and fingerprints",
           "[analysis][semantic][document-closure][canonical]") {
     SemanticWorkspaceDiscoverySnapshot discovery;

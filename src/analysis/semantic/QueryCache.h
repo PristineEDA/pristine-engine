@@ -22,6 +22,8 @@ public:
         std::uint64_t inlay_scanned_invocations = 0;
         std::uint64_t macro_scanned_visible_definitions = 0;
         std::uint64_t completion_resolve_scanned_facts = 0;
+        std::uint64_t completion_resolve_identity_hits = 0;
+        std::uint64_t completion_resolve_identity_misses = 0;
         std::uint64_t diagnostic_lookup_scanned_facts = 0;
         std::uint64_t reference_lookup_scanned_occurrences = 0;
         std::uint64_t call_hierarchy_scanned_edges = 0;
@@ -94,13 +96,19 @@ public:
         std::string_view uri,
         int line,
         int character,
-        bool include_declaration) const;
+        bool include_declaration,
+        std::uint64_t plan_fingerprint = 0,
+        std::string_view target_stable_id = {},
+        std::string_view scope_kind = {}) const;
     void storeReferences(std::uint64_t generation,
                          std::string_view uri,
                          int line,
                          int character,
                          bool include_declaration,
-                         SemanticReferenceResult result);
+                         SemanticReferenceResult result,
+                         std::uint64_t plan_fingerprint = 0,
+                         std::string_view target_stable_id = {},
+                         std::string_view scope_kind = {});
 
     [[nodiscard]] std::optional<SemanticHoverResult> hover(std::uint64_t generation,
                                                             std::string_view uri,
@@ -169,13 +177,19 @@ public:
         std::string_view uri,
         int line,
         int character,
-        std::string_view new_name) const;
+        std::string_view new_name,
+        std::uint64_t plan_fingerprint = 0,
+        std::string_view target_stable_id = {},
+        std::string_view scope_kind = {}) const;
     void storeRename(std::uint64_t generation,
                      std::string_view uri,
                      int line,
                      int character,
                      std::string_view new_name,
-                     SemanticRenameResult result);
+                     SemanticRenameResult result,
+                     std::uint64_t plan_fingerprint = 0,
+                     std::string_view target_stable_id = {},
+                     std::string_view scope_kind = {});
 
     [[nodiscard]] std::optional<SemanticCompletionResult> completions(
         std::uint64_t generation,
@@ -250,6 +264,7 @@ public:
                           ParseRange range,
                           SemanticCodeActionResult result);
     void recordCompletionResolveFactLookup(size_t count);
+    void recordCompletionResolveIdentityLookup(bool hit);
     void recordDiagnosticLookupFacts(size_t count);
 
 private:
@@ -341,11 +356,17 @@ private:
     [[nodiscard]] static std::string referencesKey(std::string_view uri,
                                                    int line,
                                                    int character,
-                                                   bool include_declaration);
+                                                   bool include_declaration,
+                                                   std::uint64_t plan_fingerprint,
+                                                   std::string_view target_stable_id,
+                                                   std::string_view scope_kind);
     [[nodiscard]] static std::string renameKey(std::string_view uri,
                                                int line,
                                                int character,
-                                               std::string_view new_name);
+                                               std::string_view new_name,
+                                               std::uint64_t plan_fingerprint,
+                                               std::string_view target_stable_id,
+                                               std::string_view scope_kind);
     [[nodiscard]] static std::string completionKey(std::string_view uri,
                                                    int line,
                                                    int character,
@@ -392,6 +413,8 @@ private:
     std::uint64_t inlay_scanned_invocations_ = 0;
     std::uint64_t macro_scanned_visible_definitions_ = 0;
     std::uint64_t completion_resolve_scanned_facts_ = 0;
+    std::uint64_t completion_resolve_identity_hits_ = 0;
+    std::uint64_t completion_resolve_identity_misses_ = 0;
     std::uint64_t diagnostic_lookup_scanned_facts_ = 0;
     std::uint64_t reference_lookup_scanned_occurrences_ = 0;
     std::uint64_t call_hierarchy_scanned_edges_ = 0;

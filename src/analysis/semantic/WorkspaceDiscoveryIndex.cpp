@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <deque>
 #include <exception>
 #include <set>
@@ -119,6 +120,79 @@ void appendReference(std::vector<std::string>& references, std::string value) {
     }
 }
 
+bool isMacroIdentifierStart(char value) {
+    const auto character = static_cast<unsigned char>(value);
+    return std::isalpha(character) != 0 || value == '_' || value == '$';
+}
+
+bool isMacroIdentifierContinue(char value) {
+    const auto character = static_cast<unsigned char>(value);
+    return std::isalnum(character) != 0 || value == '_' || value == '$';
+}
+
+bool isPreprocessorDirective(std::string_view name) {
+    static constexpr std::string_view kDirectives[] = {"begin_keywords", "celldefine", "default_nettype",
+                                                        "define", "else", "elsif", "end_keywords",
+                                                        "endcelldefine", "endif", "ifdef", "ifndef",
+                                                        "include", "line", "pragma", "resetall",
+                                                        "timescale", "undef"};
+    return std::find(std::begin(kDirectives), std::end(kDirectives), name) != std::end(kDirectives);
+}
+
+// This scanner only identifies possible macro propagation for closure planning.
+std::vector<std::string> macroInvocations(std::string_view text) {
+    std::vector<std::string> result;
+    for (size_t index = 0; index < text.size();) {
+        if (text[index] == '/' && index + 1 < text.size() && text[index + 1] == '/') {
+            index = text.find('\n', index + 2);
+            if (index == std::string_view::npos) {
+                break;
+            }
+            continue;
+        }
+        if (text[index] == '/' && index + 1 < text.size() && text[index + 1] == '*') {
+            const auto close = text.find("*/", index + 2);
+            index = close == std::string_view::npos ? text.size() : close + 2;
+            continue;
+        }
+        if (text[index] == '"') {
+            ++index;
+            while (index < text.size()) {
+                if (text[index] == '\\') {
+                    index += std::min<size_t>(2, text.size() - index);
+                    continue;
+                }
+                if (text[index++] == '"') {
+                    break;
+                }
+            }
+            continue;
+        }
+        if (text[index] != '`') {
+            ++index;
+            continue;
+        }
+        ++index;
+        if (index < text.size() && text[index] == '`') {
+            ++index;
+            continue;
+        }
+        if (index >= text.size() || !isMacroIdentifierStart(text[index])) {
+            continue;
+        }
+        const auto start = index++;
+        while (index < text.size() && isMacroIdentifierContinue(text[index])) {
+            ++index;
+        }
+        const auto name = text.substr(start, index - start);
+        if (!isPreprocessorDirective(name)) {
+            result.emplace_back(name);
+        }
+    }
+    sortUniqueStrings(result);
+    return result;
+}
+
 std::vector<std::string> filesForTop(const WorkspaceDiscoveryIndex& index, std::string_view top_name) {
     const auto files_it = index.files_by_declaration.find(std::string(top_name));
     if (files_it == index.files_by_declaration.end()) {
@@ -130,6 +204,7 @@ std::vector<std::string> filesForTop(const WorkspaceDiscoveryIndex& index, std::
 struct DiscoveryScanResult {
     DiscoveryFile file;
     std::vector<DiscoverySymbol> macros;
+    std::vector<DiscoveryMacroDefinition> macro_definitions;
     std::vector<std::string> messages;
 };
 
@@ -176,7 +251,15 @@ DiscoveryScanResult scanDiscoveryDocument(const DiscoveryDocumentInput& document
                 .name = macro.name,
                 .kind = macro.function_like ? "macro-function" : "macro",
                 .location = DiscoveryLocation{.uri = document.uri, .range = macro.range}});
+            auto body_identifiers = compilation_service.lexicalIdentifiers(macro.body);
+            result.macro_definitions.push_back(DiscoveryMacroDefinition{
+                .name = macro.name,
+                .uri = document.uri,
+                .body_identifiers = std::move(body_identifiers.names),
+                .complete = body_identifiers.complete,
+                .reasons = std::move(body_identifiers.reasons)});
         }
+        file.macro_invocations = macroInvocations(document.text);
     });
     scan("package import", [&] {
         for (const auto& import : compilation_service.packageImports(document.text)) {
@@ -207,8 +290,16 @@ DiscoveryScanResult scanDiscoveryDocument(const DiscoveryDocumentInput& document
     sortUniqueStrings(file.referenced_top_level_names);
     sortUniqueStrings(file.referenced_visible_names);
     sortUniqueStrings(file.included_uris);
+    sortUniqueStrings(file.macro_invocations);
     sortUniqueStrings(file.closure_reasons);
     sortUniqueSymbols(result.macros);
+    for (auto& definition : result.macro_definitions) {
+        sortUniqueStrings(definition.body_identifiers);
+        sortUniqueStrings(definition.reasons);
+    }
+    std::sort(result.macro_definitions.begin(), result.macro_definitions.end(), [](const auto& lhs, const auto& rhs) {
+        return std::tie(lhs.name, lhs.uri) < std::tie(rhs.name, rhs.uri);
+    });
     sortUniqueStrings(result.messages);
     return result;
 }
@@ -218,7 +309,15 @@ void appendDiscoveryScan(WorkspaceDiscoveryIndex& index, DiscoveryScanResult sca
     ++index.file_count;
     index.byte_count += file.byte_count;
     index.macros.insert(index.macros.end(), scan.macros.begin(), scan.macros.end());
+    index.macro_definitions.insert(index.macro_definitions.end(),
+                                   scan.macro_definitions.begin(),
+                                   scan.macro_definitions.end());
     index.messages.insert(index.messages.end(), scan.messages.begin(), scan.messages.end());
+    if (!file.closure_complete) {
+        index.reference_candidate_incomplete_reasons.insert(index.reference_candidate_incomplete_reasons.end(),
+                                                            file.closure_reasons.begin(),
+                                                            file.closure_reasons.end());
+    }
     index.declarations.insert(index.declarations.end(),
                               file.declarations.begin(),
                               file.declarations.end());
@@ -235,6 +334,12 @@ void appendDiscoveryScan(WorkspaceDiscoveryIndex& index, DiscoveryScanResult sca
     }
     for (const auto& reference : file.referenced_top_level_names) {
         index.referenced_files_by_name[reference].push_back(file.uri);
+    }
+    for (const auto& name : file.referenced_visible_names) {
+        index.reference_candidate_uris_by_name[name].push_back(file.uri);
+    }
+    for (const auto& name : file.macro_invocations) {
+        index.macro_invocation_uris_by_name[name].push_back(file.uri);
     }
     index.reference_count += file.referenced_top_level_names.size();
     index.files.push_back(std::move(file));
@@ -257,6 +362,19 @@ void finalizeDiscoveryIndex(WorkspaceDiscoveryIndex& index) {
     for (auto& [_, files] : index.referenced_files_by_name) {
         sortUniqueStrings(files);
     }
+    for (auto& [_, files] : index.reference_candidate_uris_by_name) {
+        sortUniqueStrings(files);
+    }
+    for (auto& [_, files] : index.macro_invocation_uris_by_name) {
+        sortUniqueStrings(files);
+    }
+    std::sort(index.macro_definitions.begin(),
+              index.macro_definitions.end(),
+              [](const auto& lhs, const auto& rhs) {
+                  return std::tie(lhs.name, lhs.uri, lhs.body_identifiers) <
+                         std::tie(rhs.name, rhs.uri, rhs.body_identifiers);
+              });
+    sortUniqueStrings(index.reference_candidate_incomplete_reasons);
     std::sort(index.files.begin(), index.files.end(), [](const DiscoveryFile& lhs,
                                                          const DiscoveryFile& rhs) {
         return lhs.uri < rhs.uri;

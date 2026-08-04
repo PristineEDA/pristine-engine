@@ -556,6 +556,29 @@ void runReferencesFixture(SemanticEngine& engine, const nlohmann::json& fixture)
     if (expected.contains("count")) {
         CHECK(result.locations.size() == expected.at("count").get<size_t>());
     }
+    if (expected.contains("snapshotScope")) {
+        const auto expected_scope = expected.at("snapshotScope").get<std::string>();
+        const auto safe_full_preselection =
+            result.snapshot_scope == "full" &&
+            result.plan_confidence == "candidate-closure-covers-workspace";
+        CHECK((result.snapshot_scope == expected_scope ||
+               (expected_scope == "referenceClosure" && safe_full_preselection)));
+    }
+    if (expected.contains("planConfidence")) {
+        const auto expected_confidence = expected.at("planConfidence").get<std::string>();
+        CHECK((result.plan_confidence == expected_confidence ||
+               (expected_confidence == "complete" &&
+                result.snapshot_scope == "full" &&
+                result.plan_confidence == "candidate-closure-covers-workspace")));
+    }
+    if (expected.contains("candidateDocumentsAtLeast")) {
+        CHECK(result.candidate_document_count >=
+              expected.at("candidateDocumentsAtLeast").get<size_t>());
+    }
+    if (expected.contains("selectedDocumentsAtMost")) {
+        CHECK(result.selected_document_count <=
+              expected.at("selectedDocumentsAtMost").get<size_t>());
+    }
     if (expected.contains("allBeforeLine")) {
         const auto line = expected.at("allBeforeLine").get<int>();
         CHECK(std::all_of(result.locations.begin(), result.locations.end(), [line](const SemanticLocation& location) {
@@ -609,6 +632,29 @@ void runRenameFixture(SemanticEngine& engine, const nlohmann::json& fixture) {
     CHECK(result.unresolved == expected.value("unresolved", false));
     if (expected.contains("count")) {
         CHECK(result.edits.size() == expected.at("count").get<size_t>());
+    }
+    if (expected.contains("snapshotScope")) {
+        const auto expected_scope = expected.at("snapshotScope").get<std::string>();
+        const auto safe_full_preselection =
+            result.snapshot_scope == "full" &&
+            result.plan_confidence == "candidate-closure-covers-workspace";
+        CHECK((result.snapshot_scope == expected_scope ||
+               (expected_scope == "referenceClosure" && safe_full_preselection)));
+    }
+    if (expected.contains("planConfidence")) {
+        const auto expected_confidence = expected.at("planConfidence").get<std::string>();
+        CHECK((result.plan_confidence == expected_confidence ||
+               (expected_confidence == "complete" &&
+                result.snapshot_scope == "full" &&
+                result.plan_confidence == "candidate-closure-covers-workspace")));
+    }
+    if (expected.contains("candidateDocumentsAtLeast")) {
+        CHECK(result.candidate_document_count >=
+              expected.at("candidateDocumentsAtLeast").get<size_t>());
+    }
+    if (expected.contains("selectedDocumentsAtMost")) {
+        CHECK(result.selected_document_count <=
+              expected.at("selectedDocumentsAtMost").get<size_t>());
     }
     if (expected.contains("allBeforeLine")) {
         const auto line = expected.at("allBeforeLine").get<int>();
@@ -690,7 +736,15 @@ void runCompletionResolveFixture(SemanticEngine& engine, const nlohmann::json& f
     const auto resolved = engine.resolveCompletion(item->stable_id,
                                                    item->label,
                                                    item->snapshot_identity);
+    const auto telemetry = engine.lastCompletionResolveTelemetry();
     CHECK(resolved.unresolved == expected.value("unresolved", false));
+    if (expected.contains("identityHit")) {
+        CHECK((telemetry.identity_hits != 0) == expected.at("identityHit").get<bool>());
+    }
+    if (expected.contains("snapshotBuildDelta")) {
+        CHECK(telemetry.snapshot_build_delta ==
+              expected.at("snapshotBuildDelta").get<size_t>());
+    }
     if (expected.contains("detailContains")) {
         CHECK(resolved.detail.find(expected.at("detailContains").get<std::string>()) !=
               std::string::npos);

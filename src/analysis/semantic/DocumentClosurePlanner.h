@@ -15,6 +15,8 @@ inline constexpr std::string_view kWorkspaceCompletionPolicyVersion =
 inline constexpr size_t kShortWorkspaceCompletionCandidateLimit = 64;
 inline constexpr size_t kLongWorkspaceCompletionCandidateLimit = 128;
 inline constexpr size_t kWorkspaceCompletionAdditionalDocumentLimit = 256;
+inline constexpr std::string_view kReferenceCandidatePolicyVersion =
+    "reference-candidate-closure-v1";
 
 struct DocumentClosurePlan {
     std::vector<std::string> uris;
@@ -33,6 +35,23 @@ struct WorkspaceCompletionPlan {
     bool incomplete = false;
 };
 
+struct ReferenceSearchSeed {
+    std::string stable_id;
+    std::string declaration_uri;
+    std::vector<std::string> spellings;
+    std::vector<std::string> alias_stable_ids;
+    bool complete = true;
+    std::vector<std::string> reasons;
+};
+
+struct ReferenceCandidatePlan {
+    DocumentClosurePlan closure;
+    size_t candidate_document_count = 0;
+    size_t selected_document_count = 0;
+    std::string confidence;
+    bool requires_full_snapshot = false;
+};
+
 [[nodiscard]] DocumentClosurePlan planDocumentClosure(
     const SemanticWorkspaceDiscoverySnapshot& discovery,
     std::vector<std::string> roots,
@@ -43,5 +62,11 @@ struct WorkspaceCompletionPlan {
     std::vector<std::string> roots,
     const std::vector<std::string>& configured_top_modules,
     std::string_view prefix);
+
+[[nodiscard]] ReferenceCandidatePlan planReferenceCandidateClosure(
+    const SemanticWorkspaceDiscoverySnapshot& discovery,
+    std::vector<std::string> roots,
+    const std::vector<std::string>& configured_top_modules,
+    const ReferenceSearchSeed& seed);
 
 } // namespace pristine::analysis::semantic
