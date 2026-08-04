@@ -18,6 +18,23 @@ bool isDriveSegment(std::string_view value) {
            value[1] == ':';
 }
 
+#ifdef _WIN32
+constexpr std::string_view kInMemoryUriRoot = "C:/__pristine_inmemory_uri__";
+
+bool startsWithIgnoreCase(std::string_view value, std::string_view prefix) {
+    if (value.size() < prefix.size()) {
+        return false;
+    }
+    for (size_t index = 0; index < prefix.size(); ++index) {
+        if (std::tolower(static_cast<unsigned char>(value[index])) !=
+            std::tolower(static_cast<unsigned char>(prefix[index]))) {
+            return false;
+        }
+    }
+    return true;
+}
+#endif
+
 int utf16ColumnForLocation(const slang::SourceManager& source_manager,
                            slang::SourceLocation location) {
     const auto fallback_character = static_cast<int>(source_manager.getColumnNumber(location)) - 1;
@@ -176,7 +193,20 @@ std::string fileUriToPath(std::string_view uri) {
     if (path.size() >= 3 && path.front() == '/' && isDriveSegment(std::string_view(path).substr(1, 2))) {
         path.erase(path.begin());
     }
+#ifdef _WIN32
+    // A drive-less absolute URI is an in-memory LSP document, not a path on the
+    // current Windows drive. Keep it under a stable synthetic root so slang
+    // include resolution and source-location round-trips address the same buffer.
+    if (!path.empty() && path.front() == '/') {
+        path = std::string(kInMemoryUriRoot) + path;
+    }
+    // SourceManager caches assigned buffers by the native filesystem spelling.
+    // Normalizing before assignText keeps a later local-include lookup on the
+    // same cache key instead of attempting to read a separate on-disk file.
+    return std::filesystem::path(path).lexically_normal().string();
+#else
     return path;
+#endif
 }
 
 std::string pathToFileUri(const std::filesystem::path& path) {
@@ -184,6 +214,14 @@ std::string pathToFileUri(const std::filesystem::path& path) {
     if (normalized.empty()) {
         return {};
     }
+#ifdef _WIN32
+    if (startsWithIgnoreCase(normalized, kInMemoryUriRoot) &&
+        normalized.size() > kInMemoryUriRoot.size() &&
+        normalized[kInMemoryUriRoot.size()] == '/') {
+        return withoutTrailingSlash(normalizeFileUri(std::string("file://") +
+                                                     normalized.substr(kInMemoryUriRoot.size())));
+    }
+#endif
     if (!normalized.empty() && normalized.front() == '/') {
         return withoutTrailingSlash(normalizeFileUri(std::string("file://") + normalized));
     }

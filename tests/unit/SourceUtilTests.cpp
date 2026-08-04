@@ -13,7 +13,9 @@ TEST_CASE("SourceUtil normalizes and joins file URIs", "[analysis][source-util]"
 }
 
 TEST_CASE("SourceUtil converts file URI paths portably", "[analysis][source-util]") {
-    CHECK(fileUriToPath("file:///workspace/top.sv").find("workspace") != std::string::npos);
+    const auto virtual_path = fileUriToPath("file:///workspace/top.sv");
+    CHECK(virtual_path.find("workspace") != std::string::npos);
+    CHECK(pathToFileUri(virtual_path) == "file:///workspace/top.sv");
     CHECK(pathToFileUri("/workspace/top.sv") == "file:///workspace/top.sv");
 }
 
